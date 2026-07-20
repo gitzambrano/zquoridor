@@ -46,6 +46,7 @@ static void printUsage(const char* prog) {
         "  --time-ms N        orcamento de tempo por lance em ms (default 100)\n"
         "  --opening-plies N  lances iniciais sujeitos a ruido (default 6)\n"
         "  --epsilon F        prob. de lance aleatorio na abertura (default 0.25)\n"
+        "  --epsilon-midgame F prob. de lance aleatorio apos abertura (default 0.02)\n"
         "  --max-plies N      corte de seguranca por partida (default 300)\n"
         "  --threads N        threads paralelas (default hardware_concurrency)\n"
         "  --seed N           semente do RNG (default 1)\n"
@@ -75,6 +76,7 @@ int main(int argc, char** argv) {
         else if (a == "--time-ms")       cfg.timeBudgetMs    = std::atoi(next("--time-ms").c_str());
         else if (a == "--opening-plies") cfg.openingRandomPlies = std::atoi(next("--opening-plies").c_str());
         else if (a == "--epsilon")       cfg.epsilon         = std::atof(next("--epsilon").c_str());
+        else if (a == "--epsilon-midgame") cfg.epsilonMidgame = std::atof(next("--epsilon-midgame").c_str());
         else if (a == "--max-plies")     cfg.maxPlies        = std::atoi(next("--max-plies").c_str());
         else if (a == "--threads")       cfg.numThreads      = std::atoi(next("--threads").c_str());
         else if (a == "--seed")          cfg.seed            = (unsigned)std::atol(next("--seed").c_str());
@@ -105,8 +107,8 @@ int main(int argc, char** argv) {
 
     std::printf("=== self-play: %d partidas totais | %d por chunk | %d chunk(s) ===\n",
                 totalGames, chunkGames, nChunks);
-    std::printf("busca: profundidade<=%d, %dms/lance | abertura: %d lances, epsilon=%.2f\n",
-                cfg.maxDepth, cfg.timeBudgetMs, cfg.openingRandomPlies, cfg.epsilon);
+    std::printf("busca: profundidade<=%d, %dms/lance | abertura: %d lances, epsilon=%.2f | midgame epsilon=%.3f\n",
+                cfg.maxDepth, cfg.timeBudgetMs, cfg.openingRandomPlies, cfg.epsilon, cfg.epsilonMidgame);
     std::printf("threads: %d | corte de seguranca: %d lances/partida\n", nThreads, cfg.maxPlies);
     std::printf("registro: %zu bytes/posicao (packed)\n\n", sizeof(TrainingSample));
 

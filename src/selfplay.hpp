@@ -76,6 +76,7 @@ struct SelfPlayConfig {
     int timeBudgetMs = 100;      // orçamento de tempo por lance na busca
     int openingRandomPlies = 6;  // primeiros N lances sujeitos a ruído epsilon-greedy
     double epsilon = 0.25;       // probabilidade de lance aleatório dentro da janela de abertura
+    double epsilonMidgame = 0.02; // probabilidade de lance aleatório após a janela de abertura
     int maxPlies = 300;          // corte de segurança (partidas que não terminam são descartadas)
     unsigned seed = 1;
     int numThreads = 0;          // 0 = usar hardware_concurrency()
@@ -117,7 +118,13 @@ inline std::vector<TrainingSample> playOneGame(Negamax& engine, std::mt19937_64&
         auto moves = legalMoves(s);
         Move chosen;
         int searchScore = evalSimple(s, s.turn);  // sempre calculado: é barato e vira o alvo auxiliar
-        bool randomMove = (ply < cfg.openingRandomPlies) && (unif(rng) < cfg.epsilon);
+        bool randomMove = false;
+        if (ply < cfg.openingRandomPlies) {
+            randomMove = (unif(rng) < cfg.epsilon);
+        } else {
+            // Pequeno ruído no meio/fim de jogo para quebrar loops simétricos e diversificar posições
+            randomMove = (unif(rng) < cfg.epsilonMidgame);
+        }
         if (randomMove) {
             std::uniform_int_distribution<size_t> pick(0, moves.size() - 1);
             chosen = moves[pick(rng)];
