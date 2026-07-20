@@ -30,7 +30,7 @@ import time
 # =============================================================================
 
 # --- Geração de partidas ---
-TOTAL_GAMES   = 20000   # partidas totais a gerar nesta rodada
+TOTAL_GAMES   = 200000   # partidas totais a gerar nesta rodada
 CHUNK_GAMES   = 2000    # partidas por arquivo .bin
                         # Cada chunk fica ~6.5 MB -- confortável pra 32 GB RAM
 

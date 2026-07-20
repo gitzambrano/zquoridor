@@ -86,13 +86,13 @@ inclui `../src/rules.hpp` e `../src/search.hpp` diretamente.
 
 ### 2.1 Windows (`build/*.bat`, precisa de MinGW-w64 `g++` no PATH)
 
-| Script | Gera em `bin/` | Flags |
-|---|---|---|
-| `build_bench.bat` | `bench.exe`, `bench_quiescence_toggle.exe` | `-O3 -march=native -mavx2 -mfma` |
-| `build_tests.bat` | `test_rules_sanity.exe`, `test_search_staging.exe`, `test_move_ordering.exe`, `nnue_verify.exe` | `-O2` |
-| `build_selfplay.bat` | `selfplay.exe` | `-O3 -march=native -mavx2 -mfma -pthread` |
-| `build_wasm.bat` | `gui_web/quoridor.js` + `.wasm` | requer `emsdk_env.bat` ativado antes |
-| `build_all.bat` | os alvos nativos acima; `build_all.bat wasm` inclui o WASM | — |
+| Script                 | Gera em`bin/`                                                                                         | Flags                                       |
+| ---------------------- | ------------------------------------------------------------------------------------------------------- | ------------------------------------------- |
+| `build_bench.bat`    | `bench.exe`, `bench_quiescence_toggle.exe`                                                          | `-O3 -march=native -mavx2 -mfma`          |
+| `build_tests.bat`    | `test_rules_sanity.exe`, `test_search_staging.exe`, `test_move_ordering.exe`, `nnue_verify.exe` | `-O2`                                     |
+| `build_selfplay.bat` | `selfplay.exe`                                                                                        | `-O3 -march=native -mavx2 -mfma -pthread` |
+| `build_wasm.bat`     | `gui_web/quoridor.js` + `.wasm`                                                                     | requer`emsdk_env.bat` ativado antes       |
+| `build_all.bat`      | os alvos nativos acima;`build_all.bat wasm` inclui o WASM                                             | —                                          |
 
 ### 2.2 Linux/macOS (`build/*.sh`)
 
@@ -135,6 +135,7 @@ cd gui_web && python3 -m http.server 8000
 ```
 
 Funcionalidades:
+
 - Colocação de muro por modo de seleção (toca Horizontal/Vertical, os
   slots legais acendem no tabuleiro) ou drag-and-drop.
 - Barra de muros restantes por jogador.
@@ -168,26 +169,21 @@ passo de pré-processamento no lado Python. O binário É o dataset: basta
 `numpy.fromfile(path, dtype=SAMPLE_DTYPE)` (ver `training/read_selfplay.py`)
 para ter um array estruturado pronto para virar tensores.
 
-| Flag | Default | O que faz |
-|---|---|---|
-| `--games N` | 1000 | número de partidas a jogar |
-| `--out PATH` | (obrigatório) | arquivo binário de saída |
-| `--depth N` | 40 | profundidade máxima da busca |
-| `--time-ms N` | 100 | orçamento de tempo por lance, em ms |
-| `--threads N` | núcleos disponíveis | partidas jogadas em paralelo |
-| `--opening-plies N` | 6 | quantos lances iniciais de cada partida sofrem ruído aleatório |
-| `--epsilon F` | 0.25 | probabilidade de jogar um lance aleatório dentro da janela de abertura acima (evita que toda partida comece igual) |
-| `--max-plies N` | 300 | corte de segurança por partida; partidas que passam disso são descartadas, não gravadas |
-| `--seed N` | 1 | semente do gerador aleatório |
+| Flag                    | Default               | O que faz                                                                                                                                                               |
+| ----------------------- | --------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `--games N`           | 1000                  | número de partidas a jogar                                                                                                                                             |
+| `--out PATH`          | (obrigatório)        | arquivo binário de saída                                                                                                                                              |
+| `--depth N`           | 40                    | profundidade máxima da busca                                                                                                                                           |
+| `--time-ms N`         | 100                   | orçamento de tempo por lance, em ms                                                                                                                                    |
+| `--threads N`         | núcleos disponíveis | partidas jogadas em paralelo                                                                                                                                            |
+| `--opening-plies N`   | 6                     | quantos lances iniciais de cada partida sofrem ruído aleatório                                                                                                        |
+| `--epsilon F`         | 0.25                  | probabilidade de jogar um lance aleatório dentro da janela de abertura acima (evita que toda partida comece igual)                                                     |
+| `--epsilon-midgame F` | 0.02                  | probabilidade de ruído aleatório no meio/fim do jogo (escolhendo entre o 2º e 3º melhor lance da busca rasa, em vez de totalmente randômico, mantendo a qualidade) |
+| `--chunk-games N`     | 2000                  | divide a saída em vários arquivos binários com no máximo N partidas cada (sharding automático)                                                                     |
+| `--max-plies N`       | 300                   | corte de segurança por partida; partidas que passam disso são descartadas                                                                                             |
+| `--seed N`            | 1                     | semente do gerador aleatório                                                                                                                                           |
 
-**Não existe geração automática de vários arquivos por tamanho de shard**
-(por exemplo "gere 500 mil posições, mas quebre em arquivos de até 2GB
-cada"). Hoje, para ter vários arquivos menores em vez de um único grande,
-rode `bin/selfplay` várias vezes com `--seed`/`--out` diferentes — o
-treino (Seção 2.6) já aceita múltiplos arquivos via `--data` repetido,
-lista separada por vírgula, diretório ou glob, e não carrega tudo em RAM
-de uma vez. Ver Fase B do roadmap (Seção 5) para a ideia de automatizar
-isso dentro do próprio `bin/selfplay`.
+O gerador de self-play suporta **sharding automático** via `--chunk-games N`. Isso gera vários arquivos `.bin` sequenciais automaticamente (ex: `selfplay_000.bin`, `selfplay_001.bin`, etc.), evitando que arquivos únicos enormes estourem a RAM no treinamento. O treino (Seção 2.6) já aceita múltiplos arquivos via `--data` e não carrega tudo em RAM de uma vez.
 
 ### 2.6 Treino da NNUE (Python)
 
@@ -210,81 +206,81 @@ caminho) e `--batch-size` é sempre um inteiro fixo, nunca `"auto"`.
 
 **Dados e checkpoint**
 
-| Flag | Default | O que faz |
-|---|---|---|
-| `--data PATH` | (obrigatório) | arquivo(s) `.bin` de self-play; pode repetir a flag, passar lista separada por vírgula, um diretório ou um glob |
-| `--val-data PATH` | nenhum | arquivo(s) usados só para validação (mesmas regras de `--data`); se omitido, a validação sai de uma fração de `--data` |
-| `--val-split F` | 0.1 | fração de `--data` reservada para validação quando `--val-data` não é passado |
-| `--init-from PATH` | nenhum | pesos `.bin` existentes para continuar um treino em vez de começar do zero |
-| `--seed N` | 0 | semente do gerador aleatório |
+| Flag                 | Default        | O que faz                                                                                                                        |
+| -------------------- | -------------- | -------------------------------------------------------------------------------------------------------------------------------- |
+| `--data PATH`      | (obrigatório) | arquivo(s)`.bin` de self-play; pode repetir a flag, passar lista separada por vírgula, um diretório ou um glob               |
+| `--val-data PATH`  | nenhum         | arquivo(s) usados só para validação (mesmas regras de`--data`); se omitido, a validação sai de uma fração de `--data` |
+| `--val-split F`    | 0.1            | fração de`--data` reservada para validação quando `--val-data` não é passado                                           |
+| `--init-from PATH` | nenhum         | pesos`.bin` existentes para continuar um treino em vez de começar do zero                                                     |
+| `--seed N`         | 0              | semente do gerador aleatório                                                                                                    |
 
 **Otimização**
 
-| Flag | Default | O que faz |
-|---|---|---|
-| `--epochs N` | 60 | número de épocas |
-| `--batch-size N\|auto` | `auto` | tamanho do batch; `auto` calcula a partir de `--vram-budget-gb` (só em `train_nnue.py`) |
-| `--lr F` | 1e-3 | taxa de aprendizado inicial |
-| `--lr-min F` | 1e-5 | piso da taxa de aprendizado nos schedules que decaem |
-| `--lr-schedule none\|step\|exponential\|cosine` | `cosine` | como a taxa de aprendizado muda ao longo do treino |
-| `--warmup-epochs N` | 2 | épocas de aquecimento no início, antes do schedule normal começar |
-| `--step-size N` | 10 | épocas por degrau, só usado em `--lr-schedule=step` |
-| `--step-gamma F` | 0.5 | fator de redução a cada degrau, só em `--lr-schedule=step` |
-| `--exp-gamma F` | 0.97 | fator de decaimento por época, só em `--lr-schedule=exponential` |
-| `--device cpu\|cuda` | `cuda` se disponível, senão `cpu` | só em `train_nnue.py` |
+| Flag                                           | Default                                 | O que faz                                                                                     |
+| ---------------------------------------------- | --------------------------------------- | --------------------------------------------------------------------------------------------- |
+| `--epochs N`                                 | 60                                      | número de épocas                                                                            |
+| `--batch-size N\|auto`                        | `auto`                                | tamanho do batch;`auto` calcula a partir de `--vram-budget-gb` (só em `train_nnue.py`) |
+| `--lr F`                                     | 1e-3                                    | taxa de aprendizado inicial                                                                   |
+| `--lr-min F`                                 | 1e-5                                    | piso da taxa de aprendizado nos schedules que decaem                                          |
+| `--lr-schedule none\|step\|exponential\|cosine` | `cosine`                              | como a taxa de aprendizado muda ao longo do treino                                            |
+| `--warmup-epochs N`                          | 2                                       | épocas de aquecimento no início, antes do schedule normal começar                          |
+| `--step-size N`                              | 10                                      | épocas por degrau, só usado em`--lr-schedule=step`                                        |
+| `--step-gamma F`                             | 0.5                                     | fator de redução a cada degrau, só em`--lr-schedule=step`                                |
+| `--exp-gamma F`                              | 0.97                                    | fator de decaimento por época, só em`--lr-schedule=exponential`                           |
+| `--device cpu\|cuda`                          | `cuda` se disponível, senão `cpu` | só em`train_nnue.py`                                                                       |
 
 **Weight decay com annealing** — regulariza mais forte no início do
 treino e afrouxa perto do fim; aplicado só em matrizes de peso, nunca em
 bias (AdamW com weight decay desacoplado):
 
-| Flag | Default | O que faz |
-|---|---|---|
-| `--weight-decay F` | 1e-4 | valor inicial do weight decay |
-| `--weight-decay-min F` | 0.0 | valor para o qual o weight decay converge ao final do treino |
-| `--wd-schedule none\|constant\|linear\|cosine` | `cosine` | como o weight decay muda entre o valor inicial e o mínimo |
+| Flag                                          | Default    | O que faz                                                    |
+| --------------------------------------------- | ---------- | ------------------------------------------------------------ |
+| `--weight-decay F`                          | 1e-4       | valor inicial do weight decay                                |
+| `--weight-decay-min F`                      | 0.0        | valor para o qual o weight decay converge ao final do treino |
+| `--wd-schedule none\|constant\|linear\|cosine` | `cosine` | como o weight decay muda entre o valor inicial e o mínimo   |
 
 **Early stopping** — para de treinar quando a métrica monitorada para de
 melhorar, e por padrão restaura os pesos do melhor epoch (não os do
 último) na exportação final:
 
-| Flag | Default | O que faz |
-|---|---|---|
-| `--early-stop` / `--no-early-stop` | ligado | liga/desliga early stopping |
-| `--patience N` | 8 | quantas épocas sem melhora até parar |
-| `--min-delta F` | 1e-4 | melhora mínima para contar como "melhorou" |
-| `--monitor val_loss\|val_outcome\|val_score\|val_policy\|val_policy_acc` | `val_loss` | qual métrica de validação é monitorada |
-| `--no-restore-best` | desligado | exporta os pesos do último epoch em vez dos do melhor |
-| `--ckpt-dir PATH` | nenhum | diretório onde salvar `best.bin` (atualizado a cada melhora) e `last.bin` |
+| Flag                                                                   | Default      | O que faz                                                                     |
+| ---------------------------------------------------------------------- | ------------ | ----------------------------------------------------------------------------- |
+| `--early-stop` / `--no-early-stop`                                 | ligado       | liga/desliga early stopping                                                   |
+| `--patience N`                                                       | 8            | quantas épocas sem melhora até parar                                        |
+| `--min-delta F`                                                      | 1e-4         | melhora mínima para contar como "melhorou"                                   |
+| `--monitor val_loss\|val_outcome\|val_score\|val_policy\|val_policy_acc` | `val_loss` | qual métrica de validação é monitorada                                    |
+| `--no-restore-best`                                                  | desligado    | exporta os pesos do último epoch em vez dos do melhor                        |
+| `--ckpt-dir PATH`                                                    | nenhum       | diretório onde salvar`best.bin` (atualizado a cada melhora) e `last.bin` |
 
 **Orçamento de memória (RAM/VRAM)** — evita estourar memória com
 datasets grandes sem precisar calcular batch/chunk na mão:
 
-| Flag | Default | O que faz |
-|---|---|---|
-| `--vram-budget-gb F` | 6.0 | orçamento de VRAM usado para calcular `--batch-size=auto`; só em `train_nnue.py` |
-| `--ram-budget-gb F` | 32.0 | orçamento de RAM usado para calcular `--chunk-size=auto` |
-| `--ram-chunk-fraction F` | 0.25 | fração do orçamento de RAM reservada ao buffer usado para embaralhar os dados |
-| `--chunk-size N\|auto` | `auto` | quantas amostras ficam em memória por vez ao ler os arquivos `.bin`; `auto` calcula a partir de `--ram-budget-gb` |
+| Flag                       | Default  | O que faz                                                                                                               |
+| -------------------------- | -------- | ----------------------------------------------------------------------------------------------------------------------- |
+| `--vram-budget-gb F`     | 6.0      | orçamento de VRAM usado para calcular`--batch-size=auto`; só em `train_nnue.py`                                   |
+| `--ram-budget-gb F`      | 32.0     | orçamento de RAM usado para calcular`--chunk-size=auto`                                                              |
+| `--ram-chunk-fraction F` | 0.25     | fração do orçamento de RAM reservada ao buffer usado para embaralhar os dados                                        |
+| `--chunk-size N\|auto`    | `auto` | quantas amostras ficam em memória por vez ao ler os arquivos`.bin`; `auto` calcula a partir de `--ram-budget-gb` |
 
 **Pesos de loss e quantização (QAT)**
 
-| Flag | Default | O que faz |
-|---|---|---|
-| `--w-score F` | 0.3 | peso da cabeça auxiliar (imita `evalSimple`) na loss total |
-| `--w-outcome F` | 1.0 | peso da cabeça WL (resultado real da partida) na loss total |
-| `--w-policy F` | 1.0 | peso da cabeça de política na loss total |
-| `--qa N` | 255 | fator de quantização QA; precisa bater com `nnue.hpp` e `quantize_nnue.py` |
-| `--qb N` | 64 | fator de quantização QB; precisa bater com `nnue.hpp` e `quantize_nnue.py` |
+| Flag              | Default | O que faz                                                                       |
+| ----------------- | ------- | ------------------------------------------------------------------------------- |
+| `--w-score F`   | 0.3     | peso da cabeça auxiliar (imita`evalSimple`) na loss total                    |
+| `--w-outcome F` | 1.0     | peso da cabeça WL (resultado real da partida) na loss total                    |
+| `--w-policy F`  | 1.0     | peso da cabeça de política na loss total                                      |
+| `--qa N`        | 255     | fator de quantização QA; precisa bater com`nnue.hpp` e `quantize_nnue.py` |
+| `--qb N`        | 64      | fator de quantização QB; precisa bater com`nnue.hpp` e `quantize_nnue.py` |
 
 **Saída**
 
-| Flag | Default | O que faz |
-|---|---|---|
-| `--out PATH` | (obrigatório) | caminho de saída dos pesos treinados, float32 |
-| `--no-quantize` | desligado | pula a quantização automática pós-treino |
-| `--quant-out PATH` | `<out>` com sufixo `_int8` | caminho de saída dos pesos quantizados |
-| `--plot-dir PATH` | nenhum | diretório para salvar plots de convergência/validação em PNG |
-| `--log-every N` | 1 | a cada quantas épocas imprimir progresso no terminal |
+| Flag                 | Default                        | O que faz                                                        |
+| -------------------- | ------------------------------ | ---------------------------------------------------------------- |
+| `--out PATH`       | (obrigatório)                 | caminho de saída dos pesos treinados, float32                   |
+| `--no-quantize`    | desligado                      | pula a quantização automática pós-treino                     |
+| `--quant-out PATH` | `<out>` com sufixo `_int8` | caminho de saída dos pesos quantizados                          |
+| `--plot-dir PATH`  | nenhum                         | diretório para salvar plots de convergência/validação em PNG |
+| `--log-every N`    | 1                              | a cada quantas épocas imprimir progresso no terminal            |
 
 `quantize_nnue.py` não usa flags nomeadas, só dois argumentos
 posicionais: `quantize_nnue.py <entrada.bin> <saida_int8.bin>`.
@@ -364,6 +360,7 @@ neural, depois os testes que garantem que nada disso quebrou.
   recompilar — útil para comparar o motor com e sem essa extensão em
   benchmark, ou para descartar essa parte como causa de um bug durante
   debug.
+- **Detecção de Empate & Contempt**: detecção de empate por 3-fold repetition (tripla repetição da mesma posição de tabuleiro) implementada com histórico de posições via `RepetitionTable`. Adicionado o fator `CONTEMPT = -30` na busca (`negamax` e `quiescência`) para fazer o motor desviar ativamente de empates (penalidade de -30 para o jogador que propõe a repetição) em posições neutras ou favoráveis, mas permitindo o empate como recurso defensivo em posições muito desfavoráveis.
 
 ### NNUE (`nnue.hpp`)
 
@@ -397,11 +394,11 @@ na Seção 4; o plano para plugá-la na busca está na Fase B do roadmap
 `332 → 256 (acumulador, ativação SCReLU)` seguido de três cabeças
 independentes (nada compartilhado além do acumulador):
 
-| Cabeça | Forma | Treinada contra | Papel |
-|---|---|---|---|
-| WL (resultado) | `256→32→1` | resultado real da partida (+1/-1), BCE | é a que a busca vai consumir (`forwardValueWLQuant`) |
-| Auxiliar | `256→32→1` | `evalSimple` no momento do lance, MSE | andaime de treino enquanto o self-play ainda vem da heurística; removida quando o self-play passar a vir da própria rede |
-| Política | `256→209` logits | lance jogado, CrossEntropy | ordenação de lances na busca, não é probabilidade de vitória |
+| Cabeça        | Forma               | Treinada contra                         | Papel                                                                                                                      |
+| -------------- | ------------------- | --------------------------------------- | -------------------------------------------------------------------------------------------------------------------------- |
+| WL (resultado) | `256→32→1`      | resultado real da partida (+1/-1), BCE  | é a que a busca vai consumir (`forwardValueWLQuant`)                                                                    |
+| Auxiliar       | `256→32→1`      | `evalSimple` no momento do lance, MSE | andaime de treino enquanto o self-play ainda vem da heurística; removida quando o self-play passar a vir da própria rede |
+| Política      | `256→209` logits | lance jogado, CrossEntropy              | ordenação de lances na busca, não é probabilidade de vitória                                                          |
 
 A rede não tem conceito fixo de branco/preto: toda entrada e toda saída
 são relativas a uma perspectiva (`buildAccumulator(state, perspective)`),
@@ -434,18 +431,16 @@ de uma heurística forte em vez de pesos aleatórios).
 
 Tudo aqui usa só `evalSimple`, sem NNUE.
 
-1. Teste de força com quiescência ligada vs. desligada (`bench_quiescence_toggle`,
-   flag `setQuiescenceEnabled`) — partidas diretas, não só nós/s.
-2. Continuation history (1-ply) para combos de muro sequenciais — a
+1. Continuation history (1-ply) para combos de muro sequenciais — a
    history hoje é `[lado][lance]`, sem contexto do lance anterior.
-3. LMR em muros ordenados tarde, null-move pruning com guarda de
+2. LMR em muros ordenados tarde, null-move pruning com guarda de
    zugzwang (`wallsLeft[side] > 0` e gap não muito apertado,
    futility/razoring raso em lance de peão quiet com profundidade ≤ 2,
    PVS — nessa ordem, todos dependentes de ordenação já madura (item 2).
-4. Calibrar os limiares da quiescência de muro
+3. Calibrar os limiares da quiescência de muro
    (`QS_CRITICAL_BFS_DELTA`, `QS_CRITICAL_ROBUSTNESS_DROP_TO`), hoje
    valores iniciais não calibrados.
-5. Ladder interno de ELO para o motor heurístico puro — cada otimização
+4. Ladder interno de ELO para o motor heurístico puro — cada otimização
    acima validada por partidas diretas, não só por nós/s e profundidade.
    Serve também de baseline de força para comparar com a NNUE mais tarde
    (Fase D).
@@ -455,22 +450,13 @@ Tudo aqui usa só `evalSimple`, sem NNUE.
 Gera dados de treino com o motor da Fase A e usa isso para dar à NNUE seu
 primeiro conjunto de pesos utilizável.
 
-6. **Sharding automático no self-play**: hoje `bin/selfplay` só grava um
-   arquivo `.bin` por execução (Seção 2.5); rodar milhões de posições de
-   uma vez gera um arquivo único enorme, que pode estourar RAM na hora do
-   treino mesmo com o carregamento em chunks. Adicionar algo como
-   `--games-per-shard N`, fazendo o próprio `bin/selfplay` girar a saída
-   em vários arquivos automaticamente em vez de depender de rodar o
-   binário várias vezes na mão.
-7. Gerar um volume maior de self-play numa máquina com mais
-   núcleos/GPU (`bin/selfplay`, Seção 2.5).
-8. Rodar um treino completo com o pipeline de regularização
+1. Rodar um treino completo com o pipeline de regularização
    (`--early-stop --plot-dir`, Seção 2.6) e registrar o resultado.
-9. Plugar a NNUE na busca: trocar `evalSimple` por `forwardValueWLQuant`
+2. Plugar a NNUE na busca: trocar `evalSimple` por `forwardValueWLQuant`
    na folha do negamax (`search.hpp`).
-10. Medir o custo real de nós/s da rede quantizada dentro do laço de
+3. Medir o custo real de nós/s da rede quantizada dentro do laço de
     busca (hoje só medido como microbenchmark isolado, fora do laço).
-11. Suíte de força NNUE vs. heurística — a NNUE só substitui `evalSimple`
+4. Suíte de força NNUE vs. heurística — a NNUE só substitui `evalSimple`
     se vencer o ladder da Fase A de forma estatisticamente clara.
 
 ### Fase C — Self-play da própria NNUE (loop de auto-melhoria)
@@ -478,26 +464,26 @@ primeiro conjunto de pesos utilizável.
 Começa depois que a Fase B mostrar que a NNUE joga pelo menos tão bem
 quanto `evalSimple` (item 11).
 
-12. Gerar self-play usando a NNUE integrada (não mais `evalSimple`) como
+1. Gerar self-play usando a NNUE integrada (não mais `evalSimple`) como
     avaliadora da busca.
-13. Zerar/remover a cabeça auxiliar (`--w-score 0` ou remoção dos campos
+2. Zerar/remover a cabeça auxiliar (`--w-score 0` ou remoção dos campos
     e do termo de loss correspondente) — ela existe só para imitar
     `evalSimple` enquanto o self-play ainda vem da heurística.
-14. Retreinar a NNUE sobre o novo dataset (gerado pela própria rede) e
+3. Retreinar a NNUE sobre o novo dataset (gerado pela própria rede) e
     repetir o ciclo: joga melhor → gera dados melhores → treina de novo.
-15. Migrar `pathRobustness` de termo de `evalSimple` para feature de
+4. Migrar `pathRobustness` de termo de `evalSimple` para feature de
     entrada da NNUE — só faz sentido depois que `evalSimple` deixa de
     ser a fonte de verdade.
 
 ### Fase D — Infraestrutura e validação externa
 
-16. `engine_cli/`: executável falando um protocolo tipo-UCI por
+1. `engine_cli/`: executável falando um protocolo tipo-UCI por
     stdin/stdout (`uci`, `isready`, `position`, `go movetime`/`go depth`,
     `bestmove`, `stop`, `quit`), reusando `rules.hpp`/`search.hpp`/`nnue.hpp`
     sem modificação. Notação: casas `a1`-`i9`, muro = casa + orientação
     (`e3h`/`e3v`). Só depois do motor estar numa versão mais madura
     (Fase C razoavelmente avançada).
-17. Benchmark contra motores externos open-source
+2. Benchmark contra motores externos open-source
     (`github.com/dzionek/quoridorAI`, `github.com/mehrshad-sdtn/AI-Quoridor`)
     e partidas contra humanos reais de níveis variados, para calibrar a
     meta de ~99% empiricamente. Não existe um benchmark público único de

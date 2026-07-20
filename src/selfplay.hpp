@@ -126,8 +126,43 @@ inline std::vector<TrainingSample> playOneGame(Negamax& engine, std::mt19937_64&
             randomMove = (unif(rng) < cfg.epsilonMidgame);
         }
         if (randomMove) {
-            std::uniform_int_distribution<size_t> pick(0, moves.size() - 1);
-            chosen = moves[pick(rng)];
+            if (ply < cfg.openingRandomPlies) {
+                // Abertura: totalmente aleatória para criar novos cenários
+                std::uniform_int_distribution<size_t> pick(0, moves.size() - 1);
+                chosen = moves[pick(rng)];
+            } else {
+                // Meio/fim do jogo: escolhe o 2º ou 3º melhor lance via busca rasa (depth=2)
+                struct ScoredMove {
+                    Move m;
+                    int score;
+                };
+                std::vector<ScoredMove> scoredMoves;
+                scoredMoves.reserve(moves.size());
+
+                SearchStats dummyStats;
+                for (size_t i = 0; i < moves.size(); i++) {
+                    const auto& m = moves[i];
+                    State ns = applyMove(s, m);
+                    reptbl.push(ns.hash);
+                    // Busca rasa do ponto de vista do oponente, então negamos o score
+                    int score = -engine.searchShallow(ns, 2, dummyStats);
+                    reptbl.pop();
+                    scoredMoves.push_back({m, score});
+                }
+
+                // Ordena decrescente pelo score
+                std::sort(scoredMoves.begin(), scoredMoves.end(), [](const ScoredMove& a, const ScoredMove& b) {
+                    return a.score > b.score;
+                });
+
+                if (scoredMoves.size() <= 2) {
+                    chosen = scoredMoves[0].m;
+                } else {
+                    // Escolhe entre o 2º (index 1) ou 3º (index 2) melhor lance
+                    std::uniform_int_distribution<size_t> pick(1, std::min<size_t>(2, scoredMoves.size() - 1));
+                    chosen = scoredMoves[pick(rng)].m;
+                }
+            }
         } else {
             SearchStats st;
             chosen = engine.chooseMove(s, cfg.maxDepth, cfg.timeBudgetMs, st, reptbl);
@@ -196,6 +231,13 @@ inline void runSelfPlay(const SelfPlayConfig& cfg, const std::string& outputPath
             int g = nextGame.fetch_add(1);
             if (g >= totalGames) break;
             uint64_t nodes = 0;
+            // Limpa a TT antes de cada partida: scores de repetição são
+            // path-dependent (dependem do histórico da partida atual), mas
+            // a TT é indexada só pelo hash da posição. Se não limpar, uma
+            // posição avaliada como empate em G1 contamina a busca de G2,
+            // onde o mesmo hash é atingido sem repetição -- causando
+            // aumento progressivo de empates conforme a TT se enche.
+            engine.clearTT();
             auto samples = playOneGame(engine, rng, cfg, nodes, stats);
             stats.totalNodes += nodes;
             if (samples.empty()) { stats.gamesDiscarded++; stats.gamesPlayed++; continue; }

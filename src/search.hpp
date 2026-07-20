@@ -96,6 +96,21 @@ public:
     void setQuiescenceEnabled(bool enabled) { quiescenceEnabled = enabled; }
     bool isQuiescenceEnabled() const { return quiescenceEnabled; }
 
+    // Limpa toda a tabela de transposição. Deve ser chamado entre partidas
+    // no self-play: scores de repetição (path-dependent) ficam gravados na
+    // TT e contaminam buscas futuras onde a mesma posição é atingida sem
+    // repetição. Não zera killers/history (esses são limpos pelo
+    // resetOrderingState() no início de cada chooseMove).
+    void clearTT() { std::fill(tt.begin(), tt.end(), TTEntry{}); }
+
+    int searchShallow(const State& s, int depth, SearchStats& stats) {
+        stopped = false;
+        rootDepth = depth;
+        deadline = std::chrono::steady_clock::now() + std::chrono::hours(1);
+        RepetitionTable emptyHistory;
+        return negamax(s, depth, -SCORE_INF, SCORE_INF, stats, emptyHistory);
+    }
+
     Move chooseMove(const State& root, int maxDepthCap, int timeBudgetMs, SearchStats& stats) {
         RepetitionTable emptyHistory;
         return chooseMove(root, maxDepthCap, timeBudgetMs, stats, emptyHistory);
@@ -291,7 +306,7 @@ private:
         int w = winner(s);
         if (w != -1) return (w == s.turn) ? SCORE_INF - 1 : -(SCORE_INF - 1);
 
-        if (reptbl.count(s.hash) >= 2) return CONTEMPT;
+        if (reptbl.count(s.hash) >= 2) return -CONTEMPT;
 
         int standPat = evalSimpleW(s, s.turn, weights);
         if (standPat >= beta) return standPat;
@@ -350,7 +365,7 @@ private:
         int w = winner(s);
         if (w != -1) return (w == s.turn) ? SCORE_INF - 1 : -(SCORE_INF - 1);
 
-        if (reptbl.count(s.hash) >= 2) return CONTEMPT;
+        if (reptbl.count(s.hash) >= 2) return -CONTEMPT;
 
         // Fix (Fase 4.2.10, pós-implementação): depth==0 tem que ser
         // resolvido ANTES de consultar a TT para cutoff. Motivo: a
