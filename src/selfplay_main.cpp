@@ -134,9 +134,10 @@ int main(int argc, char** argv) {
             while (!chunkDone.load()) {
                 std::this_thread::sleep_for(std::chrono::milliseconds(5000));
                 if (chunkDone.load()) break;
-                std::printf("  progresso: %llu/%d partidas | %llu posicoes | %llu descartadas\n",
+                std::printf("  progresso: %llu/%d partidas | %llu posicoes | %llu empates | %llu descartadas\n",
                             (unsigned long long)stats.gamesPlayed.load(), gamesThisChunk,
                             (unsigned long long)stats.positionsWritten.load(),
+                            (unsigned long long)stats.gamesDrawn.load(),
                             (unsigned long long)stats.gamesDiscarded.load());
                 std::fflush(stdout);
             }
@@ -155,10 +156,11 @@ int main(int argc, char** argv) {
               (stats.gamesPlayed.load() - stats.gamesDiscarded.load())
             : 0.0;
 
-        std::printf("  ok: %.1f s | %llu partidas (%llu desc.) | %llu pos (%.1f/partida)"
+        std::printf("  ok: %.1f s | %llu partidas (%llu empates, %llu desc.) | %llu pos (%.1f/partida)"
                     " | %.0f nos/s | %.1f pos/s\n\n",
                     chunkS,
                     (unsigned long long)stats.gamesPlayed.load(),
+                    (unsigned long long)stats.gamesDrawn.load(),
                     (unsigned long long)stats.gamesDiscarded.load(),
                     (unsigned long long)stats.positionsWritten.load(),
                     posPerGame,

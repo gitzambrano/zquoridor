@@ -676,4 +676,21 @@ inline int evalSimple(const State& s, int player) {
     return evalSimpleW(s, player, evalWeights());
 }
 
+struct RepetitionTable {
+    static constexpr int MAX_HIST = 512;
+    uint64_t hist[MAX_HIST];
+    int size = 0;
+
+    void push(uint64_t hash) { if (size < MAX_HIST) hist[size++] = hash; }
+    void pop()               { if (size > 0) --size; }
+    int count(uint64_t hash) const {
+        int c = 0;
+        for (int i = 0; i < size; i++) {
+            if (hist[i] == hash) c++;
+        }
+        return c;
+    }
+    void clear() { size = 0; }
+};
+
 } // namespace qr

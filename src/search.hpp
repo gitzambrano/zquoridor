@@ -21,6 +21,8 @@ constexpr int SCORE_INF = 1'000'000;
 // dimensiona os arrays de killer moves, indexados por ply-a-partir-da-raiz.
 constexpr int MAX_PLY = 64;
 
+constexpr int CONTEMPT = -30;  // motor evita empate em posição neutra/melhor
+
 // ordenação de muro por delta de BFS (custo: 1 BFS por muro candidato) só
 // vale a pena perto da raiz -- Seção 5.5 do plano. Nos plies mais fundos
 // cai de volta pro critério barato "peão antes de muro".
@@ -95,6 +97,11 @@ public:
     bool isQuiescenceEnabled() const { return quiescenceEnabled; }
 
     Move chooseMove(const State& root, int maxDepthCap, int timeBudgetMs, SearchStats& stats) {
+        RepetitionTable emptyHistory;
+        return chooseMove(root, maxDepthCap, timeBudgetMs, stats, emptyHistory);
+    }
+
+    Move chooseMove(const State& root, int maxDepthCap, int timeBudgetMs, SearchStats& stats, const RepetitionTable& gameHistory) {
         using clock = std::chrono::steady_clock;
         auto t0 = clock::now();
         deadline = t0 + std::chrono::milliseconds(timeBudgetMs);
@@ -104,20 +111,21 @@ public:
 
         Move bestMove = legalMoves(root)[0];
         int prevScore = 0;
+        RepetitionTable reptbl = gameHistory;
         for (int depth = 1; depth <= maxDepthCap && !stopped; depth++) {
             rootDepth = depth;
             int score;
             if (depth <= 2) {
                 // aspiration window não compensa em profundidades tão rasas
                 // (a janela estreita quase sempre falha e obriga rebusca)
-                score = negamax(root, depth, -SCORE_INF, SCORE_INF, stats);
+                score = negamax(root, depth, -SCORE_INF, SCORE_INF, stats, reptbl);
             } else {
                 int alpha = prevScore - ASPIRATION_DELTA;
                 int beta = prevScore + ASPIRATION_DELTA;
-                score = negamax(root, depth, alpha, beta, stats);
+                score = negamax(root, depth, alpha, beta, stats, reptbl);
                 if (!stopped && (score <= alpha || score >= beta)) {
                     // falhou fora da janela estreita -- rebusca com janela cheia
-                    score = negamax(root, depth, -SCORE_INF, SCORE_INF, stats);
+                    score = negamax(root, depth, -SCORE_INF, SCORE_INF, stats, reptbl);
                 }
             }
             if (stopped) break;
@@ -274,7 +282,7 @@ private:
     // "captura obrigatória" em Quoridor), então funciona como em
     // quiescência de xadrez -- só estende se algum muro crítico do lado a
     // mover melhorar sobre o stand-pat.
-    int quiescence(const State& s, int alpha, int beta, int qply, SearchStats& stats) {
+    int quiescence(const State& s, int alpha, int beta, int qply, SearchStats& stats, RepetitionTable& reptbl) {
         stats.nodes++;
         if ((stats.nodes & 0x3FF) == 0 && std::chrono::steady_clock::now() >= deadline) {
             stopped = true;
@@ -282,6 +290,8 @@ private:
         }
         int w = winner(s);
         if (w != -1) return (w == s.turn) ? SCORE_INF - 1 : -(SCORE_INF - 1);
+
+        if (reptbl.count(s.hash) >= 2) return CONTEMPT;
 
         int standPat = evalSimpleW(s, s.turn, weights);
         if (standPat >= beta) return standPat;
@@ -320,7 +330,9 @@ private:
             }
             if (!critical) continue;
 
-            int score = -quiescence(ns, -beta, -localAlpha, qply + 1, stats);
+            reptbl.push(ns.hash);
+            int score = -quiescence(ns, -beta, -localAlpha, qply + 1, stats, reptbl);
+            reptbl.pop();
             if (stopped) return 0;
             if (score > best) best = score;
             if (score > localAlpha) localAlpha = score;
@@ -329,7 +341,7 @@ private:
         return best;
     }
 
-    int negamax(const State& s, int depth, int alpha, int beta, SearchStats& stats) {
+    int negamax(const State& s, int depth, int alpha, int beta, SearchStats& stats, RepetitionTable& reptbl) {
         stats.nodes++;
         if ((stats.nodes & 0x3FF) == 0 && std::chrono::steady_clock::now() >= deadline) {
             stopped = true;
@@ -337,6 +349,8 @@ private:
         }
         int w = winner(s);
         if (w != -1) return (w == s.turn) ? SCORE_INF - 1 : -(SCORE_INF - 1);
+
+        if (reptbl.count(s.hash) >= 2) return CONTEMPT;
 
         // Fix (Fase 4.2.10, pós-implementação): depth==0 tem que ser
         // resolvido ANTES de consultar a TT para cutoff. Motivo: a
@@ -361,7 +375,7 @@ private:
             // resolvido acima, então não há necessidade de checá-lo de
             // novo aqui -- mesma garantia que quiescence() já tinha.
             if (!quiescenceEnabled) return evalSimpleW(s, s.turn, weights);
-            return quiescence(s, alpha, beta, 0, stats);
+            return quiescence(s, alpha, beta, 0, stats, reptbl);
         }
 
         int alphaOrig = alpha;
@@ -379,31 +393,6 @@ private:
             // Corte de valor: `e.depth >= depth` (reuso de qualquer busca
             // igual-ou-mais-profunda), a técnica padrão usada por
             // praticamente todo motor de alpha-beta+TT sério.
-            //
-            // Histórico desta rodada (Fase 4.2.10, honestidade sobre um
-            // erro meu): cheguei a restringir isso pra `e.depth == depth`
-            // depois de achar que reuso `>=` causava uma instabilidade de
-            // busca ligada à quiescência (Seção 4.2.10 do readme tinha
-            // essa análise). Tecnicamente accurate -- reduzia a
-            // ~0/2000 uma divergência de score de 1-3 pontos que aparecia
-            // em ~0,5% das posições testadas -- mas o custo medido em
-            // jogo real (self-play, 200ms/lance, `bench` do main.cpp) foi
-            // catastrófico: profundidade média 16,7 -> 6,1 (-63%!) e nós/s
-            // -21%, porque `==` joga fora quase todo o reuso de TT entre
-            // MOVIMENTOS CONSECUTIVOS da mesma partida (o motor mantém a
-            // MESMA instância de Negamax/TT jogo inteiro -- a maior parte
-            // do reuso valioso é entre buscas de profundidades diferentes
-            // de turnos diferentes, não só transposição dentro de uma
-            // única busca). Trocar 63% de profundidade de busca por
-            // eliminar uma instabilidade de score de poucos pontos em
-            // 0,5% das posições é uma troca péssima -- exatamente o tipo
-            // de "instabilidade de busca por reuso de TT entre
-            // profundidades" que É a norma aceita em motores de
-            // alpha-beta reais (Stockfish e outros também têm isso; não é
-            // tratado como bug lá). Reincorporado `>=`; a instabilidade
-            // residual fica documentada como característica conhecida e
-            // aceita (Seção 4.2.10 do readme), não "corrigida" à custa da
-            // força do motor.
             if (e.depth >= depth) {
                 if (e.flag == EXACT) return e.score;
                 if (e.flag == LOWER) alpha = std::max(alpha, (int)e.score);
@@ -421,7 +410,7 @@ private:
         // DSU + até BFS completo por candidato ambíguo, Seção 4.2.1) nem
         // chega a rodar. Legalidade do lance da TT verificada de forma
         // barata: se for peão, checando pertencimento no bloco de peão
-        // (sempre gerado, Estágio 2, sem BFS/alocação -- gerar esse bloco
+        // (simpre gerado, Estágio 2, sem BFS/alocação -- gerar esse bloco
         // não paga o custo que queremos evitar); se for muro,
         // isWallMoveLegal (rules.hpp) testa só ESSE candidato, sem gerar
         // os outros 127. Guarda contra colisão de hash na TT: um lance
@@ -451,7 +440,9 @@ private:
         // -- `stopped` é checado pelo chamador logo em seguida).
         auto tryMove = [&](const Move& m) -> bool {
             State ns = applyMove(s, m);
-            int score = -negamax(ns, depth - 1, -beta, -alpha, stats);
+            reptbl.push(ns.hash);
+            int score = -negamax(ns, depth - 1, -beta, -alpha, stats, reptbl);
+            reptbl.pop();
             if (stopped) return true;
             if (!haveMove || score > best) { best = score; bestMove = m; haveMove = true; }
             alpha = std::max(alpha, score);
@@ -517,7 +508,8 @@ public:
     int testQuiescence(const State& s, int alpha, int beta, SearchStats& stats) {
         stopped = false;
         deadline = std::chrono::steady_clock::now() + std::chrono::hours(1);
-        return quiescence(s, alpha, beta, 0, stats);
+        RepetitionTable emptyHistory;
+        return quiescence(s, alpha, beta, 0, stats, emptyHistory);
     }
     int testFixedDepthFullWindow(const State& s, int depth, SearchStats& stats) {
         resetOrderingState();
@@ -526,7 +518,8 @@ public:
         rootDepth = depth;
         deadline = std::chrono::steady_clock::now() + std::chrono::hours(1);
         stats = SearchStats{};
-        return negamax(s, depth, -SCORE_INF, SCORE_INF, stats);
+        RepetitionTable emptyHistory;
+        return negamax(s, depth, -SCORE_INF, SCORE_INF, stats, emptyHistory);
     }
     // igual, mas SEM limpar a TT -- pra reproduzir de propósito o reuso
     // entre iterações do chooseMove (não limpa killers/history também).
@@ -535,7 +528,8 @@ public:
         rootDepth = depth;
         deadline = std::chrono::steady_clock::now() + std::chrono::hours(1);
         stats = SearchStats{};
-        return negamax(s, depth, alpha, beta, stats);
+        RepetitionTable emptyHistory;
+        return negamax(s, depth, alpha, beta, stats, emptyHistory);
     }
     void testClearTT() { std::fill(tt.begin(), tt.end(), TTEntry{}); }
 #endif

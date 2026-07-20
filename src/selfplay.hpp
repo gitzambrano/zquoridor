@@ -84,6 +84,7 @@ struct SelfPlayConfig {
 struct SelfPlayStats {
     std::atomic<uint64_t> gamesPlayed{0};
     std::atomic<uint64_t> gamesDiscarded{0};  // não terminaram dentro de maxPlies
+    std::atomic<uint64_t> gamesDrawn{0};      // empates por repetição
     std::atomic<uint64_t> positionsWritten{0};
     std::atomic<uint64_t> totalNodes{0};
 };
@@ -92,15 +93,27 @@ struct SelfPlayStats {
 // rotuladas com o resultado final. Descarta a partida (vetor vazio) se
 // não terminar dentro de maxPlies -- evita rótulo de resultado incorreto.
 inline std::vector<TrainingSample> playOneGame(Negamax& engine, std::mt19937_64& rng,
-                                                const SelfPlayConfig& cfg, uint64_t& nodesOut) {
+                                                const SelfPlayConfig& cfg, uint64_t& nodesOut,
+                                                SelfPlayStats& stats) {
     State s = initialState();
     std::vector<TrainingSample> samples;
     samples.reserve(cfg.maxPlies);
     std::uniform_real_distribution<double> unif(0.0, 1.0);
     nodesOut = 0;
     int ply = 0;
+    RepetitionTable reptbl;
+    bool isDraw = false;
+
     for (; ply < cfg.maxPlies; ply++) {
         if (winner(s) != -1) break;
+
+        // Tripla repetição: se a posição já foi vista 2 vezes no histórico,
+        // com a visita atual ela ocorre pela 3ª vez -> empate.
+        if (reptbl.count(s.hash) >= 2) {
+            isDraw = true;
+            break;
+        }
+
         auto moves = legalMoves(s);
         Move chosen;
         int searchScore = evalSimple(s, s.turn);  // sempre calculado: é barato e vira o alvo auxiliar
@@ -110,7 +123,7 @@ inline std::vector<TrainingSample> playOneGame(Negamax& engine, std::mt19937_64&
             chosen = moves[pick(rng)];
         } else {
             SearchStats st;
-            chosen = engine.chooseMove(s, cfg.maxDepth, cfg.timeBudgetMs, st);
+            chosen = engine.chooseMove(s, cfg.maxDepth, cfg.timeBudgetMs, st, reptbl);
             nodesOut += st.nodes;
         }
 
@@ -125,16 +138,21 @@ inline std::vector<TrainingSample> playOneGame(Negamax& engine, std::mt19937_64&
         rec.searchScore = (int16_t)std::max(-30000, std::min(30000, searchScore));
         rec.gameResult = 0;  // preenchido abaixo, depois que a partida terminar
         rec.policyTarget = moveToPolicyIndex(chosen);
-        // mesma BFS que evalSimple já calcula por dentro -- reaproveitável
-        // porque shortestPathLen não aloca (arrays thread_local fixos), mas
-        // recalculada explicitamente aqui em vez de extraída de evalSimple
-        // pra manter os dois campos (own/opp) sem depender de refatorar a
-        // assinatura dessa função só por causa do dataset.
         rec.ownDist = (uint8_t)std::min(255, shortestPathLen(s.wallsH, s.wallsV, s.pawn[mover], mover));
         rec.oppDist = (uint8_t)std::min(255, shortestPathLen(s.wallsH, s.wallsV, s.pawn[opp], opp));
         samples.push_back(rec);
 
+        reptbl.push(s.hash);
         s = applyMove(s, chosen);
+    }
+
+    if (isDraw) {
+        // Empate por repetição: resultado = 0
+        for (size_t i = 0; i < samples.size(); i++) {
+            samples[i].gameResult = 0;
+        }
+        stats.gamesDrawn++;
+        return samples;
     }
 
     int w = winner(s);
@@ -171,7 +189,7 @@ inline void runSelfPlay(const SelfPlayConfig& cfg, const std::string& outputPath
             int g = nextGame.fetch_add(1);
             if (g >= totalGames) break;
             uint64_t nodes = 0;
-            auto samples = playOneGame(engine, rng, cfg, nodes);
+            auto samples = playOneGame(engine, rng, cfg, nodes, stats);
             stats.totalNodes += nodes;
             if (samples.empty()) { stats.gamesDiscarded++; stats.gamesPlayed++; continue; }
             {

@@ -26,6 +26,7 @@ Negamax g_engine;   // reaproveita a TT entre lances do motor (padrão comum em 
 std::vector<Move> g_moves;
 Move g_lastEngineMove = Move::pawn(0);
 int g_lastEngineScore = 0;   // avaliação (SearchStats::score) do último qr_engine_move
+RepetitionTable g_reptbl;
 
 void regenMoves() { g_moves = legalMoves(g_state).toVector(); }
 } // namespace
@@ -36,6 +37,8 @@ EMSCRIPTEN_KEEPALIVE
 void qr_new_game() {
     g_state = initialState();
     g_engine = Negamax();  // zera a TT: partida nova não deve herdar lixo da anterior
+    g_reptbl.clear();
+    g_reptbl.push(g_state.hash);
     regenMoves();
 }
 
@@ -65,6 +68,7 @@ int qr_apply_pawn_move(int destCell) {
     for (size_t i = 0; i < g_moves.size(); i++) {
         if (!g_moves[i].isWall && g_moves[i].a == destCell) {
             g_state = applyMove(g_state, g_moves[i]);
+            g_reptbl.push(g_state.hash);
             regenMoves();
             return 1;
         }
@@ -78,6 +82,7 @@ int qr_apply_wall_move(int orientation, int r, int c) {
         const Move& m = g_moves[i];
         if (m.isWall && m.a == orientation && m.b == r && m.c == c) {
             g_state = applyMove(g_state, m);
+            g_reptbl.push(g_state.hash);
             regenMoves();
             return 1;
         }
@@ -92,12 +97,13 @@ int qr_apply_wall_move(int orientation, int r, int c) {
 // próximo passo natural (módulo já compila igual dentro de um worker).
 EMSCRIPTEN_KEEPALIVE
 int qr_engine_move(int maxDepth, int timeMs) {
-    if (winner(g_state) != -1) return 0;
+    if (winner(g_state) != -1 || g_reptbl.count(g_state.hash) >= 3) return 0;
     SearchStats st;
-    Move m = g_engine.chooseMove(g_state, maxDepth, timeMs, st);
+    Move m = g_engine.chooseMove(g_state, maxDepth, timeMs, st, g_reptbl);
     g_lastEngineMove = m;
     g_lastEngineScore = st.score;
     g_state = applyMove(g_state, m);
+    g_reptbl.push(g_state.hash);
     regenMoves();
     return 1;
 }
@@ -111,5 +117,10 @@ EMSCRIPTEN_KEEPALIVE int qr_last_move_c() { return g_lastEngineMove.c; }
 // quem jogou -- positivo é bom pro motor, negativo é ruim. Só reflete a
 // profundidade que a busca alcançou dentro do orçamento de tempo/lance.
 EMSCRIPTEN_KEEPALIVE int qr_last_move_eval() { return g_lastEngineScore; }
+
+EMSCRIPTEN_KEEPALIVE
+int qr_is_draw() {
+    return g_reptbl.count(g_state.hash) >= 3 ? 1 : 0;
+}
 
 } // extern "C"

@@ -46,6 +46,7 @@ function setupWasmBindings(Module) {
         lastMoveB: w("qr_last_move_b", "number", []),
         lastMoveC: w("qr_last_move_c", "number", []),
         lastMoveEval: hasEval ? w("qr_last_move_eval", "number", []) : null,
+        isDraw: w("qr_is_draw", "number", []),
     };
 }
 
@@ -217,10 +218,11 @@ function render() {
     document.getElementById("nameP1").textContent = humanSide === 1 ? "Human" : "Zquoridor";
 
     const w = Q.winner();
+    const isDraw = Q.isDraw ? Q.isDraw() === 1 : false;
     const cardP0 = document.getElementById("cardP0");
     const cardP1 = document.getElementById("cardP1");
-    cardP0.classList.remove("winner");
-    cardP1.classList.remove("winner");
+    cardP0.classList.remove("winner", "draw");
+    cardP1.classList.remove("winner", "draw");
 
     const wallH = document.getElementById("wallH");
     const wallV = document.getElementById("wallV");
@@ -229,6 +231,17 @@ function render() {
         cardP0.classList.remove("active", "thinking");
         cardP1.classList.remove("active", "thinking");
         (w === 0 ? cardP0 : cardP1).classList.add("winner");
+        wallH.classList.add("disabled");
+        wallV.classList.add("disabled");
+        setSelectedWallOrientation(null);
+        return;
+    }
+
+    if (isDraw) {
+        cardP0.classList.remove("active", "thinking");
+        cardP1.classList.remove("active", "thinking");
+        cardP0.classList.add("draw");
+        cardP1.classList.add("draw");
         wallH.classList.add("disabled");
         wallV.classList.add("disabled");
         setSelectedWallOrientation(null);
@@ -297,7 +310,7 @@ let suppressNextCellClick = false;
 
 function onCellClick(ev) {
     if (suppressNextCellClick) return;
-    if (busy || Q.winner() !== -1 || Q.turn() !== humanSide) return;
+    if (busy || Q.winner() !== -1 || (Q.isDraw && Q.isDraw() === 1) || Q.turn() !== humanSide) return;
     const dest = Number(ev.currentTarget.dataset.cell);
     const mover = Q.turn();
     if (Q.applyPawn(dest) === 1) {
@@ -333,7 +346,7 @@ function clearSlotHighlights() {
 
 function highlightLegalSlots(orientation) {
     clearSlotHighlights();
-    if (busy || !Q || Q.winner() !== -1 || Q.turn() !== humanSide) return;
+    if (busy || !Q || Q.winner() !== -1 || (Q.isDraw && Q.isDraw() === 1) || Q.turn() !== humanSide) return;
     const sel = orientation === 0 ? ".wall-slot-h" : ".wall-slot-v";
     currentLegalMoves().filter(m => m.isWall && m.a === orientation).forEach(m => {
         const el = document.querySelector(`${sel}[data-er="${m.b}"][data-ec="${m.c}"]`);
@@ -350,7 +363,7 @@ function setSelectedWallOrientation(o) {
 }
 
 function beginWallDrag(orientation, ev, fromButton) {
-    if (busy || !Q || Q.winner() !== -1 || Q.turn() !== humanSide) return;
+    if (busy || !Q || Q.winner() !== -1 || (Q.isDraw && Q.isDraw() === 1) || Q.turn() !== humanSide) return;
     ev.preventDefault();
     dragOrientation = orientation;
     dragActive = true;
@@ -382,11 +395,12 @@ function onBoardPointerDown(ev) {
 // de verdade se o dedo se mover até o tabuleiro, ou um toque simples que
 // alterna o "modo de colocação" se soltar sem sair do botão:
 function onWallBtnPointerDown(orientation, ev) {
-    if (busy || !Q || Q.winner() !== -1 || Q.turn() !== humanSide) return;
+    if (busy || !Q || Q.winner() !== -1 || (Q.isDraw && Q.isDraw() === 1) || Q.turn() !== humanSide) return;
     beginWallDrag(orientation, ev, true);
 }
 
 function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
+
 
 function updateDrag(clientX, clientY) {
     document.querySelectorAll(".wall-slot-h, .wall-slot-v").forEach(el => {

@@ -22,7 +22,7 @@ EXPORTED_FUNCS='[
   "_qr_legal_move_b","_qr_legal_move_c","_qr_apply_pawn_move",
   "_qr_apply_wall_move","_qr_engine_move","_qr_last_move_is_wall",
   "_qr_last_move_a","_qr_last_move_b","_qr_last_move_c",
-  "_qr_last_move_eval"
+  "_qr_last_move_eval","_qr_is_draw"
 ]'
 
 cd "$GUIWEB"

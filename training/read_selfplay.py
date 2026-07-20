@@ -186,7 +186,7 @@ if __name__ == "__main__":
     print(f"total de posicoes: {len(data)}")
     print(f"bytes/posicao: {SAMPLE_DTYPE.itemsize} (total: {len(data) * SAMPLE_DTYPE.itemsize:,} bytes)")
     print(f"distribuicao de game_result: +1={np.sum(data['game_result'] == 1)}  "
-          f"-1={np.sum(data['game_result'] == -1)}  outros={np.sum(np.abs(data['game_result']) != 1)}")
+          f"0={np.sum(data['game_result'] == 0)}  -1={np.sum(data['game_result'] == -1)}")
     print(f"search_score: min={data['search_score'].min()} max={data['search_score'].max()} "
           f"media={data['search_score'].astype(np.float64).mean():.2f}")
     print(f"policy_target: min={data['policy_target'].min()} max={data['policy_target'].max()} "

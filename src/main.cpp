@@ -21,14 +21,21 @@ void benchNegamax() {
     int ply = 0;
     int maxPlies = 300;
     int depthSum = 0, depthSamples = 0;
+    RepetitionTable reptbl;
+    bool isDraw = false;
     for (; ply < maxPlies; ply++) {
         int w = winner(s);
         if (w != -1) break;
+        if (reptbl.count(s.hash) >= 2) {
+            isDraw = true;
+            break;
+        }
         SearchStats st;
-        Move m = engine.chooseMove(s, /*maxDepthCap=*/40, /*timeBudgetMs=*/200, st);
+        Move m = engine.chooseMove(s, /*maxDepthCap=*/40, /*timeBudgetMs=*/200, st, reptbl);
         totalNodes += st.nodes;
         depthSum += st.reachedDepth;
         depthSamples++;
+        reptbl.push(s.hash);
         s = applyMove(s, m);
     }
     double totalMs = msSince(t0);
@@ -37,8 +44,12 @@ void benchNegamax() {
            totalMs, totalNodes / (totalMs / 1000.0));
     printf("profundidade media alcancada por lance: %.1f\n", depthSamples ? (double)depthSum / depthSamples : 0.0);
     int w = winner(s);
-    printf("resultado: %s\n", w == -1 ? "nao terminou no limite de lances" :
-           (w == 0 ? "jogador 0 venceu" : "jogador 1 venceu"));
+    if (isDraw) {
+        printf("resultado: empate por repeticao\n");
+    } else {
+        printf("resultado: %s\n", w == -1 ? "nao terminou no limite de lances" :
+               (w == 0 ? "jogador 0 venceu" : "jogador 1 venceu"));
+    }
 }
 
 void benchNNUEForward(int iters) {

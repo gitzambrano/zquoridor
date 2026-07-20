@@ -104,6 +104,11 @@
     box-shadow: 0 0 0 1px var(--gold), 0 6px 18px rgba(232,199,119,.25);
   }
   .player-card.winner .name::after { content: "\1F3C6"; margin-left: 4px; font-size: .8em; }
+  .player-card.draw {
+    border-color: var(--text-dim);
+    box-shadow: 0 0 0 1px var(--text-dim), 0 6px 14px rgba(0,0,0,.15);
+  }
+  .player-card.draw .name::after { content: " 🤝"; margin-left: 4px; font-size: .8em; }
   .player-card .name {
     font-size: .84rem; font-weight: 700; letter-spacing: .01em; white-space: nowrap; overflow: hidden;
     text-overflow: ellipsis; display: flex; align-items: center; gap: 7px;
