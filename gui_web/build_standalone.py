@@ -1,16 +1,14 @@
 #!/usr/bin/env python3
-"""build_standalone.py -- monta um único quoridor.html autocontido, sem
+"""build_standalone.py -- monta um único zquoridor.html autocontido, sem
 precisar de servidor HTTP: embute o WASM como base64 dentro do próprio
 arquivo (mesma técnica de sempre pra distribuir side-by-side).
 
-Uso (depois de rodar build_wasm.sh nesta pasta, o que gera quoridor.js e
-quoridor.wasm):
+Uso (depois de rodar build_wasm.sh nesta pasta, o que gera zquoridor.js e
+zquoridor.wasm):
 
     python3 build_standalone.py
 
-Gera gui_web/quoridor.html. Requer emsdk local -- não roda no ambiente
-onde este projeto foi editado (ver nota em README.md sobre storage.googleapis.com
-bloqueado nesse sandbox).
+Gera gui_web/zquoridor.html.
 """
 import base64
 import re
@@ -20,11 +18,11 @@ from pathlib import Path
 HERE = Path(__file__).parent
 
 def main():
-    wasm_path = HERE / "quoridor.wasm"
-    loader_path = HERE / "quoridor.js"
+    wasm_path = HERE / "zquoridor.wasm"
+    loader_path = HERE / "zquoridor.js"
     html_path = HERE / "index.html"
     app_path = HERE / "app.js"
-    out_path = HERE / "quoridor.html"
+    out_path = HERE / "zquoridor.html"
 
     for p in (wasm_path, loader_path, html_path, app_path):
         if not p.exists():
@@ -36,23 +34,23 @@ def main():
     html = html_path.read_text(encoding="utf-8")
 
     # standalone precisa passar os bytes do wasm direto pro módulo em vez
-    # de deixar o Emscripten buscar quoridor.wasm via fetch/XHR (que exige
+    # de deixar o Emscripten buscar zquoridor.wasm via fetch/XHR (que exige
     # servidor HTTP -- não funciona em file://).
     app_js_standalone = app_js.replace(
-        "QuoridorModule().then((Module) => {",
-        "QuoridorModule({ wasmBinary: __QR_WASM_BYTES__ }).then((Module) => {",
+        "ZquoridorModule().then((Module) => {",
+        "ZquoridorModule({ wasmBinary: __QR_WASM_BYTES__ }).then((Module) => {",
     )
     if app_js_standalone == app_js:
-        sys.exit("não encontrei o padrão QuoridorModule().then(...) em app.js pra adaptar")
+        sys.exit("não encontrei o padrão ZquoridorModule().then(...) em app.js pra adaptar")
 
     # remove as duas tags <script src="..."> e injeta loader+app inline
     html_no_scripts = re.sub(
-        r'\s*<script src="quoridor\.js"></script>\s*<script src="app\.js"></script>\s*',
+        r'\s*<script src="zquoridor\.js"></script>\s*<script src="app\.js"></script>\s*',
         "\n<!--INLINE_SCRIPTS-->\n",
         html,
     )
     if "<!--INLINE_SCRIPTS-->" not in html_no_scripts:
-        sys.exit("não encontrei as tags <script src=quoridor.js/app.js> em index.html")
+        sys.exit("não encontrei as tags <script src=zquoridor.js/app.js> em index.html")
 
     b2b = (
         "function __qr_b64ToBytes(b64) {\n"

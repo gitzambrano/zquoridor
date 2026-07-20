@@ -590,7 +590,7 @@ function wireControls() {
     }
 }
 
-QuoridorModule().then((Module) => {
+ZquoridorModule().then((Module) => {
     Q = setupWasmBindings(Module);
     applyTheme(theme);
     flipped = (humanSide === 0);

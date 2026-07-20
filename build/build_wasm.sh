@@ -30,15 +30,15 @@ cd "$GUIWEB"
 emcc -O3 -std=c++17 \
   engine_wasm.cpp \
   -s MODULARIZE=1 \
-  -s EXPORT_NAME=QuoridorModule \
+  -s EXPORT_NAME=ZquoridorModule \
   -s EXPORTED_FUNCTIONS="${EXPORTED_FUNCS}" \
   -s EXPORTED_RUNTIME_METHODS='["ccall","cwrap"]' \
   -s ALLOW_MEMORY_GROWTH=1 \
   -s ENVIRONMENT=web \
-  -o quoridor.js
+  -o zquoridor.js
 
-echo "OK: gerado gui_web/quoridor.js + gui_web/quoridor.wasm"
+echo "OK: gerado gui_web/zquoridor.js + gui_web/zquoridor.wasm"
 echo "WASM não carrega via file:// -- sirva a pasta com um servidor HTTP:"
 echo "  cd gui_web && python3 -m http.server 8000"
 echo "e abra http://localhost:8000/index.html"
-echo "(opcional: python3 gui_web/build_standalone.py empacota tudo num quoridor.html único)"
+echo "(opcional: python3 gui_web/build_standalone.py empacota tudo num zquoridor.html único)"
