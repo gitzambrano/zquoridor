@@ -30,7 +30,8 @@ set PYTHONIOENCODING=utf-8
 python build_standalone.py
 if %ERRORLEVEL% equ 0 (
     echo.
-    echo SUCCESS: Bundle build complete!
+    echo SUCCESS: gui_web\zquoridor.html atualizado!
+    echo Commite e suba o arquivo para servir via GitHub Pages.
     echo.
 ) else (
     echo.
@@ -39,8 +40,4 @@ if %ERRORLEVEL% equ 0 (
     pause
     exit /b 1
 )
-
-echo Deploying to GitHub Pages...
-copy /Y zquoridor.html ..\index.html >nul
-echo index.html updated
 pause

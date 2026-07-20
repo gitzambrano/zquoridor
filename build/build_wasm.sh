@@ -37,8 +37,5 @@ emcc -O3 -std=c++17 \
   -s ENVIRONMENT=web \
   -o zquoridor.js
 
-echo "OK: gerado gui_web/zquoridor.js + gui_web/zquoridor.wasm"
-echo "WASM não carrega via file:// -- sirva a pasta com um servidor HTTP:"
-echo "  cd gui_web && python3 -m http.server 8000"
-echo "e abra http://localhost:8000/index.html"
-echo "(opcional: python3 gui_web/build_standalone.py empacota tudo num zquoridor.html único)"
+echo "OK: gui_web/zquoridor.html atualizado (standalone bundle para GitHub Pages)"
+echo "Commite e suba o arquivo: git add gui_web/zquoridor.html && git push"
