@@ -20,9 +20,10 @@ HERE = Path(__file__).parent
 def main():
     wasm_path = HERE / "zquoridor.wasm"
     loader_path = HERE / "zquoridor.js"
-    html_path = HERE / "index.html"
+    html_path = HERE / "style.html"
     app_path = HERE / "app.js"
     out_path = HERE / "zquoridor.html"
+    root_out_path = HERE.parent / "index.html"
 
     for p in (wasm_path, loader_path, html_path, app_path):
         if not p.exists():
@@ -50,7 +51,7 @@ def main():
         html,
     )
     if "<!--INLINE_SCRIPTS-->" not in html_no_scripts:
-        sys.exit("não encontrei as tags <script src=zquoridor.js/app.js> em index.html")
+        sys.exit("não encontrei as tags <script src=zquoridor.js/app.js> em style.html")
 
     b2b = (
         "function __qr_b64ToBytes(b64) {\n"
@@ -75,7 +76,9 @@ def main():
 
     out = html_no_scripts.replace("<!--INLINE_SCRIPTS-->", inline)
     out_path.write_text(out, encoding="utf-8")
+    root_out_path.write_text(out, encoding="utf-8")
     print(f"OK: {out_path} ({out_path.stat().st_size / 1024:.0f} KB)")
+    print(f"OK: {root_out_path} ({root_out_path.stat().st_size / 1024:.0f} KB)")
 
 
 if __name__ == "__main__":

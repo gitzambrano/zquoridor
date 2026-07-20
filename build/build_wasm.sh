@@ -37,5 +37,7 @@ emcc -O3 -std=c++17 \
   -s ENVIRONMENT=web \
   -o zquoridor.js
 
-echo "OK: gui_web/zquoridor.html atualizado (standalone bundle para GitHub Pages)"
-echo "Commite e suba o arquivo: git add gui_web/zquoridor.html && git push"
+python3 build_standalone.py
+
+echo "OK: WASM e bundles atualizados (gui_web/zquoridor.html e root index.html para GitHub Pages)"
+echo "Commite e suba: git add index.html gui_web/zquoridor.html && git push"
