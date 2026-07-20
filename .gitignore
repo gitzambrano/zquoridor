@@ -1,0 +1,34 @@
+# Compilados / Executáveis
+bin/
+*.exe
+*.o
+*.obj
+*.wasm
+*.js.metadata
+
+# Dados de Selfplay (Fase 4)
+data/selfplay/
+data/selfplay_*.bin
+
+# Checkpoints / Plots / Saídas de Treino (Fase 5)
+data/checkpoints/
+data/plots/
+training/plots/
+training/checkpoints/
+
+# Pesos da NNUE (opcional, mas bom ignorar arquivos pesados de pesos se não forem a versão final de release)
+# data/nnue/nnue_weights.bin
+# data/nnue/nnue_weights_int8.bin
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+ENV/
+
+# IDEs
+.vs/
+.vscode/
+.idea/
