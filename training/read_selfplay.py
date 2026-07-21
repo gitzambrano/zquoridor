@@ -47,7 +47,9 @@ def dist_bucket(dist: np.ndarray) -> np.ndarray:
 
 def load_selfplay(path: str) -> np.ndarray:
     """Carrega um arquivo como array estruturado numpy (zero-copy via mmap)."""
-    return np.memmap(path, dtype=SAMPLE_DTYPE, mode="r")
+    size = os.path.getsize(path)
+    num_samples = size // SAMPLE_DTYPE.itemsize
+    return np.memmap(path, dtype=SAMPLE_DTYPE, mode="r", shape=(num_samples,))
 
 
 def expand_data_paths(spec) -> list:

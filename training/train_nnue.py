@@ -68,6 +68,12 @@ from quantize_nnue import quantize_file  # noqa: E402
 # ============================== DEFAULT CONFIG ==============================
 # Editar aqui muda o default sem precisar de flag; toda entrada tem uma
 # flag de linha de comando correspondente que sobrescreve o valor abaixo.
+DATA_DEFAULT = [
+    os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data"),
+    os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data", "selfplay")
+]
+OUT_DEFAULT = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data", "nnue", "nnue_weights.bin")
+
 EPOCHS_DEFAULT = 60
 BATCH_SIZE_DEFAULT = "auto"          # inteiro, ou "auto" (calculado a partir de --vram-budget-gb)
 SEED_DEFAULT = 0
@@ -679,7 +685,7 @@ def parse_args(argv=None):
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
 
     g_data = p.add_argument_group("dados")
-    g_data.add_argument("--data", action="append", required=True,
+    g_data.add_argument("--data", action="append", default=None,
                          help="arquivo(s) .bin de self-play; aceita lista separada por virgula, "
                               "diretorio, glob, ou a flag repetida varias vezes")
     g_data.add_argument("--val-data", action="append", default=None,
@@ -694,7 +700,7 @@ def parse_args(argv=None):
     g_opt = p.add_argument_group("otimizacao")
     g_opt.add_argument("--epochs", type=int, default=EPOCHS_DEFAULT)
     g_opt.add_argument("--batch-size", default=BATCH_SIZE_DEFAULT,
-                        help='inteiro, ou "auto" para calcular a partir de --vram-budget-gb (default "auto")')
+                         help='inteiro, ou "auto" para calcular a partir de --vram-budget-gb (default "auto")')
     g_opt.add_argument("--lr", type=float, default=LR_DEFAULT)
     g_opt.add_argument("--lr-min", type=float, default=LR_MIN_DEFAULT)
     g_opt.add_argument("--lr-schedule", choices=["none", "step", "exponential", "cosine"],
@@ -747,14 +753,17 @@ def parse_args(argv=None):
     g_loss.add_argument("--qb", type=int, default=QB_DEFAULT)
 
     g_out = p.add_argument_group("saida")
-    g_out.add_argument("--out", required=True, help="caminho de saida dos pesos treinados (.bin)")
+    g_out.add_argument("--out", default=OUT_DEFAULT, help="caminho de saida dos pesos treinados (.bin)")
     g_out.add_argument("--no-quantize", action="store_true")
     g_out.add_argument("--quant-out", default=None)
     g_out.add_argument("--plot-dir", default=None,
                         help="diretorio para salvar plots de convergencia/validacao (PNG)")
     g_out.add_argument("--log-every", type=int, default=LOG_EVERY_DEFAULT)
 
-    return p.parse_args(argv)
+    args = p.parse_args(argv)
+    if not args.data:
+        args.data = DATA_DEFAULT
+    return args
 
 
 if __name__ == "__main__":

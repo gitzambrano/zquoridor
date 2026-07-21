@@ -41,9 +41,9 @@ TIME_MS       = 200     # orçamento de tempo por lance em ms
                         # gerar muito volume rapidamente (em detrimento da força)
 
 # --- Abertura aleatória ---
-OPENING_PLIES   = 8       # primeiros N lances sujeitos a epsilon-greedy
-EPSILON         = 0.8    # probabilidade de lance aleatório na janela de abertura
-EPSILON_MIDGAME = 0.03   # probabilidade de lance aleatório após a janela de abertura (0.02 = 2%)
+OPENING_PLIES   = 10      # primeiros N lances sujeitos a epsilon-greedy
+EPSILON         = 0.1    # probabilidade de lance aleatório na janela de abertura
+EPSILON_MIDGAME = 0.05   # probabilidade de lance aleatório após a janela de abertura (0.02 = 2%)
 
 # --- Segurança ---
 MAX_PLIES     = 300     # corte: partidas que não terminam são descartadas
@@ -53,7 +53,7 @@ THREADS       = 14      # 0 = auto (usa hardware_concurrency); ajuste se quiser
                         # reservar threads para outras tarefas
 
 # --- Semente ---
-SEED          = 43      # semente base do RNG; chunks subsequentes variam automaticamente
+SEED          = 42      # semente base do RNG; chunks subsequentes variam automaticamente
 
 # --- Saída ---
 # Use {shard:03d} para nomear os chunks automaticamente.
@@ -99,6 +99,16 @@ def compile_selfplay(root):
             return ret == 0
     return False
 
+def next_free_shard(root, template):
+    """Retorna o menor índice de shard que ainda não existe em disco."""
+    shard = 0
+    while True:
+        path = os.path.join(root, template.format(shard=shard))
+        if not os.path.exists(path):
+            return shard
+        shard += 1
+
+
 def main():
     root = find_project_root()
     exe  = find_selfplay_exe(root)
@@ -116,34 +126,42 @@ def main():
     if out_dir:
         os.makedirs(out_dir, exist_ok=True)
 
+    # Detecta o próximo shard livre para não sobrescrever dados existentes.
+    start_shard = next_free_shard(root, OUT_TEMPLATE)
+    if start_shard > 0:
+        print(f"[run_selfplay] {start_shard} shard(s) existente(s) detectado(s); "
+              f"iniciando a partir do shard {start_shard:03d}.")
+
     # Monta o path de saída relativo à raiz do projeto.
     out_full = os.path.join(root, OUT_TEMPLATE).replace("\\", "/")
 
     # Monta os argumentos do executável.
     cmd = [
         exe,
-        "--games",         str(TOTAL_GAMES),
-        "--chunk-games",   str(CHUNK_GAMES),
-        "--depth",         str(MAX_DEPTH),
-        "--time-ms",       str(TIME_MS),
-        "--opening-plies", str(OPENING_PLIES),
-        "--epsilon",       str(EPSILON),
+        "--games",           str(TOTAL_GAMES),
+        "--chunk-games",     str(CHUNK_GAMES),
+        "--depth",           str(MAX_DEPTH),
+        "--time-ms",         str(TIME_MS),
+        "--opening-plies",   str(OPENING_PLIES),
+        "--epsilon",         str(EPSILON),
         "--epsilon-midgame", str(EPSILON_MIDGAME),
-        "--max-plies",     str(MAX_PLIES),
-        "--seed",          str(SEED),
-        "--out",           out_full,
+        "--max-plies",       str(MAX_PLIES),
+        "--seed",            str(SEED + start_shard),   # semente varia por sessão
+        "--start-shard",     str(start_shard),
+        "--out",             out_full,
     ]
     if THREADS > 0:
         cmd += ["--threads", str(THREADS)]
 
     print("=" * 60)
     print(f"[run_selfplay] Iniciando geração de dados")
-    print(f"  Executável : {exe}")
-    print(f"  Partidas   : {TOTAL_GAMES} total / {CHUNK_GAMES} por chunk")
-    print(f"  Busca      : depth<={MAX_DEPTH}, {TIME_MS} ms/lance")
-    print(f"  Abertura   : plies={OPENING_PLIES}, epsilon={EPSILON} | midgame epsilon={EPSILON_MIDGAME}")
-    print(f"  Threads    : {THREADS or 'auto'}")
-    print(f"  Saída      : {out_full}")
+    print(f"  Executável  : {exe}")
+    print(f"  Partidas    : {TOTAL_GAMES} total / {CHUNK_GAMES} por chunk")
+    print(f"  Busca       : depth<={MAX_DEPTH}, {TIME_MS} ms/lance")
+    print(f"  Abertura    : plies={OPENING_PLIES}, epsilon={EPSILON} | midgame epsilon={EPSILON_MIDGAME}")
+    print(f"  Threads     : {THREADS or 'auto'}")
+    print(f"  Shard início: {start_shard:03d}")
+    print(f"  Saída       : {out_full}")
     print("=" * 60)
     print()
 

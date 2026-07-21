@@ -50,6 +50,8 @@ static void printUsage(const char* prog) {
         "  --max-plies N      corte de seguranca por partida (default 300)\n"
         "  --threads N        threads paralelas (default hardware_concurrency)\n"
         "  --seed N           semente do RNG (default 1)\n"
+        "  --start-shard N    primeiro indice de shard a escrever (default 0);\n"
+        "                     permite retomar sem sobrescrever shards existentes.\n"
         "  --out PATH         arquivo/template de saida (obrigatorio).\n"
         "                     Use {shard:03d} para chunks: data/selfplay_{shard:03d}.bin\n",
         prog);
@@ -60,6 +62,7 @@ int main(int argc, char** argv) {
     std::string outTemplate;
     int totalGames  = 2000;
     int chunkGames  = 2000;
+    int startShard  = 0;
 
     for (int i = 1; i < argc; i++) {
         std::string a = argv[i];
@@ -80,6 +83,7 @@ int main(int argc, char** argv) {
         else if (a == "--max-plies")     cfg.maxPlies        = std::atoi(next("--max-plies").c_str());
         else if (a == "--threads")       cfg.numThreads      = std::atoi(next("--threads").c_str());
         else if (a == "--seed")          cfg.seed            = (unsigned)std::atol(next("--seed").c_str());
+        else if (a == "--start-shard")   startShard          = std::atoi(next("--start-shard").c_str());
         else if (a == "--out")           outTemplate         = next("--out");
         else if (a == "-h" || a == "--help") { printUsage(argv[0]); return 0; }
         else {
@@ -117,12 +121,13 @@ int main(int argc, char** argv) {
     unsigned baseSeed = cfg.seed;
 
     for (int chunk = 0; chunk < nChunks; chunk++) {
+        int shardIdx = startShard + chunk;
         // Seed diferente por chunk para variedade.
-        cfg.seed = baseSeed + (unsigned)chunk * 999983u;
+        cfg.seed = baseSeed + (unsigned)shardIdx * 999983u;
 
         int gamesThisChunk  = std::min(chunkGames, totalGames - chunk * chunkGames);
         cfg.numGames        = gamesThisChunk;
-        std::string outPath = multiChunk ? formatShardPath(outTemplate, chunk) : outTemplate;
+        std::string outPath = multiChunk ? formatShardPath(outTemplate, shardIdx) : outTemplate;
 
         std::printf("--- chunk %d/%d | %d partidas -> %s ---\n",
                     chunk + 1, nChunks, gamesThisChunk, outPath.c_str());
