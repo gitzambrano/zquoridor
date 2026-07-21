@@ -73,13 +73,15 @@ static_assert(sizeof(TrainingSample) == 27,
 struct SelfPlayConfig {
     int numGames = 1000;
     int maxDepth = 40;
-    int timeBudgetMs = 100;      // orçamento de tempo por lance na busca
-    int openingRandomPlies = 6;  // primeiros N lances sujeitos a ruído epsilon-greedy
-    double epsilon = 0.25;       // probabilidade de lance aleatório dentro da janela de abertura
-    double epsilonMidgame = 0.02; // probabilidade de lance aleatório após a janela de abertura
-    int maxPlies = 300;          // corte de segurança (partidas que não terminam são descartadas)
+    int timeBudgetMs = 100;       // orçamento de tempo por lance na busca
+    int openingRandomPlies  = 6;  // fase 1: lances 0..N1-1 com epsilon1 (lances óbvios, pouco ruído)
+    double epsilon          = 0.05; // epsilon da fase 1
+    int openingRandomPlies2 = 10; // fase 2: lances N1..N2-1 com epsilon2 (exploração pesada)
+    double epsilon2         = 0.8;  // epsilon da fase 2
+    double epsilonMidgame   = 0.02; // probabilidade de lance aleatório após a fase 2
+    int maxPlies = 300;           // corte de segurança (partidas que não terminam são descartadas)
     unsigned seed = 1;
-    int numThreads = 0;          // 0 = usar hardware_concurrency()
+    int numThreads = 0;           // 0 = usar hardware_concurrency()
 };
 
 struct SelfPlayStats {
@@ -119,15 +121,22 @@ inline std::vector<TrainingSample> playOneGame(Negamax& engine, std::mt19937_64&
         Move chosen;
         int searchScore = evalSimple(s, s.turn);  // sempre calculado: é barato e vira o alvo auxiliar
         bool randomMove = false;
+        double epsNow;
         if (ply < cfg.openingRandomPlies) {
-            randomMove = (unif(rng) < cfg.epsilon);
+            // Fase 1: lances iniciais óbvios, pouco ruído
+            epsNow = cfg.epsilon;
+        } else if (ply < cfg.openingRandomPlies2) {
+            // Fase 2: janela de exploração pesada
+            epsNow = cfg.epsilon2;
         } else {
-            // Pequeno ruído no meio/fim de jogo para quebrar loops simétricos e diversificar posições
-            randomMove = (unif(rng) < cfg.epsilonMidgame);
+            // Midgame: ruído mínimo para quebrar loops simétricos
+            epsNow = cfg.epsilonMidgame;
         }
+        randomMove = (unif(rng) < epsNow);
+
         if (randomMove) {
-            if (ply < cfg.openingRandomPlies) {
-                // Abertura: totalmente aleatória para criar novos cenários
+            if (ply < cfg.openingRandomPlies2) {
+                // Abertura (fase 1 ou 2): totalmente aleatória para criar novos cenários
                 std::uniform_int_distribution<size_t> pick(0, moves.size() - 1);
                 chosen = moves[pick(rng)];
             } else {

@@ -42,18 +42,20 @@ static void printUsage(const char* prog) {
         "Uso: %s [opcoes]\n"
         "  --games N          total de partidas a gerar (default 2000)\n"
         "  --chunk-games N    partidas por arquivo .bin (default 2000)\n"
-        "  --depth N          profundidade maxima da busca (default 40)\n"
-        "  --time-ms N        orcamento de tempo por lance em ms (default 100)\n"
-        "  --opening-plies N  lances iniciais sujeitos a ruido (default 6)\n"
-        "  --epsilon F        prob. de lance aleatorio na abertura (default 0.25)\n"
-        "  --epsilon-midgame F prob. de lance aleatorio apos abertura (default 0.02)\n"
-        "  --max-plies N      corte de seguranca por partida (default 300)\n"
-        "  --threads N        threads paralelas (default hardware_concurrency)\n"
-        "  --seed N           semente do RNG (default 1)\n"
-        "  --start-shard N    primeiro indice de shard a escrever (default 0);\n"
-        "                     permite retomar sem sobrescrever shards existentes.\n"
-        "  --out PATH         arquivo/template de saida (obrigatorio).\n"
-        "                     Use {shard:03d} para chunks: data/selfplay_{shard:03d}.bin\n",
+        "  --depth N           profundidade maxima da busca (default 40)\n"
+        "  --time-ms N         orcamento de tempo por lance em ms (default 100)\n"
+        "  --opening-plies N   fase 1: lances 0..N-1 com epsilon1 (default 6)\n"
+        "  --epsilon F         epsilon da fase 1 (default 0.05)\n"
+        "  --opening-plies2 N  fase 2: lances N1..N2-1 com epsilon2 (default 10)\n"
+        "  --epsilon-opening2 F epsilon da fase 2 (default 0.8)\n"
+        "  --epsilon-midgame F  epsilon apos fase 2 (default 0.02)\n"
+        "  --max-plies N       corte de seguranca por partida (default 300)\n"
+        "  --threads N         threads paralelas (default hardware_concurrency)\n"
+        "  --seed N            semente do RNG (default 1)\n"
+        "  --start-shard N     primeiro indice de shard a escrever (default 0);\n"
+        "                      permite retomar sem sobrescrever shards existentes.\n"
+        "  --out PATH          arquivo/template de saida (obrigatorio).\n"
+        "                      Use {shard:03d} para chunks: data/selfplay_{shard:03d}.bin\n",
         prog);
 }
 
@@ -73,17 +75,19 @@ int main(int argc, char** argv) {
             }
             return argv[++i];
         };
-        if      (a == "--games")         totalGames          = std::atoi(next("--games").c_str());
-        else if (a == "--chunk-games")   chunkGames          = std::atoi(next("--chunk-games").c_str());
-        else if (a == "--depth")         cfg.maxDepth        = std::atoi(next("--depth").c_str());
-        else if (a == "--time-ms")       cfg.timeBudgetMs    = std::atoi(next("--time-ms").c_str());
-        else if (a == "--opening-plies") cfg.openingRandomPlies = std::atoi(next("--opening-plies").c_str());
-        else if (a == "--epsilon")       cfg.epsilon         = std::atof(next("--epsilon").c_str());
-        else if (a == "--epsilon-midgame") cfg.epsilonMidgame = std::atof(next("--epsilon-midgame").c_str());
-        else if (a == "--max-plies")     cfg.maxPlies        = std::atoi(next("--max-plies").c_str());
-        else if (a == "--threads")       cfg.numThreads      = std::atoi(next("--threads").c_str());
-        else if (a == "--seed")          cfg.seed            = (unsigned)std::atol(next("--seed").c_str());
-        else if (a == "--start-shard")   startShard          = std::atoi(next("--start-shard").c_str());
+        if      (a == "--games")           totalGames                = std::atoi(next("--games").c_str());
+        else if (a == "--chunk-games")     chunkGames                = std::atoi(next("--chunk-games").c_str());
+        else if (a == "--depth")           cfg.maxDepth              = std::atoi(next("--depth").c_str());
+        else if (a == "--time-ms")         cfg.timeBudgetMs          = std::atoi(next("--time-ms").c_str());
+        else if (a == "--opening-plies")   cfg.openingRandomPlies    = std::atoi(next("--opening-plies").c_str());
+        else if (a == "--epsilon")         cfg.epsilon               = std::atof(next("--epsilon").c_str());
+        else if (a == "--opening-plies2")  cfg.openingRandomPlies2   = std::atoi(next("--opening-plies2").c_str());
+        else if (a == "--epsilon-opening2") cfg.epsilon2             = std::atof(next("--epsilon-opening2").c_str());
+        else if (a == "--epsilon-midgame") cfg.epsilonMidgame        = std::atof(next("--epsilon-midgame").c_str());
+        else if (a == "--max-plies")       cfg.maxPlies              = std::atoi(next("--max-plies").c_str());
+        else if (a == "--threads")         cfg.numThreads            = std::atoi(next("--threads").c_str());
+        else if (a == "--seed")            cfg.seed                  = (unsigned)std::atol(next("--seed").c_str());
+        else if (a == "--start-shard")     startShard                = std::atoi(next("--start-shard").c_str());
         else if (a == "--out")           outTemplate         = next("--out");
         else if (a == "-h" || a == "--help") { printUsage(argv[0]); return 0; }
         else {
@@ -111,8 +115,12 @@ int main(int argc, char** argv) {
 
     std::printf("=== self-play: %d partidas totais | %d por chunk | %d chunk(s) ===\n",
                 totalGames, chunkGames, nChunks);
-    std::printf("busca: profundidade<=%d, %dms/lance | abertura: %d lances, epsilon=%.2f | midgame epsilon=%.3f\n",
-                cfg.maxDepth, cfg.timeBudgetMs, cfg.openingRandomPlies, cfg.epsilon, cfg.epsilonMidgame);
+    std::printf("busca: profundidade<=%d, %dms/lance\n",
+                cfg.maxDepth, cfg.timeBudgetMs);
+    std::printf("abertura: fase1=[0..%d) eps=%.2f | fase2=[%d..%d) eps=%.2f | midgame eps=%.3f\n",
+                cfg.openingRandomPlies, cfg.epsilon,
+                cfg.openingRandomPlies, cfg.openingRandomPlies2, cfg.epsilon2,
+                cfg.epsilonMidgame);
     std::printf("threads: %d | corte de seguranca: %d lances/partida\n", nThreads, cfg.maxPlies);
     std::printf("registro: %zu bytes/posicao (packed)\n\n", sizeof(TrainingSample));
 

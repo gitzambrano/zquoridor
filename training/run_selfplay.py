@@ -41,19 +41,25 @@ TIME_MS       = 200     # orçamento de tempo por lance em ms
                         # gerar muito volume rapidamente (em detrimento da força)
 
 # --- Abertura aleatória ---
-OPENING_PLIES   = 8      # primeiros N lances sujeitos a epsilon-greedy
-EPSILON         = 0.5    # probabilidade de lance aleatório na janela de abertura (lance aleatório)
-EPSILON_MIDGAME = 0.02   # probabilidade de lance aleatório após a janela de abertura (segundo ou terceiro melhores lances)
+# Fase 1: lances iniciais (óbvios no Quoridor) com muito pouco ruído
+OPENING_PLIES1   = 6       # lances 1 a N1 sujeitos a EPSILON_OPENING1
+EPSILON_OPENING1 = 0.2   # baixo: não distorce os lances óbvios da abertura
+
+# Fase 2: janela de exploração pesada para diversificar posições iniciais
+OPENING_PLIES2   = 10     # lances N1+1 a N2 sujeitos a EPSILON_OPENING2
+EPSILON_OPENING2 = 0.8   # alto: cria muita variedade de abertura (lance totalmente aleatório)
+
+EPSILON_MIDGAME  = 0.02   # prob. de desvio no midgame: escolhe 2º ou 3º melhor lance (não totalmente aleatório)
 
 # --- Segurança ---
 MAX_PLIES     = 300     # corte: partidas que não terminam são descartadas
 
 # --- Paralelismo ---
-THREADS       = 14      # 0 = auto (usa hardware_concurrency); ajuste se quiser
+THREADS       = 15      # 0 = auto (usa hardware_concurrency); ajuste se quiser
                         # reservar threads para outras tarefas
 
 # --- Semente ---
-SEED          = 45      # semente base do RNG; chunks subsequentes variam automaticamente
+SEED          = 22      # semente base do RNG; chunks subsequentes variam automaticamente
 
 # --- Saída ---
 # Use {shard:03d} para nomear os chunks automaticamente.
@@ -142,8 +148,10 @@ def main():
         "--chunk-games",     str(CHUNK_GAMES),
         "--depth",           str(MAX_DEPTH),
         "--time-ms",         str(TIME_MS),
-        "--opening-plies",   str(OPENING_PLIES),
-        "--epsilon",         str(EPSILON),
+        "--opening-plies",   str(OPENING_PLIES1),
+        "--epsilon",         str(EPSILON_OPENING1),
+        "--opening-plies2",  str(OPENING_PLIES2),
+        "--epsilon-opening2", str(EPSILON_OPENING2),
         "--epsilon-midgame", str(EPSILON_MIDGAME),
         "--max-plies",       str(MAX_PLIES),
         "--seed",            str(SEED + start_shard),   # semente varia por sessão
@@ -158,7 +166,9 @@ def main():
     print(f"  Executável  : {exe}")
     print(f"  Partidas    : {TOTAL_GAMES} total / {CHUNK_GAMES} por chunk")
     print(f"  Busca       : depth<={MAX_DEPTH}, {TIME_MS} ms/lance")
-    print(f"  Abertura    : plies={OPENING_PLIES}, epsilon={EPSILON} | midgame epsilon={EPSILON_MIDGAME}")
+    print(f"  Abertura    : fase1=[lances 1..{OPENING_PLIES1}] eps={EPSILON_OPENING1} (lance aleatório)")
+    print(f"                fase2=[lances {OPENING_PLIES1+1}..{OPENING_PLIES2}] eps={EPSILON_OPENING2} (lance aleatório)")
+    print(f"                midgame eps={EPSILON_MIDGAME} (2º/3º melhor lance)")
     print(f"  Threads     : {THREADS or 'auto'}")
     print(f"  Shard início: {start_shard:03d}")
     print(f"  Saída       : {out_full}")
