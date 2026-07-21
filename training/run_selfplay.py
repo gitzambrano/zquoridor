@@ -41,9 +41,9 @@ TIME_MS       = 200     # orçamento de tempo por lance em ms
                         # gerar muito volume rapidamente (em detrimento da força)
 
 # --- Abertura aleatória ---
-OPENING_PLIES   = 10      # primeiros N lances sujeitos a epsilon-greedy
-EPSILON         = 0.1    # probabilidade de lance aleatório na janela de abertura
-EPSILON_MIDGAME = 0.05   # probabilidade de lance aleatório após a janela de abertura (0.02 = 2%)
+OPENING_PLIES   = 8      # primeiros N lances sujeitos a epsilon-greedy
+EPSILON         = 0.5    # probabilidade de lance aleatório na janela de abertura (lance aleatório)
+EPSILON_MIDGAME = 0.02   # probabilidade de lance aleatório após a janela de abertura (segundo ou terceiro melhores lances)
 
 # --- Segurança ---
 MAX_PLIES     = 300     # corte: partidas que não terminam são descartadas
@@ -53,7 +53,7 @@ THREADS       = 14      # 0 = auto (usa hardware_concurrency); ajuste se quiser
                         # reservar threads para outras tarefas
 
 # --- Semente ---
-SEED          = 42      # semente base do RNG; chunks subsequentes variam automaticamente
+SEED          = 45      # semente base do RNG; chunks subsequentes variam automaticamente
 
 # --- Saída ---
 # Use {shard:03d} para nomear os chunks automaticamente.
