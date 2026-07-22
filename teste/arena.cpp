@@ -34,7 +34,6 @@ int playArenaGame(int engine1PlayerIdx, int timeMs, const State& startState, uin
     eng2.clearTT();
 
     RepetitionTable realHistory;
-    realHistory.push(s.hash);
 
     struct MoveRecord {
         State state;
@@ -53,7 +52,7 @@ int playArenaGame(int engine1PlayerIdx, int timeMs, const State& startState, uin
             break;
         }
 
-        if (realHistory.count(s.hash) >= 3) {
+        if (realHistory.count(s.hash) >= 2) {
             winnerPlayer = -1; // Empate por repetição
             break;
         }
@@ -69,8 +68,7 @@ int playArenaGame(int engine1PlayerIdx, int timeMs, const State& startState, uin
             eng1TimeOut += std::chrono::duration<double>(t1 - t0).count();
             eng1NodesOut += st.nodes;
         } else {
-            RepetitionTable emptyHistory;
-            m = eng2.chooseMove(s, 40, timeMs, st, emptyHistory);
+            m = eng2.chooseMove(s, 40, timeMs, st, realHistory);
             auto t1 = std::chrono::high_resolution_clock::now();
             eng2TimeOut += std::chrono::duration<double>(t1 - t0).count();
             eng2NodesOut += st.nodes;
@@ -80,8 +78,8 @@ int playArenaGame(int engine1PlayerIdx, int timeMs, const State& startState, uin
             gameRecords.push_back({s, m, currentTurn, st.score});
         }
 
-        s = applyMove(s, m);
         realHistory.push(s.hash);
+        s = applyMove(s, m);
     }
 
     if (winnerPlayer == -1 && winner(s) != -1) {
@@ -131,6 +129,8 @@ int main(int argc, char* argv[]) {
 
     std::string binFilePath = "";
 
+    bool invertColors = true;
+
     for (int i = 1; i < argc; i++) {
         if (std::strcmp(argv[i], "--games") == 0 && i + 1 < argc) {
             totalGames = std::atoi(argv[++i]);
@@ -144,6 +144,8 @@ int main(int argc, char* argv[]) {
             reportGames = std::atoi(argv[++i]);
         } else if (std::strcmp(argv[i], "--bin-file") == 0 && i + 1 < argc) {
             binFilePath = argv[++i];
+        } else if (std::strcmp(argv[i], "--no-invert") == 0) {
+            invertColors = false;
         }
     }
 
@@ -166,40 +168,72 @@ int main(int argc, char* argv[]) {
     std::vector<TrainingSample> allSamples;
     std::vector<TrainingSample>* samplesPtr = binFilePath.empty() ? nullptr : &allSamples;
 
-    for (int p = 0; p < totalPairs; p++) {
-        State openingState = generateRandomOpening(randomPlies, rng);
+    if (invertColors) {
+        for (int p = 0; p < totalPairs; p++) {
+            State openingState = generateRandomOpening(randomPlies, rng);
 
-        // Jogo A: Engine 1 = Jogador 0 (Brancas), Engine 2 = Jogador 1 (Pretas)
-        int resA = playArenaGame(0, timeMs, openingState, eng1Nodes, baseNodes, eng1TimeSec, baseTimeSec, samplesPtr);
-        if (resA == -1) { draws++; totalDraws++; }
-        else if (resA == 0) { eng1Wins++; totalEng1Wins++; }
-        else { baseWins++; totalBaseWins++; }
+            // Jogo A: Engine 1 = Jogador 0 (Brancas), Engine 2 = Jogador 1 (Pretas)
+            int resA = playArenaGame(0, timeMs, openingState, eng1Nodes, baseNodes, eng1TimeSec, baseTimeSec, samplesPtr);
+            if (resA == -1) { draws++; totalDraws++; }
+            else if (resA == 0) { eng1Wins++; totalEng1Wins++; }
+            else { baseWins++; totalBaseWins++; }
 
-        // Jogo B: Engine 2 = Jogador 0 (Brancas), Engine 1 = Jogador 1 (Pretas) na MESMA abertura
-        int resB = playArenaGame(1, timeMs, openingState, eng1Nodes, baseNodes, eng1TimeSec, baseTimeSec, samplesPtr);
-        if (resB == -1) { draws++; totalDraws++; }
-        else if (resB == 1) { eng1Wins++; totalEng1Wins++; }
-        else { baseWins++; totalBaseWins++; }
+            // Jogo B: Engine 2 = Jogador 0 (Brancas), Engine 1 = Jogador 1 (Pretas) na MESMA abertura
+            int resB = playArenaGame(1, timeMs, openingState, eng1Nodes, baseNodes, eng1TimeSec, baseTimeSec, samplesPtr);
+            if (resB == -1) { draws++; totalDraws++; }
+            else if (resB == 1) { eng1Wins++; totalEng1Wins++; }
+            else { baseWins++; totalBaseWins++; }
 
-        int gamesPlayed = (p + 1) * 2;
-        if (reportGames > 0 && (gamesPlayed - lastReportedGames >= reportGames)) {
-            double eng1Nps = eng1TimeSec > 0 ? eng1Nodes / eng1TimeSec : 0.0;
-            double baseNps = baseTimeSec > 0 ? baseNodes / baseTimeSec : 0.0;
-            std::printf("PROGRESS_JSON:{\"games\":%d,\"candWins\":%d,\"baseWins\":%d,\"draws\":%d,\"candNodes\":%llu,\"baseNodes\":%llu,\"candTimeSec\":%.4f,\"baseTimeSec\":%.4f,\"candNps\":%.0f,\"baseNps\":%.0f}\n",
-                        gamesPlayed - lastReportedGames, eng1Wins, baseWins, draws,
-                        (unsigned long long)eng1Nodes, (unsigned long long)baseNodes,
-                        eng1TimeSec, baseTimeSec, eng1Nps, baseNps);
-            std::fflush(stdout);
-            
-            totalEng1Nodes += eng1Nodes;
-            totalBaseNodes += baseNodes;
-            totalEng1Time += eng1TimeSec;
-            totalBaseTime += baseTimeSec;
+            int gamesPlayed = (p + 1) * 2;
+            if (reportGames > 0 && (gamesPlayed - lastReportedGames >= reportGames)) {
+                double eng1Nps = eng1TimeSec > 0 ? eng1Nodes / eng1TimeSec : 0.0;
+                double baseNps = baseTimeSec > 0 ? baseNodes / baseTimeSec : 0.0;
+                std::printf("PROGRESS_JSON:{\"games\":%d,\"candWins\":%d,\"baseWins\":%d,\"draws\":%d,\"candNodes\":%llu,\"baseNodes\":%llu,\"candTimeSec\":%.4f,\"baseTimeSec\":%.4f,\"candNps\":%.0f,\"baseNps\":%.0f}\n",
+                            gamesPlayed - lastReportedGames, eng1Wins, baseWins, draws,
+                            (unsigned long long)eng1Nodes, (unsigned long long)baseNodes,
+                            eng1TimeSec, baseTimeSec, eng1Nps, baseNps);
+                std::fflush(stdout);
+                
+                totalEng1Nodes += eng1Nodes;
+                totalBaseNodes += baseNodes;
+                totalEng1Time += eng1TimeSec;
+                totalBaseTime += baseTimeSec;
 
-            eng1Wins = 0; baseWins = 0; draws = 0;
-            eng1Nodes = 0; baseNodes = 0;
-            eng1TimeSec = 0.0; baseTimeSec = 0.0;
-            lastReportedGames = gamesPlayed;
+                eng1Wins = 0; baseWins = 0; draws = 0;
+                eng1Nodes = 0; baseNodes = 0;
+                eng1TimeSec = 0.0; baseTimeSec = 0.0;
+                lastReportedGames = gamesPlayed;
+            }
+        }
+    } else {
+        for (int g = 0; g < totalGames; g++) {
+            State openingState = generateRandomOpening(randomPlies, rng);
+            int eng1Player = g % 2; // alterna brancas e pretas a cada partida individual
+            int res = playArenaGame(eng1Player, timeMs, openingState, eng1Nodes, baseNodes, eng1TimeSec, baseTimeSec, samplesPtr);
+            if (res == -1) { draws++; totalDraws++; }
+            else if (res == eng1Player) { eng1Wins++; totalEng1Wins++; }
+            else { baseWins++; totalBaseWins++; }
+
+            int gamesPlayed = g + 1;
+            if (reportGames > 0 && (gamesPlayed - lastReportedGames >= reportGames)) {
+                double eng1Nps = eng1TimeSec > 0 ? eng1Nodes / eng1TimeSec : 0.0;
+                double baseNps = baseTimeSec > 0 ? baseNodes / baseTimeSec : 0.0;
+                std::printf("PROGRESS_JSON:{\"games\":%d,\"candWins\":%d,\"baseWins\":%d,\"draws\":%d,\"candNodes\":%llu,\"baseNodes\":%llu,\"candTimeSec\":%.4f,\"baseTimeSec\":%.4f,\"candNps\":%.0f,\"baseNps\":%.0f}\n",
+                            gamesPlayed - lastReportedGames, eng1Wins, baseWins, draws,
+                            (unsigned long long)eng1Nodes, (unsigned long long)baseNodes,
+                            eng1TimeSec, baseTimeSec, eng1Nps, baseNps);
+                std::fflush(stdout);
+                
+                totalEng1Nodes += eng1Nodes;
+                totalBaseNodes += baseNodes;
+                totalEng1Time += eng1TimeSec;
+                totalBaseTime += baseTimeSec;
+
+                eng1Wins = 0; baseWins = 0; draws = 0;
+                eng1Nodes = 0; baseNodes = 0;
+                eng1TimeSec = 0.0; baseTimeSec = 0.0;
+                lastReportedGames = gamesPlayed;
+            }
         }
     }
 

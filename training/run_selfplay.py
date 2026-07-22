@@ -31,7 +31,7 @@ import time
 
 # --- Geração de partidas ---
 TOTAL_GAMES   = 200000   # partidas totais a gerar nesta rodada
-CHUNK_GAMES   = 2000    # partidas por arquivo .bin
+CHUNK_GAMES   = 5000    # partidas por arquivo .bin
                         # Cada chunk fica ~6.5 MB -- confortável pra 32 GB RAM
 
 # --- Busca ---
@@ -42,14 +42,14 @@ TIME_MS       = 200     # orçamento de tempo por lance em ms
 
 # --- Abertura aleatória ---
 # Fase 1: lances iniciais (óbvios no Quoridor) com muito pouco ruído
-OPENING_PLIES1   = 6       # lances 1 a N1 sujeitos a EPSILON_OPENING1
-EPSILON_OPENING1 = 0.1   # baixo: não distorce os lances óbvios da abertura
+OPENING_PLIES1   = 4       # lances 1 a N1 sujeitos a EPSILON_OPENING1
+EPSILON_OPENING1 = 0.99999999   # baixo: não distorce os lances óbvios da abertura
 
 # Fase 2: janela de exploração pesada para diversificar posições iniciais
-OPENING_PLIES2   = 12     # lances N1+1 a N2 sujeitos a EPSILON_OPENING2
-EPSILON_OPENING2 = 0.3   # alto: cria muita variedade de abertura (lance totalmente aleatório)
-
-EPSILON_MIDGAME  = 0.02   # prob. de desvio no midgame: escolhe 2º ou 3º melhor lance (não totalmente aleatório)
+OPENING_PLIES2   = 10     # lances N1+1 a N2 sujeitos a EPSILON_OPENING2
+EPSILON_OPENING2 = 0.0000001  # alto: cria muita variedade de abertura (lance totalmente aleatório)
+''
+EPSILON_MIDGAME  = 0.0000001   # prob. de desvio no midgame: escolhe 2º ou 3º melhor lance (não totalmente aleatório)
 
 # --- Segurança ---
 MAX_PLIES     = 300     # corte: partidas que não terminam são descartadas
@@ -59,7 +59,7 @@ THREADS       = 15      # 0 = auto (usa hardware_concurrency); ajuste se quiser
                         # reservar threads para outras tarefas
 
 # --- Semente ---
-SEED          = 25     # semente base do RNG; chunks subsequentes variam automaticamente
+SEED          = 88     # semente base do RNG; chunks subsequentes variam automaticamente
 
 # --- Saída ---
 # Use {shard:03d} para nomear os chunks automaticamente.

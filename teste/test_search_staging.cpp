@@ -13,6 +13,20 @@
 // alpha-beta estiver correta, os dois devem concordar exatamente no score
 // de raiz. Esse é o teste: não "parece mais rápido", e sim "responde
 // exatamente igual".
+//
+// [ATUALIZAÇÃO -- integração de endgame_race.hpp, plano-additional.md
+// Prioridade 4] Mesmo problema que a quiescência já tinha causado na
+// Fase 4.2.10 (ver nota grande dentro de NegamaxReference::quiescence,
+// logo abaixo): a busca estagiada real (search.hpp::negamax) ganhou um
+// atalho que retorna o valor EXATO de final "mãos vazias"
+// (resolveEmptyHandedEndgame) assim que wallsLeft[0]==0 && wallsLeft[1]==0,
+// sem continuar a busca heurística. Sem replicar esse atalho aqui, a
+// NegamaxReference (que não conhece endgame_race.hpp) continuaria fazendo
+// busca heurística normal nessas posições e divergiria do score novo --
+// não por causa de um bug de staging (o que este arquivo de fato existe
+// pra testar), e sim por causa de um comportamento novo e esperado.
+// Replicado abaixo, na mesma posição relativa (logo após o teste de
+// `winner`) que search.hpp usa.
 #define QR_ENABLE_TEST_HOOKS  // habilita testFixedDepthFullWindow (search.hpp)
 #include <cstdio>
 #include <chrono>
@@ -40,6 +54,10 @@ using qr::LOWER;
 using qr::UPPER;
 using qr::TTEntry;
 using qr::SearchStats;
+using qr::CONTEMPT;
+using qr::RaceOutcome;
+using qr::RACE_SCORE_BASE;
+using qr::resolveEmptyHandedEndgame;
 
 class NegamaxReference {
 public:
@@ -175,6 +193,18 @@ private:
         stats.nodes++;
         int w = winner(s);
         if (w != -1) return (w == s.turn) ? SCORE_INF - 1 : -(SCORE_INF - 1);
+
+        // Réplica do hook de endgame_race.hpp em search.hpp::negamax (ver
+        // nota grande no topo do arquivo) -- necessária pra este teste
+        // continuar comparando staging-vs-monolítico de forma isolada, sem
+        // contaminação do comportamento novo (e já validado à parte por
+        // test_endgame_race.cpp) do solver de final "mãos vazias".
+        if (s.wallsLeft[0] == 0 && s.wallsLeft[1] == 0) {
+            RaceOutcome ro = resolveEmptyHandedEndgame(s.wallsH, s.wallsV, s.pawn[0], s.pawn[1], s.turn);
+            if (ro.winner == -1) return -CONTEMPT;
+            int score = RACE_SCORE_BASE - ro.dtm;
+            return (ro.winner == s.turn) ? score : -score;
+        }
 
         int alphaOrig = alpha;
         TTEntry& e = probe(s.hash);

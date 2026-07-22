@@ -25,12 +25,13 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 GIT_REF1 = None              # None = versão local não comitada (ou passe string de ref git)
 GIT_REF2 = "main"            # Ref Git base para o confronto (ex: 'main', 'v1.0', 'HEAD')
 
-CREATE_BIN = True            # Se True, salva os dados das partidas em data/arena/ no formato .bin de treino
-GAMES = 500                 # Quantidade total de jogos (serão divididos em pares com aberturas idênticas)
+INVERT_COLORS = True          # Se True, joga cada abertura 2x invertendo as cores (par). Se False, joga apenas 1x por abertura.
+CREATE_BIN = False           # Se True, salva os dados das partidas em data/arena/ no formato .bin de treino
+GAMES = 500                  # Quantidade total de jogos
 REPORT_GAMES = 50            # Atualiza e imprime o relatório parcial a cada N jogos concluídos (default 50)
 TIME_MS = 100                # Tempo de pensamento por lance em milissegundos
 THREADS = 14                 # Número de núcleos / processos em paralelo (default 14)
-RANDOM_OPENING_PLIES = 4     # Quantidade de lances aleatórios na abertura (duplicados por par)
+RANDOM_OPENING_PLIES = 4     # Quantidade de lances aleatórios na abertura
 SEED = 45                    # Semente aleatória
 COMPILER = "g++"             # Compilador C++
 CXX_FLAGS = "-O3 -std=c++17"  # Flags de compilação
@@ -106,10 +107,22 @@ def cleanup_worktree(temp_dir):
 
 import multiprocessing
 
-def worker_process(exe_path, worker_games, time_ms, random_plies, seed, report_games, bin_path, progress_queue):
-    bin_arg = f" --bin-file \"{bin_path}\"" if bin_path else ""
-    cmd = f"\"{exe_path}\" --games {worker_games} --time {time_ms} --random-plies {random_plies} --seed {seed} --report-games {report_games}{bin_arg}"
-    proc = subprocess.Popen(cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
+def worker_process(exe_path, worker_games, time_ms, random_plies, seed, report_games, bin_path, invert_colors, progress_queue):
+    cmd = [
+        exe_path,
+        "--games", str(worker_games),
+        "--time", str(time_ms),
+        "--random-plies", str(random_plies),
+        "--seed", str(seed)
+    ]
+    if not invert_colors:
+        cmd.append("--no-invert")
+    if report_games > 0:
+        cmd.extend(["--report-games", str(report_games)])
+    if bin_path:
+        cmd.extend(["--bin-file", bin_path])
+        
+    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
     
     for line in iter(proc.stdout.readline, ''):
         line = line.strip()
@@ -141,6 +154,8 @@ def main():
     parser.add_argument("--threads", type=int, default=THREADS, help=f"Numero de nucleos/threads (padrao: {THREADS})")
     parser.add_argument("--random-plies", type=int, default=RANDOM_OPENING_PLIES, help=f"Lances aleatorios na abertura (padrao: {RANDOM_OPENING_PLIES})")
     parser.add_argument("--seed", type=int, default=SEED, help=f"Semente RNG (padrao: {SEED})")
+    parser.add_argument("--no-invert", dest="invert_colors", action="store_false", default=False, help="Nao inverte as cores na mesma abertura")
+    parser.add_argument("--invert-colors", dest="invert_colors", action="store_true", default=True, help="Inverte as cores jogando a mesma abertura 2x")
     
     args = parser.parse_args()
     
@@ -187,12 +202,22 @@ def main():
         worker_pairs = pairs_per_thread + (1 if w < extra_pairs else 0)
         if worker_pairs <= 0:
             continue
-        worker_games = worker_pairs * 2
+        worker_games = worker_pairs * 2 if args.invert_colors else (args.games // threads_count + (1 if w < (args.games % threads_count) else 0))
+        if worker_games <= 0: continue
         worker_seed = args.seed + w * 10007
         worker_bin = os.path.join(temp_bin_dir, f"part_{w}.bin") if temp_bin_dir else None
         tasks.append((worker_games, worker_seed, worker_bin))
-        
-    print(f"\n[*] Disparando partidas em {len(tasks)} threads/processos paralelos...")
+
+    manager = multiprocessing.Manager()
+    queue = manager.Queue()
+    processes = []
+    for worker_games, worker_seed, worker_bin in tasks:
+        p = multiprocessing.Process(
+            target=worker_process,
+            args=(cand_exe, worker_games, args.time, args.random_plies, worker_seed, worker_report, worker_bin, args.invert_colors, queue)
+        )
+        p.start()
+        processes.append(p)
     
     tot_eng1_wins = 0
     tot_eng2_wins = 0
@@ -206,16 +231,6 @@ def main():
     next_report_target = args.report_games
     total_games = sum(t[0] for t in tasks)
     
-    queue = multiprocessing.Queue()
-    processes = []
-    for g, s, b in tasks:
-        p = multiprocessing.Process(
-            target=worker_process,
-            args=(cand_exe, g, args.time, args.random_plies, s, worker_report, b, queue)
-        )
-        p.start()
-        processes.append(p)
-        
     finished_workers = 0
     while finished_workers < len(tasks):
         msg_type, data = queue.get()
@@ -232,7 +247,9 @@ def main():
             if completed_games >= next_report_target or completed_games == total_games:
                 elo_diff, elo_margin = calculate_elo_and_ci(tot_eng1_wins, tot_eng2_wins, tot_draws)
                 sign = "+" if elo_diff >= 0 else ""
-                print(f"  [Progresso: {completed_games:4d}/{total_games:4d} jogos] Eng1: {tot_eng1_wins:3d} | Eng2: {tot_eng2_wins:3d} | Empates: {tot_draws:2d} | Elo: {sign}{elo_diff:.1f} (±{elo_margin:.1f})", flush=True)
+                eng1_nps = tot_eng1_nodes / tot_eng1_time if tot_eng1_time > 0 else 0.0
+                eng2_nps = tot_eng2_nodes / tot_eng2_time if tot_eng2_time > 0 else 0.0
+                print(f"  [Progresso: {completed_games:4d}/{total_games:4d} jogos] Eng1: {tot_eng1_wins:3d} ({eng1_nps:,.0f} nps) | Eng2: {tot_eng2_wins:3d} ({eng2_nps:,.0f} nps) | Empates: {tot_draws:2d} | Elo: {sign}{elo_diff:.1f} (±{elo_margin:.1f})", flush=True)
                 while next_report_target <= completed_games and next_report_target < total_games:
                     next_report_target += args.report_games
         elif msg_type == "RESULT":

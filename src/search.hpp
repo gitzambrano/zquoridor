@@ -10,12 +10,20 @@
 #include <cstring>
 #include "rules.hpp"
 #include "cat.hpp"
+#include "endgame_race.hpp"
 
 namespace qr {
 
 constexpr int TT_BITS = 21;               // 2M entradas
 constexpr size_t TT_SIZE = 1ull << TT_BITS;
 constexpr int SCORE_INF = 1'000'000;
+
+// RACE_SCORE_BASE (endgame_race.hpp) precisa ficar estritamente abaixo do
+// score de vitória imediata (SCORE_INF-1, ver winner() em negamax) com
+// folga suficiente pra subtrair o dtm do final resolvido, e acima de
+// qualquer eval heurística plausível -- checado aqui em vez de em
+// endgame_race.hpp porque SCORE_INF só existe deste ponto em diante.
+static_assert(RACE_SCORE_BASE < SCORE_INF - 1, "RACE_SCORE_BASE precisa deixar espaco abaixo do score de vitoria imediata");
 
 // profundidade máxima de iterative deepening suportada (folga generosa
 // sobre os ~40 usados hoje em main.cpp/selfplay_main.cpp/gui_web) --
@@ -367,6 +375,22 @@ private:
         if (w != -1) return (w == s.turn) ? SCORE_INF - 1 : -(SCORE_INF - 1);
 
         if (reptbl.count(s.hash) >= 2) return -CONTEMPT;
+
+        // Final "mãos vazias" (endgame_race.hpp, plano-additional.md
+        // Prioridade 4): quando os dois ficam sem muros, a topologia
+        // congela pra sempre e o jogo vira corrida de peão pura -- resolve
+        // por solver exato (Nível 1 -> Nível 2 -> Serviço B, ver
+        // endgame_race.hpp) em vez de continuar a busca heurística, que
+        // não tem como bater certeza matemática aqui. Colocado depois do
+        // check de repetição de propósito: se a mesma posição já se
+        // repetiu de fato na partida real, isso tem prioridade sobre o
+        // resultado teórico do subjogo (mesmo doravante).
+        if (s.wallsLeft[0] == 0 && s.wallsLeft[1] == 0) {
+            RaceOutcome ro = resolveEmptyHandedEndgame(s.wallsH, s.wallsV, s.pawn[0], s.pawn[1], s.turn);
+            if (ro.winner == -1) return -CONTEMPT;  // empate -- perseguição infinita/repetição
+            int score = RACE_SCORE_BASE - ro.dtm;
+            return (ro.winner == s.turn) ? score : -score;
+        }
 
         // Fix (Fase 4.2.10, pós-implementação): depth==0 tem que ser
         // resolvido ANTES de consultar a TT para cutoff. Motivo: a
