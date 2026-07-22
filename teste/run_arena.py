@@ -23,7 +23,7 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 #     GIT_REF2 = "HEAD~3"      -> 3 commits atrás
 #     GIT_REF2 = "minha-branch"-> Outra branch
 GIT_REF1 = None              # None = versão local não comitada (ou passe string de ref git)
-GIT_REF2 = "main"            # Ref Git base para o confronto (ex: 'main', 'v1.0', 'HEAD')
+GIT_REF2 = "v1.1"            # Ref Git base para o confronto (ex: 'main', 'v1.0', 'HEAD')
 
 INVERT_COLORS = True          # Se True, joga cada abertura 2x invertendo as cores (par). Se False, joga apenas 1x por abertura.
 CREATE_BIN = False           # Se True, salva os dados das partidas em data/arena/ no formato .bin de treino
@@ -69,14 +69,51 @@ def calculate_elo_and_ci(wins_1, wins_2, draws):
         
     return elo_diff, margin
 
-def compile_arena(src_dir, output_exe):
+def _bump_mtimes(src_dir, epoch_offset_seconds):
+    # Contorna uma peculiaridade do GCC: quando os headers de duas árvores
+    # de fonte são byte-idênticos (muito comum aqui -- normalmente só
+    # search.hpp muda entre ref1/ref2, rules.hpp/cat.hpp/dsu.hpp/
+    # endgame_race.hpp ficam iguais) E foram escritos no mesmo segundo, o
+    # pragma once do cpplib os trata como "o mesmo arquivo já incluído"
+    # mesmo estando em diretórios (e inodes) diferentes -- silenciosamente
+    # descarta a inclusão do segundo, e o segundo motor acaba compilado
+    # com os símbolos do primeiro. Forçar mtimes distintos entre as duas
+    # árvores evita esse falso-positivo de forma determinística.
+    base = os.path.join(src_dir, "src")
+    if not os.path.isdir(base):
+        return
+    stamp = 1577836800 + epoch_offset_seconds  # 2020-01-01 UTC + offset
+    for name in os.listdir(base):
+        if name.endswith(".hpp"):
+            p = os.path.join(base, name)
+            os.utime(p, (stamp, stamp))
+
+def compile_arena(dir1, dir2, output_exe):
+    """
+    Compila teste/arena.cpp incluindo os headers REAIS de dir1 (ref1)
+    e dir2 (ref2) no MESMO binário, sob namespaces separados (qr_e1 /
+    qr_e2) -- ao contrário do compile_arena antigo, que só compilava dir1
+    e fazia "Engine 2" ser, na prática, uma cópia do código de Engine 1
+    (o worktree de --ref2 era criado e descartado sem nunca ser usado).
+    """
     os.makedirs(os.path.dirname(output_exe), exist_ok=True)
     arena_src = os.path.join(PROJECT_ROOT, "teste", "arena.cpp")
-    cmd = f"{COMPILER} {CXX_FLAGS} -I\"{os.path.join(src_dir, 'src')}\" \"{arena_src}\" -o \"{output_exe}\""
-    
+
+    _bump_mtimes(dir1, 0)
+    _bump_mtimes(dir2, 86400)
+
+    search1 = os.path.join(dir1, "src", "search.hpp").replace("\\", "/")
+    search2 = os.path.join(dir2, "src", "search.hpp").replace("\\", "/")
+    cmd = (
+        f"{COMPILER} {CXX_FLAGS} "
+        f"-DENGINE1_SEARCH_HPP=\"\\\"{search1}\\\"\" "
+        f"-DENGINE2_SEARCH_HPP=\"\\\"{search2}\\\"\" "
+        f"\"{arena_src}\" -o \"{output_exe}\""
+    )
+
     res = subprocess.run(cmd, shell=True, capture_output=True, text=True)
     if res.returncode != 0:
-        print(f"[!] ERRO DE COMPILAÇÃO em {src_dir}:\n{res.stderr}")
+        print(f"[!] ERRO DE COMPILAÇÃO (arena dual, ref1={dir1} ref2={dir2}):\n{res.stderr}")
         sys.exit(1)
 
 def prepare_engine_source(ref_name):
@@ -177,12 +214,12 @@ def main():
     dir1, cleanup1 = prepare_engine_source(args.ref1)
     dir2, cleanup2 = prepare_engine_source(args.ref2)
     
-    cand_exe = os.path.join(BIN_DIR, "arena_engine1.exe")
+    cand_exe = os.path.join(BIN_DIR, "arena.exe")
     
     try:
-        print(f"[*] Compilando executavel de arena...")
-        compile_arena(dir1, cand_exe)
-        print(f"[+] Compilacao concluida com sucesso!")
+        print(f"[*] Compilando executavel de arena (engine1={ref1_label} + engine2={ref2_label} no mesmo binario)...")
+        compile_arena(dir1, dir2, cand_exe)
+        print(f"[+] Compilacao concluida com sucesso! (as duas engines sao codigo REAL de cada ref, nao a mesma engine duplicada)")
     finally:
         cleanup_worktree(cleanup1)
         cleanup_worktree(cleanup2)

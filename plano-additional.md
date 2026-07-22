@@ -401,6 +401,80 @@ por ±1 casa é sutil o bastante pra merecer testes de posição construídos à
 mão (pulos retos e diagonais nos dois lados) antes de aceitar qualquer
 nível.
 
+### 4d — **[IMPLEMENTADO, com 2 desvios do plano original]** status real após a integração
+
+A Prioridade 4 foi implementada (`src/endgame_race.hpp`, gancho em
+`search.hpp::negamax`, `src/test_endgame_race.cpp`) e está em produção,
+mas com duas divergências importantes em relação ao que 4b/4c descreviam
+— ambas achadas DEPOIS da integração inicial, uma por teste dirigido e
+outra por medição de força em arena externa. Registradas aqui pra quem
+for portar algo parecido não repetir os mesmos dois erros.
+
+**1. Nível 1 (portão de ETA) foi removido do pipeline de decisão, não só
+"refinado".** A margem do item 4c (delta de tempo grande o bastante pra
+descartar interceptação) assumia que bloqueio físico custa no máximo 1
+tempo a mais que um pulo — um teste aleatório amplo
+(`testRandomWallTopologiesGatesAgreeWithExact`) achou um contraexemplo
+real onde bloqueio custa mais que isso. Em vez de tentar consertar a
+margem (arriscado sem uma prova nova), `raceETAGate` foi mantida como
+utilitário isolado, testado, mas **não é mais chamada** por
+`resolveEmptyHandedEndgame` — só o Nível 2 (corrigido, ver abaixo) e o
+Serviço B decidem em produção.
+
+**2. Nível 2 (sobreposição de caminho) tinha a base geométrica errada —
+achado e corrigido depois de já estar em produção.** A versão original
+testava disjunção dos **conjuntos de casas em algum caminho mais curto**
+(`onShortestPathMask`) e tratava isso como certeza de que nenhuma
+interação era possível. Isso é falso: um jogador que está perdendo a
+corrida de tempo pura não é obrigado a seguir um caminho mínimo — pode
+desviar pra dentro do território do outro só pra bloquear fisicamente,
+mesmo sem nunca pisar numa casa do caminho mínimo do oponente. Um
+contraexemplo real foi encontrado por busca em topologias sintéticas:
+caminhos mínimos disjuntos (colunas 2-3 vs. 4-5) no mesmo tabuleiro
+totalmente conectado (as 81 casas continuam mutuamente alcançáveis
+ignorando o outro peão) — o gate antigo decidia "vitória do jogador 0 em
+10 lances"; o resultado verdadeiro (confirmado pelo Serviço B e por duas
+reimplementações independentes de checagem cruzada) era **empate por
+perseguição infinita**. Corrigido trocando a base para disjunção da
+**região inteira alcançável** (`reachableRegionMask`, BFS única sem meta)
+— essa sim é condição necessária e suficiente (regiões disjuntas ⇒
+nenhuma aresta atravessável as liga ⇒ os dois jogadores nunca ficam
+sequer adjacentes, em qualquer rota, ótima ou não).
+
+**3. Consequência de engenharia da correção acima: o Serviço B precisou
+de cache por topologia de muro, e isso não era opcional.** O comentário
+original do plano ("13k estados resolve em microssegundos, vale a pena
+mesmo custando mais que um nó de busca comum") só era verdade *na
+prática* porque o Nível 2 antigo (mesmo incorreto) decidia sozinho com
+bastante frequência em tabuleiros típicos, evitando a maioria das
+chamadas ao Serviço B. A versão corrigida do Nível 2 decide bem menos
+(a condição sã é mais rara — a maioria dos tabuleiros reais continua
+totalmente conectada mesmo com vários muros), então passou a cair no
+Serviço B em quase todo nó da fase "mãos vazias" — e cada chamada
+reconstruía o grafo de 13.122 estados e rodava as duas BFS retrógradas
+**do zero**, medido em ~790 microssegundos por chamada (não
+"microssegundos" desprezíveis). Isso derrubou nós/s em mais de 50× numa
+sessão de arena externa (Elo -166 medido contra a versão anterior) antes
+de ser identificado e corrigido. A correção: como
+`wallsLeft[0]==0 && wallsLeft[1]==0` (única condição de entrada do
+gancho) implica que nenhum muro pode mais ser colocado pro resto daquela
+subárvore de busca inteira, `wallsH`/`wallsV` ficam **congelados** por
+potencialmente milhares de nós consecutivos — um cache de 1 slot
+(`raceExactDTM` só recalcula a DP quando a topologia recebida muda em
+relação à última chamada) resolveu: de ~1.267 chamadas/s (sem cache) para
+~276.000 chamadas/s (com cache) num benchmark isolado de chamadas
+repetidas, e de ~1.600 nós/s pra ~84.000 nós/s num benchmark ponta-a-ponta
+com `Negamax::chooseMove` real e orçamento de tempo por lance, mesma
+posição. Lição pro roadmap: **qualquer** camada nova que se proponha
+"barata o bastante pra não precisar de cache" precisa ser medida sob a
+frequência de chamada real esperada em produção antes de assumir isso —
+principalmente quando uma correção de corretude futura pode
+legitimamente mudar essa frequência pra pior, como aconteceu aqui.
+
+Nível 3 (certificado de dominância por desvio, item 4b) segue não
+implementado — nenhum problema de volume o justificou até agora, já que
+o Serviço B com cache resolve a fase inteira rápido o bastante.
+
 ---
 
 ## Prioridade 5 — Gates de perft como oracle de regressão de corretude

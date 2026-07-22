@@ -34,6 +34,7 @@
 #include <atomic>
 #include <algorithm>
 #include <string>
+#include <memory>
 #include "rules.hpp"
 #include "search.hpp"
 
@@ -82,6 +83,15 @@ struct SelfPlayConfig {
     int maxPlies = 300;           // corte de segurança (partidas que não terminam são descartadas)
     unsigned seed = 1;
     int numThreads = 0;           // 0 = usar hardware_concurrency()
+    // true (default) = as duas cores dividem uma única engine/TT dentro da
+    // mesma partida (mais rápido -- metade da memória de TT por thread, e
+    // aproveita transposições encontradas pelo lado oposto; é o padrão
+    // usual em geração de dados de self-play e o objetivo aqui é
+    // throughput). false = cada cor usa sua própria engine/TT isolada,
+    // igual à arena (teste/arena_dual.cpp) -- útil quando o objetivo é
+    // comparar a taxa de empate/comportamento do selfplay com o da arena,
+    // não gerar dados de treino.
+    bool sharedTT = true;
 };
 
 struct SelfPlayStats {
@@ -95,7 +105,7 @@ struct SelfPlayStats {
 // Joga uma partida completa contra si mesmo e devolve as amostras já
 // rotuladas com o resultado final. Descarta a partida (vetor vazio) se
 // não terminar dentro de maxPlies -- evita rótulo de resultado incorreto.
-inline std::vector<TrainingSample> playOneGame(Negamax& engine, std::mt19937_64& rng,
+inline std::vector<TrainingSample> playOneGame(Negamax& engine0, Negamax& engine1, std::mt19937_64& rng,
                                                 const SelfPlayConfig& cfg, uint64_t& nodesOut,
                                                 SelfPlayStats& stats) {
     State s = initialState();
@@ -116,6 +126,15 @@ inline std::vector<TrainingSample> playOneGame(Negamax& engine, std::mt19937_64&
             isDraw = true;
             break;
         }
+
+        // Engine da vez: cada cor tem sua própria TT, isolada -- assim
+        // como na arena (arena_dual.cpp/arena.cpp), e ao contrário do
+        // engine único compartilhado que existia aqui antes. Isso evita
+        // que a busca de um lado "vaze" para o outro via transposições
+        // encontradas poucos lances antes pelo lado oposto -- efeito que
+        // não existe numa partida real (dois processos independentes) e
+        // que enviesava a comparação selfplay vs arena.
+        Negamax& engine = (s.turn == 0) ? engine0 : engine1;
 
         auto moves = legalMoves(s);
         Move chosen;
@@ -234,7 +253,14 @@ inline void runSelfPlay(const SelfPlayConfig& cfg, const std::string& outputPath
     int totalGames = cfg.numGames;
 
     auto worker = [&](int threadIdx) {
-        Negamax engine;  // TT própria por thread (evita contenção e é o padrão usual em self-play multi-thread)
+        Negamax engine0;
+        // Só aloca a 2ª TT (custosa: 2M entradas) quando de fato vamos
+        // usá-la; no modo default (sharedTT=true) as duas cores usam
+        // engine0 e a alocação extra seria desperdício de memória.
+        std::unique_ptr<Negamax> engine1Storage;
+        if (!cfg.sharedTT) engine1Storage = std::make_unique<Negamax>();
+        Negamax& engine1 = cfg.sharedTT ? engine0 : *engine1Storage;
+
         std::mt19937_64 rng(cfg.seed + 1000003ull * (unsigned)threadIdx);
         for (;;) {
             int g = nextGame.fetch_add(1);
@@ -246,8 +272,9 @@ inline void runSelfPlay(const SelfPlayConfig& cfg, const std::string& outputPath
             // posição avaliada como empate em G1 contamina a busca de G2,
             // onde o mesmo hash é atingido sem repetição -- causando
             // aumento progressivo de empates conforme a TT se enche.
-            engine.clearTT();
-            auto samples = playOneGame(engine, rng, cfg, nodes, stats);
+            engine0.clearTT();
+            if (!cfg.sharedTT) engine1.clearTT();  // se compartilhada, já foi limpa acima (mesmo objeto)
+            auto samples = playOneGame(engine0, engine1, rng, cfg, nodes, stats);
             stats.totalNodes += nodes;
             if (samples.empty()) { stats.gamesDiscarded++; stats.gamesPlayed++; continue; }
             {

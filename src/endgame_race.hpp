@@ -304,14 +304,57 @@ inline bool raceDisjointGate(uint64_t wallsH, uint64_t wallsV, int pawn0, int pa
 // passos + pulos retos/diagonais) -- microssegundos, não persiste entre
 // chamadas (plano-additional.md confirma que não vale a pena persistir
 // entre partidas).
+// [NOTA -- correção pós-implementação #2, achado por medição direta numa
+// sessão de arena externa: motor perdeu força e nós/s desabaram depois da
+// correção do Nível 2 acima] O comentário original abaixo ("barato o
+// bastante... não precisa de cache entre chamadas") estava errado na
+// prática: reconstruir o grafo de 13.122 estados E rodar as duas BFS
+// retrógradas do zero A CADA CHAMADA mede ~790 microssegundos por
+// chamada (benchmark isolado, `/tmp/bench_race.cpp` numa sessão de
+// depuração -- 1267 chamadas/s), não "microssegundos" desprezíveis. Isso
+// já era um problema antes da correção do Nível 2, mas ficava mascarado
+// porque o gate antigo (baseado em caminho mínimo, e sabidamente
+// incorreto -- ver nota grande acima) decidia sozinho com bastante
+// frequência em topologias de tabuleiro típicas, evitando a maior parte
+// dessas chamadas. A correção do Nível 2 (baseada em região alcançável,
+// a única base comprovadamente sã) decide MENOS vezes por construção --
+// a maioria dos tabuleiros reais fica totalmente conectada mesmo com
+// vários muros -- então passou a cair no Serviço B em quase todo nó
+// dessa fase, e o custo por chamada, que antes só aparecia ocasionalmente,
+// virou o caminho comum.
+//
+// A correção certa não é "decidir mais no gate barato mesmo que seja
+// arriscado" (isso reintroduziria o bug original), e sim reconhecer que
+// esse recálculo do zero era desnecessário: uma vez que
+// wallsLeft[0]==0 && wallsLeft[1]==0 (única condição sob a qual este
+// hook roda -- ver gancho em search.hpp), NENHUM muro pode ser colocado
+// nunca mais, então wallsH/wallsV ficam CONGELADOS pro resto daquela
+// subárvore de busca inteira -- só o par de peões e o turno mudam de nó
+// pra nó. Um cache de UM slot (a topologia de muro corrente quase nunca
+// muda entre chamadas consecutivas dentro da mesma subárvore) faz a DP de
+// 13k estados rodar uma vez só por topologia distinta, e cada chamada
+// subsequente virar só duas leituras de array. Depois desta correção, o
+// mesmo benchmark mede reuso quase total do cache dentro de uma
+// subárvore (ver teste de performance dedicado).
 inline RaceOutcome raceExactDTM(uint64_t wallsH, uint64_t wallsV, int pawn0, int pawn1, int turn) {
     constexpr int NS = N * N;         // 81
     constexpr int NST = NS * NS * 2;  // 13122
     auto sidx = [](int p0, int p1, int t) { return (p0 * NS + p1) * 2 + t; };
 
-    // Grafo do jogo (sucessores + predecessores), reconstruído a cada
-    // chamada a partir da topologia de muros fixa recebida -- barato o
-    // bastante (ver custo acima) pra não precisar de cache entre chamadas.
+    static thread_local uint64_t cachedWallsH = 0, cachedWallsV = 0;
+    static thread_local bool cacheValid = false;
+    static thread_local std::vector<int8_t> win0, win1;
+    static thread_local std::vector<int> dtm0, dtm1;
+
+    if (cacheValid && cachedWallsH == wallsH && cachedWallsV == wallsV) {
+        int s0 = sidx(pawn0, pawn1, turn);
+        if (win0[s0]) return {0, dtm0[s0]};
+        if (win1[s0]) return {1, dtm1[s0]};
+        return {-1, 0};
+    }
+
+    // Grafo do jogo (sucessores + predecessores), reconstruído só quando a
+    // topologia de muro muda em relação à última chamada (ver nota acima).
     static thread_local std::vector<std::vector<int>> succ, pred;
     if ((int)succ.size() != NST) { succ.assign(NST, {}); pred.assign(NST, {}); }
     for (int i = 0; i < NST; i++) { succ[i].clear(); pred[i].clear(); }
@@ -343,9 +386,6 @@ inline RaceOutcome raceExactDTM(uint64_t wallsH, uint64_t wallsV, int pawn0, int
             }
         }
     }
-
-    static thread_local std::vector<int8_t> win0, win1;
-    static thread_local std::vector<int> dtm0, dtm1;
 
     auto solveFor = [&](int X, std::vector<int8_t>& win, std::vector<int>& dtm) {
         win.assign(NST, 0);
@@ -394,6 +434,9 @@ inline RaceOutcome raceExactDTM(uint64_t wallsH, uint64_t wallsV, int pawn0, int
 
     solveFor(0, win0, dtm0);
     solveFor(1, win1, dtm1);
+    cachedWallsH = wallsH;
+    cachedWallsV = wallsV;
+    cacheValid = true;
 
     int s0 = sidx(pawn0, pawn1, turn);
     if (win0[s0]) return {0, dtm0[s0]};

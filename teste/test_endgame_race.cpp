@@ -11,6 +11,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <random>
+#include <chrono>
 #include "rules.hpp"
 #include "endgame_race.hpp"
 using namespace qr;
@@ -243,6 +244,63 @@ static void testRandomWallTopologiesGatesAgreeWithExact() {
     std::printf("  (info) topologias mao-vazia checadas=%d, decididas por atalho barato=%d\n", checkedTotal, decidedByGate);
 }
 
+// Regressão de PERFORMANCE (não só de corretude) -- achado numa sessão de
+// arena externa: depois da correção do Nível 2 acima (base sonora =
+// região alcançável, que decide bem menos vezes que o gate antigo
+// baseado em caminho mínimo), a maioria das topologias de tabuleiro reais
+// passou a cair no Serviço B (raceExactDTM) em quase todo nó da fase
+// "mãos vazias" -- e cada chamada reconstruía o grafo de 13.122 estados e
+// rodava as duas BFS retrógradas DO ZERO, medido em ~790 microssegundos
+// por chamada (não "microssegundos" desprezíveis como o comentário
+// original assumia). Como wallsLeft[0]==0 && wallsLeft[1]==0 significa
+// que nenhum muro pode mais ser colocado pro resto daquela subárvore de
+// busca -- ou seja, wallsH/wallsV ficam CONGELADOS por potencialmente
+// milhares de nós consecutivos -- a correção foi cachear a DP inteira por
+// topologia de muro (ver nota de correção #2 em endgame_race.hpp). Sem
+// esse cache, um motor de arena real media queda de nós/s de mais de
+// 50x nessa fase (confirmado com benchmark ponta-a-ponta numa sessão de
+// depuração separada, usando Negamax::chooseMove de verdade com
+// orçamento de tempo por lance: ~1.600 nós/s sem cache vs. ~84.000 nós/s
+// com cache, mesma posição, mesmo orçamento). Este teste não repete
+// aquele benchmark completo (chooseMove real, custoso demais pra rodar
+// toda vez que a suíte roda), só verifica que MUITAS chamadas
+// consecutivas com a MESMA topologia de muro (o padrão real dentro de uma
+// subárvore) não degradam pra escala de "microssegundos por chamada" --
+// se o cache for removido ou quebrado por um refactor futuro, este teste
+// deve estourar o limite de tempo por uma margem folgada (o limite usado
+// aqui é propositalmente frouxo -- várias ordens de grandeza acima do
+// custo esperado com cache -- pra não ficar frágil em máquinas lentas ou
+// carregadas, só pra pegar uma regressão real de "sem cache nenhum").
+static void testRepeatedQueriesSameTopologyAreFast() {
+    std::mt19937 rng(2026);
+    State s = initialState();
+    for (int ply = 0; ply < 200 && (s.wallsLeft[0] > 0 || s.wallsLeft[1] > 0); ply++) {
+        MoveList moves = legalMoves(s);
+        if (moves.empty()) break;
+        s = applyMove(s, moves[rng() % moves.size()]);
+    }
+    CHECK(s.wallsLeft[0] == 0 && s.wallsLeft[1] == 0,
+          "perf: setup do teste -- partida deveria ter zerado os muros dos dois lados");
+
+    constexpr int NCALLS = 5000;
+    auto t0 = std::chrono::steady_clock::now();
+    long acc = 0;  // só pra impedir o compilador de eliminar as chamadas
+    for (int i = 0; i < NCALLS; i++) {
+        RaceOutcome ro = resolveEmptyHandedEndgame(s.wallsH, s.wallsV, s.pawn[0], s.pawn[1], i % 2);
+        acc += ro.dtm;
+    }
+    auto t1 = std::chrono::steady_clock::now();
+    double secs = std::chrono::duration<double>(t1 - t0).count();
+    std::printf("  (info) perf: %d chamadas com a mesma topologia em %.4fs (%.0f chamadas/s, acc=%ld)\n",
+                NCALLS, secs, NCALLS / secs, acc);
+    // Sem cache, isso mede ~0,79s (1267 chamadas/s) nesta máquina -- um
+    // limite de 0,3s dá margem generosa (>4x) sem exigir uma máquina
+    // rápida, e ainda pega com folga se o cache for removido por
+    // completo. Com o cache, isso roda em bem menos de 0,1s na prática.
+    CHECK(secs < 0.3,
+          "perf: 5000 chamadas com a MESMA topologia de muro deveriam reusar o cache (achado de regressao real de nos/s em arena)");
+}
+
 int main() {
     testTrivialOneMoveWin();
     testOpenBoardStraightRace();
@@ -250,6 +308,7 @@ int main() {
     testETAGateSafeInOneMoveWinCase();
     testInfinitePursuitDraw();
     testRandomWallTopologiesGatesAgreeWithExact();
+    testRepeatedQueriesSameTopologyAreFast();
 
     if (failures == 0) {
         std::printf("OK -- todos os testes de endgame_race passaram\n");

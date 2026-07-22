@@ -33,6 +33,9 @@ zquoridor/
     dsu.hpp                   # union-find com rollback (checagem de legalidade de muro)
     search.hpp                # negamax, alpha-beta, tabela de transposição,
                                #   ordenação de lances, quiescência de muro
+    endgame_race.hpp           # solver exato de final "mãos vazias" (plano-additional.md
+                               #   Prioridade 4) -- gate de região alcançável + DP retrógrada
+                               #   exata com cache por topologia de muro
     nnue.hpp                   # rede neural: acumulador incremental, float32 e int8
     main.cpp                    # benchmark de performance (self-play + custo da NNUE)
     selfplay.hpp                 # geração de dados de treino via self-play multi-thread
@@ -42,6 +45,8 @@ zquoridor/
     test_rules_sanity.cpp        # regressão de regras (pré-filtro + DSU)
     test_search_staging.cpp       # geração de lances estagiada vs. referência monolítica
     test_move_ordering.cpp         # ordenação de muros (bônus de toque no caminho)
+    test_endgame_race.cpp            # solver de final "mãos vazias" -- corretude (gates vs.
+                                      #   DP exata) e regressão de performance (cache)
     nnue_verify.cpp                 # paridade numérica C++ vs. Python (float32 e int8)
     bench_quiescence_toggle.cpp      # nós/s e nós totais com/sem quiescência, posição fixa
 
@@ -67,7 +72,7 @@ zquoridor/
 
   build/                      # scripts de compilação
     build_bench.bat / .sh         # main.cpp + bench_quiescence_toggle.cpp
-    build_tests.bat / .sh          # os 4 arquivos de teste/
+    build_tests.bat / .sh          # os 5 arquivos de teste/
     build_selfplay.bat / .sh        # selfplay_main.cpp
     build_wasm.bat / .sh             # engine_wasm.cpp -> quoridor.js/.wasm
     build_termux.sh                   # build ARM/Android via Termux
@@ -371,6 +376,33 @@ neural, depois os testes que garantem que nada disso quebrou.
   benchmark, ou para descartar essa parte como causa de um bug durante
   debug.
 - **Detecção de Empate & Contempt**: detecção de empate por 3-fold repetition (tripla repetição da mesma posição de tabuleiro) implementada com histórico de posições via `RepetitionTable`. Adicionado o fator `CONTEMPT = -30` na busca (`negamax` e `quiescência`) para fazer o motor desviar ativamente de empates (penalidade de -30 para o jogador que propõe a repetição) em posições neutras ou favoráveis, mas permitindo o empate como recurso defensivo em posições muito desfavoráveis.
+- **Solver exato de final "mãos vazias"** (`endgame_race.hpp`,
+  plano-additional.md Prioridade 4): quando os dois jogadores ficam sem
+  muros, a topologia de paredes congela pra sempre e o jogo vira uma
+  corrida de peão pura — o gancho em `negamax` detecta essa condição
+  (`wallsLeft[0]==0 && wallsLeft[1]==0`) e resolve com certeza matemática
+  em vez de continuar a busca heurística. Duas camadas: um gate barato
+  (`raceDisjointGate`) que decide sem busca quando as **regiões inteiras
+  alcançáveis** pelos dois jogadores (não só o caminho mais curto de cada
+  um — ver nota abaixo) são disjuntas, e uma DP retrógrada exata
+  (`raceExactDTM`) sobre os 81×81×2=13.122 estados `(pos0, pos1, turno)`
+  daquela topologia fixa, que também detecta empate por perseguição
+  infinita. A DP é cacheada por topologia de muro (só recalcula quando
+  `wallsH`/`wallsV` mudam em relação à última chamada) — necessário na
+  prática, não só otimização: sem esse cache, uma sessão de arena externa
+  mediu queda de nós/s de mais de 50× e Elo -166 assim que o gate barato
+  passou a decidir com menos frequência (ver nota de correção abaixo).
+  Duas correções de corretude relevantes já aconteceram depois da
+  primeira integração — quem for mexer aqui deveria ler a nota grande no
+  topo de `endgame_race.hpp` e a Seção 4d do `plano-additional.md` antes:
+  (1) um portão de ETA mais barato (Nível 1 do plano) foi testado e
+  **descartado** do pipeline de decisão por decidir errado num
+  contraexemplo real (bloqueio físico pode custar mais tempo que o
+  previsto); (2) a primeira versão do gate de região testava só
+  disjunção de **caminho mais curto**, o que não garante ausência de
+  interação (um jogador perdendo pode desviar do próprio caminho mínimo
+  só pra bloquear o outro) — corrigido pra testar disjunção da região
+  inteira alcançável, a única base comprovadamente sã.
 
 ### NNUE (`nnue.hpp`)
 
@@ -390,6 +422,13 @@ na Seção 4; o plano para plugá-la na busca está na Fase B do roadmap
 - `test_move_ordering.cpp`: valida a Corridor Attention Table (`cat.hpp`)
   isoladamente (forma do calor por casa) e seu uso em `orderWallMoves`
   (favorece os lances certos e não altera a legalidade deles).
+- `test_endgame_race.cpp`: regressão do solver de final "mãos vazias"
+  (`endgame_race.hpp`) — confirma que, sempre que o gate barato decide,
+  o resultado bate exatamente com a DP retrógrada exata (posições fixas
+  e topologias aleatórias), cobre o caso de empate por perseguição
+  infinita, e tem um teste de performance dedicado (muitas chamadas
+  consecutivas com a mesma topologia de muro devem reusar o cache —
+  ver nota de correção na Seção "Busca" acima).
 - `nnue_verify.cpp`: confirma que a implementação C++ da rede produz os
   mesmos números que a implementação Python, tanto em float32 quanto na
   versão quantizada em int8.

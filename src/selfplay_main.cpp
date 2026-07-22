@@ -49,6 +49,10 @@ static void printUsage(const char* prog) {
         "  --opening-plies2 N  fase 2: lances N1..N2-1 com epsilon2 (default 10)\n"
         "  --epsilon-opening2 F epsilon da fase 2 (default 0.8)\n"
         "  --epsilon-midgame F  epsilon apos fase 2 (default 0.02)\n"
+        "  --separate-tt        cada cor usa sua propria TT/engine, isolada\n"
+        "                       (default: TT compartilhada entre as 2 cores --\n"
+        "                       mais rapido para gerar dados; use esta flag para\n"
+        "                       comparar taxa de empate com a arena)\n"
         "  --max-plies N       corte de seguranca por partida (default 300)\n"
         "  --threads N         threads paralelas (default hardware_concurrency)\n"
         "  --seed N            semente do RNG (default 1)\n"
@@ -84,6 +88,7 @@ int main(int argc, char** argv) {
         else if (a == "--opening-plies2")  cfg.openingRandomPlies2   = std::atoi(next("--opening-plies2").c_str());
         else if (a == "--epsilon-opening2") cfg.epsilon2             = std::atof(next("--epsilon-opening2").c_str());
         else if (a == "--epsilon-midgame") cfg.epsilonMidgame        = std::atof(next("--epsilon-midgame").c_str());
+        else if (a == "--separate-tt")     cfg.sharedTT              = false;
         else if (a == "--max-plies")       cfg.maxPlies              = std::atoi(next("--max-plies").c_str());
         else if (a == "--threads")         cfg.numThreads            = std::atoi(next("--threads").c_str());
         else if (a == "--seed")            cfg.seed                  = (unsigned)std::atol(next("--seed").c_str());
@@ -122,6 +127,7 @@ int main(int argc, char** argv) {
                 cfg.openingRandomPlies, cfg.openingRandomPlies2, cfg.epsilon2,
                 cfg.epsilonMidgame);
     std::printf("threads: %d | corte de seguranca: %d lances/partida\n", nThreads, cfg.maxPlies);
+    std::printf("TT: %s\n", cfg.sharedTT ? "compartilhada entre as 2 cores (default)" : "separada por cor (--separate-tt)");
     std::printf("registro: %zu bytes/posicao (packed)\n\n", sizeof(TrainingSample));
 
     auto wallT0 = std::chrono::steady_clock::now();

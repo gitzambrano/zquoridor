@@ -54,6 +54,17 @@ EPSILON_MIDGAME  = 0.0000001   # prob. de desvio no midgame: escolhe 2º ou 3º 
 # --- Segurança ---
 MAX_PLIES     = 300     # corte: partidas que não terminam são descartadas
 
+# --- TT (transposition table) ---
+# False (default) = as 2 cores dividem uma única engine/TT dentro da mesma
+#   partida -- mais rápido para gerar dados de treino (menos memória de TT
+#   por thread, aproveita transposições do lado oposto). É o padrão usual
+#   em geração de self-play e o objetivo aqui é throughput.
+# True = cada cor usa engine/TT própria e isolada, igual à arena
+#   (teste/arena_dual.cpp). Deixa a geração ~2x mais cara em memória de TT
+#   por thread; use quando o objetivo é comparar comportamento/taxa de
+#   empate do selfplay com o da arena, não gerar dados de treino.
+SEPARATE_TT   = False
+
 # --- Paralelismo ---
 THREADS       = 15      # 0 = auto (usa hardware_concurrency); ajuste se quiser
                         # reservar threads para outras tarefas
@@ -160,6 +171,8 @@ def main():
     ]
     if THREADS > 0:
         cmd += ["--threads", str(THREADS)]
+    if SEPARATE_TT:
+        cmd += ["--separate-tt"]
 
     print("=" * 60)
     print(f"[run_selfplay] Iniciando geração de dados")
@@ -170,6 +183,7 @@ def main():
     print(f"                fase2=[lances {OPENING_PLIES1+1}..{OPENING_PLIES2}] eps={EPSILON_OPENING2} (lance aleatório)")
     print(f"                midgame eps={EPSILON_MIDGAME} (2º/3º melhor lance)")
     print(f"  Threads     : {THREADS or 'auto'}")
+    print(f"  TT          : {'separada por cor' if SEPARATE_TT else 'compartilhada entre as 2 cores (default)'}")
     print(f"  Shard início: {start_shard:03d}")
     print(f"  Saída       : {out_full}")
     print("=" * 60)

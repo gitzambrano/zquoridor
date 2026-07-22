@@ -315,7 +315,13 @@ private:
         int w = winner(s);
         if (w != -1) return (w == s.turn) ? SCORE_INF - 1 : -(SCORE_INF - 1);
 
-        if (reptbl.count(s.hash) >= 2) return -CONTEMPT;
+        // Bug corrigido: estava `return -CONTEMPT` (= +30, uma RECOMPENSA
+        // para quem alcança a repetição). Com CONTEMPT=-30 o objetivo é
+        // exatamente o oposto ("motor evita empate em posição neutra/
+        // melhor", comentário original da constante) -- o score do nó de
+        // repetição tem que ser CONTEMPT (negativo) do ponto de vista de
+        // quem tem o lance ali, não -CONTEMPT.
+        if (reptbl.count(s.hash) >= 2) return CONTEMPT;
 
         int standPat = evalSimpleW(s, s.turn, weights);
         if (standPat >= beta) return standPat;
@@ -374,7 +380,10 @@ private:
         int w = winner(s);
         if (w != -1) return (w == s.turn) ? SCORE_INF - 1 : -(SCORE_INF - 1);
 
-        if (reptbl.count(s.hash) >= 2) return -CONTEMPT;
+        // Bug corrigido (mesmo de quiescence() acima): era `-CONTEMPT`
+        // (+30, recompensa por repetir); passa a ser `CONTEMPT` (-30,
+        // penalidade), coerente com o objetivo documentado da constante.
+        if (reptbl.count(s.hash) >= 2) return CONTEMPT;
 
         // Final "mãos vazias" (endgame_race.hpp, plano-additional.md
         // Prioridade 4): quando os dois ficam sem muros, a topologia
@@ -387,7 +396,7 @@ private:
         // resultado teórico do subjogo (mesmo doravante).
         if (s.wallsLeft[0] == 0 && s.wallsLeft[1] == 0) {
             RaceOutcome ro = resolveEmptyHandedEndgame(s.wallsH, s.wallsV, s.pawn[0], s.pawn[1], s.turn);
-            if (ro.winner == -1) return -CONTEMPT;  // empate -- perseguição infinita/repetição
+            if (ro.winner == -1) return CONTEMPT;  // empate -- perseguição infinita/repetição (bug corrigido: era -CONTEMPT, recompensava o empate)
             int score = RACE_SCORE_BASE - ro.dtm;
             return (ro.winner == s.turn) ? score : -score;
         }
