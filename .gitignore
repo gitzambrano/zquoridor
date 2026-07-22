@@ -1,5 +1,6 @@
 # Compilados / Executáveis
 bin/
+teste/bin/
 *.exe
 *.o
 *.obj
@@ -12,6 +13,8 @@ gui_web/zquoridor.wasm
 # Dados de Selfplay (Fase 4)
 data/selfplay/
 data/selfplay_*.bin
+data/arena/
+data/arena_*.bin
 
 # Checkpoints / Plots / Saídas de Treino (Fase 5)
 data/checkpoints/

@@ -25,13 +25,13 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 GIT_REF1 = None              # None = versão local não comitada (ou passe string de ref git)
 GIT_REF2 = "main"            # Ref Git base para o confronto (ex: 'main', 'v1.0', 'HEAD')
 
-CREATE_BIN = False           # Se True, salva os dados das partidas em data/arena/ no formato .bin de treino
-GAMES = 1000                 # Quantidade total de jogos (serão divididos em pares com aberturas idênticas)
+CREATE_BIN = True            # Se True, salva os dados das partidas em data/arena/ no formato .bin de treino
+GAMES = 500                 # Quantidade total de jogos (serão divididos em pares com aberturas idênticas)
 REPORT_GAMES = 50            # Atualiza e imprime o relatório parcial a cada N jogos concluídos (default 50)
 TIME_MS = 100                # Tempo de pensamento por lance em milissegundos
 THREADS = 14                 # Número de núcleos / processos em paralelo (default 14)
 RANDOM_OPENING_PLIES = 4     # Quantidade de lances aleatórios na abertura (duplicados por par)
-SEED = 42                    # Semente aleatória
+SEED = 45                    # Semente aleatória
 COMPILER = "g++"             # Compilador C++
 CXX_FLAGS = "-O3 -std=c++17"  # Flags de compilação
 # ==============================================================================
@@ -104,21 +104,31 @@ def cleanup_worktree(temp_dir):
         if os.path.exists(temp_dir):
             shutil.rmtree(temp_dir, ignore_errors=True)
 
-def run_worker_batch(exe_path, worker_games, time_ms, random_plies, seed, report_games, bin_path=None):
+import multiprocessing
+
+def worker_process(exe_path, worker_games, time_ms, random_plies, seed, report_games, bin_path, progress_queue):
     bin_arg = f" --bin-file \"{bin_path}\"" if bin_path else ""
     cmd = f"\"{exe_path}\" --games {worker_games} --time {time_ms} --random-plies {random_plies} --seed {seed} --report-games {report_games}{bin_arg}"
-    proc = subprocess.Popen(cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    proc = subprocess.Popen(cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
     
-    final_res = None
-    for line in proc.stdout:
+    for line in iter(proc.stdout.readline, ''):
         line = line.strip()
-        if line.startswith("RESULT_JSON:"):
-            final_res = json.loads(line.replace("RESULT_JSON:", "").strip())
+        if line.startswith("PROGRESS_JSON:"):
+            try:
+                data = json.loads(line.replace("PROGRESS_JSON:", "").strip())
+                progress_queue.put(("PROGRESS", data))
+            except Exception:
+                pass
+        elif line.startswith("RESULT_JSON:"):
+            try:
+                data = json.loads(line.replace("RESULT_JSON:", "").strip())
+                progress_queue.put(("RESULT", data))
+            except Exception:
+                pass
             
     proc.wait()
     if proc.returncode != 0:
-        raise RuntimeError(f"Worker falhou")
-    return final_res
+        progress_queue.put(("ERROR", "Worker finalizou com erro"))
 
 def main():
     parser = argparse.ArgumentParser(description="Zquoridor Arena Selfplay: Confronto entre 2 Referencias Git ou Local")
@@ -167,6 +177,9 @@ def main():
     pairs_per_thread = total_pairs // threads_count
     extra_pairs = total_pairs % threads_count
     
+    # Divide report_games entre threads para emissão frequente
+    worker_report = max(2, (args.report_games // threads_count) // 2 * 2) if args.report_games > 0 else 0
+    
     temp_bin_dir = tempfile.mkdtemp(prefix="zquoridor_arena_bins_") if args.create_bin else None
     
     tasks = []
@@ -193,39 +206,67 @@ def main():
     next_report_target = args.report_games
     total_games = sum(t[0] for t in tasks)
     
-    with ProcessPoolExecutor(max_workers=len(tasks)) as executor:
-        futures = {
-            executor.submit(run_worker_batch, cand_exe, g, args.time, args.random_plies, s, args.report_games, b): (g, s, b)
-            for g, s, b in tasks
-        }
+    queue = multiprocessing.Queue()
+    processes = []
+    for g, s, b in tasks:
+        p = multiprocessing.Process(
+            target=worker_process,
+            args=(cand_exe, g, args.time, args.random_plies, s, worker_report, b, queue)
+        )
+        p.start()
+        processes.append(p)
         
-        for future in as_completed(futures):
-            res = future.result()
-            if res:
-                tot_eng1_wins += res["candWins"]
-                tot_eng2_wins += res["baseWins"]
-                tot_draws += res["draws"]
-                tot_eng1_nodes += res["candNodes"]
-                tot_eng2_nodes += res["baseNodes"]
-                tot_eng1_time += res["candTimeSec"]
-                tot_eng2_time += res["baseTimeSec"]
+    finished_workers = 0
+    while finished_workers < len(tasks):
+        msg_type, data = queue.get()
+        if msg_type == "PROGRESS":
+            tot_eng1_wins += data["candWins"]
+            tot_eng2_wins += data["baseWins"]
+            tot_draws += data["draws"]
+            tot_eng1_nodes += data["candNodes"]
+            tot_eng2_nodes += data["baseNodes"]
+            tot_eng1_time += data["candTimeSec"]
+            tot_eng2_time += data["baseTimeSec"]
             
-            completed_games += futures[future][0]
-            
+            completed_games += data["games"]
             if completed_games >= next_report_target or completed_games == total_games:
                 elo_diff, elo_margin = calculate_elo_and_ci(tot_eng1_wins, tot_eng2_wins, tot_draws)
                 sign = "+" if elo_diff >= 0 else ""
-                print(f"  [Progresso: {completed_games:4d}/{total_games:4d} jogos] Eng1: {tot_eng1_wins:3d} | Eng2: {tot_eng2_wins:3d} | Empates: {tot_draws:2d} | Elo: {sign}{elo_diff:.1f} (±{elo_margin:.1f})")
+                print(f"  [Progresso: {completed_games:4d}/{total_games:4d} jogos] Eng1: {tot_eng1_wins:3d} | Eng2: {tot_eng2_wins:3d} | Empates: {tot_draws:2d} | Elo: {sign}{elo_diff:.1f} (±{elo_margin:.1f})", flush=True)
                 while next_report_target <= completed_games and next_report_target < total_games:
                     next_report_target += args.report_games
+        elif msg_type == "RESULT":
+            finished_workers += 1
+            if data and worker_report == 0:
+                tot_eng1_wins += data["candWins"]
+                tot_eng2_wins += data["baseWins"]
+                tot_draws += data["draws"]
+                tot_eng1_nodes += data["candNodes"]
+                tot_eng2_nodes += data["baseNodes"]
+                tot_eng1_time += data["candTimeSec"]
+                tot_eng2_time += data["baseTimeSec"]
+                completed_games += (data["candWins"] + data["baseWins"] + data["draws"])
+        elif msg_type == "ERROR":
+            print(f"[!] {data}", flush=True)
+            finished_workers += 1
+            
+    for p in processes:
+        p.join()
 
-    # Salva dataset final concatenado em data/arena/
+    # Salva dataset final concatenado em data/arena/ com numeração sequencial 000, 001...
     if args.create_bin and temp_bin_dir:
         os.makedirs(ARENA_DATA_DIR, exist_ok=True)
         r1_clean = ref1_name.replace("/", "_").replace("\\", "_")
         r2_clean = ref2_name.replace("/", "_").replace("\\", "_")
-        final_bin_filename = f"arena_{r1_clean}_{r2_clean}_{total_games}.bin"
-        final_bin_path = os.path.join(ARENA_DATA_DIR, final_bin_filename)
+        
+        idx = 0
+        while True:
+            candidate_name = f"arena_{r1_clean}_{r2_clean}_{total_games}_{idx:03d}.bin"
+            candidate_path = os.path.join(ARENA_DATA_DIR, candidate_name)
+            if not os.path.exists(candidate_path):
+                final_bin_path = candidate_path
+                break
+            idx += 1
         
         total_bytes = 0
         with open(final_bin_path, "wb") as outfile:

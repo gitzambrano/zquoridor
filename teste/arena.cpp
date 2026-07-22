@@ -154,13 +154,13 @@ int main(int argc, char* argv[]) {
 
     std::mt19937_64 rng(seed);
 
-    int eng1Wins = 0;
-    int eng2Wins = 0;
-    int draws = 0;
-    uint64_t eng1Nodes = 0;
-    uint64_t eng2Nodes = 0;
-    double eng1TimeSec = 0.0;
-    double eng2TimeSec = 0.0;
+    int eng1Wins = 0, baseWins = 0, draws = 0;
+    uint64_t eng1Nodes = 0, baseNodes = 0;
+    double eng1TimeSec = 0.0, baseTimeSec = 0.0;
+
+    int totalEng1Wins = 0, totalBaseWins = 0, totalDraws = 0;
+    uint64_t totalEng1Nodes = 0, totalBaseNodes = 0;
+    double totalEng1Time = 0.0, totalBaseTime = 0.0;
 
     int lastReportedGames = 0;
     std::vector<TrainingSample> allSamples;
@@ -170,33 +170,43 @@ int main(int argc, char* argv[]) {
         State openingState = generateRandomOpening(randomPlies, rng);
 
         // Jogo A: Engine 1 = Jogador 0 (Brancas), Engine 2 = Jogador 1 (Pretas)
-        int resA = playArenaGame(0, timeMs, openingState, eng1Nodes, eng2Nodes, eng1TimeSec, eng2TimeSec, samplesPtr);
-        if (resA == -1) draws++;
-        else if (resA == 0) eng1Wins++;
-        else eng2Wins++;
+        int resA = playArenaGame(0, timeMs, openingState, eng1Nodes, baseNodes, eng1TimeSec, baseTimeSec, samplesPtr);
+        if (resA == -1) { draws++; totalDraws++; }
+        else if (resA == 0) { eng1Wins++; totalEng1Wins++; }
+        else { baseWins++; totalBaseWins++; }
 
         // Jogo B: Engine 2 = Jogador 0 (Brancas), Engine 1 = Jogador 1 (Pretas) na MESMA abertura
-        int resB = playArenaGame(1, timeMs, openingState, eng1Nodes, eng2Nodes, eng1TimeSec, eng2TimeSec, samplesPtr);
-        if (resB == -1) draws++;
-        else if (resB == 1) eng1Wins++;
-        else eng2Wins++;
+        int resB = playArenaGame(1, timeMs, openingState, eng1Nodes, baseNodes, eng1TimeSec, baseTimeSec, samplesPtr);
+        if (resB == -1) { draws++; totalDraws++; }
+        else if (resB == 1) { eng1Wins++; totalEng1Wins++; }
+        else { baseWins++; totalBaseWins++; }
 
         int gamesPlayed = (p + 1) * 2;
         if (reportGames > 0 && (gamesPlayed - lastReportedGames >= reportGames)) {
             double eng1Nps = eng1TimeSec > 0 ? eng1Nodes / eng1TimeSec : 0.0;
-            double eng2Nps = eng2TimeSec > 0 ? eng2Nodes / eng2TimeSec : 0.0;
+            double baseNps = baseTimeSec > 0 ? baseNodes / baseTimeSec : 0.0;
             std::printf("PROGRESS_JSON:{\"games\":%d,\"candWins\":%d,\"baseWins\":%d,\"draws\":%d,\"candNodes\":%llu,\"baseNodes\":%llu,\"candTimeSec\":%.4f,\"baseTimeSec\":%.4f,\"candNps\":%.0f,\"baseNps\":%.0f}\n",
-                        gamesPlayed - lastReportedGames, eng1Wins, eng2Wins, draws,
-                        (unsigned long long)eng1Nodes, (unsigned long long)eng2Nodes,
-                        eng1TimeSec, eng2TimeSec, eng1Nps, eng2Nps);
+                        gamesPlayed - lastReportedGames, eng1Wins, baseWins, draws,
+                        (unsigned long long)eng1Nodes, (unsigned long long)baseNodes,
+                        eng1TimeSec, baseTimeSec, eng1Nps, baseNps);
             std::fflush(stdout);
             
-            eng1Wins = 0; eng2Wins = 0; draws = 0;
-            eng1Nodes = 0; eng2Nodes = 0;
-            eng1TimeSec = 0.0; eng2TimeSec = 0.0;
+            totalEng1Nodes += eng1Nodes;
+            totalBaseNodes += baseNodes;
+            totalEng1Time += eng1TimeSec;
+            totalBaseTime += baseTimeSec;
+
+            eng1Wins = 0; baseWins = 0; draws = 0;
+            eng1Nodes = 0; baseNodes = 0;
+            eng1TimeSec = 0.0; baseTimeSec = 0.0;
             lastReportedGames = gamesPlayed;
         }
     }
+
+    totalEng1Nodes += eng1Nodes;
+    totalBaseNodes += baseNodes;
+    totalEng1Time += eng1TimeSec;
+    totalBaseTime += baseTimeSec;
 
     if (!binFilePath.empty() && !allSamples.empty()) {
         FILE* fp = std::fopen(binFilePath.c_str(), "wb");
@@ -206,15 +216,14 @@ int main(int argc, char* argv[]) {
         }
     }
 
-    double eng1Nps = eng1TimeSec > 0 ? eng1Nodes / eng1TimeSec : 0.0;
-    double eng2Nps = eng2TimeSec > 0 ? eng2Nodes / eng2TimeSec : 0.0;
+    double eng1Nps = totalEng1Time > 0 ? totalEng1Nodes / totalEng1Time : 0.0;
+    double baseNps = totalBaseTime > 0 ? totalBaseNodes / totalBaseTime : 0.0;
 
     std::printf("RESULT_JSON:{\"candWins\":%d,\"baseWins\":%d,\"draws\":%d,\"candNodes\":%llu,\"baseNodes\":%llu,\"candTimeSec\":%.4f,\"baseTimeSec\":%.4f,\"candNps\":%.0f,\"baseNps\":%.0f}\n",
-                eng1Wins, eng2Wins, draws,
-                (unsigned long long)eng1Nodes, (unsigned long long)eng2Nodes,
-                eng1TimeSec, eng2TimeSec, eng1Nps, eng2Nps);
+                totalEng1Wins, totalBaseWins, totalDraws,
+                (unsigned long long)totalEng1Nodes, (unsigned long long)totalBaseNodes,
+                totalEng1Time, totalBaseTime, eng1Nps, baseNps);
     std::fflush(stdout);
 
     return 0;
 }
-
