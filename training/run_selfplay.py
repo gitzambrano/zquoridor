@@ -43,11 +43,11 @@ TIME_MS       = 200     # orçamento de tempo por lance em ms
 # --- Abertura aleatória ---
 # Fase 1: lances iniciais (óbvios no Quoridor) com muito pouco ruído
 OPENING_PLIES1   = 6       # lances 1 a N1 sujeitos a EPSILON_OPENING1
-EPSILON_OPENING1 = 0.2   # baixo: não distorce os lances óbvios da abertura
+EPSILON_OPENING1 = 0.1   # baixo: não distorce os lances óbvios da abertura
 
 # Fase 2: janela de exploração pesada para diversificar posições iniciais
-OPENING_PLIES2   = 10     # lances N1+1 a N2 sujeitos a EPSILON_OPENING2
-EPSILON_OPENING2 = 0.8   # alto: cria muita variedade de abertura (lance totalmente aleatório)
+OPENING_PLIES2   = 12     # lances N1+1 a N2 sujeitos a EPSILON_OPENING2
+EPSILON_OPENING2 = 0.3   # alto: cria muita variedade de abertura (lance totalmente aleatório)
 
 EPSILON_MIDGAME  = 0.02   # prob. de desvio no midgame: escolhe 2º ou 3º melhor lance (não totalmente aleatório)
 
@@ -59,7 +59,7 @@ THREADS       = 15      # 0 = auto (usa hardware_concurrency); ajuste se quiser
                         # reservar threads para outras tarefas
 
 # --- Semente ---
-SEED          = 22      # semente base do RNG; chunks subsequentes variam automaticamente
+SEED          = 25     # semente base do RNG; chunks subsequentes variam automaticamente
 
 # --- Saída ---
 # Use {shard:03d} para nomear os chunks automaticamente.

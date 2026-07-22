@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <cstring>
 #include "rules.hpp"
+#include "cat.hpp"
 
 namespace qr {
 
@@ -157,16 +158,18 @@ public:
 private:
     static constexpr int ASPIRATION_DELTA = 50;  // unidades de evalSimple
 
-    // bônus barato de ordenação de muro (Fase 4.2.5 do plano): muro que
-    // toca uma aresta do caminho mais curto ATUAL do oponente, via
-    // shortestPathTouchSlots (mesma função do pré-filtro de
-    // legalWallMoves, rules.hpp) -- O(1) por candidato depois de UMA BFS
-    // por nó (não por candidato, ao contrário do wallByBFS exato abaixo).
-    // Escala abaixo do menor efeito prático de um wallByBFS exato
-    // (delta>=1 já vale 1000) e acima da history típica em profundidades
-    // rasas -- desempate honesto, não domina um delta exato quando os
-    // dois estão presentes.
-    static constexpr long long WALL_TOUCH_BONUS = 600;
+    // bônus de ordenação de muro via CAT (Corridor Attention Table,
+    // cat.hpp, plano-additional.md Prioridade 1) -- substitui o antigo
+    // WALL_TOUCH_BONUS binário ("toca o caminho testemunha ou não") por um
+    // calor CONTÍNUO por casa, que também enxerga desvios de custo baixo
+    // fora do único caminho testemunha devolvido por
+    // shortestPathTouchSlots. wallEdgeHeat() (cat.hpp) devolve no máximo
+    // ~CAT_CORRIDOR_CM + CAT_CORRIDOR_CM/4 + CAT_BOTTLENECK_BONUS_CM (uma
+    // casa de gargalo em delta==0 tocada junto de outra quase tão quente)
+    // -- CAT_SCORE_SCALE leva isso pra uma faixa comparável à do antigo
+    // WALL_TOUCH_BONUS (600), mantendo a mesma ordem de grandeza relativa
+    // a killer (1.4-1.5M) e history (depth^2 por corte) já calibrados.
+    static constexpr long long CAT_SCORE_SCALE = 2;
 
     std::vector<TTEntry> tt;
     EvalWeights weights;
@@ -244,21 +247,21 @@ private:
 
     // Ordenação dentro do bloco de muro -- killer/history de antes, mais
     // duas camadas de sinal de "quão tático" é o muro (Seção 4.2.4/4.2.5
-    // do plano):
+    // do plano, mais Prioridade 1 do plano-additional.md):
     //   1. wallByBFS (já existia): delta EXATO de shortestPathLen do
     //      oponente antes/depois do lance -- preciso, mas paga 2 BFS por
     //      candidato, então continua restrito a ply <= WALL_BFS_ORDER_MAX_PLY
     //      (poucos nós, perto da raiz -- custo agregado pequeno).
-    //   2. WALL_TOUCH_BONUS (novo): sinal barato de "muro toca o caminho
-    //      mínimo atual do oponente". touchHOpp/touchVOpp são recebidos
-    //      JÁ CALCULADOS pelo chamador (legalWallMoves já roda essa
-    //      mesma BFS internamente pro pré-filtro, Seção 4.2.1) -- achado
-    //      do benchmark ad-hoc desta sessão: recalcular aqui dentro
-    //      duplicava a BFS e custava ~11% de nós/s sem ganho
-    //      compensador; reaproveitar o resultado deixa o sinal
-    //      efetivamente grátis.
+    //   2. CAT (cat.hpp, novo): calor de corredor do oponente, calculado
+    //      UMA VEZ por nó (2 BFS, não por candidato) e recebido já pronto
+    //      em `oppHeat` -- substitui o antigo WALL_TOUCH_BONUS binário.
+    //      Ao contrário do touch bitmask (só enxerga o único caminho
+    //      testemunha), CAT também dá crédito a muros que fecham desvios
+    //      de custo baixo fora desse caminho específico -- ver cat.hpp
+    //      para a derivação completa. Roda em TODOS os plies (o custo não
+    //      escala com o número de candidatos, diferente de wallByBFS).
     void orderWallMoves(MoveList& moves, int ply, int side, const State& s,
-                         uint64_t touchHOpp, uint64_t touchVOpp) {
+                         const CorridorHeat& oppHeat) {
         bool ply0 = ply >= 0 && ply < MAX_PLY;
         bool wallByBFS = ply <= WALL_BFS_ORDER_MAX_PLY;
         int opp = 1 - side;
@@ -276,9 +279,7 @@ private:
                 int after = shortestPathLen(ns.wallsH, ns.wallsV, ns.pawn[opp], opp);
                 sc = (long long)(after - before) * 1000;
             }
-            int slot = slotIdx(m.b, m.c);
-            bool touches = (m.a == 0) ? ((touchHOpp >> slot) & 1ull) : ((touchVOpp >> slot) & 1ull);
-            if (touches) sc += WALL_TOUCH_BONUS;
+            sc += wallEdgeHeat(oppHeat, m.a, m.b, m.c) * CAT_SCORE_SCALE;
             sc += history[side][moveToPolicyIndex(m)];
             if (ply0) {
                 if (killerValid[ply][0] && m == killers[ply][0]) sc += 1'500'000;
@@ -490,11 +491,14 @@ private:
         // só numa fração dos nós internos, não em todos.
         if (!cutoff) {
             MoveList wallMoves;
-            uint64_t touchH0, touchV0, touchH1, touchV1;
-            legalWallMoves(s, side, wallMoves, &touchH0, &touchV0, &touchH1, &touchV1);
-            uint64_t touchHOpp = (side == 0) ? touchH1 : touchH0;
-            uint64_t touchVOpp = (side == 0) ? touchV1 : touchV0;
-            orderWallMoves(wallMoves, ply, side, s, touchHOpp, touchVOpp);
+            legalWallMoves(s, side, wallMoves);
+            // CAT (cat.hpp, plano-additional.md Prioridade 1): calor de
+            // corredor do OPONENTE, calculado uma vez por nó (2 BFS) --
+            // substitui os touchHOpp/touchVOpp binários que orderWallMoves
+            // recebia antes.
+            int opp = 1 - side;
+            CorridorHeat oppHeat = computeCorridorHeat(s.wallsH, s.wallsV, s.pawn[opp], opp);
+            orderWallMoves(wallMoves, ply, side, s, oppHeat);
             for (size_t i = 0; i < wallMoves.size() && !cutoff; i++) {
                 const Move& m = wallMoves[i];
                 if (ttTried && m == ttMoveVal) continue;  // já tentado no Estágio 1
@@ -514,8 +518,8 @@ private:
     // define QR_ENABLE_TEST_HOOKS, então isso não existe fora dos testes.
 public:
     void testOrderWallMoves(MoveList& moves, int ply, int side, const State& s,
-                             uint64_t touchHOpp, uint64_t touchVOpp) {
-        orderWallMoves(moves, ply, side, s, touchHOpp, touchVOpp);
+                             const CorridorHeat& oppHeat) {
+        orderWallMoves(moves, ply, side, s, oppHeat);
     }
     void testOrderPawnMoves(MoveList& moves, int ply, int side) {
         orderPawnMoves(moves, ply, side);

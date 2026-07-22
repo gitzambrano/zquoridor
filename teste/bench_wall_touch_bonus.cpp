@@ -1,6 +1,6 @@
 // bench_wall_touch_bonus.cpp -- benchmark ad-hoc (não faz parte da suíte
 // persistida, mesmo espírito do "benchmark controlado" da Seção 4.2.3 do
-// plano): mede se o WALL_TOUCH_BONUS (search.hpp atual) realmente ajuda,
+// plano): mede se o sinal de ordenacao de muro atual (CAT, cat.hpp -- antigo WALL_TOUCH_BONUS) realmente ajuda,
 // de duas formas independentes:
 //   1. nós/s e profundidade média em posições fixas, orçamento de tempo
 //      fixo -- proxy de eficiência de busca (mesma metodologia já usada
@@ -8,9 +8,9 @@
 //   2. partidas diretas engine-vs-engine (COM bônus vs SEM bônus,
 //      cores alternadas) -- resposta mais direta à pergunta "joga melhor".
 //
-// qr::Negamax (search.hpp) = versão ATUAL, com WALL_TOUCH_BONUS.
-// qr::old::Negamax abaixo = cópia fiel de orderWallMoves de ANTES desta
-// sessão (só wallByBFS + killer + history, sem o bônus), pra comparação
+// qr::Negamax (search.hpp) = versao ATUAL, com CAT (cat.hpp).
+// qr::old::Negamax abaixo = copia fiel de orderWallMoves de ANTES do CAT (so
+// wallByBFS + killer + history, sem CAT nem o antigo WALL_TOUCH_BONUS), pra comparacao
 // isolada -- mesmo padrão de qr::ref::NegamaxReference em
 // test_search_staging.cpp.
 #include <cstdio>
@@ -215,18 +215,18 @@ static void benchNodeEfficiency() {
     printf("=== nos/s e profundidade -- 40 posicoes fixas, 200ms/lance ===\n");
     auto positions = fixedPositions(40, 5, 40);
     {
-        Negamax engine; // ATUAL (com WALL_TOUCH_BONUS)
+        Negamax engine; // ATUAL (com CAT)
         uint64_t totalNodes = 0; int depthSum = 0;
         for (auto& s : positions) {
             SearchStats st;
             engine.chooseMove(s, 40, 200, st);
             totalNodes += st.nodes; depthSum += st.reachedDepth;
         }
-        printf("ATUAL (com WALL_TOUCH_BONUS): nos totais=%llu, profundidade media=%.2f\n",
+        printf("ATUAL (com CAT): nos totais=%llu, profundidade media=%.2f\n",
                (unsigned long long)totalNodes, depthSum / (double)positions.size());
     }
     {
-        qr::old::Negamax engine; // ANTIGA (sem o bonus)
+        qr::old::Negamax engine; // ANTIGA (sem CAT/bonus)
         uint64_t totalNodes = 0; int depthSum = 0;
         for (auto& s : positions) {
             SearchStats st;
@@ -255,7 +255,7 @@ static int playGame(E0& e0, E1& e1, int movetimeMs, int maxPlies) {
 }
 
 static void benchHeadToHead() {
-    printf("\n=== partidas diretas: ATUAL (com bonus) vs ANTIGA (sem bonus), 150ms/lance ===\n");
+    printf("\n=== partidas diretas: ATUAL (com CAT) vs ANTIGA (sem CAT/bonus), 150ms/lance ===\n");
     int atualWins = 0, antigaWins = 0, indecisas = 0;
     const int NUM_GAMES = 6;
     for (int g = 0; g < NUM_GAMES; g++) {

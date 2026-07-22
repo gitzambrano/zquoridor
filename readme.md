@@ -345,8 +345,18 @@ neural, depois os testes que garantem que nada disso quebrou.
   promissores corta mais ramos, mais cedo. O motor prioriza lances que já
   causaram poda em posições parecidas antes (killer moves), lances que
   historicamente se saíram bem (history heuristic), e, para muros
-  especificamente, muros que atrapalham o caminho mais curto do
-  adversário (`WALL_TOUCH_BONUS`).
+  especificamente, o quanto cada muro atrapalha o caminho mais curto do
+  adversário: perto da raiz, um delta exato de BFS (caro, um BFS por
+  candidato); em qualquer profundidade, a **Corridor Attention Table**
+  (`cat.hpp`, plano-additional.md, Prioridade 1) — um "calor" por casa do
+  tabuleiro, calculado uma única vez por nó (2 BFS, não por candidato de
+  muro), que mede o quanto cada casa se desvia do caminho ótimo do
+  oponente. Substituiu um bônus binário mais simples ("este muro toca o
+  único caminho testemunha ou não") que enxergava só uma rota — o calor
+  contínuo também dá crédito a muros que fecham desvios de custo baixo
+  fora dessa rota específica. Benchmark ad-hoc (`bench_wall_touch_bonus.cpp`,
+  40 posições fixas, 200ms/lance): ~11,7× menos nós até profundidade
+  equivalente comparado à ordenação sem esse sinal.
 - **Quiescência de muro**: perto do fim de uma busca, se o melhor lance
   encontrado for um muro que piora bastante o caminho do adversário, o
   motor estende a busca por mais alguns lances antes de aceitar aquele
@@ -377,8 +387,9 @@ na Seção 4; o plano para plugá-la na busca está na Fase B do roadmap
 - `test_search_staging.cpp`: compara a geração de lances estagiada
   (a usada em produção) com uma implementação de referência mais simples
   e direta, para garantir que a versão otimizada não mudou o resultado.
-- `test_move_ordering.cpp`: valida o bônus de ordenação de muro (que ele
-  favorece os lances certos e não altera a legalidade deles).
+- `test_move_ordering.cpp`: valida a Corridor Attention Table (`cat.hpp`)
+  isoladamente (forma do calor por casa) e seu uso em `orderWallMoves`
+  (favorece os lances certos e não altera a legalidade deles).
 - `nnue_verify.cpp`: confirma que a implementação C++ da rede produz os
   mesmos números que a implementação Python, tanto em float32 quanto na
   versão quantizada em int8.
