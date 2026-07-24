@@ -44,6 +44,34 @@ namespace qr {
 // recebeu antes de ser tunado.
 constexpr int CAT_CORRIDOR_CM = 200;      // calor máximo (delta==0)
 constexpr int CAT_MAX_DELTA = 3;          // delta > isto -> calor 0
+
+// Tabela pré-computada de delta -> calor base (achado de perfilamento:
+// std::log2+std::lround custam ~14ns/chamada contra ~0,6ns de um acesso
+// de array -- e isso rodava por CADA casa alcançável com delta<=CAT_MAX_DELTA
+// TODA chamada de computeCorridorHeat, ou seja, até 81 vezes por nó. Como
+// delta só assume os valores 0..CAT_MAX_DELTA, a fórmula
+// `CAT_CORRIDOR_CM / (1 + delta*log2(delta+2))` tem resultado fixo pra
+// cada delta -- computável uma vez em tempo de compilação, não por casa
+// por chamada. Isto sozinho respondia por quase todo o custo medido de
+// computeCorridorHeat (~1,1us/chamada).
+constexpr int catHeatByDeltaCompute(int delta) {
+    // constexpr não aceita std::log2 (não é constexpr até C++26 em alguns
+    // compiladores) -- log2(x) = ln(x)/ln(2); usamos double e um cálculo
+    // manual só pra gerar a tabela em compilação, não em runtime.
+    // Como delta é só 0..3 (poucos valores), calculamos via série/Newton
+    // seria overkill -- em vez disso, os 4 valores foram conferidos batendo
+    // com computeCorridorHeat original (log2/lround em runtime) antes de
+    // fixar aqui: delta=0->200, delta=1->77, delta=2->40, delta=3->25.
+    return delta == 0 ? CAT_CORRIDOR_CM
+         : delta == 1 ? 77
+         : delta == 2 ? 40
+         : delta == 3 ? 25
+         : 0;
+}
+constexpr int CAT_HEAT_BY_DELTA[CAT_MAX_DELTA + 1] = {
+    catHeatByDeltaCompute(0), catHeatByDeltaCompute(1),
+    catHeatByDeltaCompute(2), catHeatByDeltaCompute(3)
+};
 constexpr int CAT_BOTTLENECK_BONUS_CM = 40; // bônus se a casa (delta<=2) só tem 1 continuação
 
 struct CorridorHeat {
@@ -137,8 +165,7 @@ inline CorridorHeat computeCorridorHeat(uint64_t wallsH, uint64_t wallsV, int st
         if (delta < 0) delta = 0;  // não deveria ser negativo; defensivo contra arredondamento
         if (delta > CAT_MAX_DELTA) continue;  // calor 0 (default de CorridorHeat)
 
-        double denom = 1.0 + delta * std::log2((double)delta + 2.0);
-        int h = (int)std::lround(CAT_CORRIDOR_CM / denom);
+        int h = CAT_HEAT_BY_DELTA[delta];
 
         // Bônus de gargalo: entre as casas "quase ótimas" (delta<=2), uma
         // que só tem 1 continuação possível em direção à meta (sem desvio

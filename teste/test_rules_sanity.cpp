@@ -246,6 +246,29 @@ int main() {
     printf("bolso: slot disponivel=%d (esperado 1), caminho apos fechar=%d (esperado 0)\n", availBefore, pathAfter);
     if (!availBefore || pathAfter) { printf("FALHOU: bolso\n"); return 1; }
 
+    // perft (Prioridade 5, plano-additional.md): oracle de regressão de
+    // geracao de lances -- numeros conferidos batendo EXATAMENTE com os
+    // publicados pelo titanium-engine na mesma posicao (perft(3) e
+    // perft(4)), cross-validacao independente da implementacao. Depth 4
+    // fica de fora do teste rapido (~4s) -- roda manualmente via
+    // /tmp/gen_perft.cpp ou similar se precisar reconferir depois de
+    // mexer em legalMoves/applyMove/pawnStepMoves/legalWallMoves.
+    constexpr uint64_t PERFT1_STARTPOS = 131;
+    constexpr uint64_t PERFT2_STARTPOS = 16677;
+    constexpr uint64_t PERFT3_STARTPOS = 2062264;
+    State startPos = initialState();
+    uint64_t p1 = perft(startPos, 1);
+    uint64_t p2 = perft(startPos, 2);
+    uint64_t p3 = perft(startPos, 3);
+    printf("perft(1)=%llu (esperado %llu), perft(2)=%llu (esperado %llu), perft(3)=%llu (esperado %llu)\n",
+           (unsigned long long)p1, (unsigned long long)PERFT1_STARTPOS,
+           (unsigned long long)p2, (unsigned long long)PERFT2_STARTPOS,
+           (unsigned long long)p3, (unsigned long long)PERFT3_STARTPOS);
+    if (p1 != PERFT1_STARTPOS || p2 != PERFT2_STARTPOS || p3 != PERFT3_STARTPOS) {
+        printf("FALHOU: perft divergiu do valor travado\n");
+        return 1;
+    }
+
     printf("TODOS OS TESTES DE SANIDADE PASSARAM\n");
     return 0;
 }

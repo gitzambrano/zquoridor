@@ -694,3 +694,27 @@ struct RepetitionTable {
 };
 
 } // namespace qr
+
+namespace qr {
+
+// perft (Prioridade 5, plano-additional.md): contagem exata de nós-folha
+// da árvore de geração de lances até `depth`, a partir de `s` -- não é
+// benchmark de velocidade, é prova de que legalMoves/applyMove/pawnStepMoves/
+// legalWallMoves (pulo, muro, borda) não regrediram, mesmo que a
+// implementação interna mude por completo. Convenção igual à do
+// titanium-engine (perft "puro": nunca para cedo em `winner(s)!=-1`, conta
+// só profundidade de geração de lances -- não surge diferença prática pras
+// profundidades usadas aqui, já que uma vitória não é alcançável tão cedo
+// a partir da posição inicial).
+inline uint64_t perft(const State& s, int depth) {
+    if (depth == 0) return 1;
+    MoveList moves = legalMoves(s);
+    if (depth == 1) return moves.size();
+    uint64_t total = 0;
+    for (size_t i = 0; i < moves.size(); i++) {
+        total += perft(applyMove(s, moves[i]), depth - 1);
+    }
+    return total;
+}
+
+} // namespace qr

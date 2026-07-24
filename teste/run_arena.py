@@ -22,7 +22,7 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 #     GIT_REF2 = "HEAD"        -> Último commit da branch atual
 #     GIT_REF2 = "HEAD~3"      -> 3 commits atrás
 #     GIT_REF2 = "minha-branch"-> Outra branch
-GIT_REF1 = None              # None = versão local não comitada (ou passe string de ref git)
+GIT_REF1 = "v1.0"              # None = versão local não comitada (ou passe string de ref git)
 GIT_REF2 = "v1.1"            # Ref Git base para o confronto (ex: 'main', 'v1.0', 'HEAD')
 
 INVERT_COLORS = True          # Se True, joga cada abertura 2x invertendo as cores (par). Se False, joga apenas 1x por abertura.

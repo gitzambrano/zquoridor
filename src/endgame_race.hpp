@@ -78,6 +78,7 @@
 #include <cstdint>
 #include <array>
 #include <vector>
+#include <chrono>
 #include "rules.hpp"
 
 namespace qr {
@@ -93,8 +94,23 @@ constexpr int RACE_SCORE_BASE = 999'000;
 
 struct RaceOutcome {
     int winner;  // 0, 1, ou -1 = empate (perseguição infinita / repetição)
-    int dtm;     // plies até a vitória forçada (só significativo se winner != -1)
+    int dtm;     // plies até a vitória forçada (só significativo se winner >= 0)
 };
+
+// Orçamento de tempo por chamada de chooseMove() pra TODA a resolução de
+// final "mãos vazias" (gate barato + DP exata), não só o rebuild caro.
+// Motivo da correção: o gate barato (raceDisjointGate, ~1,85us/chamada
+// medido -- 4 BFS de 81 casas) roda em TODO nó desta fase, mesmo quando a
+// DP exata nunca é chamada; medido que isso sozinho já dobra o custo por
+// nó (baseline sem race ~1,6us/nó) -- orçar só o rebuild caro deixava essa
+// metade do problema sem solução. Agora search.hpp mede o tempo da
+// chamada INTEIRA a resolveEmptyHandedEndgame() (gate incluído) e só
+// chama de novo se ainda houver orçamento -- do contrário pula a
+// resolução inteiramente (custo zero, cai pro heurístico de sempre).
+// search.hpp reseta g_raceExactUsedUs a cada chooseMove() e ajusta
+// g_raceExactBudgetUs conforme o orçamento de tempo da busca.
+inline double g_raceExactBudgetUs = 1e18;  // default efetivamente ilimitado (usado pelos testes unitários / testFixedDepthFullWindow)
+inline double g_raceExactUsedUs = 0.0;
 
 // Nível 1 -- "portão de ETA" (plano-additional.md, item 4b) -- NÃO É
 // USADA por `resolveEmptyHandedEndgame` (ver nota grande no topo do
@@ -336,62 +352,182 @@ inline bool raceDisjointGate(uint64_t wallsH, uint64_t wallsV, int pawn0, int pa
 // subsequente virar só duas leituras de array. Depois desta correção, o
 // mesmo benchmark mede reuso quase total do cache dentro de uma
 // subárvore (ver teste de performance dedicado).
+inline uint64_t g_raceCacheHits = 0, g_raceCacheMisses = 0;
+
 inline RaceOutcome raceExactDTM(uint64_t wallsH, uint64_t wallsV, int pawn0, int pawn1, int turn) {
     constexpr int NS = N * N;         // 81
     constexpr int NST = NS * NS * 2;  // 13122
     auto sidx = [](int p0, int p1, int t) { return (p0 * NS + p1) * 2 + t; };
 
-    static thread_local uint64_t cachedWallsH = 0, cachedWallsV = 0;
-    static thread_local bool cacheValid = false;
-    static thread_local std::vector<int8_t> win0, win1;
-    static thread_local std::vector<int> dtm0, dtm1;
+    // Cache multi-slot (experimento): a busca real, perto da transição de
+    // "muros esgotados", passa por VÁRIAS topologias diferentes em
+    // sucessão (candidatos de onde colocar o último muro de cada lado) --
+    // o cache de 1 slot só (versão anterior) tem taxa de acerto medida de
+    // ~0,5% numa busca real. Testando aqui se o CONJUNTO de topologias
+    // visitadas dentro de uma chamada de chooseMove() é pequeno o
+    // bastante (dezenas, não milhares) pra um cache de N slots (indexado
+    // por hash, sem encadeamento) capturar reuso real.
+    constexpr int NSLOTS = 1024;
+    struct RaceCacheSlot {
+        uint64_t wallsH = 0, wallsV = 0;
+        bool valid = false;
+        std::vector<int8_t> win0, win1;
+        std::vector<int> dtm0, dtm1;
+    };
+    static thread_local std::vector<RaceCacheSlot> slots(NSLOTS);
+    uint64_t h = wallsH * 0x9E3779B97F4A7C15ULL ^ (wallsV + 0x9E3779B97F4A7C15ULL + (wallsH << 6) + (wallsH >> 2));
+    int slotIdx = (int)(h % NSLOTS);
+    RaceCacheSlot& slot = slots[slotIdx];
 
-    if (cacheValid && cachedWallsH == wallsH && cachedWallsV == wallsV) {
+    if (slot.valid && slot.wallsH == wallsH && slot.wallsV == wallsV) {
+        g_raceCacheHits++;
         int s0 = sidx(pawn0, pawn1, turn);
-        if (win0[s0]) return {0, dtm0[s0]};
-        if (win1[s0]) return {1, dtm1[s0]};
+        if (slot.win0[s0]) return {0, slot.dtm0[s0]};
+        if (slot.win1[s0]) return {1, slot.dtm1[s0]};
         return {-1, 0};
     }
+    g_raceCacheMisses++;
+    auto& win0 = slot.win0;
+    auto& win1 = slot.win1;
+    auto& dtm0 = slot.dtm0;
+    auto& dtm1 = slot.dtm1;
 
-    // Grafo do jogo (sucessores + predecessores), reconstruído só quando a
-    // topologia de muro muda em relação à última chamada (ver nota acima).
-    static thread_local std::vector<std::vector<int>> succ, pred;
-    if ((int)succ.size() != NST) { succ.assign(NST, {}); pred.assign(NST, {}); }
-    for (int i = 0; i < NST; i++) { succ[i].clear(); pred[i].clear(); }
+    // Grafo do jogo em CSR (arrays planos), reconstruído só quando a
+    // topologia de muro muda em relação à última chamada (ver nota acima
+    // sobre por que isso acontece em quase todo nó real, não é caso raro
+    // -- por isso o CUSTO POR RECONSTRUÇÃO precisa ser baixo, não só a
+    // taxa de acerto do cache). A versão anterior usava
+    // std::vector<std::vector<int>> com push_back por aresta (~65k
+    // pushes, uma alocação/realloc incremental por vetor, 13.122 vetores
+    // tocados a cada chamada) -- essa é a fonte real do custo por chamada
+    // medido (~610-790us). CSR substitui por 2 arrays planos (sem
+    // ponteiros por estado, sem realloc incremental): 1 passada gera as
+    // arestas de sucessor em ordem (contígua por `from` já que o laço
+    // externo é por estado, então succOffset sai de graça como contador
+    // corrente); a lista de predecessores é obtida por contagem
+    // (counting sort) em vez de push_back por aresta.
+    constexpr int MAXDEG = 6;  // pawnStepMoves cobre passo+pulo reto+2 diagonais -- 5 no pior caso, folga de 1
+    static thread_local std::vector<int> succData;   // tamanho NST*MAXDEG (upper bound), compactado
+    static thread_local std::vector<int> succOff;    // NST+1
+    static thread_local std::vector<int> predData;   // idem, preenchido por counting sort
+    static thread_local std::vector<int> predOff;    // NST+1
+    static thread_local std::vector<int> predCursor;  // NST, scratch reutilizado
+    if ((int)succOff.size() != NST + 1) {
+        succData.resize((size_t)NST * MAXDEG);
+        succOff.assign(NST + 1, 0);
+        predData.resize((size_t)NST * MAXDEG);
+        predOff.assign(NST + 1, 0);
+        predCursor.assign(NST, 0);
+    }
 
-    State tmp;
-    tmp.wallsH = wallsH;
-    tmp.wallsV = wallsV;
-    MoveList mv;
-    for (int p0 = 0; p0 < NS; p0++) {
-        for (int p1 = 0; p1 < NS; p1++) {
-            if (p0 == p1) continue;  // dois peões nunca ocupam a mesma casa
-            bool term0 = rowOf(p0) == GOAL_ROW[0];
-            bool term1 = rowOf(p1) == GOAL_ROW[1];
-            if (term0 || term1) continue;  // terminal -- sem sucessores necessários
-            for (int t = 0; t < 2; t++) {
-                int from = sidx(p0, p1, t);
-                tmp.pawn[0] = p0;
-                tmp.pawn[1] = p1;
-                mv.n = 0;
-                pawnStepMoves(tmp, t, mv);
-                for (size_t i = 0; i < mv.size(); i++) {
-                    int dest = mv[i].a;
-                    int np0 = (t == 0) ? dest : p0;
-                    int np1 = (t == 1) ? dest : p1;
-                    int to = sidx(np0, np1, 1 - t);
-                    succ[from].push_back(to);
-                    pred[to].push_back(from);
+    // Tabela de abertura por casa (Fase de otimização -- achado ao
+    // perfilar o miss path: pawnStepMoves recalculava edgeBlocked() do
+    // zero pra CADA par (p0,p1) mesmo quando p0 é o mesmo -- ou seja, a
+    // MESMA pergunta "dá pra sair da casa X na direção d?" era refeita
+    // até 80x (uma por valor possível do OUTRO peão), sendo que a
+    // resposta só depende da topologia de muro (independente de onde o
+    // oponente está). Medido isoladamente: só essa parte custava ~242us
+    // dos ~560-590us totais do miss path. Precomputando open[cell][dir] +
+    // neighbor[cell][dir] UMA VEZ por topologia (81*4=324 checagens de
+    // edgeBlocked, não 12.960*4), o laço de 13k estados abaixo vira só
+    // leitura de array -- mesma lógica de pawnStepMoves (passo reto,
+    // pulo reto, 2 diagonais), sem recomputar nada wall-dependente.
+    static thread_local bool openDir[NS][4];
+    static thread_local int neighborCell[NS][4];
+    {
+        static const int dr[4] = {-1, 1, 0, 0};
+        static const int dc[4] = {0, 0, -1, 1};
+        for (int c = 0; c < NS; c++) {
+            int r = rowOf(c), cc = colOf(c);
+            for (int d = 0; d < 4; d++) {
+                int nr = r + dr[d], nc = cc + dc[d];
+                if (inBounds(nr, nc) && !edgeBlocked(wallsH, wallsV, r, cc, nr, nc)) {
+                    openDir[c][d] = true;
+                    neighborCell[c][d] = cellIdx(nr, nc);
+                } else {
+                    openDir[c][d] = false;
+                    neighborCell[c][d] = -1;
                 }
             }
         }
     }
 
+    int edgeCount = 0;
+    for (int i = 0; i <= NST; i++) succOff[i] = 0;  // succOff[s] preenchido como contador corrente abaixo
+    for (int p0 = 0; p0 < NS; p0++) {
+        for (int p1 = 0; p1 < NS; p1++) {
+            if (p0 == p1) {
+                // Estado inválido (dois peões na mesma casa, nunca ocorre
+                // de fato) -- ainda precisa marcar succOff[from] pros 2
+                // t's aqui (sem sucessores), senão o array de offsets fica
+                // com um buraco (valor 0 do reset) bem no meio da
+                // sequência monotônica, quebrando o succOff[from+1] do
+                // estado válido imediatamente anterior (from = sidx(p0,
+                // p0-1, 1)) -- essa é a causa raiz do bug encontrado ao
+                // testar esta otimização (ver suite de testes).
+                succOff[sidx(p0, p1, 0)] = edgeCount;
+                succOff[sidx(p0, p1, 1)] = edgeCount;
+                continue;
+            }
+            bool term0 = rowOf(p0) == GOAL_ROW[0];
+            bool term1 = rowOf(p1) == GOAL_ROW[1];
+            for (int t = 0; t < 2; t++) {
+                int from = sidx(p0, p1, t);
+                succOff[from] = edgeCount;  // início do bloco de `from` no array plano
+                if (term0 || term1) continue;  // terminal -- sem sucessores necessários
+                int me = (t == 0) ? p0 : p1;
+                int opp = (t == 0) ? p1 : p0;
+                for (int d = 0; d < 4; d++) {
+                    if (!openDir[me][d]) continue;
+                    int step1 = neighborCell[me][d];
+                    int dest = -1;
+                    if (step1 != opp) {
+                        dest = step1;
+                    } else if (openDir[step1][d]) {
+                        dest = neighborCell[step1][d];
+                    } else {
+                        int pd0, pd1;
+                        if (d < 2) { pd0 = 2; pd1 = 3; } else { pd0 = 0; pd1 = 1; }
+                        for (int pd : {pd0, pd1}) {
+                            if (!openDir[step1][pd]) continue;
+                            int diag = neighborCell[step1][pd];
+                            int np0 = (t == 0) ? diag : p0;
+                            int np1 = (t == 1) ? diag : p1;
+                            succData[edgeCount++] = sidx(np0, np1, 1 - t);
+                        }
+                        continue;  // já tratou as 2 diagonais (ou nenhuma) acima -- não cai no bloco `dest` abaixo
+                    }
+                    int np0 = (t == 0) ? dest : p0;
+                    int np1 = (t == 1) ? dest : p1;
+                    succData[edgeCount++] = sidx(np0, np1, 1 - t);
+                }
+            }
+        }
+    }
+    succOff[NST] = edgeCount;
+
+    // Predecessores via counting sort (2 passadas O(edgeCount), sem
+    // realloc): 1) conta quantas arestas chegam em cada `to`; 2) prefix
+    // sum vira offset; 3) segunda passada distribui cada aresta na sua
+    // posição usando um cursor por destino.
+    for (int i = 0; i <= NST; i++) predOff[i] = 0;
+    for (int e = 0; e < edgeCount; e++) predOff[succData[e] + 1]++;
+    for (int i = 0; i < NST; i++) predOff[i + 1] += predOff[i];
+    for (int i = 0; i < NST; i++) predCursor[i] = predOff[i];
+    for (int from = 0; from < NST; from++) {
+        for (int e = succOff[from]; e < succOff[from + 1]; e++) {
+            int to = succData[e];
+            predData[predCursor[to]++] = from;
+        }
+    }
+
+    auto succSize = [&](int s) { return succOff[s + 1] - succOff[s]; };
+
     auto solveFor = [&](int X, std::vector<int8_t>& win, std::vector<int>& dtm) {
         win.assign(NST, 0);
         dtm.assign(NST, -1);
         std::vector<int> cnt(NST);
-        for (int i = 0; i < NST; i++) cnt[i] = (int)succ[i].size();
+        for (int i = 0; i < NST; i++) cnt[i] = succSize(i);
         std::vector<int> queue;
         queue.reserve(NST);
         for (int p0 = 0; p0 < NS; p0++) {
@@ -410,7 +546,8 @@ inline RaceOutcome raceExactDTM(uint64_t wallsH, uint64_t wallsV, int pawn0, int
         size_t head = 0;
         while (head < queue.size()) {
             int s = queue[head++];
-            for (int p : pred[s]) {
+            for (int pi = predOff[s]; pi < predOff[s + 1]; pi++) {
+                int p = predData[pi];
                 if (win[p]) continue;
                 int t = p & 1;  // sidx(p0,p1,t) = (...)*2+t -> paridade == turno do estado p
                 if (t == X) {
@@ -434,9 +571,9 @@ inline RaceOutcome raceExactDTM(uint64_t wallsH, uint64_t wallsV, int pawn0, int
 
     solveFor(0, win0, dtm0);
     solveFor(1, win1, dtm1);
-    cachedWallsH = wallsH;
-    cachedWallsV = wallsV;
-    cacheValid = true;
+    slot.wallsH = wallsH;
+    slot.wallsV = wallsV;
+    slot.valid = true;
 
     int s0 = sidx(pawn0, pawn1, turn);
     if (win0[s0]) return {0, dtm0[s0]};

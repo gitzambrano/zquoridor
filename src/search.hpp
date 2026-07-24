@@ -116,6 +116,7 @@ public:
         stopped = false;
         rootDepth = depth;
         deadline = std::chrono::steady_clock::now() + std::chrono::hours(1);
+        g_raceExactBudgetUs = 1e18;  // só chooseMove() aplica o orçamento (ver nota lá)
         RepetitionTable emptyHistory;
         return negamax(s, depth, -SCORE_INF, SCORE_INF, stats, emptyHistory);
     }
@@ -132,6 +133,19 @@ public:
         stats = SearchStats{};
         stopped = false;
         resetOrderingState();
+
+        // Orçamento de TEMPO REAL (não contagem de chamadas com custo
+        // estimado -- ver endgame_race.hpp) reservado ao solver exato de
+        // final "mãos vazias" -- uma fração do orçamento de tempo total
+        // desta busca, medida de verdade via chrono a cada chamada cara,
+        // então se autocorrige (não depende de acertar hardware/otimização
+        // futura). Mantém nós/s perto da linha de base sem race: no pior
+        // caso (posições que precisam de muitas topologias diferentes),
+        // o excedente cai no heurístico de sempre em vez de continuar
+        // pagando o rebuild caro.
+        constexpr double RACE_BUDGET_FRACTION = 0.03;
+        g_raceExactUsedUs = 0.0;
+        g_raceExactBudgetUs = std::max(1000.0, timeBudgetMs * 1000.0 * RACE_BUDGET_FRACTION);
 
         Move bestMove = legalMoves(root)[0];
         int prevScore = 0;
@@ -276,6 +290,12 @@ private:
         size_t n = moves.size();
 
         static thread_local std::pair<long long, Move> buf[ORDER_BUF_CAP];
+        // `before` não depende do candidato `m` (só de `s`, fixo pra toda
+        // a chamada) -- hoisted pra fora do laço. Achado de revisão:
+        // estava sendo recomputado (BFS completa) em CADA iteração, até
+        // ~128 vezes por nó perto da raiz (ply<=WALL_BFS_ORDER_MAX_PLY),
+        // sempre com o mesmo resultado.
+        int before = wallByBFS ? shortestPathLen(s.wallsH, s.wallsV, s.pawn[opp], opp) : 0;
         for (size_t i = 0; i < n; i++) {
             const Move& m = moves[i];
             long long sc = 0;
@@ -283,7 +303,6 @@ private:
                 // quanto o muro aumenta o caminho do oponente até a meta
                 // dele (mesma shortestPathLen já usada em evalSimple)
                 State ns = applyMove(s, m);
-                int before = shortestPathLen(s.wallsH, s.wallsV, s.pawn[opp], opp);
                 int after = shortestPathLen(ns.wallsH, ns.wallsV, ns.pawn[opp], opp);
                 sc = (long long)(after - before) * 1000;
             }
@@ -394,11 +413,75 @@ private:
         // check de repetição de propósito: se a mesma posição já se
         // repetiu de fato na partida real, isso tem prioridade sobre o
         // resultado teórico do subjogo (mesmo doravante).
+        bool raceResolved = false;
+        int raceScore = 0;
         if (s.wallsLeft[0] == 0 && s.wallsLeft[1] == 0) {
-            RaceOutcome ro = resolveEmptyHandedEndgame(s.wallsH, s.wallsV, s.pawn[0], s.pawn[1], s.turn);
-            if (ro.winner == -1) return CONTEMPT;  // empate -- perseguição infinita/repetição (bug corrigido: era -CONTEMPT, recompensava o empate)
-            int score = RACE_SCORE_BASE - ro.dtm;
-            return (ro.winner == s.turn) ? score : -score;
+            // Achado de regressão de nós/s (arena externa): o cache de
+            // 1 slot em endgame_race.hpp (indexado só por topologia de
+            // muro) quase nunca acerta numa busca real -- medido em
+            // ~0,5% de hit rate, porque o alpha-beta ainda está decidindo
+            // ONDE colocar os últimos muros de cada lado quando entra
+            // nesta fase, e cada candidato de muro testado nessa borda
+            // gera uma topologia final DIFERENTE. Isso faz o solver
+            // exato (Serviço B, ~0,6-0,9ms por chamada) rodar do zero em
+            // quase todo nó desta fase. Uma posição EXATA (mesmo
+            // wallsH/wallsV + mesmo par de peões + mesmo turno -- ou
+            // seja, o mesmo s.hash) sim se repete com frequência real via
+            // transposição/re-busca de PVS/aspiration/iterative
+            // deepening, então armazenar o resultado na TT (chave =
+            // s.hash, já calculada, já rege o restante do motor) resolve
+            // esse caso sem precisar de estrutura nova: EXACT com
+            // depth=127 pra nunca ser descartado por um `e.depth>=depth`
+            // de profundidade menor.
+            TTEntry& re = probe(s.hash);
+            if (re.valid && re.key == s.hash && re.flag == EXACT) {
+                return re.score;
+            }
+            // Orçamento agora cobre a chamada INTEIRA (gate barato +
+            // solver exato), não só o rebuild caro -- ver nota grande em
+            // endgame_race.hpp. O gate sozinho (~1,85us/chamada, 4 BFS de
+            // 81 casas) já dobrava o custo por nó mesmo quando o solver
+            // exato nunca era acionado, porque rodava incondicionalmente
+            // em todo nó desta fase. Checando o orçamento ANTES de pagar
+            // qualquer coisa (nem o gate), o pior caso (orçamento
+            // esgotado) fica com custo zero adicional -- nó igual ao que
+            // seria sem a feature de race, garantindo que nós/s nunca cai
+            // mais que a fração do orçamento reservada (RACE_BUDGET_FRACTION).
+            if (g_raceExactUsedUs < g_raceExactBudgetUs) {
+                auto __raceT0 = std::chrono::steady_clock::now();
+                RaceOutcome ro = resolveEmptyHandedEndgame(s.wallsH, s.wallsV, s.pawn[0], s.pawn[1], s.turn);
+                g_raceExactUsedUs += std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now() - __raceT0).count();
+                raceResolved = true;
+                if (ro.winner == -1) {
+                    raceScore = CONTEMPT;  // empate -- perseguição infinita/repetição (bug corrigido: era -CONTEMPT, recompensava o empate)
+                } else {
+                    int raw = RACE_SCORE_BASE - ro.dtm;
+                    raceScore = (ro.winner == s.turn) ? raw : -raw;
+                }
+            }
+            // orçamento esgotado -- raceResolved fica false, cai pro resto
+            // da função (TT normal, geração de lances, recursão)
+            // EXATAMENTE como se este `if` nem existisse: no pior caso o
+            // nó custa o mesmo que custava antes da feature de race
+            // existir, nunca mais.
+        }
+        if (raceResolved) {
+
+            int score = raceScore;
+            // Bug pego pelo test_search_staging.cpp (posicao 3) durante a
+            // implementacao deste cache: chooseMove le e.best da TT SEM
+            // checar legalidade quando root.hash bate (ver loop de
+            // iterative deepening acima) -- se a raiz de verdade cair
+            // nesta fase (jogo real com os dois sem muro), um placeholder
+            // tipo Move::pawn(0) pode nao ser um lance legal ali e virar
+            // um lance ilegal devolvido pelo motor. legalMoves(s)[0] e
+            // sempre legal (peao, ja que sem muro so ha lance de peao) --
+            // nao e o lance DTM-otimo (o solver so devolve o VALOR, nao
+            // qual lance realiza esse valor), mas garante seguranca; so
+            // paga o custo de legalMoves numa chamada por posicao nova
+            // (miss), nao por no.
+            store(s.hash, 127, score, EXACT, legalMoves(s)[0]);
+            return score;
         }
 
         // Fix (Fase 4.2.10, pós-implementação): depth==0 tem que ser
@@ -525,13 +608,21 @@ private:
         if (!cutoff) {
             MoveList wallMoves;
             legalWallMoves(s, side, wallMoves);
-            // CAT (cat.hpp, plano-additional.md Prioridade 1): calor de
-            // corredor do OPONENTE, calculado uma vez por nó (2 BFS) --
-            // substitui os touchHOpp/touchVOpp binários que orderWallMoves
-            // recebia antes.
-            int opp = 1 - side;
-            CorridorHeat oppHeat = computeCorridorHeat(s.wallsH, s.wallsV, s.pawn[opp], opp);
-            orderWallMoves(wallMoves, ply, side, s, oppHeat);
+            // Achado de revisão de performance: computeCorridorHeat (2
+            // BFS) rodava incondicionalmente aqui, mesmo quando
+            // wallMoves está vazio -- o que acontece sempre que o lado a
+            // mover já não tem mais muros (wallsLeft[side]<=0), mas o
+            // oponente ainda tem (senão o hook de final "mãos vazias",
+            // mais acima nesta função, já teria resolvido o nó). Isso é
+            // comum durante boa parte do "meio de jogo tardio"/"final" --
+            // exatamente a fase que mais sofria com custo extra por nó.
+            // Só vale a pena pagar o calor de corredor se há algum muro
+            // pra de fato ordenar com ele.
+            if (!wallMoves.empty()) {
+                int opp = 1 - side;
+                CorridorHeat oppHeat = computeCorridorHeat(s.wallsH, s.wallsV, s.pawn[opp], opp);
+                orderWallMoves(wallMoves, ply, side, s, oppHeat);
+            }
             for (size_t i = 0; i < wallMoves.size() && !cutoff; i++) {
                 const Move& m = wallMoves[i];
                 if (ttTried && m == ttMoveVal) continue;  // já tentado no Estágio 1
@@ -569,6 +660,7 @@ public:
         stopped = false;
         rootDepth = depth;
         deadline = std::chrono::steady_clock::now() + std::chrono::hours(1);
+        g_raceExactBudgetUs = 1e18;  // só chooseMove() aplica o orçamento (ver nota lá) -- senão uma chamada anterior de chooseMove() deixa o orçamento finito "vazando" pra esta busca de referência
         stats = SearchStats{};
         RepetitionTable emptyHistory;
         return negamax(s, depth, -SCORE_INF, SCORE_INF, stats, emptyHistory);
@@ -579,6 +671,7 @@ public:
         stopped = false;
         rootDepth = depth;
         deadline = std::chrono::steady_clock::now() + std::chrono::hours(1);
+        g_raceExactBudgetUs = 1e18;  // só chooseMove() aplica o orçamento (ver nota lá)
         stats = SearchStats{};
         RepetitionTable emptyHistory;
         return negamax(s, depth, alpha, beta, stats, emptyHistory);
