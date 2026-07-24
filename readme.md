@@ -388,21 +388,38 @@ neural, depois os testes que garantem que nada disso quebrou.
   (`raceExactDTM`) sobre os 81×81×2=13.122 estados `(pos0, pos1, turno)`
   daquela topologia fixa, que também detecta empate por perseguição
   infinita. A DP é cacheada por topologia de muro (só recalcula quando
-  `wallsH`/`wallsV` mudam em relação à última chamada) — necessário na
-  prática, não só otimização: sem esse cache, uma sessão de arena externa
-  mediu queda de nós/s de mais de 50× e Elo -166 assim que o gate barato
-  passou a decidir com menos frequência (ver nota de correção abaixo).
-  Duas correções de corretude relevantes já aconteceram depois da
-  primeira integração — quem for mexer aqui deveria ler a nota grande no
-  topo de `endgame_race.hpp` e a Seção 4d do `plano-additional.md` antes:
+  `wallsH`/`wallsV` mudam em relação à última chamada), e o custo do
+  Serviço B é limitado por um **orçamento de tempo real** por lance
+  (`g_raceExactBudgetUs`, ~3% do orçamento total de `chooseMove`, medido
+  via `chrono` a cada chamada cara) — no pior caso (posições que exigem
+  muitas topologias diferentes em sequência, onde o cache de 1 slot não
+  ajuda) o excedente cai de volta pro heurístico de sempre em vez de
+  continuar pagando o rebuild caro, então nós/s nunca fica pior que a
+  linha de base sem a feature.
+  Várias rodadas de correção aconteceram depois da primeira integração —
+  quem for mexer aqui deveria ler a nota grande no topo de
+  `endgame_race.hpp` e as Seções 4d/4e do `plano-additional.md` antes:
   (1) um portão de ETA mais barato (Nível 1 do plano) foi testado e
   **descartado** do pipeline de decisão por decidir errado num
   contraexemplo real (bloqueio físico pode custar mais tempo que o
   previsto); (2) a primeira versão do gate de região testava só
   disjunção de **caminho mais curto**, o que não garante ausência de
-  interação (um jogador perdendo pode desviar do próprio caminho mínimo
-  só pra bloquear o outro) — corrigido pra testar disjunção da região
-  inteira alcançável, a única base comprovadamente sã.
+  interação — corrigido pra testar disjunção da região inteira
+  alcançável; (3) o cache de 1 slot por topologia sozinho não bastava
+  (taxa de acerto real medida em ~0,5% durante a decisão de onde colocar
+  os últimos muros — daí o orçamento de tempo acima); (4) **o mais sério**:
+  um bug de ESCOLHA DE LANCE (não de valor) em `chooseMove` — quando a
+  própria RAIZ real da partida (não um nó interno) já está em
+  `wallsLeft==(0,0)`, o atalho devolve só o valor (comportamento correto
+  de nó-folha) e `chooseMove` lia da TT um placeholder como "melhor
+  lance" em vez do lance que de fato realiza o DTM ótimo — o motor sabia
+  quem ganhava mas jogava lances arbitrários pra chegar lá, perdendo a
+  maioria das partidas mesmo com nós/s saudável. Corrigido comparando os
+  candidatos da raiz por 1 ply de valor exato antes do loop de iterative
+  deepening. Validado em arena real (`teste/arena.cpp`, código de dois
+  refs de verdade no mesmo binário): de ~113/502 vitórias (Elo≈−132)
+  antes da correção (4) para ~46,5% de score em 100 jogos depois —
+  dentro do ruído estatístico dessa amostra.
 
 ### NNUE (`nnue.hpp`)
 
@@ -426,9 +443,12 @@ na Seção 4; o plano para plugá-la na busca está na Fase B do roadmap
   (`endgame_race.hpp`) — confirma que, sempre que o gate barato decide,
   o resultado bate exatamente com a DP retrógrada exata (posições fixas
   e topologias aleatórias), cobre o caso de empate por perseguição
-  infinita, e tem um teste de performance dedicado (muitas chamadas
-  consecutivas com a mesma topologia de muro devem reusar o cache —
-  ver nota de correção na Seção "Busca" acima).
+  infinita, tem um teste de performance dedicado (muitas chamadas
+  consecutivas com a mesma topologia de muro devem reusar o cache), e
+  testa `Negamax::chooseMove` de ponta a ponta a partir de uma raiz já em
+  `wallsLeft==(0,0)` — pega o bug de escolha de lance (não de valor)
+  descrito na Seção "Busca" acima (falha contra a versão sem a correção,
+  passa com ela).
 - `nnue_verify.cpp`: confirma que a implementação C++ da rede produz os
   mesmos números que a implementação Python, tanto em float32 quanto na
   versão quantizada em int8.

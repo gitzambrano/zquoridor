@@ -475,6 +475,88 @@ Nível 3 (certificado de dominância por desvio, item 4b) segue não
 implementado — nenhum problema de volume o justificou até agora, já que
 o Serviço B com cache resolve a fase inteira rápido o bastante.
 
+### 4e — **[CORRIGIDO]** cache por topologia não bastava sozinho, e um bug de ESCOLHA DE LANCE (não de valor) sobrevivera a tudo isso
+
+Depois de 4d (cache de 1 slot por topologia), duas rodadas adicionais de
+correção aconteceram, uma de performance e outra — mais séria — de
+corretude na escolha do lance em si.
+
+**1. Orçamento de tempo real para o Serviço B (performance).** O cache de
+1 slot de 4d só ajuda quando chamadas consecutivas compartilham a MESMA
+topologia — e medição em busca real mostrou taxa de acerto de cache
+**~0,5%**, não os >90% que o benchmark sintético (chamadas repetidas de
+propósito) sugeria. O motivo: perto do fim de jogo, o alpha-beta ainda
+está decidindo ONDE colocar os ÚLTIMOS muros de cada lado, e cada
+candidato de posição de muro testado nessa borda gera uma topologia
+FINAL diferente — o cache não tem o que reaproveitar entre candidatos
+irmãos. Isso fazia o Serviço B (~0,6–0,9ms/chamada sem acerto de cache)
+rodar do zero em quase todo nó dessa fase de decisão. Corrigido com um
+orçamento de TEMPO REAL (medido via `chrono` a cada chamada cara, não
+uma contagem estimada de chamadas) reservado ao solver exato — uma
+fração pequena (3%) do orçamento de tempo total daquela busca
+(`g_raceExactBudgetUs`/`g_raceExactUsedUs`, resetado a cada
+`chooseMove`). Quando o orçamento acaba, o nó cai de volta pro heurístico
+de sempre em vez de continuar pagando o rebuild caro — no pior caso,
+nós/s fica igual ao que seria sem a feature de race, nunca pior. Some-se
+a isso: uma posição EXATA repetida (mesmo hash — comum via
+transposição/re-busca de PVS/aspiration/iterative deepening) agora é
+armazenada e lida da própria TT do motor (`EXACT`, `depth=127` pra nunca
+ser sobrescrita por uma entrada de profundidade menor), sem precisar de
+estrutura de cache nova pra esse caso.
+
+**2. Bug de escolha de LANCE na raiz — achado só depois de já ter nós/s
+saudável (>900k) e AINDA ASSIM perder a maioria das partidas em arena
+externa.** `resolveEmptyHandedEndgame` devolve o VALOR exato de uma
+posição, mas se comporta como nó-folha: nunca gera nem recursiona sobre
+os próprios filhos (igual `winner()`). Isso é correto e barato quando
+essa posição é FILHA de outro nó — o pai continua comparando vários
+candidatos normalmente, cada um recursando pra um filho que aciona o
+atalho só pra fornecer um valor pra comparação. O problema é quando a
+própria RAIZ real da partida (a posição que `chooseMove` recebe, vinda
+do jogo de verdade — não um nó interno) já satisfaz
+`wallsLeft==(0,0)`: não existe "nó pai" nenhum fazendo essa comparação, e
+o "melhor lance" que `chooseMove` lia da TT era um PLACEHOLDER
+(`legalMoves(s)[0]`, gravado só pra garantir legalidade de retorno, ver
+comentário em `negamax`) — não o lance que de fato realiza o DTM ótimo.
+O motor "sabia" quem ia ganhar (score correto, TT correta) mas jogava um
+lance essencialmente arbitrário pra chegar lá, durante toda a fase de
+final — tipicamente a maior parte de uma partida real, já que os muros
+costumam acabar bem antes do jogo terminar. Isso explica por que nós/s
+podia estar SAUDÁVEL ou até melhor que a linha de base (cada "busca" na
+raiz, quando já em mãos-vazias, resolve instantaneamente por não haver
+recursão nenhuma) e mesmo assim o motor perder a maioria das partidas —
+sintoma que não bate com "está lento", bate com "está decidindo mal".
+Corrigido em `chooseMove`: antes do loop de iterative deepening, se a
+própria raiz já satisfaz `wallsLeft==(0,0)`, compara os candidatos (só
+peão — sem muro nessa fase) por **1 ply usando o valor exato** de cada
+filho (mesma fórmula de `resolveEmptyHandedEndgame`) — maximizar sobre
+valores já exatos é ótimo por construção, não precisa de busca alguma.
+
+**Validação (não só teste unitário — arena real, mesma ferramenta que
+detectou o problema originalmente):** `teste/arena.cpp` compilando o
+código REAL de dois refs (não a mesma engine duplicada) — antes da
+correção do item 2, ~113 vitórias em 502 jogos contra a v1.1 (Elo
+≈−132, apesar de nós/s ALTO); depois da correção, duas amostras
+independentes (50 e 50 jogos, seeds diferentes) deram 24–24–2 e
+21–28–1 — combinado, 45–52–3 em 100 jogos (score ≈46,5%, Elo ≈−24,
+dentro do ruído estatístico dessa quantidade de jogos). Também um teste
+de regressão dedicado
+(`test_endgame_race.cpp::testChooseMoveAtEmptyHandedRootPicksOptimalMove`)
+que constrói uma posição de raiz com um único lance objetivamente ótimo
+e confirma que `chooseMove` o escolhe — falha contra a versão sem a
+correção (confirmado rodando o teste contra ambas), passa com ela.
+
+**Lição pro roadmap, reforçando a de 4d:** um atalho que devolve só um
+VALOR (sem lance) é seguro em qualquer nó INTERNO da árvore (o pai
+sempre compara), mas quebra silenciosamente se o mesmo atalho puder ser
+atingido diretamente pela RAIZ de uma busca real — `chooseMove` precisa
+de um LANCE, não só um score, e nada detecta esse descompasso em tempo
+de compilação nem em testes que só chamam o solver isoladamente (como os
+de 4d faziam). Qualquer atalho parecido no futuro (Nível 3, ou outro
+solver exato de subjogo) precisa de um teste que chame explicitamente o
+ponto de entrada de escolha de lance (`chooseMove`) a partir de uma
+posição-raiz já dentro da zona do atalho — não só o solver isolado.
+
 ---
 
 ## Prioridade 5 — Gates de perft como oracle de regressão de corretude
