@@ -14,6 +14,7 @@
 #include <chrono>
 #include "rules.hpp"
 #include "endgame_race.hpp"
+#include "search.hpp"
 using namespace qr;
 
 static int failures = 0;
@@ -301,6 +302,51 @@ static void testRepeatedQueriesSameTopologyAreFast() {
           "perf: 5000 chamadas com a MESMA topologia de muro deveriam reusar o cache (achado de regressao real de nos/s em arena)");
 }
 
+// Regressão do bug de ESCOLHA DE LANCE (não de valor) achado numa arena
+// externa: quando a RAIZ real (não um nó interno) já satisfaz
+// wallsLeft==(0,0), negamax(root,...) resolve por atalho e devolve só o
+// VALOR -- sem gerar/comparar os próprios filhos, porque é tratado como
+// nó-folha (igual winner()). Antes da correção em chooseMove, o "melhor
+// lance" lido da TT nesse caso era um PLACEHOLDER (legalMoves(s)[0], só
+// pra garantir legalidade -- ver nota em negamax) e não o lance que de
+// fato realiza o DTM ótimo -- o motor "sabia" o resultado mas jogava
+// lances arbitrários pra chegar lá, perdendo partidas que já tinha
+// ganho na teoria. Este teste constrói uma posição óbvia (tabuleiro
+// aberto, sem muro, jogador 0 a 2 passos da própria meta, oponente longe
+// o bastante pra não interferir) onde SÓ o lance "andar pra frente"
+// reduz o DTM -- qualquer outro lance (lateral/afastando) é estritamente
+// pior -- e confirma que chooseMove escolhe o lance certo, não só que
+// resolveEmptyHandedEndgame calcula o valor certo (isso já é coberto
+// pelos testes acima).
+static void testChooseMoveAtEmptyHandedRootPicksOptimalMove() {
+    State root = initialState();
+    root.wallsLeft[0] = 0;
+    root.wallsLeft[1] = 0;
+    root.wallsH = 0;
+    root.wallsV = 0;
+    root.pawn[0] = cellIdx(N - 3, 4);  // 2 passos da própria meta (linha N-1)
+    root.pawn[1] = cellIdx(4, 8);      // linha do meio, canto lateral -- longe o bastante pra nao
+                                        // interferir/pular, e (importante) NAO em cima da meta de
+                                        // nenhum dos dois lados (linha 0 = meta do jogador 1,
+                                        // linha N-1 = meta do jogador 0 -- ambas evitadas de propósito)
+    root.turn = 0;
+    root.hash = zobrist().pawnKey[0][root.pawn[0]] ^ zobrist().pawnKey[1][root.pawn[1]];
+
+    Negamax eng;
+    SearchStats st;
+    Move m = eng.chooseMove(root, 20, 50, st);  // orcamento pequeno de proposito -- deveria resolver na hora, sem precisar de busca
+    State ns = applyMove(root, m);
+
+    CHECK(rowOf(ns.pawn[0]) == N - 2,
+          "chooseMove na raiz ja em maos-vazias: deveria escolher o lance que anda pra frente (reduz DTM), nao um lance lateral/arbitrario");
+
+    // Confere tambem que o valor resultante bate com o Servico B exato
+    // pra essa transicao especifica (nao só a direcao do lance).
+    RaceOutcome exact = raceExactDTM(ns.wallsH, ns.wallsV, ns.pawn[0], ns.pawn[1], ns.turn);
+    CHECK(exact.winner == 0 && exact.dtm == 2,
+          "chooseMove na raiz ja em maos-vazias: apos o lance escolhido, deveria restar vitoria do jogador 0 em 2 plies (1 lance do oponente + o lance final do jogador 0 -- dtm conta plies, nao 'lances proprios')");
+}
+
 int main() {
     testTrivialOneMoveWin();
     testOpenBoardStraightRace();
@@ -309,6 +355,7 @@ int main() {
     testInfinitePursuitDraw();
     testRandomWallTopologiesGatesAgreeWithExact();
     testRepeatedQueriesSameTopologyAreFast();
+    testChooseMoveAtEmptyHandedRootPicksOptimalMove();
 
     if (failures == 0) {
         std::printf("OK -- todos os testes de endgame_race passaram\n");

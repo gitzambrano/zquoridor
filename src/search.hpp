@@ -134,6 +134,56 @@ public:
         stopped = false;
         resetOrderingState();
 
+        // [CORREÇÃO -- achado por perda de Elo grande numa arena externa
+        // apesar de nós/s saudável] Quando a própria RAIZ real (a posição
+        // que o jogo de verdade está, não um nó interno da busca) já
+        // satisfaz wallsLeft==(0,0), `negamax(root,...)` cai direto no
+        // atalho de final "mãos vazias" -- que devolve o VALOR exato mas
+        // NUNCA gera nem recursiona sobre os próprios filhos (é tratado
+        // como um nó-folha, igual a `winner()`). Isso é correto e barato
+        // quando essa posição é FILHA de outro nó (o pai ainda compara
+        // vários candidatos normalmente, cada um recursando pra um filho
+        // que ai sim aciona o atalho -- só precisa do valor pra comparar).
+        // Mas quando essa posição É a raiz, não existe "nó pai" nenhum
+        // pra fazer essa comparação -- e o placeholder que o atalho grava
+        // na TT (`legalMoves(s)[0]`, só pra garantir legalidade, ver nota
+        // em negamax) era o que `chooseMove` lia como "melhor lance",
+        // resultando num lance ARBITRÁRIO (não o que realiza o DTM ótimo)
+        // durante toda a fase de final -- que é tipicamente a maior parte
+        // do fim de uma partida real, já que os muros costumam acabar
+        // bem antes do jogo terminar. O motor "sabia" quem ganhava
+        // (score correto) mas jogava lances que não necessariamente
+        // levavam lá. Resolvido comparando os candidatos (só peão -- sem
+        // muro nesta fase) por 1 ply usando o próprio valor EXATO (não
+        // heurístico) de cada filho -- maximizar sobre valores já exatos
+        // é ótimo por construção, sem precisar de busca nenhuma.
+        if (root.wallsLeft[0] == 0 && root.wallsLeft[1] == 0) {
+            MoveList rootMoves = legalMoves(root);
+            Move best = rootMoves[0];
+            int bestScore = -SCORE_INF;
+            for (size_t i = 0; i < rootMoves.size(); i++) {
+                State ns = applyMove(root, rootMoves[i]);
+                int w = winner(ns);
+                int childScore;
+                if (w != -1) {
+                    childScore = (w == ns.turn) ? SCORE_INF - 1 : -(SCORE_INF - 1);
+                } else {
+                    RaceOutcome ro = resolveEmptyHandedEndgame(ns.wallsH, ns.wallsV, ns.pawn[0], ns.pawn[1], ns.turn);
+                    if (ro.winner == -1) {
+                        childScore = CONTEMPT;
+                    } else {
+                        int raw = RACE_SCORE_BASE - ro.dtm;
+                        childScore = (ro.winner == ns.turn) ? raw : -raw;
+                    }
+                }
+                int scoreForRoot = -childScore;  // negamax: valor do filho é do ponto de vista do OPONENTE
+                if (scoreForRoot > bestScore) { bestScore = scoreForRoot; best = rootMoves[i]; }
+            }
+            stats.reachedDepth = maxDepthCap;  // resolvido com certeza matemática, não com busca heurística parcial
+            stats.score = bestScore;
+            return best;
+        }
+
         // Orçamento de TEMPO REAL (não contagem de chamadas com custo
         // estimado -- ver endgame_race.hpp) reservado ao solver exato de
         // final "mãos vazias" -- uma fração do orçamento de tempo total
