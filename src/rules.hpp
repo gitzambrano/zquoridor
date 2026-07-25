@@ -155,20 +155,115 @@ inline bool wallSlotAvailable(uint64_t wallsH, uint64_t wallsV, int orientation,
     return true;
 }
 
-// BFS sem alocação (arrays fixos de 81 células) -- existe caminho até a meta?
+// ---------------------------------------------------------------------
+// BFS de distância/caminho -- núcleo compartilhado (plano-additional.md,
+// Prioridade 6: "Cache de BFS por nó"). Antes desta refatoração,
+// shortestPathLen/shortestPathTouchSlots/pathRobustness eram 3 BFS
+// SEPARADAS a partir do MESMO (wallsH, wallsV, startCell, player) --
+// pathRobustness já era, sozinha, um superset estrito do que as outras
+// duas computam (perfilado via gprof: shortestPathLen sozinha era 36,5%
+// do tempo total de busca, 21M chamadas; pathRobustness mais 17,9%, 8,25M
+// chamadas -- juntas mais da metade do tempo). `detail::runBFS` abaixo é
+// essa BFS única; as 3 funções públicas (mantidas por compatibilidade de
+// API -- usadas fora de search.hpp em nnue.hpp/selfplay.hpp/
+// endgame_race.hpp/testes) viram wrappers finos sobre o mesmo resultado.
 //
-// Otimização de contador de geração (perfilado com gprof: shortestPathLen
-// sozinha era 36,5% do tempo total de busca, 21M chamadas; pathRobustness
-// mais 17,9%, 8,25M chamadas -- juntas mais da metade do tempo). As 4
-// funções de BFS abaixo faziam `for(i=0;i<81;i++) reset` em TODA chamada,
-// mesmo quando o BFS visita poucas células antes de achar a meta. Troca:
-// em vez de "limpo tudo antes, visited[i]==true significa visitado", uso
-// um contador `gen` incrementado a cada chamada e um array paralelo
-// `visitGen[i]` -- célula i está "visitada nesta chamada" sse
-// `visitGen[i] == gen` (comparação O(1), sem zerar nada entre chamadas).
-// uint64_t de propósito: nenhuma contagem realista de chamadas (mesmo ao
-// longo de todo um self-play) dá a volta, então não há risco de colisão
-// de geração revalidando por engano uma célula de uma chamada antiga.
+// Um nó de busca real (negamax/quiescence/evalSimpleW/legalWallMoves)
+// ainda assim acabava rodando essa BFS várias vezes por nó -- uma vez
+// por chamador, mesmo quando o chamador seguinte usava exatamente a
+// mesma tripla (wallsH, wallsV, startCell, player) da chamada anterior
+// (ex.: evalSimpleW pedia shortestPathLen+pathRobustness do MESMO
+// jogador; quiescence pedia de novo logo em seguida para o oponente;
+// legalWallMoves pedia de novo para os dois jogadores). `PlayerPathCache`
+// + `computeDistFull` abaixo permitem calcular essa BFS 1x por
+// (jogador, nó) e passar o resultado adiante por referência para todo
+// mundo que precisar dele dentro do MESMO nó -- ver search.hpp
+// (evalSimpleW, quiescence, legalWallMoves, orderWallMoves) para os
+// pontos que agora recebem/propagam um PlayerPathCache em vez de
+// recalcular.
+//
+// Importante (correção): `computeDistFull` preserva o MESMO early exit
+// total que pathRobustness/shortestPathTouchSlots já faziam (BFS para
+// assim que a fileira de meta é alcançada, na mesma ordem de direções
+// cima/baixo/esquerda/direita) -- ou seja, dá resultado BIT A BIT
+// idêntico ao das 3 funções antigas, não uma aproximação. De propósito
+// NÃO foi generalizado para BFS completa sem early exit (o que
+// permitiria também reaproveitar o distStart de computeCorridorHeat,
+// cat.hpp) -- fazer isso mudaria, em casos de borda raros, quais células
+// contam como "alcançáveis" para pathRobustness (a célula que descobre a
+// meta tem suas direções restantes propositalmente não exploradas; uma
+// BFS completa poderia "preencher" essas células por outra rota,
+// mudando o resultado). computeCorridorHeat continua com sua própria BFS
+// dedicada -- ver nota lá. Fusão com CAT fica como trabalho futuro
+// (Prioridade 6b do plano), não incluída aqui por risco de correção.
+namespace detail {
+    struct BFSEngineData {
+        int dist[N * N];
+        int parent[N * N];
+        uint64_t visitGen[N * N] = {};
+        uint64_t gen = 0;
+        int queue[N * N];
+        int touched[N * N];   // células tocadas nesta chamada (permite
+                               // copiar pra um PlayerPathCache em O(visitado),
+                               // não O(81) -- ver computeDistFull abaixo).
+        int touchedCount = 0;
+        int goalCell = -1;
+        int distToGoal = -1;
+    };
+    // thread_local: cada thread de self-play/arena tem seu próprio motor,
+    // sem contenção nem necessidade de lock (mesmo padrão já usado pelos
+    // arrays static thread_local de hasPathToGoal etc.).
+    inline BFSEngineData& engine() {
+        static thread_local BFSEngineData e;
+        return e;
+    }
+
+    inline void runBFS(uint64_t wallsH, uint64_t wallsV, int startCell, int player) {
+        auto& e = engine();
+        ++e.gen;
+        e.touchedCount = 0;
+        e.goalCell = -1;
+        e.distToGoal = -1;
+        int goalRow = GOAL_ROW[player];
+        static const int dr[4] = {-1, 1, 0, 0};
+        static const int dc[4] = {0, 0, -1, 1};
+        int head = 0, tail = 0;
+        e.queue[tail++] = startCell;
+        e.visitGen[startCell] = e.gen;
+        e.dist[startCell] = 0;
+        e.parent[startCell] = -1;
+        e.touched[e.touchedCount++] = startCell;
+        if (rowOf(startCell) == goalRow) { e.goalCell = startCell; e.distToGoal = 0; return; }
+        while (head < tail) {
+            int cell = e.queue[head++];
+            int r = rowOf(cell), c = colOf(cell);
+            int d0 = e.dist[cell];
+            for (int d = 0; d < 4; d++) {
+                int nr = r + dr[d], nc = c + dc[d];
+                if (!inBounds(nr, nc)) continue;
+                int ncell = cellIdx(nr, nc);
+                if (e.visitGen[ncell] == e.gen) continue;
+                if (edgeBlocked(wallsH, wallsV, r, c, nr, nc)) continue;
+                e.visitGen[ncell] = e.gen;
+                e.parent[ncell] = cell;
+                e.dist[ncell] = d0 + 1;
+                e.touched[e.touchedCount++] = ncell;
+                if (nr == goalRow) {
+                    e.goalCell = ncell;
+                    e.distToGoal = d0 + 1;
+                    return;  // early exit total -- idêntico às 3 funções antigas
+                }
+                e.queue[tail++] = ncell;
+            }
+        }
+    }
+} // namespace detail
+
+// BFS sem alocação -- existe caminho até a meta? Mantida separada do
+// motor acima (não usa geração compartilhada com ele) porque é chamada
+// para topologias de muro DIFERENTES a cada vez (candidato ambíguo em
+// legalWallMoves/isWallMoveLegal, um por candidato) -- não há BFS
+// duplicada aqui pra fundir, cada chamada já é sobre uma topologia única.
 inline bool hasPathToGoal(uint64_t wallsH, uint64_t wallsV, int startCell, int player) {
     int goalRow = GOAL_ROW[player];
     if (rowOf(startCell) == goalRow) return true;
@@ -198,42 +293,13 @@ inline bool hasPathToGoal(uint64_t wallsH, uint64_t wallsV, int startCell, int p
     return false;
 }
 
-// BFS com distância -- usado pela eval simples (Fase 3). Mesma técnica de
-// geração acima: `distGen[i] == gen` substitui o antigo `dist[i] != -1`
-// como marcador de "já visitado nesta chamada" -- `dist[i]` só é lido
-// depois de checar a geração, então o valor de uma chamada anterior nunca
-// vaza pra esta.
+// Distância mais curta até a meta -- wrapper fino sobre detail::runBFS
+// (ver nota grande acima). Mantida com esta assinatura porque é usada
+// fora de search.hpp (nnue.hpp, selfplay.hpp, endgame_race.hpp, testes)
+// em lugares que não têm um PlayerPathCache de nó pra reaproveitar.
 inline int shortestPathLen(uint64_t wallsH, uint64_t wallsV, int startCell, int player) {
-    int goalRow = GOAL_ROW[player];
-    if (rowOf(startCell) == goalRow) return 0;
-    static thread_local int dist[N * N];
-    static thread_local uint64_t distGen[N * N] = {};
-    static thread_local uint64_t gen = 0;
-    static thread_local int queue[N * N];
-    ++gen;
-    int head = 0, tail = 0;
-    queue[tail++] = startCell;
-    dist[startCell] = 0;
-    distGen[startCell] = gen;
-    static const int dr[4] = {-1, 1, 0, 0};
-    static const int dc[4] = {0, 0, -1, 1};
-    while (head < tail) {
-        int cell = queue[head++];
-        int r = rowOf(cell), c = colOf(cell);
-        int d0 = dist[cell];
-        for (int d = 0; d < 4; d++) {
-            int nr = r + dr[d], nc = c + dc[d];
-            if (!inBounds(nr, nc)) continue;
-            int ncell = cellIdx(nr, nc);
-            if (distGen[ncell] == gen) continue;
-            if (edgeBlocked(wallsH, wallsV, r, c, nr, nc)) continue;
-            if (nr == goalRow) return d0 + 1;
-            dist[ncell] = d0 + 1;
-            distGen[ncell] = gen;
-            queue[tail++] = ncell;
-        }
-    }
-    return -1;  // não deveria acontecer (legalidade de muro já garante caminho)
+    detail::runBFS(wallsH, wallsV, startCell, player);
+    return detail::engine().distToGoal;
 }
 
 // Pré-filtro barato antes do BFS caro (Fase 4.2.1 do plano). Calcula, a
@@ -247,58 +313,17 @@ inline int shortestPathLen(uint64_t wallsH, uint64_t wallsV, int startCell, int 
 // seja, para esse jogador, hasPathToGoal(candidato) é garantidamente
 // verdadeiro sem precisar rodar o BFS de novo. Só quando o slot toca o
 // caminho é que a legalidade fica genuinamente incerta e o BFS completo
-// (hasPathToGoal) precisa rodar.
-//
-// Reconstrói o caminho via ponteiros de pai (mesma BFS de hasPathToGoal,
-// mas mantendo `parent[]` em vez de parar no primeiro achado) e, para
-// cada aresta do caminho, marca os slots de muro que a bloqueariam --
-// mesma lógica inversa de edgeBlocked(): aresta horizontal (mesma linha)
-// é bloqueada por muro vertical; aresta vertical (mesma coluna) é
-// bloqueada por muro horizontal, cada aresta podendo ser bloqueada por
-// até 2 slots adjacentes.
+// (hasPathToGoal) precisa rodar. Wrapper fino sobre detail::runBFS.
 inline void shortestPathTouchSlots(uint64_t wallsH, uint64_t wallsV, int startCell, int player,
                                     uint64_t& touchH, uint64_t& touchV) {
+    detail::runBFS(wallsH, wallsV, startCell, player);
+    auto& e = detail::engine();
     touchH = 0;
     touchV = 0;
-    int goalRow = GOAL_ROW[player];
-    if (rowOf(startCell) == goalRow) return;  // já na meta -- nenhum muro desconecta mais
-    // Geração em vez de reset O(N) (mesma técnica de hasPathToGoal/
-    // shortestPathLen acima). `parent[]` não precisa de reset: só é
-    // escrito/lido para células marcadas nesta geração, e `parent[startCell]`
-    // é setado explicitamente (O(1)) em vez de depender de um reset global
-    // pra virar -1 -- a caminhada de volta em parent[] (mais abaixo, na
-    // reconstrução do caminho) só visita células desta mesma geração.
-    static thread_local int parent[N * N];
-    static thread_local uint64_t visitGen[N * N] = {};
-    static thread_local uint64_t gen = 0;
-    static thread_local int queue[N * N];
-    ++gen;
-    int head = 0, tail = 0;
-    queue[tail++] = startCell;
-    visitGen[startCell] = gen;
-    parent[startCell] = -1;
-    static const int dr[4] = {-1, 1, 0, 0};
-    static const int dc[4] = {0, 0, -1, 1};
-    int goalCell = -1;
-    while (head < tail && goalCell == -1) {
-        int cell = queue[head++];
-        int r = rowOf(cell), c = colOf(cell);
-        for (int d = 0; d < 4; d++) {
-            int nr = r + dr[d], nc = c + dc[d];
-            if (!inBounds(nr, nc)) continue;
-            int ncell = cellIdx(nr, nc);
-            if (visitGen[ncell] == gen) continue;
-            if (edgeBlocked(wallsH, wallsV, r, c, nr, nc)) continue;
-            visitGen[ncell] = gen;
-            parent[ncell] = cell;
-            if (nr == goalRow) { goalCell = ncell; break; }
-            queue[tail++] = ncell;
-        }
-    }
-    if (goalCell == -1) return;  // não deveria acontecer (estado já é legal)
-    int cur = goalCell;
-    while (parent[cur] != -1) {
-        int prev = parent[cur];
+    if (e.distToGoal <= 0) return;  // já na meta -- nenhum muro desconecta mais
+    int cur = e.goalCell;
+    while (e.parent[cur] != -1) {
+        int prev = e.parent[cur];
         int ra = rowOf(prev), ca = colOf(prev);
         int rb = rowOf(cur), cb = colOf(cur);
         if (ra == rb) {
@@ -320,74 +345,133 @@ inline void shortestPathTouchSlots(uint64_t wallsH, uint64_t wallsV, int startCe
 // `shortestPathLen`/`shortestPathTouchSlots` só enxergam o COMPRIMENTO do
 // caminho mínimo; não distinguem um corredor de 1 célula (qualquer muro
 // no lugar certo bloqueia) de um caminho igualmente curto com desvios
-// quase tão bons ao lado. Métrica implementada aqui (decisão de projeto:
-// termo de `evalSimple`, não feature de entrada da NNUE -- ver nota no
-// readme, Seção 4.2.10, sobre por que essa troca fica pra depois): 1 BFS
-// completo com `parent[]`/`dist[]` (mesma forma de `shortestPathTouchSlots`,
-// função própria pra não arriscar mexer em código já validado por
-// `testWallPrefilterRegression`), e depois, para cada célula do caminho
-// mínimo reconstruído, conta quantos vizinhos ortogonais alcançáveis
-// (aresta não bloqueada) fora do caminho têm `dist[]` <= dist da célula do
-// caminho + 1 -- ou seja, oferecem um desvio de custo marginal (0 ou +1)
-// que sai e volta perto do caminho principal. Retorna a contagem bruta
-// (0 = corredor de 1 célula do início ao fim, sem NENHUM desvio barato;
-// quanto maior, mais redundante/robusto). Não normalizado pelo
-// comprimento do caminho de propósito -- caminhos mais longos "ganham"
-// mais chances de robustez, o que é o comportamento desejado (a mesma
-// vantagem de distância vale menos se for um corredor único e vale mais
-// se for uma rede larga de rotas).
+// quase tão bons ao lado. Métrica: para cada célula do caminho mínimo
+// reconstruído, conta quantos vizinhos ortogonais alcançáveis (aresta não
+// bloqueada) fora do caminho têm dist[] <= dist da célula do caminho + 1
+// -- ou seja, oferecem um desvio de custo marginal (0 ou +1) que sai e
+// volta perto do caminho principal. Retorna a contagem bruta (0 =
+// corredor de 1 célula do início ao fim, sem NENHUM desvio barato; quanto
+// maior, mais redundante/robusto). Não normalizado pelo comprimento do
+// caminho de propósito -- caminhos mais longos "ganham" mais chances de
+// robustez, o que é o comportamento desejado. Wrapper fino sobre
+// detail::runBFS (mesmo motor de shortestPathLen/shortestPathTouchSlots
+// acima -- antes desta refatoração, esta função rodava sua PRÓPRIA BFS
+// redundante, idêntica até o ponto em que a meta é encontrada).
 inline int pathRobustness(uint64_t wallsH, uint64_t wallsV, int startCell, int player) {
-    int goalRow = GOAL_ROW[player];
-    if (rowOf(startCell) == goalRow) return 0;  // já chegou -- robustez não importa mais
-    // Geração em vez de reset O(N) (mesma técnica das 3 funções acima).
-    // `dist[]`/`parent[]` só são lidos para células desta geração (checada
-    // via `visitGen[]`); `parent[startCell]`/`dist[startCell]` setados
-    // explicitamente em vez de via reset global.
-    static thread_local int dist[N * N];
-    static thread_local int parent[N * N];
-    static thread_local uint64_t visitGen[N * N] = {};
-    static thread_local uint64_t gen = 0;
-    static thread_local int queue[N * N];
-    ++gen;
-    int head = 0, tail = 0;
-    queue[tail++] = startCell;
-    visitGen[startCell] = gen;
-    parent[startCell] = -1;
-    dist[startCell] = 0;
+    detail::runBFS(wallsH, wallsV, startCell, player);
+    auto& e = detail::engine();
+    if (e.distToGoal <= 0) return 0;  // já chegou -- robustez não importa mais
     static const int dr[4] = {-1, 1, 0, 0};
     static const int dc[4] = {0, 0, -1, 1};
-    int goalCell = -1;
-    while (head < tail && goalCell == -1) {
-        int cell = queue[head++];
-        int r = rowOf(cell), c = colOf(cell);
-        for (int d = 0; d < 4; d++) {
-            int nr = r + dr[d], nc = c + dc[d];
-            if (!inBounds(nr, nc)) continue;
-            int ncell = cellIdx(nr, nc);
-            if (visitGen[ncell] == gen) continue;
-            if (edgeBlocked(wallsH, wallsV, r, c, nr, nc)) continue;
-            visitGen[ncell] = gen;
-            parent[ncell] = cell;
-            dist[ncell] = dist[cell] + 1;
-            if (nr == goalRow) { goalCell = ncell; break; }
-            queue[tail++] = ncell;
-        }
-    }
-    if (goalCell == -1) return 0;  // não deveria acontecer (estado já é legal)
-
     int robustness = 0;
-    int cur = parent[goalCell];  // o passo final até a linha de meta não conta como "célula do caminho"
+    int cur = e.parent[e.goalCell];  // o passo final até a linha de meta não conta como "célula do caminho"
     while (cur != -1) {
         int r = rowOf(cur), c = colOf(cur);
-        int prevOnPath = parent[cur];
+        int prevOnPath = e.parent[cur];
         for (int d = 0; d < 4; d++) {
             int nr = r + dr[d], nc = c + dc[d];
             if (!inBounds(nr, nc)) continue;
             int ncell = cellIdx(nr, nc);
             if (ncell == prevOnPath) continue;               // não conta o passo de volta no próprio caminho
-            if (visitGen[ncell] != gen) continue;              // não alcançável dentro do BFS já feito
+            if (e.visitGen[ncell] != e.gen) continue;         // não alcançável dentro do BFS já feito
             if (edgeBlocked(wallsH, wallsV, r, c, nr, nc)) continue;
-            if (dist[ncell] <= dist[cur] + 1) robustness++;    // desvio de custo marginal <=1
+            if (e.dist[ncell] <= e.dist[cur] + 1) robustness++;    // desvio de custo marginal <=1
+        }
+        cur = prevOnPath;
+    }
+    return robustness;
+}
+
+// ---------------------------------------------------------------------
+// Cache de BFS por nó (plano-additional.md, Prioridade 6). Um
+// PlayerPathCache guarda o resultado de UMA chamada a detail::runBFS
+// (dist[]/parent[]/reached[] + goalCell/distToGoal) de forma que possa
+// ser LIDO várias vezes por chamadores diferentes dentro do MESMO nó de
+// busca, sem rodar a BFS de novo -- ver cachedShortestPathLen/
+// cachedPathRobustness/cachedTouchSlots abaixo, e os pontos de chamada em
+// search.hpp (evalSimpleW, quiescence, legalWallMoves, orderWallMoves)
+// que agora passam um PlayerPathCache adiante em vez de cada um chamar
+// shortestPathLen/pathRobustness/shortestPathTouchSlots por conta própria.
+//
+// `valid` começa false; quem PREENCHE o cache (computeDistFull) marca
+// true. Quem CONSOME (legalWallMoves, orderWallMoves, ...) checa `valid`
+// antes de decidir se precisa chamar computeDistFull -- permite que um
+// cache computado por um chamador anterior no mesmo nó (ex.: evalSimpleW
+// em quiescence) seja reaproveitado por um chamador posterior (ex.:
+// legalWallMoves, oppDistBefore/oppRobustBefore, logo depois) sem
+// recomputar nada.
+struct PlayerPathCache {
+    std::array<int, N * N> dist;
+    std::array<int, N * N> parent;
+    std::array<bool, N * N> reached{};
+    int goalCell = -1;
+    int distToGoal = -1;
+    bool valid = false;
+};
+
+// Preenche `out` a partir de UMA chamada a detail::runBFS. O reset de
+// `out.reached` (81 bools) é O(81), mas agora só é pago 1x por
+// (jogador, nó) -- não mais em toda chamada de shortestPathLen/
+// pathRobustness/shortestPathTouchSlots individualmente (essas continuam
+// O(visitado) via geração, ver detail::runBFS -- não regridem). A cópia
+// dist[]/parent[]/reached[] abaixo é O(visitado), não O(81), pelo mesmo
+// motivo (usa e.touched[], não varre as 81 células).
+inline void computeDistFull(uint64_t wallsH, uint64_t wallsV, int startCell, int player, PlayerPathCache& out) {
+    detail::runBFS(wallsH, wallsV, startCell, player);
+    auto& e = detail::engine();
+    out.reached = {};
+    out.goalCell = e.goalCell;
+    out.distToGoal = e.distToGoal;
+    out.valid = true;
+    for (int i = 0; i < e.touchedCount; i++) {
+        int cell = e.touched[i];
+        out.dist[cell] = e.dist[cell];
+        out.parent[cell] = e.parent[cell];
+        out.reached[cell] = true;
+    }
+}
+
+inline int cachedShortestPathLen(const PlayerPathCache& d) { return d.distToGoal; }
+
+inline void cachedTouchSlots(const PlayerPathCache& d, uint64_t& touchH, uint64_t& touchV) {
+    touchH = 0;
+    touchV = 0;
+    if (d.distToGoal <= 0) return;
+    int cur = d.goalCell;
+    while (d.parent[cur] != -1) {
+        int prev = d.parent[cur];
+        int ra = rowOf(prev), ca = colOf(prev);
+        int rb = rowOf(cur), cb = colOf(cur);
+        if (ra == rb) {
+            int r = ra, c = ca < cb ? ca : cb;
+            if (r - 1 >= 0) touchV |= (1ull << slotIdx(r - 1, c));
+            if (r < WS) touchV |= (1ull << slotIdx(r, c));
+        } else {
+            int r = ra < rb ? ra : rb, c = ca;
+            if (c - 1 >= 0) touchH |= (1ull << slotIdx(r, c - 1));
+            if (c < WS) touchH |= (1ull << slotIdx(r, c));
+        }
+        cur = prev;
+    }
+}
+
+inline int cachedPathRobustness(const PlayerPathCache& d, uint64_t wallsH, uint64_t wallsV) {
+    if (d.distToGoal <= 0) return 0;
+    static const int dr[4] = {-1, 1, 0, 0};
+    static const int dc[4] = {0, 0, -1, 1};
+    int robustness = 0;
+    int cur = d.parent[d.goalCell];
+    while (cur != -1) {
+        int r = rowOf(cur), c = colOf(cur);
+        int prevOnPath = d.parent[cur];
+        for (int dd = 0; dd < 4; dd++) {
+            int nr = r + dr[dd], nc = c + dc[dd];
+            if (!inBounds(nr, nc)) continue;
+            int ncell = cellIdx(nr, nc);
+            if (ncell == prevOnPath) continue;
+            if (!d.reached[ncell]) continue;
+            if (edgeBlocked(wallsH, wallsV, r, c, nr, nc)) continue;
+            if (d.dist[ncell] <= d.dist[cur] + 1) robustness++;
         }
         cur = prevOnPath;
     }
@@ -430,9 +514,26 @@ inline void pawnStepMoves(const State& s, int player, MoveList& out) {
 // (achado do benchmark ad-hoc desta sessão: recomputar
 // shortestPathTouchSlots dentro de orderWallMoves duplicava trabalho já
 // feito aqui, custando nós/s sem ganho compensador).
+//
+// cacheOut0/cacheOut1 (opcionais, default nullptr, Prioridade 6 do
+// plano-additional.md): mesma ideia, um nível acima. Se não-nulos, são
+// os PlayerPathCache de player0/player1 usados internamente para gerar
+// os touch slots acima -- se já vierem com `valid==true` (preenchidos
+// por um chamador anterior no MESMO nó, ex.: evalSimpleW dentro de
+// quiescence), a BFS interna nem roda: o cache existente é reaproveitado
+// direto. Se vierem `valid==false` (ou forem nullptr), são computados
+// aqui e devolvidos preenchidos, prontos para o chamador reaproveitar
+// depois (ex.: orderWallMoves, oppDistBefore/oppRobustBefore).
 inline void legalWallMoves(const State& s, int player, MoveList& out,
                             uint64_t* touchOutH0 = nullptr, uint64_t* touchOutV0 = nullptr,
-                            uint64_t* touchOutH1 = nullptr, uint64_t* touchOutV1 = nullptr) {
+                            uint64_t* touchOutH1 = nullptr, uint64_t* touchOutV1 = nullptr,
+                            PlayerPathCache* cacheOut0 = nullptr, PlayerPathCache* cacheOut1 = nullptr) {
+    PlayerPathCache localCache0, localCache1;
+    PlayerPathCache& c0 = cacheOut0 ? *cacheOut0 : localCache0;
+    PlayerPathCache& c1 = cacheOut1 ? *cacheOut1 : localCache1;
+    if (!c0.valid) computeDistFull(s.wallsH, s.wallsV, s.pawn[0], 0, c0);
+    if (!c1.valid) computeDistFull(s.wallsH, s.wallsV, s.pawn[1], 1, c1);
+
     if (s.wallsLeft[player] <= 0) {
         if (touchOutH0) *touchOutH0 = 0; if (touchOutV0) *touchOutV0 = 0;
         if (touchOutH1) *touchOutH1 = 0; if (touchOutV1) *touchOutV1 = 0;
@@ -440,14 +541,15 @@ inline void legalWallMoves(const State& s, int player, MoveList& out,
     }
 
     // Pré-filtro (Fase 4.2.1 do plano): calculado uma única vez por
-    // chamada (2 BFS, não 2×128). Um slot candidato que não toca o
-    // caminho mais curto atual de nenhum dos dois jogadores é
-    // garantidamente legal -- ver prova em shortestPathTouchSlots. Só
-    // roda hasPathToGoal (BFS completo) para o(s) jogador(es) cujo
-    // caminho o candidato realmente toca.
+    // chamada (2 BFS, não 2×128, e agora possivelmente ZERO BFS -- ver
+    // c0/c1 acima). Um slot candidato que não toca o caminho mais curto
+    // atual de nenhum dos dois jogadores é garantidamente legal -- ver
+    // prova em cachedTouchSlots/shortestPathTouchSlots. Só roda
+    // hasPathToGoal (BFS completo) para o(s) jogador(es) cujo caminho o
+    // candidato realmente toca.
     uint64_t touchH0, touchV0, touchH1, touchV1;
-    shortestPathTouchSlots(s.wallsH, s.wallsV, s.pawn[0], 0, touchH0, touchV0);
-    shortestPathTouchSlots(s.wallsH, s.wallsV, s.pawn[1], 1, touchH1, touchV1);
+    cachedTouchSlots(c0, touchH0, touchV0);
+    cachedTouchSlots(c1, touchH1, touchV1);
     if (touchOutH0) *touchOutH0 = touchH0; if (touchOutV0) *touchOutV0 = touchV0;
     if (touchOutH1) *touchOutH1 = touchH1; if (touchOutV1) *touchOutV1 = touchV1;
 
@@ -646,10 +748,29 @@ inline int urgency(int dist) {
 // sem depender do estado global. evalSimple(s,player) é o atalho de
 // produção, sempre com os pesos de evalWeights() (arredondado só no final,
 // pra não pagar custo de double no meio do cálculo mais do que uma vez).
-inline int evalSimpleW(const State& s, int player, const EvalWeights& w) {
+//
+// meCacheOut/oppCacheOut (opcionais, default nullptr, Prioridade 6 do
+// plano-additional.md): antes desta refatoração esta função pagava 4 BFS
+// (shortestPathLen + pathRobustness, separadas, para cada jogador) --
+// pathRobustness já calcula internamente tudo que shortestPathLen
+// calcula, então isso era 2 BFS redundantes. Agora usa 1 BFS por jogador
+// (computeDistFull), da qual tanto a distância quanto a robustez são
+// derivadas sem custo extra. Se meCacheOut/oppCacheOut forem passados,
+// ficam preenchidos e VÁLIDOS na volta -- permite ao chamador (quiescence,
+// search.hpp) reaproveitar esse mesmo cache logo em seguida (ex.:
+// legalWallMoves, oppDistBefore/oppRobustBefore) sem pagar mais nenhuma
+// BFS para o mesmo par (estado, jogador).
+inline int evalSimpleW(const State& s, int player, const EvalWeights& w,
+                        PlayerPathCache* meCacheOut = nullptr, PlayerPathCache* oppCacheOut = nullptr) {
     int me = player, opp = 1 - player;
-    int myDist = shortestPathLen(s.wallsH, s.wallsV, s.pawn[me], me);
-    int oppDist = shortestPathLen(s.wallsH, s.wallsV, s.pawn[opp], opp);
+    PlayerPathCache localMe, localOpp;
+    PlayerPathCache& meCache = meCacheOut ? *meCacheOut : localMe;
+    PlayerPathCache& oppCache = oppCacheOut ? *oppCacheOut : localOpp;
+    if (!meCache.valid) computeDistFull(s.wallsH, s.wallsV, s.pawn[me], me, meCache);
+    if (!oppCache.valid) computeDistFull(s.wallsH, s.wallsV, s.pawn[opp], opp, oppCache);
+
+    int myDist = cachedShortestPathLen(meCache);
+    int oppDist = cachedShortestPathLen(oppCache);
     int myMob = pawnMobilityCount(s, me);
     int oppMob = pawnMobilityCount(s, opp);
 
@@ -659,9 +780,10 @@ inline int evalSimpleW(const State& s, int player, const EvalWeights& w) {
     // Robustez de caminho (Fase 4.2.10, item 1): mesma distância BFS vale
     // mais se o caminho for uma rede larga de rotas (difícil de fechar em
     // 1-2 muros) do que se for um corredor único. Termo simétrico, mesmo
-    // padrão dos outros (diferença própria-menos-oponente).
-    int myRobust = pathRobustness(s.wallsH, s.wallsV, s.pawn[me], me);
-    int oppRobust = pathRobustness(s.wallsH, s.wallsV, s.pawn[opp], opp);
+    // padrão dos outros (diferença própria-menos-oponente). Derivada do
+    // MESMO cache computado acima -- sem BFS adicional (Prioridade 6).
+    int myRobust = cachedPathRobustness(meCache, s.wallsH, s.wallsV);
+    int oppRobust = cachedPathRobustness(oppCache, s.wallsH, s.wallsV);
     score += w.robustnessWeight * (myRobust - oppRobust);
 
     int distGap = std::abs(myDist - oppDist);
@@ -680,9 +802,25 @@ struct RepetitionTable {
     static constexpr int MAX_HIST = 512;
     uint64_t hist[MAX_HIST];
     int size = 0;
+    // Índice em `hist` onde termina o histórico REAL do jogo (copiado de
+    // gameHistory) e começa o que foi empilhado hipoteticamente por ESTA
+    // busca. Ver markRoot()/isRepetitionDraw() -- convenção igual à do
+    // Stockfish (Position::is_repetition) e ao algoritmo clássico do
+    // John Stanback (chessprogramming.org/Repetitions): uma posição que
+    // já existiu de verdade antes da raiz só conta como empate na
+    // 3ª ocorrência real (regra do jogo); uma que só existe dentro da
+    // linha hipotética desta busca pode cortar já na 2ª (1 repetição
+    // depois da raiz), porque continuar buscando um ciclo puramente
+    // hipotético não traz informação nova -- é otimização de busca
+    // padrão, não uma alteração da regra de fato.
+    int rootSize = 0;
 
     void push(uint64_t hash) { if (size < MAX_HIST) hist[size++] = hash; }
     void pop()               { if (size > 0) --size; }
+    // Chamar 1x no início de cada busca (chooseMove), depois de copiar
+    // gameHistory pra dentro do reptbl local, pra marcar onde termina o
+    // histórico real e começa o hipotético.
+    void markRoot() { rootSize = size; }
     int count(uint64_t hash) const {
         int c = 0;
         for (int i = 0; i < size; i++) {
@@ -690,7 +828,21 @@ struct RepetitionTable {
         }
         return c;
     }
-    void clear() { size = 0; }
+    // true se `hash` (já empilhado por push() antes desta chamada, ou
+    // seja, a ocorrência atual já está incluída na contagem) deve ser
+    // tratado como empate por repetição agora.
+    bool isRepetitionDraw(uint64_t hash) const {
+        int total = 0;
+        bool preRoot = false;
+        for (int i = 0; i < size; i++) {
+            if (hist[i] == hash) {
+                total++;
+                if (i < rootSize) preRoot = true;
+            }
+        }
+        return preRoot ? (total >= 3) : (total >= 2);
+    }
+    void clear() { size = 0; rootSize = 0; }
 };
 
 } // namespace qr

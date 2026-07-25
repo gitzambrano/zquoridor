@@ -200,12 +200,20 @@ public:
         Move bestMove = legalMoves(root)[0];
         int prevScore = 0;
         RepetitionTable reptbl = gameHistory;
+        reptbl.markRoot();  // tudo antes daqui é histórico real do jogo
         for (int depth = 1; depth <= maxDepthCap && !stopped; depth++) {
             rootDepth = depth;
             int score;
             if (depth <= 2) {
                 // aspiration window não compensa em profundidades tão rasas
                 // (a janela estreita quase sempre falha e obriga rebusca)
+                score = negamax(root, depth, -SCORE_INF, SCORE_INF, stats, reptbl);
+            } else if (prevScore <= -RACE_SCALE_THRESHOLD || prevScore >= RACE_SCALE_THRESHOLD) {
+                // prevScore já está em escala de mate/race (RACE_SCORE_BASE
+                // ou SCORE_INF-1), não em escala de evalSimple. Uma janela
+                // de +-50 centrada nesse valor sempre falha e força
+                // rebusca em janela cheia -- pulando direto evita pagar
+                // essa profundidade duas vezes.
                 score = negamax(root, depth, -SCORE_INF, SCORE_INF, stats, reptbl);
             } else {
                 int alpha = prevScore - ASPIRATION_DELTA;
@@ -229,6 +237,7 @@ public:
 
 private:
     static constexpr int ASPIRATION_DELTA = 50;  // unidades de evalSimple
+    static constexpr int RACE_SCALE_THRESHOLD = 100'000;
 
     // bônus de ordenação de muro via CAT (Corridor Attention Table,
     // cat.hpp, plano-additional.md Prioridade 1) -- substitui o antigo
@@ -332,8 +341,15 @@ private:
     //      de custo baixo fora desse caminho específico -- ver cat.hpp
     //      para a derivação completa. Roda em TODOS os plies (o custo não
     //      escala com o número de candidatos, diferente de wallByBFS).
+    //
+    // oppCache (opcional, default nullptr, Prioridade 6 do
+    // plano-additional.md): se não-nulo e `valid`, `before` é lido direto
+    // do cache (0 BFS) em vez de chamar shortestPathLen -- o chamador
+    // (negamax, Estágio 3) já paga essa BFS dentro de legalWallMoves logo
+    // antes desta chamada, para o pré-filtro; reaproveitar aqui evita
+    // pagá-la de novo para a MESMA topologia/jogador.
     void orderWallMoves(MoveList& moves, int ply, int side, const State& s,
-                         const CorridorHeat& oppHeat) {
+                         const CorridorHeat& oppHeat, const PlayerPathCache* oppCache = nullptr) {
         bool ply0 = ply >= 0 && ply < MAX_PLY;
         bool wallByBFS = ply <= WALL_BFS_ORDER_MAX_PLY;
         int opp = 1 - side;
@@ -344,8 +360,16 @@ private:
         // a chamada) -- hoisted pra fora do laço. Achado de revisão:
         // estava sendo recomputado (BFS completa) em CADA iteração, até
         // ~128 vezes por nó perto da raiz (ply<=WALL_BFS_ORDER_MAX_PLY),
-        // sempre com o mesmo resultado.
-        int before = wallByBFS ? shortestPathLen(s.wallsH, s.wallsV, s.pawn[opp], opp) : 0;
+        // sempre com o mesmo resultado. Achado desta rodada (Prioridade
+        // 6): mesmo hoisted, ainda era uma BFS A MAIS por nó além da que
+        // legalWallMoves já tinha acabado de pagar para o mesmo par
+        // (topologia atual, opp) -- reaproveita o cache quando disponível.
+        int before = 0;
+        if (wallByBFS) {
+            before = (oppCache && oppCache->valid)
+                ? cachedShortestPathLen(*oppCache)
+                : shortestPathLen(s.wallsH, s.wallsV, s.pawn[opp], opp);
+        }
         for (size_t i = 0; i < n; i++) {
             const Move& m = moves[i];
             long long sc = 0;
@@ -375,7 +399,8 @@ private:
     // "captura obrigatória" em Quoridor), então funciona como em
     // quiescência de xadrez -- só estende se algum muro crítico do lado a
     // mover melhorar sobre o stand-pat.
-    int quiescence(const State& s, int alpha, int beta, int qply, SearchStats& stats, RepetitionTable& reptbl) {
+    int quiescence(const State& s, int alpha, int beta, int qply, SearchStats& stats, RepetitionTable& reptbl,
+                   bool rootParity) {
         stats.nodes++;
         if ((stats.nodes & 0x3FF) == 0 && std::chrono::steady_clock::now() >= deadline) {
             stopped = true;
@@ -384,15 +409,21 @@ private:
         int w = winner(s);
         if (w != -1) return (w == s.turn) ? SCORE_INF - 1 : -(SCORE_INF - 1);
 
-        // Bug corrigido: estava `return -CONTEMPT` (= +30, uma RECOMPENSA
-        // para quem alcança a repetição). Com CONTEMPT=-30 o objetivo é
-        // exatamente o oposto ("motor evita empate em posição neutra/
-        // melhor", comentário original da constante) -- o score do nó de
-        // repetição tem que ser CONTEMPT (negativo) do ponto de vista de
-        // quem tem o lance ali, não -CONTEMPT.
-        if (reptbl.count(s.hash) >= 2) return CONTEMPT;
+        // Ver comentário equivalente em negamax() -- mesmo critério de
+        // 2 vs 3 ocorrências e mesma âncora de sinal na paridade do ply
+        // em relação à raiz (rootParity), não em s.turn.
+        if (reptbl.isRepetitionDraw(s.hash)) return rootParity ? CONTEMPT : -CONTEMPT;
 
-        int standPat = evalSimpleW(s, s.turn, weights);
+        // Prioridade 6 do plano-additional.md: evalSimpleW por si só já
+        // funde 4 BFS em 2 (ver rules.hpp); capturando esses 2 caches
+        // (sideCache/oppCache) aqui, o resto desta função (legalWallMoves
+        // logo abaixo, e oppDistBefore/oppRobustBefore) reaproveita o
+        // MESMO resultado em vez de recalcular -- 0 BFS adicionais no
+        // caminho comum (extensão não disparada), e só 1 BFS por
+        // candidato de muro testado (em vez de até 2) no caminho que
+        // dispara a extensão.
+        PlayerPathCache sideCache, oppCache;
+        int standPat = evalSimpleW(s, s.turn, weights, &sideCache, &oppCache);
         if (standPat >= beta) return standPat;
         int localAlpha = alpha > standPat ? alpha : standPat;
         int best = standPat;
@@ -402,17 +433,19 @@ private:
         int side = s.turn, opp = 1 - side;
         if (s.wallsLeft[side] <= 0) return best;  // sem muro pra jogar, nada a estender
 
-        // mesmo BFS já pago pelo pré-filtro de legalWallMoves -- não é
-        // custo adicional além do que o Estágio 3 do negamax já pagaria
-        // se este nó não fosse folha.
+        // mesmo BFS já pago acima por evalSimpleW -- legalWallMoves recebe
+        // os caches (mapeados por índice de jogador, não por side/opp) já
+        // válidos e não roda BFS nenhuma internamente.
         MoveList wallMoves;
         uint64_t touchH0, touchV0, touchH1, touchV1;
-        legalWallMoves(s, side, wallMoves, &touchH0, &touchV0, &touchH1, &touchV1);
+        PlayerPathCache* cache0 = (side == 0) ? &sideCache : &oppCache;
+        PlayerPathCache* cache1 = (side == 0) ? &oppCache : &sideCache;
+        legalWallMoves(s, side, wallMoves, &touchH0, &touchV0, &touchH1, &touchV1, cache0, cache1);
         uint64_t touchHOpp = (side == 0) ? touchH1 : touchH0;
         uint64_t touchVOpp = (side == 0) ? touchV1 : touchV0;
 
-        int oppDistBefore = shortestPathLen(s.wallsH, s.wallsV, s.pawn[opp], opp);
-        int oppRobustBefore = pathRobustness(s.wallsH, s.wallsV, s.pawn[opp], opp);
+        int oppDistBefore = cachedShortestPathLen(oppCache);
+        int oppRobustBefore = cachedPathRobustness(oppCache, s.wallsH, s.wallsV);
 
         for (size_t i = 0; i < wallMoves.size(); i++) {
             const Move& m = wallMoves[i];
@@ -421,16 +454,23 @@ private:
             if (!touches) continue;  // não toca o caminho atual do oponente -> não pode ser "crítico" aqui
 
             State ns = applyMove(s, m);
-            int oppDistAfter = shortestPathLen(ns.wallsH, ns.wallsV, ns.pawn[opp], opp);
+            // 1 BFS só (computeDistFull), não mais até 2 (shortestPathLen
+            // sempre + pathRobustness condicional) -- a topologia de `ns`
+            // é única por candidato (não há cache de nó pra reaproveitar
+            // aqui), mas a robustez sai de graça do mesmo cache quando
+            // precisa (só percorre parent[], não roda BFS nova).
+            PlayerPathCache oppCacheAfter;
+            computeDistFull(ns.wallsH, ns.wallsV, ns.pawn[opp], opp, oppCacheAfter);
+            int oppDistAfter = cachedShortestPathLen(oppCacheAfter);
             bool critical = (oppDistAfter - oppDistBefore) >= QS_CRITICAL_BFS_DELTA;
             if (!critical && oppRobustBefore > QS_CRITICAL_ROBUSTNESS_DROP_TO) {
-                int oppRobustAfter = pathRobustness(ns.wallsH, ns.wallsV, ns.pawn[opp], opp);
+                int oppRobustAfter = cachedPathRobustness(oppCacheAfter, ns.wallsH, ns.wallsV);
                 critical = (oppRobustAfter <= QS_CRITICAL_ROBUSTNESS_DROP_TO);
             }
             if (!critical) continue;
 
             reptbl.push(ns.hash);
-            int score = -quiescence(ns, -beta, -localAlpha, qply + 1, stats, reptbl);
+            int score = -quiescence(ns, -beta, -localAlpha, qply + 1, stats, reptbl, !rootParity);
             reptbl.pop();
             if (stopped) return 0;
             if (score > best) best = score;
@@ -449,10 +489,22 @@ private:
         int w = winner(s);
         if (w != -1) return (w == s.turn) ? SCORE_INF - 1 : -(SCORE_INF - 1);
 
-        // Bug corrigido (mesmo de quiescence() acima): era `-CONTEMPT`
-        // (+30, recompensa por repetir); passa a ser `CONTEMPT` (-30,
-        // penalidade), coerente com o objetivo documentado da constante.
-        if (reptbl.count(s.hash) >= 2) return CONTEMPT;
+        int ply = rootDepth - depth;
+
+        // Empate por repetição (ver RepetitionTable::isRepetitionDraw em
+        // rules.hpp pro critério de 2 vs 3 ocorrências). O sinal do
+        // CONTEMPT é ancorado na paridade do ply em relação à RAIZ desta
+        // busca (ply par = mesmo lado que está pensando agora), não em
+        // `s.turn` puro -- porque `s.turn` alterna a cada lance e não tem
+        // relação fixa com "nós" vs "o oponente": a mesma fórmula
+        // aplicada direto a s.turn dá um viés de sinal que troca
+        // aleatoriamente conforme a paridade da profundidade em que a
+        // repetição aparece na árvore, em vez de refletir uma preferência
+        // consistente. É o mesmo motivo pelo qual o Stockfish ancora
+        // "Analysis Contempt" ao lado que tem o lance NA RAIZ, não ao
+        // lado do nó terminal (ver UCI option "Analysis Contempt": "By
+        // default, contempt is set to prefer the side to move [na raiz]").
+        if (reptbl.isRepetitionDraw(s.hash)) return (ply % 2 == 0) ? CONTEMPT : -CONTEMPT;
 
         // Final "mãos vazias" (endgame_race.hpp, plano-additional.md
         // Prioridade 4): quando os dois ficam sem muros, a topologia
@@ -557,7 +609,7 @@ private:
             // resolvido acima, então não há necessidade de checá-lo de
             // novo aqui -- mesma garantia que quiescence() já tinha.
             if (!quiescenceEnabled) return evalSimpleW(s, s.turn, weights);
-            return quiescence(s, alpha, beta, 0, stats, reptbl);
+            return quiescence(s, alpha, beta, 0, stats, reptbl, ply % 2 == 0);
         }
 
         int alphaOrig = alpha;
@@ -583,7 +635,6 @@ private:
             }
         }
 
-        int ply = rootDepth - depth;
         int side = s.turn;
 
         // --- Geração estagiada de lances (Fase 4.2.3 do plano) ---------
@@ -657,7 +708,13 @@ private:
         // só numa fração dos nós internos, não em todos.
         if (!cutoff) {
             MoveList wallMoves;
-            legalWallMoves(s, side, wallMoves);
+            // Prioridade 6 do plano-additional.md: legalWallMoves já roda
+            // (no máximo) 1 BFS por jogador para o pré-filtro de muro --
+            // devolvendo esses caches aqui, orderWallMoves (logo abaixo)
+            // reaproveita o do oponente pra "before" em vez de pagar mais
+            // uma BFS pra mesma topologia/jogador.
+            PlayerPathCache cache0, cache1;
+            legalWallMoves(s, side, wallMoves, nullptr, nullptr, nullptr, nullptr, &cache0, &cache1);
             // Achado de revisão de performance: computeCorridorHeat (2
             // BFS) rodava incondicionalmente aqui, mesmo quando
             // wallMoves está vazio -- o que acontece sempre que o lado a
@@ -670,8 +727,13 @@ private:
             // pra de fato ordenar com ele.
             if (!wallMoves.empty()) {
                 int opp = 1 - side;
+                // computeCorridorHeat continua com sua própria BFS
+                // dedicada (não reaproveita cache0/cache1) -- ver nota em
+                // rules.hpp sobre por que essa fusão específica (com
+                // early-exit parcial) fica de fora por risco de correção.
                 CorridorHeat oppHeat = computeCorridorHeat(s.wallsH, s.wallsV, s.pawn[opp], opp);
-                orderWallMoves(wallMoves, ply, side, s, oppHeat);
+                const PlayerPathCache& oppCache = (opp == 0) ? cache0 : cache1;
+                orderWallMoves(wallMoves, ply, side, s, oppHeat, &oppCache);
             }
             for (size_t i = 0; i < wallMoves.size() && !cutoff; i++) {
                 const Move& m = wallMoves[i];
@@ -702,7 +764,7 @@ public:
         stopped = false;
         deadline = std::chrono::steady_clock::now() + std::chrono::hours(1);
         RepetitionTable emptyHistory;
-        return quiescence(s, alpha, beta, 0, stats, emptyHistory);
+        return quiescence(s, alpha, beta, 0, stats, emptyHistory, true);
     }
     int testFixedDepthFullWindow(const State& s, int depth, SearchStats& stats) {
         resetOrderingState();
