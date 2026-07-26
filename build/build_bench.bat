@@ -24,12 +24,20 @@ if not exist "%BIN%" mkdir "%BIN%"
 
 set FLAGS=-O3 -std=c++17 -march=native -mavx2 -mfma
 
-echo [1/2] bench.exe  ^<-  src\main.cpp
+echo [1/4] bench.exe  ^<-  src\main.cpp
 g++ %FLAGS% -I"%SRC%" -o "%BIN%\bench.exe" "%SRC%\main.cpp"
 if errorlevel 1 goto :erro
 
-echo [2/2] bench_wall_touch_bonus.exe  ^<-  teste\bench_wall_touch_bonus.cpp
+echo [2/4] bench_wall_touch_bonus.exe  ^<-  teste\bench_wall_touch_bonus.cpp
 g++ %FLAGS% -I"%SRC%" -o "%BIN%\bench_wall_touch_bonus.exe" "%TESTE%\bench_wall_touch_bonus.cpp"
+if errorlevel 1 goto :erro
+
+echo [3/4] bench_quiescence_toggle.exe  ^<-  teste\bench_quiescence_toggle.cpp
+g++ %FLAGS% -I"%SRC%" -o "%BIN%\bench_quiescence_toggle.exe" "%TESTE%\bench_quiescence_toggle.cpp"
+if errorlevel 1 goto :erro
+
+echo [4/4] bench_lmr_pvs.exe  ^<-  teste\bench_lmr_pvs.cpp
+g++ %FLAGS% -I"%SRC%" -o "%BIN%\bench_lmr_pvs.exe" "%TESTE%\bench_lmr_pvs.cpp"
 if errorlevel 1 goto :erro
 
 echo.

@@ -15,11 +15,12 @@ A meta de força é vencer a esmagadora maioria dos jogadores humanos
 motores públicos de Quoridor mais fortes que existirem.
 
 **Status atual**: a busca (negamax, alpha-beta, tabela de transposição,
-quiescência de muro) está implementada e validada por testes de
-regressão. A NNUE também está implementada — arquitetura, treino e
-quantização — mas ainda não foi plugada na busca, que por enquanto
-continua usando só a avaliação heurística (`evalSimple`). O caminho até
-lá está descrito no Roadmap (Seção 5).
+killer/history, CAT, LMR+PVS, RFP+LMP, quiescência de muro, cache de BFS
+por nó e entre nós, solver exato de final "mãos vazias") está implementada
+e validada por testes de regressão. A NNUE também está implementada —
+arquitetura, treino e quantização — mas ainda não foi plugada na busca,
+que por enquanto continua usando só a avaliação heurística
+(`evalSimple`). O caminho até lá está descrito no Roadmap (Seção 5).
 
 ---
 
@@ -362,6 +363,45 @@ neural, depois os testes que garantem que nada disso quebrou.
   fora dessa rota específica. Benchmark ad-hoc (`bench_wall_touch_bonus.cpp`,
   40 posições fixas, 200ms/lance): ~11,7× menos nós até profundidade
   equivalente comparado à ordenação sem esse sinal.
+- **Cache de BFS por nó e entre nós** (plano-additional.md, Prioridades 6
+  e 6b): a mesma BFS de distância (`shortestPathLen`/`pathRobustness`/
+  `shortestPathTouchSlots`, unificadas num único motor em `rules.hpp`)
+  era recalculada várias vezes por nó (ordenação, quiescência,
+  avaliação) mesmo para o mesmo par (topologia de muro, peão, jogador).
+  Um `PlayerPathCache` computado uma vez por nó elimina a duplicação
+  local; um `PlayerPathCacheTable` (~48MB, chaveado por
+  `wallsH/wallsV/pawnCell/player`, não pela posição inteira) elimina
+  também a duplicação entre nós irmãos/transposições que compartilham a
+  mesma topologia de muro. Ganho medido (`bench_fixed_depth.cpp`,
+  mesma contagem de nós antes/depois — só velocidade, busca idêntica):
+  ~57% (cache por nó) + ~5% adicional (cache entre nós).
+- **LMR + PVS** (Late Move Reduction + Principal Variation Search,
+  plano-additional.md Prioridades 3 e 8): lances tardios na ordenação
+  são buscados em profundidade reduzida e janela nula primeiro,
+  reverificando em profundidade/janela cheia só se o resultado reduzido
+  indicar que talvez valha a pena — reduz nós-para-mesma-profundidade
+  sem abrir mão de encontrar a linha certa quando ela existe. Nunca
+  reduz o lance da TT, killers, nem muro "quente" no calor CAT. Toggle
+  `Negamax::setLmrPvsEnabled(false)`.
+- **RFP + LMP** (Reverse Futility Pruning + Late Move Pruning,
+  plano-additional.md Prioridades 3b e 3c): em profundidade rasa, RFP
+  corta o nó sem gerar lance nenhum quando o eval estático já está muito
+  acima de beta; LMP descarta de vez a cauda de lances quietos depois de
+  já ter tentado vários sem sucesso. Nunca aplicados na raiz, nem ao
+  lance da TT/killer/muro quente. Toggles
+  `Negamax::setRfpEnabled(false)`/`setLmpEnabled(false)`.
+  **Cuidado documentado:** LMR combinado com LMP sem um guard extra
+  (`reducedByLmr` em `negamax`) formava uma combinação catastroficamente
+  pior que qualquer um sozinho (0-10 em partidas diretas isoladas) — a
+  busca de verificação reduzida do LMR ficava contaminada pela poda
+  agressiva do LMP, nunca disparando a re-busca de segurança da qual o
+  LMR depende. Corrigido; ver Prioridade 3c do plano para a análise
+  completa. Validado em `test_lmr_pvs.cpp` (nunca lance ilegal,
+  concordância de score ≥85% e ≥90% em posições decisivas contra
+  referência de janela cheia sem nenhuma das quatro heurísticas) e
+  `bench_lmr_pvs.cpp` (nós-para-mesma-profundidade ~0,19–0,22×; partidas
+  diretas 6-3-1 a favor de ligado, amostra pequena — não é SPRT, ver
+  Prioridade 14 do plano).
 - **Quiescência de muro**: perto do fim de uma busca, se o melhor lance
   encontrado for um muro que piora bastante o caminho do adversário, o
   motor estende a busca por mais alguns lances antes de aceitar aquele
@@ -449,6 +489,14 @@ na Seção 4; o plano para plugá-la na busca está na Fase B do roadmap
   `wallsLeft==(0,0)` — pega o bug de escolha de lance (não de valor)
   descrito na Seção "Busca" acima (falha contra a versão sem a correção,
   passa com ela).
+- `test_lmr_pvs.cpp`: valida LMR+PVS+RFP+LMP (plano-additional.md,
+  Prioridades 3/3b/3c/8) contra uma referência de janela cheia sem
+  nenhuma das quatro — não exige "0 divergências" (são heurísticas por
+  desenho, diferente do teste de staging acima), mas exige nunca devolver
+  lance ilegal, concordância de score ≥85% geral e ≥90% em posições
+  decisivas (|score| alto — é onde uma redução/poda mal calibrada
+  perderia uma linha tática fina), e reporta nós-para-mesma-profundidade
+  como evidência de que a mudança de fato ajuda.
 - `nnue_verify.cpp`: confirma que a implementação C++ da rede produz os
   mesmos números que a implementação Python, tanto em float32 quanto na
   versão quantizada em int8.
@@ -456,6 +504,11 @@ na Seção 4; o plano para plugá-la na busca está na Fase B do roadmap
   nós com a quiescência ligada e desligada, numa trilha de posições fixa
   e profundidade fixa (não orçamento de tempo, que varia muito de rodada
   para rodada e mascara o efeito medido).
+- `bench_lmr_pvs.cpp`: mesmo espírito do anterior, mas para LMR+PVS+RFP+
+  LMP — nós/s e profundidade média em posições fixas (orçamento de tempo
+  fixo), e partidas diretas engine-vs-engine (heurísticas ligadas vs
+  desligadas, cores alternadas) para uma resposta mais direta de "joga
+  melhor".
 
 ---
 
@@ -503,13 +556,19 @@ Tudo aqui usa só `evalSimple`, sem NNUE.
 
 1. Continuation history (1-ply) para combos de muro sequenciais — a
    history hoje é `[lado][lance]`, sem contexto do lance anterior.
-2. LMR em muros ordenados tarde, null-move pruning com guarda de
-   zugzwang (`wallsLeft[side] > 0` e gap não muito apertado,
-   futility/razoring raso em lance de peão quiet com profundidade ≤ 2,
-   PVS — nessa ordem, todos dependentes de ordenação já madura (item 2).
+2. ~~LMR em muros ordenados tarde~~, ~~PVS~~, ~~futility/razoring raso em
+   lance de peão quiet com profundidade ≤ 2~~ — **feito** (plano-
+   additional.md, Prioridades 3/3b/3c/8: LMR+PVS+RFP+LMP, ver Seção 3
+   "Busca" acima). Ainda falta **null-move pruning** com guarda de
+   zugzwang (`wallsLeft[side] > 0` e gap não muito apertado) — técnica
+   diferente de RFP (dá um lance "de graça" ao adversário em vez de só
+   olhar o eval estático), não coberta pelo que já está pronto.
 3. Calibrar os limiares da quiescência de muro
    (`QS_CRITICAL_BFS_DELTA`, `QS_CRITICAL_ROBUSTNESS_DROP_TO`), hoje
-   valores iniciais não calibrados.
+   valores iniciais não calibrados. As margens de RFP (`RFP_MARGIN_*`) e
+   contagens de LMP (`LMP_COUNT_*`) também herdaram valores de partida
+   (do titanium-engine) ainda não recalibrados via `tune_spsa.cpp` para
+   este motor.
 4. Ladder interno de ELO para o motor heurístico puro — cada otimização
    acima validada por partidas diretas, não só por nós/s e profundidade.
    Serve também de baseline de força para comparar com a NNUE mais tarde

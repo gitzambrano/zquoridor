@@ -478,6 +478,122 @@ inline int cachedPathRobustness(const PlayerPathCache& d, uint64_t wallsH, uint6
     return robustness;
 }
 
+// ---------------------------------------------------------------------
+// Cache de BFS ENTRE nós (plano-additional.md, Prioridade 6b). O cache
+// da Prioridade 6 acima (PlayerPathCache passado por referência dentro
+// de um nó) evita recomputar a mesma BFS várias vezes DENTRO do mesmo
+// nó; este cache vai além: a MESMA topologia de muro (mesmo par
+// wallsH/wallsV) reaparece o tempo todo em nós DIFERENTES da árvore --
+// irmãos (mesmo pai, candidatos de PEÃO diferentes não mexem nos muros),
+// transposições, e reaberturas da mesma posição por PVS/aspiration/
+// iterative deepening. Como a distância BFS de um jogador só depende de
+// (wallsH, wallsV, pawnCell, player) -- nunca de wallsLeft/turn/peão do
+// OUTRO jogador --, o resultado pode ser reaproveitado por QUALQUER nó
+// que caia nessa mesma quádrupla, não só dentro do nó que o calculou.
+//
+// Nota sobre a pergunta "dá pra reaproveitar a mesma BFS pros 2
+// jogadores": não -- BFS é busca de fonte ÚNICA, e pawn[0] != pawn[1]
+// sempre (dois peões nunca ocupam a mesma casa), então são
+// inevitavelmente 2 travessias diferentes. O que ESTE cache reaproveita
+// não é "jogador A pro B", mas "este nó" pro "próximo nó que pisar na
+// MESMA topologia + MESMA casa de peão + MESMO jogador" -- o que
+// acontece com frequência real (medido abaixo via hits()/misses()).
+//
+// Chave: hash de (wallsH, wallsV, pawnCell, player) -- NÃO o State.hash
+// inteiro (que também mistura turn/wallsLeft, que não afetam o
+// resultado da BFS de distância -- mesmo raciocínio documentado em
+// cat.hpp sobre a independência de computeCorridorHeat).
+//
+// Tabela hash de tamanho FIXO desde o início (Prioridade 6b do plano:
+// "popular o tamanho inicial já no valor de regime, evitar a rampa
+// fria"), sem heap por chamada -- só a alocação única do vector no
+// construtor. Substituição "always replace" (sem lista ligada de LRU de
+// verdade): o slot mais recentemente pedido sempre vence a posição do
+// hash -- aproxima um LRU real com custo O(1) por acesso e sem ponteiros
+// extras, mesmo compromisso que várias TT de xadrez pequenas usam.
+struct PlayerPathCacheEntry {
+    uint64_t key = 0;
+    PlayerPathCache data;
+    bool occupied = false;
+};
+
+constexpr int PLAYER_PATH_TT_BITS = 16;  // 65536 entradas * ~740B ~= 48MB
+constexpr size_t PLAYER_PATH_TT_SIZE = 1ull << PLAYER_PATH_TT_BITS;
+
+// Mistura simples (splitmix64-like) dos 4 componentes da chave -- não
+// precisa de força criptográfica, só espalhar bem o suficiente pra evitar
+// colisões óbvias (walls quase sempre mudam só 1 bit de cada vez, então
+// XOR direto sem multiplicar antes colidiria demais).
+inline uint64_t playerPathCacheKey(uint64_t wallsH, uint64_t wallsV, int pawnCell, int player) {
+    uint64_t h = wallsH * 0x9E3779B97F4A7C15ull;
+    h ^= (wallsV * 0xC2B2AE3D27D4EB4Full + 0x165667B19E3779F9ull);
+    h ^= (uint64_t)(pawnCell * 2 + player) * 0xFF51AFD7ED558CCDull;
+    h ^= h >> 33;
+    return h;
+}
+
+class PlayerPathCacheTable {
+public:
+    PlayerPathCacheTable() : table(PLAYER_PATH_TT_SIZE) {}
+
+    // true + `out` preenchido em caso de acerto; false em caso de erro
+    // (miss) -- chamador computa e deve chamar put() para alimentar
+    // futuros acertos de outros nós.
+    bool get(uint64_t wallsH, uint64_t wallsV, int pawnCell, int player, PlayerPathCache& out) {
+        uint64_t key = playerPathCacheKey(wallsH, wallsV, pawnCell, player);
+        PlayerPathCacheEntry& e = table[key & (PLAYER_PATH_TT_SIZE - 1)];
+        if (e.occupied && e.key == key) {
+            out = e.data;
+            hits_++;
+            return true;
+        }
+        misses_++;
+        return false;
+    }
+
+    void put(uint64_t wallsH, uint64_t wallsV, int pawnCell, int player, const PlayerPathCache& data) {
+        uint64_t key = playerPathCacheKey(wallsH, wallsV, pawnCell, player);
+        PlayerPathCacheEntry& e = table[key & (PLAYER_PATH_TT_SIZE - 1)];
+        e.key = key;
+        e.data = data;
+        e.occupied = true;
+    }
+
+    // Não precisa ser chamado entre partidas por corretude (ao contrário
+    // da TT de score em search.hpp): o valor cacheado aqui é uma função
+    // PURA de (wallsH, wallsV, pawnCell, player) -- nunca fica
+    // "contaminado" por contexto de outra busca/partida, então uma
+    // entrada antiga sempre continua correta se a chave bater de novo.
+    // Exposto só para medição/teste (zerar hits/misses entre benchmarks).
+    void clear() {
+        std::fill(table.begin(), table.end(), PlayerPathCacheEntry{});
+        hits_ = 0; misses_ = 0;
+    }
+
+    uint64_t hits() const { return hits_; }
+    uint64_t misses() const { return misses_; }
+
+private:
+    std::vector<PlayerPathCacheEntry> table;
+    uint64_t hits_ = 0, misses_ = 0;
+};
+
+// Ponte entre o cache de nó (Prioridade 6, PlayerPathCache::valid) e o
+// cache entre nós (Prioridade 6b, PlayerPathCacheTable) -- usada no lugar
+// de computeDistFull() direto sempre que houver uma tabela 6b disponível
+// (evalSimpleW/legalWallMoves abaixo, chamadas a partir de search.hpp).
+// `xtable == nullptr` cai de volta no comportamento da Prioridade 6 pura
+// (sem cache entre nós) -- mantém os chamadores que não têm uma
+// PlayerPathCacheTable de longa duração à mão (tune_spsa.cpp,
+// endgame_race.hpp, testes) funcionando sem mudança nenhuma.
+inline void computeDistCached(uint64_t wallsH, uint64_t wallsV, int startCell, int player,
+                               PlayerPathCacheTable* xtable, PlayerPathCache& out) {
+    if (out.valid) return;  // já preenchido nesta chamada por um chamador anterior no mesmo nó
+    if (xtable && xtable->get(wallsH, wallsV, startCell, player, out)) return;  // acerto 6b -- 0 BFS
+    computeDistFull(wallsH, wallsV, startCell, player, out);
+    if (xtable) xtable->put(wallsH, wallsV, startCell, player, out);
+}
+
 // lances de peão (ortogonais + saltos retos/diagonais) -- grava direto
 // como Move::pawn(destCell) em out (Fase 4.2.2: sem std::vector<int>
 // intermediário, out é o MoveList final de legalMoves).
@@ -524,19 +640,26 @@ inline void pawnStepMoves(const State& s, int player, MoveList& out) {
 // direto. Se vierem `valid==false` (ou forem nullptr), são computados
 // aqui e devolvidos preenchidos, prontos para o chamador reaproveitar
 // depois (ex.: orderWallMoves, oppDistBefore/oppRobustBefore).
+//
+// xtable (opcional, default nullptr, Prioridade 6b): se não-nulo, um
+// miss local (cacheOut ainda inválido) tenta o cache ENTRE nós antes de
+// rodar a BFS -- ver computeDistCached acima.
 inline void legalWallMoves(const State& s, int player, MoveList& out,
                             uint64_t* touchOutH0 = nullptr, uint64_t* touchOutV0 = nullptr,
                             uint64_t* touchOutH1 = nullptr, uint64_t* touchOutV1 = nullptr,
-                            PlayerPathCache* cacheOut0 = nullptr, PlayerPathCache* cacheOut1 = nullptr) {
+                            PlayerPathCache* cacheOut0 = nullptr, PlayerPathCache* cacheOut1 = nullptr,
+                            PlayerPathCacheTable* xtable = nullptr) {
     PlayerPathCache localCache0, localCache1;
     PlayerPathCache& c0 = cacheOut0 ? *cacheOut0 : localCache0;
     PlayerPathCache& c1 = cacheOut1 ? *cacheOut1 : localCache1;
-    if (!c0.valid) computeDistFull(s.wallsH, s.wallsV, s.pawn[0], 0, c0);
-    if (!c1.valid) computeDistFull(s.wallsH, s.wallsV, s.pawn[1], 1, c1);
+    computeDistCached(s.wallsH, s.wallsV, s.pawn[0], 0, xtable, c0);
+    computeDistCached(s.wallsH, s.wallsV, s.pawn[1], 1, xtable, c1);
 
     if (s.wallsLeft[player] <= 0) {
-        if (touchOutH0) *touchOutH0 = 0; if (touchOutV0) *touchOutV0 = 0;
-        if (touchOutH1) *touchOutH1 = 0; if (touchOutV1) *touchOutV1 = 0;
+        if (touchOutH0) *touchOutH0 = 0;
+        if (touchOutV0) *touchOutV0 = 0;
+        if (touchOutH1) *touchOutH1 = 0;
+        if (touchOutV1) *touchOutV1 = 0;
         return;
     }
 
@@ -550,8 +673,10 @@ inline void legalWallMoves(const State& s, int player, MoveList& out,
     uint64_t touchH0, touchV0, touchH1, touchV1;
     cachedTouchSlots(c0, touchH0, touchV0);
     cachedTouchSlots(c1, touchH1, touchV1);
-    if (touchOutH0) *touchOutH0 = touchH0; if (touchOutV0) *touchOutV0 = touchV0;
-    if (touchOutH1) *touchOutH1 = touchH1; if (touchOutV1) *touchOutV1 = touchV1;
+    if (touchOutH0) *touchOutH0 = touchH0;
+    if (touchOutV0) *touchOutV0 = touchV0;
+    if (touchOutH1) *touchOutH1 = touchH1;
+    if (touchOutV1) *touchOutV1 = touchV1;
 
     // DSU (Fase 4.2.1, item 2 do plano) sobre o grafo dual de muros --
     // ver prova de corretude e geometria em dsu.hpp. Construído uma
@@ -760,14 +885,19 @@ inline int urgency(int dist) {
 // search.hpp) reaproveitar esse mesmo cache logo em seguida (ex.:
 // legalWallMoves, oppDistBefore/oppRobustBefore) sem pagar mais nenhuma
 // BFS para o mesmo par (estado, jogador).
+//
+// xtable (opcional, default nullptr, Prioridade 6b): cache ENTRE nós --
+// se a MESMA topologia+peão+jogador já foi vista em outro nó da árvore,
+// nem a BFS local roda (ver computeDistCached acima).
 inline int evalSimpleW(const State& s, int player, const EvalWeights& w,
-                        PlayerPathCache* meCacheOut = nullptr, PlayerPathCache* oppCacheOut = nullptr) {
+                        PlayerPathCache* meCacheOut = nullptr, PlayerPathCache* oppCacheOut = nullptr,
+                        PlayerPathCacheTable* xtable = nullptr) {
     int me = player, opp = 1 - player;
     PlayerPathCache localMe, localOpp;
     PlayerPathCache& meCache = meCacheOut ? *meCacheOut : localMe;
     PlayerPathCache& oppCache = oppCacheOut ? *oppCacheOut : localOpp;
-    if (!meCache.valid) computeDistFull(s.wallsH, s.wallsV, s.pawn[me], me, meCache);
-    if (!oppCache.valid) computeDistFull(s.wallsH, s.wallsV, s.pawn[opp], opp, oppCache);
+    computeDistCached(s.wallsH, s.wallsV, s.pawn[me], me, xtable, meCache);
+    computeDistCached(s.wallsH, s.wallsV, s.pawn[opp], opp, xtable, oppCache);
 
     int myDist = cachedShortestPathLen(meCache);
     int oppDist = cachedShortestPathLen(oppCache);

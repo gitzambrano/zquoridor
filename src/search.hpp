@@ -8,6 +8,7 @@
 #include <chrono>
 #include <algorithm>
 #include <cstring>
+#include <cmath>
 #include "rules.hpp"
 #include "cat.hpp"
 #include "endgame_race.hpp"
@@ -57,6 +58,47 @@ constexpr int QS_CRITICAL_BFS_DELTA = 2;
 // fecha a última rota alternativa bem na borda da busca").
 constexpr int QS_CRITICAL_ROBUSTNESS_DROP_TO = 0;
 
+// ---------------------------------------------------------------------
+// LMR (Late Move Reduction, plano-additional.md Prioridade 3) + PVS
+// (Principal Variation Search, Prioridade 8) -- dupla clássica que separa
+// alpha-beta simples de alpha-beta "sério": PVS busca o 1º lance (o
+// esperado melhor, normalmente o da TT) em janela completa e todos os
+// demais em janela NULA (-alpha-1,-alpha), promovendo pra janela completa
+// só se a busca nula "vazar" acima de alpha; LMR, por cima disso, reduz a
+// PROFUNDIDADE dos lances tardios na ordenação antes de gastar a busca
+// nula, reverificando em profundidade cheia (ainda janela nula) só se o
+// resultado reduzido também vazar. Combinados: cada lance depois do 1º
+// paga o mínimo possível, e só escala pra busca cara (mais profunda/mais
+// larga) quando o resultado barato indica que talvez valha a pena.
+//
+// Fórmula usada pelo titanium-engine (mesma família da usada em
+// Stockfish, adaptada) -- ver plano-additional.md Prioridade 3.
+constexpr int LMR_MIN_DEPTH = 3;         // não reduz nós rasos demais
+constexpr int LMR_MIN_MOVE_INDEX = 3;    // 1-based; 1º lance (PVS) + os 2
+                                          // seguintes nunca são reduzidos
+constexpr double LMR_DIVISOR = 2.25;
+
+// Modificadores de calor CAT (cat.hpp) sobre a redução -- só se aplicam a
+// lances de MURO (peão não tem calor CAT). Escala de heat: 0..240
+// (CAT_CORRIDOR_CM=200 + CAT_BOTTLENECK_BONUS_CM=40 no caso extremo).
+// Um muro "quente" (perto do caminho ótimo do oponente) é candidato a
+// mudar o resultado tático da posição -- nunca reduzir. Um muro "frio"
+// (bem longe de qualquer caminho relevante) quase certamente é ruído de
+// ordenação -- reduzir 1 passo a mais que o normal.
+constexpr int CAT_HOT_CM = 150;   // heat >= isto -> pula LMR (lance "tático")
+constexpr int CAT_COLD_CM = 30;   // heat < isto -> +1 de redução extra ("frio")
+
+// reduction = clamp( round( ln(depth) * ln(move_index) / 2.25 ), 0, depth/2 )
+// -- ver Prioridade 3 do plano pra derivação/justificativa da fórmula.
+inline int lmrReduction(int depth, int moveIndex) {
+    double r = std::log((double)depth) * std::log((double)moveIndex) / LMR_DIVISOR;
+    int red = (int)std::lround(r);
+    if (red < 0) red = 0;
+    int maxRed = depth / 2;
+    if (red > maxRed) red = maxRed;
+    return red;
+}
+
 enum TTFlag : uint8_t { EXACT, LOWER, UPPER };
 
 struct TTEntry {
@@ -105,12 +147,35 @@ public:
     void setQuiescenceEnabled(bool enabled) { quiescenceEnabled = enabled; }
     bool isQuiescenceEnabled() const { return quiescenceEnabled; }
 
+    // Liga/desliga LMR+PVS (plano-additional.md, Prioridades 3 e 8) sem
+    // recompilar -- mesmo motivo do toggle de quiescência acima: permite
+    // A/B em benchmark e isolar regressões. Default true (produção).
+    // IMPORTANTE: test_search_staging.cpp compara a busca "estagiada"
+    // contra uma referência monolítica CONGELADA de antes da Fase 4.2.3,
+    // que nunca teve LMR/PVS -- LMR muda o VALOR de busca em profundidade
+    // fixa por desenho (é instabilidade de busca aceita, não um bug; a
+    // garantia de LMR é "nunca poda uma linha sem reverificar em
+    // profundidade cheia quando o resultado reduzido supera alpha", não
+    // "produz o mesmo valor que busca plena sempre"). testFixedDepthFullWindow
+    // (usado por aquele teste) desliga isto antes de rodar, preservando o
+    // propósito original do teste (validar SÓ o refactor de staging).
+    void setLmrPvsEnabled(bool enabled) { lmrPvsEnabled = enabled; }
+    bool isLmrPvsEnabled() const { return lmrPvsEnabled; }
+
     // Limpa toda a tabela de transposição. Deve ser chamado entre partidas
     // no self-play: scores de repetição (path-dependent) ficam gravados na
     // TT e contaminam buscas futuras onde a mesma posição é atingida sem
     // repetição. Não zera killers/history (esses são limpos pelo
     // resetOrderingState() no início de cada chooseMove).
     void clearTT() { std::fill(tt.begin(), tt.end(), TTEntry{}); }
+
+    // Prioridade 6b: ao contrário de clearTT(), NÃO precisa ser chamado
+    // entre partidas por corretude (ver PlayerPathCacheTable em
+    // rules.hpp) -- exposto só pra medição/benchmark (zerar hits/misses
+    // antes de uma rodada isolada).
+    void clearXDistCache() { xdistCache.clear(); }
+    uint64_t xDistCacheHits() const { return xdistCache.hits(); }
+    uint64_t xDistCacheMisses() const { return xdistCache.misses(); }
 
     int searchShallow(const State& s, int depth, SearchStats& stats) {
         stopped = false;
@@ -254,10 +319,21 @@ private:
 
     std::vector<TTEntry> tt;
     EvalWeights weights;
+    // Prioridade 6b do plano-additional.md: cache de BFS de distância
+    // ENTRE nós (chaveado por wallsH/wallsV/pawnCell/player, não por
+    // s.hash inteiro) -- vive pela duração da instância inteira de
+    // Negamax (mesmo padrão de `tt` acima), então uma topologia de muro
+    // vista em qualquer nó de qualquer busca anterior desta instância
+    // continua disponível. Ao contrário de `tt`, nunca precisa ser
+    // limpo entre partidas por corretude (é uma função pura da chave,
+    // não guarda score dependente de caminho) -- ver PlayerPathCacheTable
+    // em rules.hpp.
+    PlayerPathCacheTable xdistCache;
     std::chrono::steady_clock::time_point deadline;
     bool stopped = false;
     int rootDepth = 0;
     bool quiescenceEnabled = true;
+    bool lmrPvsEnabled = true;
 
     // killer moves: 2 slots por ply, lances que causaram beta-cutoff em
     // nós irmãos na mesma distância da raiz.
@@ -375,9 +451,17 @@ private:
             long long sc = 0;
             if (wallByBFS) {
                 // quanto o muro aumenta o caminho do oponente até a meta
-                // dele (mesma shortestPathLen já usada em evalSimple)
+                // dele (mesma shortestPathLen já usada em evalSimple).
+                // Prioridade 6b: passa por xdistCache -- restrito a
+                // ply<=WALL_BFS_ORDER_MAX_PLY (perto da raiz), onde nós
+                // IRMÃOS testam os MESMOS candidatos de muro sobre a
+                // MESMA topologia base com frequência real, então esta
+                // topologia-depois-do-candidato tende a se repetir entre
+                // chamadas (não só dentro de uma única chamada).
                 State ns = applyMove(s, m);
-                int after = shortestPathLen(ns.wallsH, ns.wallsV, ns.pawn[opp], opp);
+                PlayerPathCache afterCache;
+                computeDistCached(ns.wallsH, ns.wallsV, ns.pawn[opp], opp, &xdistCache, afterCache);
+                int after = cachedShortestPathLen(afterCache);
                 sc = (long long)(after - before) * 1000;
             }
             sc += wallEdgeHeat(oppHeat, m.a, m.b, m.c) * CAT_SCORE_SCALE;
@@ -423,7 +507,7 @@ private:
         // candidato de muro testado (em vez de até 2) no caminho que
         // dispara a extensão.
         PlayerPathCache sideCache, oppCache;
-        int standPat = evalSimpleW(s, s.turn, weights, &sideCache, &oppCache);
+        int standPat = evalSimpleW(s, s.turn, weights, &sideCache, &oppCache, &xdistCache);
         if (standPat >= beta) return standPat;
         int localAlpha = alpha > standPat ? alpha : standPat;
         int best = standPat;
@@ -440,7 +524,7 @@ private:
         uint64_t touchH0, touchV0, touchH1, touchV1;
         PlayerPathCache* cache0 = (side == 0) ? &sideCache : &oppCache;
         PlayerPathCache* cache1 = (side == 0) ? &oppCache : &sideCache;
-        legalWallMoves(s, side, wallMoves, &touchH0, &touchV0, &touchH1, &touchV1, cache0, cache1);
+        legalWallMoves(s, side, wallMoves, &touchH0, &touchV0, &touchH1, &touchV1, cache0, cache1, &xdistCache);
         uint64_t touchHOpp = (side == 0) ? touchH1 : touchH0;
         uint64_t touchVOpp = (side == 0) ? touchV1 : touchV0;
 
@@ -460,7 +544,7 @@ private:
             // aqui), mas a robustez sai de graça do mesmo cache quando
             // precisa (só percorre parent[], não roda BFS nova).
             PlayerPathCache oppCacheAfter;
-            computeDistFull(ns.wallsH, ns.wallsV, ns.pawn[opp], opp, oppCacheAfter);
+            computeDistCached(ns.wallsH, ns.wallsV, ns.pawn[opp], opp, &xdistCache, oppCacheAfter);
             int oppDistAfter = cachedShortestPathLen(oppCacheAfter);
             bool critical = (oppDistAfter - oppDistBefore) >= QS_CRITICAL_BFS_DELTA;
             if (!critical && oppRobustBefore > QS_CRITICAL_ROBUSTNESS_DROP_TO) {
@@ -608,7 +692,7 @@ private:
             // direta, sem extensão de muro crítico). winner() já foi
             // resolvido acima, então não há necessidade de checá-lo de
             // novo aqui -- mesma garantia que quiescence() já tinha.
-            if (!quiescenceEnabled) return evalSimpleW(s, s.turn, weights);
+            if (!quiescenceEnabled) return evalSimpleW(s, s.turn, weights, nullptr, nullptr, &xdistCache);
             return quiescence(s, alpha, beta, 0, stats, reptbl, ply % 2 == 0);
         }
 
@@ -667,14 +751,68 @@ private:
         Move bestMove = pawnMoves.empty() ? ttMoveVal : pawnMoves[0];
         bool haveMove = false;
         bool cutoff = false;
+        bool ply0 = ply >= 0 && ply < MAX_PLY;
+        int moveCount = 0;  // 1-based, TT+peão+muro combinados -- alimenta LMR+PVS abaixo
 
         // aplica um lance candidato; devolve true se a busca deve parar
         // de avaliar mais lances neste nó (beta-cutoff OU tempo esgotado
         // -- `stopped` é checado pelo chamador logo em seguida).
-        auto tryMove = [&](const Move& m) -> bool {
+        //
+        // moveIndex (1-based, ordem de tentativa neste nó) e catHeat (só
+        // faz sentido pra lance de muro -- ver wallEdgeHeat/cat.hpp; -1 =
+        // "sem calor conhecido", pula os modificadores CAT) alimentam
+        // LMR+PVS (Prioridades 3 e 8 do plano-additional.md, constantes
+        // no topo deste arquivo). Com lmrPvsEnabled desligado, cai de
+        // volta no comportamento antigo -- sempre janela completa em
+        // profundidade cheia (ver setLmrPvsEnabled acima).
+        auto tryMove = [&](const Move& m, int moveIndex, int catHeat) -> bool {
             State ns = applyMove(s, m);
             reptbl.push(ns.hash);
-            int score = -negamax(ns, depth - 1, -beta, -alpha, stats, reptbl);
+            int score;
+            if (!lmrPvsEnabled || moveIndex == 1) {
+                // 1º lance (normalmente o da TT, a aposta da ordenação de
+                // ser o melhor): sempre janela completa, profundidade
+                // cheia -- é o valor de referência que os demais lances
+                // (busca de janela nula, abaixo) tentam apenas SUPERAR ou
+                // não, sem precisar do valor exato quando não superam.
+                score = -negamax(ns, depth - 1, -beta, -alpha, stats, reptbl);
+            } else {
+                // LMR (Prioridade 3): nunca reduz lance killer, nunca
+                // reduz muro "quente" (perto do caminho ótimo do
+                // oponente -- candidato a mudar o resultado tático,
+                // mesmo cuidado que o plano pede para lances que a
+                // checagem crítica de quiescência marcaria). Muro "frio"
+                // ganha 1 passo extra de redução.
+                bool isKillerMove = ply0 && ((killerValid[ply][0] && m == killers[ply][0]) ||
+                                             (killerValid[ply][1] && m == killers[ply][1]));
+                int reduction = 0;
+                if (moveIndex > LMR_MIN_MOVE_INDEX && depth >= LMR_MIN_DEPTH && !isKillerMove) {
+                    bool hot = (catHeat >= 0 && catHeat >= CAT_HOT_CM);
+                    if (!hot) {
+                        reduction = lmrReduction(depth, moveIndex);
+                        if (catHeat >= 0 && catHeat < CAT_COLD_CM) reduction += 1;
+                        int maxRed = depth / 2;
+                        if (reduction > maxRed) reduction = maxRed;
+                    }
+                }
+                // PVS (Prioridade 8): janela nula em profundidade (talvez
+                // reduzida por LMR).
+                score = -negamax(ns, depth - 1 - reduction, -alpha - 1, -alpha, stats, reptbl);
+                if (!stopped && reduction > 0 && score > alpha) {
+                    // vazou acima de alpha na profundidade reduzida --
+                    // reverifica em profundidade CHEIA antes de confiar
+                    // (a redução é heurística, não prova nada sozinha),
+                    // ainda em janela nula.
+                    score = -negamax(ns, depth - 1, -alpha - 1, -alpha, stats, reptbl);
+                }
+                if (!stopped && score > alpha && score < beta) {
+                    // janela nula vazou sem provar corte (score<beta) --
+                    // só profundidade cheia + janela completa dá o valor
+                    // exato aqui (mesmo lance pode genuinamente ser o
+                    // novo melhor, não só um pouco melhor que alpha).
+                    score = -negamax(ns, depth - 1, -beta, -alpha, stats, reptbl);
+                }
+            }
             reptbl.pop();
             if (stopped) return true;
             if (!haveMove || score > best) { best = score; bestMove = m; haveMove = true; }
@@ -688,7 +826,8 @@ private:
 
         // Estágio 1: lance da TT primeiro, se validado acima.
         if (ttTried) {
-            cutoff = tryMove(ttMoveVal);
+            moveCount++;
+            cutoff = tryMove(ttMoveVal, moveCount, -1);
             if (stopped) return 0;
         }
 
@@ -697,7 +836,8 @@ private:
             for (size_t i = 0; i < pawnMoves.size() && !cutoff; i++) {
                 const Move& m = pawnMoves[i];
                 if (ttTried && m == ttMoveVal) continue;  // já tentado no Estágio 1
-                cutoff = tryMove(m);
+                moveCount++;
+                cutoff = tryMove(m, moveCount, -1);
                 if (stopped) return 0;
             }
         }
@@ -714,7 +854,7 @@ private:
             // reaproveita o do oponente pra "before" em vez de pagar mais
             // uma BFS pra mesma topologia/jogador.
             PlayerPathCache cache0, cache1;
-            legalWallMoves(s, side, wallMoves, nullptr, nullptr, nullptr, nullptr, &cache0, &cache1);
+            legalWallMoves(s, side, wallMoves, nullptr, nullptr, nullptr, nullptr, &cache0, &cache1, &xdistCache);
             // Achado de revisão de performance: computeCorridorHeat (2
             // BFS) rodava incondicionalmente aqui, mesmo quando
             // wallMoves está vazio -- o que acontece sempre que o lado a
@@ -725,20 +865,25 @@ private:
             // exatamente a fase que mais sofria com custo extra por nó.
             // Só vale a pena pagar o calor de corredor se há algum muro
             // pra de fato ordenar com ele.
+            CorridorHeat oppHeat;
+            bool haveOppHeat = false;
             if (!wallMoves.empty()) {
                 int opp = 1 - side;
                 // computeCorridorHeat continua com sua própria BFS
                 // dedicada (não reaproveita cache0/cache1) -- ver nota em
                 // rules.hpp sobre por que essa fusão específica (com
                 // early-exit parcial) fica de fora por risco de correção.
-                CorridorHeat oppHeat = computeCorridorHeat(s.wallsH, s.wallsV, s.pawn[opp], opp);
+                oppHeat = computeCorridorHeat(s.wallsH, s.wallsV, s.pawn[opp], opp);
+                haveOppHeat = true;
                 const PlayerPathCache& oppCache = (opp == 0) ? cache0 : cache1;
                 orderWallMoves(wallMoves, ply, side, s, oppHeat, &oppCache);
             }
             for (size_t i = 0; i < wallMoves.size() && !cutoff; i++) {
                 const Move& m = wallMoves[i];
                 if (ttTried && m == ttMoveVal) continue;  // já tentado no Estágio 1
-                cutoff = tryMove(m);
+                moveCount++;
+                int heat = haveOppHeat ? wallEdgeHeat(oppHeat, m.a, m.b, m.c) : -1;
+                cutoff = tryMove(m, moveCount, heat);
                 if (stopped) return 0;
             }
         }
@@ -766,6 +911,23 @@ public:
         RepetitionTable emptyHistory;
         return quiescence(s, alpha, beta, 0, stats, emptyHistory, true);
     }
+    // igual a testFixedDepthFullWindow, mas SEM desligar LMR/PVS -- para
+    // testes que precisam comparar explicitamente o comportamento COM
+    // LMR/PVS ligado (produção) contra a referência de janela cheia
+    // acima (ver test_lmr_pvs.cpp). Usa o valor atual de lmrPvsEnabled
+    // da instância (default true, via setLmrPvsEnabled se o chamador
+    // quiser testar desligado explicitamente também).
+    int testFixedDepthFullWindowLmr(const State& s, int depth, SearchStats& stats) {
+        resetOrderingState();
+        std::fill(tt.begin(), tt.end(), TTEntry{});
+        stopped = false;
+        rootDepth = depth;
+        deadline = std::chrono::steady_clock::now() + std::chrono::hours(1);
+        g_raceExactBudgetUs = 1e18;
+        stats = SearchStats{};
+        RepetitionTable emptyHistory;
+        return negamax(s, depth, -SCORE_INF, SCORE_INF, stats, emptyHistory);
+    }
     int testFixedDepthFullWindow(const State& s, int depth, SearchStats& stats) {
         resetOrderingState();
         std::fill(tt.begin(), tt.end(), TTEntry{});
@@ -775,7 +937,19 @@ public:
         g_raceExactBudgetUs = 1e18;  // só chooseMove() aplica o orçamento (ver nota lá) -- senão uma chamada anterior de chooseMove() deixa o orçamento finito "vazando" pra esta busca de referência
         stats = SearchStats{};
         RepetitionTable emptyHistory;
-        return negamax(s, depth, -SCORE_INF, SCORE_INF, stats, emptyHistory);
+        // LMR/PVS desligado aqui de propósito: esta função existe pra
+        // comparar a busca ESTAGIADA contra a referência monolítica
+        // congelada (test_search_staging.cpp, Fase 4.2.3) -- a referência
+        // nunca teve LMR/PVS, então compará-las com LMR ligado testaria
+        // duas coisas diferentes ao mesmo tempo (staging E instabilidade
+        // de busca do LMR) e quebraria a garantia de "0 divergências" que
+        // aquele teste existe pra validar. Salva/restaura em vez de só
+        // desligar, caso um teste futuro precise ligar isto de propósito.
+        bool prevLmrPvs = lmrPvsEnabled;
+        lmrPvsEnabled = false;
+        int result = negamax(s, depth, -SCORE_INF, SCORE_INF, stats, emptyHistory);
+        lmrPvsEnabled = prevLmrPvs;
+        return result;
     }
     // igual, mas SEM limpar a TT -- pra reproduzir de propósito o reuso
     // entre iterações do chooseMove (não limpa killers/history também).

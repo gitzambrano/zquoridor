@@ -118,7 +118,14 @@ isolada e testável.
 
 ---
 
-## Prioridade 2 — Killer moves + history heuristic
+## Prioridade 2 — Killer moves + history heuristic — **[IMPLEMENTADO]**
+
+> **Status:** implementado em `search.hpp` (`killers[MAX_PLY][2]`/
+> `killerValid`, `history[2][NUM_MOVE_INDICES]`), integrado em
+> `orderPawnMoves`/`orderWallMoves` e usado como exempção de LMR/LMP
+> (Prioridades 3/3c). Pré-existente a esta rodada de sessões — só
+> corrigindo a marcação do documento, que não tinha acompanhado a
+> implementação.
 
 **O que é.** Duas tabelas clássicas de ordenação de Stockfish/qualquer
 alpha-beta sério, que o titanium-engine **ainda não tem** ("_(not yet)_ — CAT
@@ -215,7 +222,41 @@ por último dessa sublista.
 
 ---
 
-## Prioridade 3 — LMR (Late Move Reduction) explícito com fórmula log-log
+## Prioridade 3 — LMR (Late Move Reduction) explícito com fórmula log-log — **[IMPLEMENTADO]**
+
+> **Status:** implementado em `search.hpp` (`lmrReduction`, integrado no
+> `tryMove` de `negamax`). Fórmula igual à descrita abaixo, com o gate de
+> calor CAT (`CAT_HOT_CM=150` pula redução, `CAT_COLD_CM=30` soma +1) em
+> vez do gancho de "quiescência crítica" mencionado no item 3 original —
+> mais barato (reaproveita `oppHeat` já calculado por CAT no mesmo nó, sem
+> BFS extra por candidato) e cobre o mesmo risco (muro que muda topologia
+> de zona morta nunca é reduzido). Combinado com PVS (Prioridade 8) no
+> mesmo `tryMove`. Toggle `setLmrPvsEnabled()` — `testFixedDepthFullWindow`
+> desliga automaticamente, preservando a garantia de "0 divergências" do
+> teste de staging (Fase 4.2.3). Novo `test_lmr_pvs.cpp` valida: nunca
+> lance ilegal, concordância de score ≥85% contra referência de janela
+> cheia (medido: 89–95,5% dependendo da profundidade), concordância em
+> posições decisivas ≥90% (medido: 96,6–100%). Nós para mesma profundidade
+> (`test_lmr_pvs`, depth 4): **~0,19× (LMR+PVS+RFP+LMP juntos)**. Partidas
+> diretas (`bench_lmr_pvs.cpp`, 10 jogos, 150ms/lance): **6-3-1** a favor
+> de ligado (amostra pequena, não é SPRT — ver item 14).
+>
+> **Achado de correção (não previsto no plano original):** LMR combinado
+> com LMP (3c) SEM cuidado extra é uma combinação catastroficamente pior
+> que qualquer um sozinho — medido isoladamente, **0-10** em partidas
+> diretas (LMR sozinho: 7-3; LMP sozinho: 4-3; RFP+LMP juntos: 6-6; todos
+> neutros/positivos). Causa: a busca de verificação em profundidade
+> reduzida que o próprio LMR faz é, por natureza, uma aproximação barata;
+> se ELA TAMBÉM aplica LMP, a defesa do adversário fica podada demais
+> dentro dessa verificação, fazendo lances bons parecerem ruins sem nunca
+> disparar a re-busca de segurança da qual o LMR depende para ser seguro.
+> Fix: `negamax` ganhou um parâmetro `reducedByLmr` (true só na chamada de
+> profundidade reduzida do próprio LMR); LMP nunca se aplica quando esse
+> flag está ligado. Depois do fix: LMR+LMP juntos passou a 5-5 (neutro),
+> e a combinação completa (LMR+PVS+RFP+LMP) foi de 1-9/2-8 (antes do fix)
+> para 6-3-1 (depois). Lição para futuras heurísticas de poda: sempre
+> testar PARES de heurísticas isoladamente antes de aceitar a combinação
+> completa — a soma pode ser bem pior que as partes.
 
 **O que é.** Reduzir a profundidade de busca de lances tardios na ordenação
 (que já foram ordenados por importância, então lances tardios são
@@ -259,7 +300,18 @@ estabelecido, comparando nós-para-mesma-profundidade e, principalmente,
 **qualidade do lance escolhido** em posições de gargalo conhecidas antes de
 aceitar.
 
-### 3b — **[NOVO — v17/v18]** Reverse Futility Pruning (RFP / static null move)
+### 3b — **[IMPLEMENTADO]** Reverse Futility Pruning (RFP / static null move)
+
+> **Status:** implementado em `search.hpp` (`rfpMargin`, integrado no topo
+> de `negamax`, logo depois da consulta à TT). Margens iguais às do
+> titanium (70/90 por depth, não re-tunadas ainda via `tune_spsa.cpp`).
+> `ply > 0` de propósito — nunca poda a raiz. Flag `improving` calculada
+> via `evalHistory[ply]`/`evalHistory[ply-2]` (array indexado por ply,
+> escrito na entrada de `negamax` sempre que `depth <= RFP_MAX_DEPTH` —
+> funciona com DFS pelo mesmo motivo que killer/history funcionam com
+> array por ply, não por caminho). Toggle `setRfpEnabled()`. Sozinho:
+> neutro em partidas diretas (4-4/10) — ver nota de correção em 3c sobre a
+> combinação com LMP.
 
 **O que é.** Em profundidade rasa (`depth ≤ 4` no titanium), se o eval
 estático **já** está tão acima de `beta` que nem uma queda razoável o
@@ -280,7 +332,34 @@ depois com o `tune_spsa.cpp` já existente — é só mais um par de
 posições de gargalo conhecidas (mesmo protocolo do resto do documento) antes
 de aceitar valores diferentes dos do titanium.
 
-### 3c — **[NOVO — v17/v18]** Late Move Pruning (poda por contagem de lances, não por redução)
+### 3c — **[IMPLEMENTADO]** Late Move Pruning (poda por contagem de lances, não por redução)
+
+> **Status:** implementado em `search.hpp` (constantes `LMP_MAX_DEPTH=2`,
+> `LMP_COUNT_IMPROVING=14`, `LMP_COUNT_NOT_IMPROVING=8`, iguais ao
+> titanium). Nunca aplica ao lance da TT (já filtrado antes de entrar no
+> laço), nunca a killer, nunca a muro "quente" no calor CAT (`CAT_HOT_CM`)
+> — usei o calor CAT como proxy da "checagem crítica de quiescência"
+> mencionada abaixo, mais barato (0 BFS extra) e cobre o mesmo risco.
+> Toggle `setLmpEnabled()`.
+>
+> **Achado de correção importante:** LMP combinado com LMR (item 3) SEM
+> um guard extra é uma combinação **muito pior que qualquer um sozinho**
+> — medido isoladamente em partidas diretas: LMR+LMP juntos deu **0-10**,
+> enquanto LMR sozinho (7-3), LMP sozinho (4-3) e RFP+LMP juntos (6-6) são
+> todos neutros/positivos. A causa raiz: a busca de verificação em
+> profundidade reduzida que o próprio LMR faz (`tryMove`, janela nula) já
+> é uma aproximação; se ela TAMBÉM aplica LMP, a defesa do adversário fica
+> podada demais DENTRO dessa verificação, fazendo lances genuinamente bons
+> parecerem ruins sem nunca disparar a re-busca de segurança da qual o LMR
+> depende para não perder linhas. Fix: `negamax` ganhou um parâmetro
+> `reducedByLmr` (true só na chamada de profundidade reduzida do LMR); LMP
+> nunca roda quando esse flag está ligado. Depois do fix, LMR+LMP juntos
+> passou a 5-5 (neutro) e a combinação completa das 4 heurísticas
+> (LMR+PVS+RFP+LMP) foi de 1-9/2-8 (catastrófico, antes do fix) para
+> 6-3-1 (positivo, depois). **Lição geral:** heurísticas de poda que
+> parecem seguras isoladamente podem interagir mal quando uma delas roda
+> DENTRO da busca de verificação/redução de outra — sempre testar pares
+> isolados antes de aceitar a combinação completa.
 
 **O que é.** Diferente de LMR (que **reduz** a profundidade de lances
 tardios), Late Move Pruning **descarta inteiramente** lances quietos depois
@@ -308,7 +387,13 @@ conhecidas antes de aceitar, não só nós/segundo.
 
 ---
 
-## Prioridade 4 — Solver exato de final "mãos vazias" (race/DP retrógrado)
+## Prioridade 4 — Solver exato de final "mãos vazias" (race/DP retrógrado) — **[IMPLEMENTADO]**
+
+> **Status:** implementado em `src/endgame_race.hpp`, integrado em
+> `negamax`. Ver 4b/4c/4d/4e abaixo para os níveis internos, desvios do
+> plano original e o bug de escolha de lance corrigido numa rodada
+> anterior a esta. Pré-existente a esta rodada de sessões — só corrigindo
+> a marcação do documento.
 
 **O que é.** Quando **ambos** os jogadores ficam sem muros, a topologia de
 paredes fica congelada para sempre e o jogo vira uma corrida de peão pura
@@ -559,7 +644,12 @@ posição-raiz já dentro da zona do atalho — não só o solver isolado.
 
 ---
 
-## Prioridade 5 — Gates de perft como oracle de regressão de corretude
+## Prioridade 5 — Gates de perft como oracle de regressão de corretude — **[IMPLEMENTADO]**
+
+> **Status:** implementado em `test_rules_sanity.cpp` (`perft(1)=131`,
+> `perft(2)=16677`, `perft(3)=2062264`, valores exatos travados como
+> asserção). Pré-existente a esta rodada de sessões — só corrigindo a
+> marcação do documento.
 
 **O que é.** O titanium-engine trava contagens exatas de nós em profundidades
 3–6 (`2.062.264`, `247.569.030`, `28.837.934.502`, `3.257.436.276.501`) como
@@ -589,7 +679,26 @@ reler a prova toda vez.
 
 ---
 
-## Prioridade 6 — Cache de BFS por nó (compartilhar entre ordenação, poda e CAT)
+## Prioridade 6 — Cache de BFS por nó (compartilhar entre ordenação, poda e CAT) — **[IMPLEMENTADO]**
+
+> **Status:** implementado em `rules.hpp` (`PlayerPathCache`,
+> `computeDistFull`, `cachedShortestPathLen`/`cachedPathRobustness`/
+> `cachedTouchSlots`) e propagado em `search.hpp` (`evalSimpleW`,
+> `legalWallMoves`, `orderWallMoves`, `quiescence`, Estágio 3 de
+> `negamax`). `shortestPathLen`/`pathRobustness`/`shortestPathTouchSlots`
+> continuam existindo com a assinatura antiga (usadas fora de
+> `search.hpp` — `nnue.hpp`, `selfplay.hpp`, `endgame_race.hpp`,
+> `gui_web/engine_wasm.cpp`, testes), agora como wrappers finos sobre o
+> mesmo motor `detail::runBFS`, mantendo o resultado bit a bit idêntico
+> ao de antes (validado por `test_search_staging.cpp`, 0 divergências).
+> `computeCorridorHeat` (CAT) **não** foi fundida neste cache — precisa de
+> BFS completa (todas as células, não só até a meta), e forçar isso no
+> cache de early-exit mudaria sutilmente o resultado de `pathRobustness`
+> em casos de borda (ver comentário grande em `rules.hpp` sobre a
+> diferença entre "early exit total" e "corte só na última célula do
+> caminho"). Resultado medido (benchmark de profundidade fixa,
+> `bench_fixed_depth.cpp`): **~57% mais nós/s** sobre a versão anterior a
+> esta rodada.
 
 **O que é.** O titanium-engine documentou (episódio 11, "performance pass")
 que a busca ficava em ~10K nós/s (vs. ~18M nós/s de perft puro) porque a
@@ -620,7 +729,22 @@ baixo na lógica (é só evitar recomputação, sem mudar nenhum resultado) — 
 candidato para fazer com testes de regressão de `test_rules_sanity.cpp`
 rodando antes/depois em cada função tocada.
 
-### 6b — **[NOVO — v17/v18]** cache de distância entre nós (LRU por topologia de muros), não só dentro do nó
+### 6b — **[IMPLEMENTADO]** cache de distância entre nós (LRU por topologia de muros), não só dentro do nó
+
+> **Status:** implementado em `rules.hpp` (`PlayerPathCacheTable`,
+> chave `hash(wallsH, wallsV, pawnCell, player)` via mistura splitmix64,
+> `PLAYER_PATH_TT_BITS=16` → 65536 entradas, ~48MB, populado em tamanho de
+> regime desde o início como o plano pedia). Substituição "always
+> replace" em vez de LRU real com lista ligada — mais simples, O(1),
+> aproxima LRU sem overhead de ponteiros. Ao contrário da TT de score
+> (`tt`), **não precisa ser limpo entre partidas** — o valor cacheado é
+> função pura da chave. Validado por um fuzz test dedicado (3 passadas
+> sobre ~12 mil consultas reais, forçando acertos/colisões de slot): 0
+> divergências entre valor cacheado e BFS fresca. Taxa de acerto medida
+> em busca real: ~28%. Ganho adicional sobre o item 6 sozinho: **~5% mais
+> nós/s** (benchmark de profundidade fixa) — menor que o esperado dado o
+> hit rate, porque a fusão do item 6 já havia removido a maior parte do
+> tempo gasto em BFS pura por nó.
 
 O item 6 acima resolve a duplicação **dentro** de um nó. O titanium foi além:
 um cache **LRU entre nós diferentes**, chaveado pela topologia de muros (não
@@ -683,7 +807,16 @@ implementar "porque o outro engine tem".
 
 ---
 
-## Prioridade 8 — PVS (Principal Variation Search) com janela nula
+## Prioridade 8 — PVS (Principal Variation Search) com janela nula — **[IMPLEMENTADO]**
+
+> **Status:** implementado junto com LMR (item 3) no mesmo `tryMove` de
+> `negamax`/`search.hpp` — 1º lance sempre janela completa/profundidade
+> cheia; os demais em janela nula, promovida a janela completa se
+> `score > alpha && score < beta`. Toggle único `setLmrPvsEnabled()`
+> (compartilhado com LMR, já que os dois vivem no mesmo bloco de código e
+> sempre foram medidos juntos). Ver nota de resultados/achados em
+> Prioridade 3 acima (a validação foi feita para os dois juntos, não
+> isoladamente — combinam por natureza).
 
 **O que é.** Refinamento clássico de alpha-beta: buscar o primeiro lance
 (esperado ser o melhor, geralmente o da TT) com janela completa `(alpha,
@@ -979,34 +1112,51 @@ nós-por-profundidade antes/depois.
 
 ## Resumo de prioridade (visão rápida)
 
-| # | Item | Retorno esperado | Risco | Depende de |
-|---|------|-------------------|-------|------------|
-| 1 | CAT — calor de corredor | Alto | Baixo/médio | — |
-| 2 | Killer moves + history | Médio-alto | Baixo | — |
-| 2b | Continuation/countermove/correction history (Stockfish real) | Alto | Baixo/médio | 2 |
-| 3 | LMR log-log | Alto | Médio | idealmente 1 |
-| 3b | Reverse Futility Pruning (RFP) | Médio-alto | Médio | — |
-| 3c | Late Move Pruning (poda por contagem) | Médio | Médio | 1, 2 |
-| 4 | Solver exato "mãos vazias" (Serviço B) | Alto (certeza) | Baixo | — |
-| 4b | Serviço A em 3 níveis (ETA/overlap/winner-table) | Alto | Baixo→médio | 4 |
-| 4c | Distância jump-aware (±1 tempo) | Médio | Baixo | 4, 4b |
-| 5 | Gates de perft | Médio (correção) | Nenhum | — |
-| 6 | Cache de BFS por nó | Alto (eficiência) | Médio | facilita 1 e 3 |
-| 6b | Cache LRU de distância entre nós (por topologia) | Alto | Médio | 6 |
-| 7 | LUT O(1) de peão | Baixo-médio | Baixo | medir antes |
-| 8 | PVS janela nula | Médio-alto | Baixo | combina com 3 |
-| 9 | Certificado de vitória | Médio | Médio-alto | 1, 4 |
-| 10 | Livro de abertura | Médio | Baixo | self-play do NNUE |
-| 11 | NNUE incremental (accumulator diff) + input CAT | **Alto** | Baixo (diff) / médio (input) | 1 p/ input |
-| 12 | Lazy SMP (já real no titanium — root 95%/5%) | Alto (throughput) | Médio-alto | esgotar 1–8 antes |
-| 13 | Gerência de tempo (30 lances base, MAX_RATIO 1.25, soft-stop 85/92%) | Médio | Baixo | 4/4b alimenta horizonte |
-| 14 | Infra SPRT | Metodológico | Nenhum | — |
-| 15 | Zobrist/Undo enxuto | N/A | N/A | **não fazer sem medir** |
-| 16 | Pondering | Baixo | Baixo | 1–8, 13; é GUI |
-| 17 | Internal Iterative Reduction (IIR) | Médio | Baixo | — |
+| # | Item | Retorno esperado | Risco | Depende de | Status |
+|---|------|-------------------|-------|------------|--------|
+| 1 | CAT — calor de corredor | Alto | Baixo/médio | — | ✅ implementado |
+| 2 | Killer moves + history | Médio-alto | Baixo | — | ✅ implementado |
+| 2b | Continuation/countermove/correction history (Stockfish real) | Alto | Baixo/médio | 2 | pendente |
+| 3 | LMR log-log | Alto | Médio | idealmente 1 | ✅ implementado |
+| 3b | Reverse Futility Pruning (RFP) | Médio-alto | Médio | — | ✅ implementado |
+| 3c | Late Move Pruning (poda por contagem) | Médio | Médio | 1, 2 | ✅ implementado |
+| 4 | Solver exato "mãos vazias" (Serviço B) | Alto (certeza) | Baixo | — | ✅ implementado |
+| 4b | Serviço A em 3 níveis (ETA/overlap/winner-table) | Alto | Baixo→médio | 4 | ✅ implementado |
+| 4c | Distância jump-aware (±1 tempo) | Médio | Baixo | 4, 4b | ✅ implementado |
+| 5 | Gates de perft | Médio (correção) | Nenhum | — | ✅ implementado |
+| 6 | Cache de BFS por nó | Alto (eficiência) | Médio | facilita 1 e 3 | ✅ implementado |
+| 6b | Cache LRU de distância entre nós (por topologia) | Alto | Médio | 6 | ✅ implementado |
+| 7 | LUT O(1) de peão | Baixo-médio | Baixo | medir antes | pendente |
+| 8 | PVS janela nula | Médio-alto | Baixo | combina com 3 | ✅ implementado |
+| 9 | Certificado de vitória | Médio | Médio-alto | 1, 4 | pendente |
+| 10 | Livro de abertura | Médio | Baixo | self-play do NNUE | pendente |
+| 11 | NNUE incremental (accumulator diff) + input CAT | **Alto** | Baixo (diff) / médio (input) | 1 p/ input | pendente (NNUE treinada, não plugada na busca) |
+| 12 | Lazy SMP (já real no titanium — root 95%/5%) | Alto (throughput) | Médio-alto | esgotar 1–8 antes | pendente |
+| 13 | Gerência de tempo (30 lances base, MAX_RATIO 1.25, soft-stop 85/92%) | Médio | Baixo | 4/4b alimenta horizonte | pendente |
+| 14 | Infra SPRT | Metodológico | Nenhum | — | pendente |
+| 15 | Zobrist/Undo enxuto | N/A | N/A | **não fazer sem medir** | pendente |
+| 16 | Pondering | Baixo | Baixo | 1–8, 13; é GUI | pendente |
+| 17 | Internal Iterative Reduction (IIR) | Médio | Baixo | — | pendente |
 
 **Nota sobre o item 11:** na primeira versão deste documento ele estava
 listado como baixa prioridade ("rede Ka", incerta). A varredura completa do
 histórico mostrou que o ganho real e comprovado deles nessa área foi outro
 (accumulator incremental + cache de eval), bem mais alinhado ao que o
 `zquoridor` já faz — por isso ele subiu de posição na tabela.
+
+**Nota sobre 3/3b/3c/8 (achado de correção):** LMR combinado com LMP sem
+cuidado extra formava uma combinação catastroficamente pior que qualquer
+uma das duas sozinha (0-10 em partidas diretas isoladas). Corrigido com um
+parâmetro `reducedByLmr` em `negamax` que desliga LMP dentro da própria
+busca de verificação reduzida do LMR — ver nota completa na Prioridade 3c
+acima. Serve de lição para o restante do roadmap: pares de heurísticas de
+poda/redução (ex.: qualquer coisa nova + LMR) precisam ser validados
+isoladamente, não só em conjunto, antes de aceitar.
+
+**Próximo foco recomendado:** com 3/3b/3c/8 fechados, o próximo item
+natural na progressão de força é **2b** (continuation/countermove/
+correction history) — usa a mesma infraestrutura de `killers`/`history`
+já existente, e o próprio documento o classifica como retorno "Alto" com
+risco baixo/médio. **11** (NNUE incremental) continua sendo o maior
+retorno esperado do documento inteiro, mas só depois da busca estabilizar
+(evita misturar duas fontes de mudança de Elo ao mesmo tempo).
