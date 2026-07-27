@@ -35,6 +35,18 @@ Recursos:
     final, os pesos exportados sao os do melhor epoch (nao os do ultimo),
     a menos que --no-restore-best seja passado.
   - Plots de convergencia/validacao em PNG (--plot-dir).
+  - Gradient clipping (--grad-clip-norm) aplicado antes de cada optimizer.step,
+    estabiliza o treino QAT (ideia portada do mixtrain.py).
+  - Diagnostico de device no inicio do treino: nome da GPU, VRAM total, e
+    pico de VRAM alocado ao final de cada epoch (torch.cuda.max_memory_allocated).
+  - Transferencia CPU->GPU em blocos (--gpu-chunk-multiplier): cada chunk lido
+    do disco e enviado a GPU em sub-blocos de `batch_size * multiplier`
+    posicoes, e os batches de treino sao fatiados diretamente na VRAM --
+    reduz bastante o numero de round-trips host->device comparado a
+    transferir por batch.
+  - Console verboso com progresso dentro do epoch (posicoes processadas,
+    % concluido, loss corrente, ETA do epoch) alem do ETA do treino inteiro,
+    throttled por tempo (--progress-every-secs).
 
 Todos os defaults abaixo (secao DEFAULT CONFIG) valem como "flags no
 cabecalho do arquivo": editar as constantes muda o comportamento padrao
@@ -69,7 +81,6 @@ from quantize_nnue import quantize_file  # noqa: E402
 # Editar aqui muda o default sem precisar de flag; toda entrada tem uma
 # flag de linha de comando correspondente que sobrescreve o valor abaixo.
 DATA_DEFAULT = [
-    os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data"),
     os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data", "selfplay")
 ]
 OUT_DEFAULT = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data", "nnue", "nnue_weights.bin")
@@ -117,6 +128,19 @@ QA_DEFAULT = 255
 QB_DEFAULT = 64
 LOG_EVERY_DEFAULT = 1
 DEVICE_DEFAULT = "cuda" if torch.cuda.is_available() else "cpu"
+
+# Estabilizacao do treino QAT (ideia do mixtrain.py). 0 ou negativo desliga.
+GRAD_CLIP_NORM_DEFAULT = 1.0
+
+# Quantos batches sao agrupados numa unica transferencia host->device. O
+# chunk (dimensionado por --ram-budget-gb) e lido do disco e convertido em
+# features numpy normalmente, mas em vez de mandar pra GPU um batch de cada
+# vez, agrupamos `gpu_chunk_multiplier` batches por transferencia -- os
+# batches de treino sao depois fatiados direto na VRAM, sem novo round-trip.
+GPU_CHUNK_MULTIPLIER_DEFAULT = 8
+
+# Intervalo minimo (segundos) entre linhas de progresso dentro do epoch.
+PROGRESS_EVERY_SECS_DEFAULT = 5.0
 # =============================================================================
 
 N, WS = 9, 8
@@ -185,28 +209,57 @@ class WeightClipper:
 
 
 # --- features -----------------------------------------------------------------
-def to_batch_tensors(batch: np.ndarray, device):
-    n = len(batch)
+def to_chunk_tensors(chunk: np.ndarray, device):
+    """Converte um bloco de TrainingSample (array estruturado numpy) para
+    tensores densos e transfere tudo para `device` de uma vez so. Chamar
+    isso uma vez por bloco grande (em vez de uma vez por batch) e o que
+    permite ao `iter_gpu_batches` amortizar o custo de transferencia
+    host->device entre varios batches."""
+    n = len(chunk)
     x = np.zeros((n, NUM_FEATURES), dtype=np.float32)
-    x[np.arange(n), batch["own_pawn"]] = 1.0
-    x[np.arange(n), 81 + batch["opp_pawn"]] = 1.0
-    wh = batch["walls_h"].astype(np.uint64)
-    wv = batch["walls_v"].astype(np.uint64)
+    x[np.arange(n), chunk["own_pawn"]] = 1.0
+    x[np.arange(n), 81 + chunk["opp_pawn"]] = 1.0
+    wh = chunk["walls_h"].astype(np.uint64)
+    wv = chunk["walls_v"].astype(np.uint64)
     bits_h = ((wh[:, None] >> np.arange(64, dtype=np.uint64)) & 1).astype(np.float32)
     bits_v = ((wv[:, None] >> np.arange(64, dtype=np.uint64)) & 1).astype(np.float32)
     x[:, 162:162 + 64] = bits_h
     x[:, 162 + 64:162 + 128] = bits_v
-    own_bucket = np.minimum(batch["own_dist"].astype(np.int64), DIST_BUCKETS - 1)
-    opp_bucket = np.minimum(batch["opp_dist"].astype(np.int64), DIST_BUCKETS - 1)
+    own_bucket = np.minimum(chunk["own_dist"].astype(np.int64), DIST_BUCKETS - 1)
+    opp_bucket = np.minimum(chunk["opp_dist"].astype(np.int64), DIST_BUCKETS - 1)
     x[np.arange(n), 290 + own_bucket] = 1.0
     x[np.arange(n), 290 + DIST_BUCKETS + opp_bucket] = 1.0
 
     return {
         "x": torch.from_numpy(x).to(device, non_blocking=True),
-        "search_score": torch.from_numpy(batch["search_score"].astype(np.float32)).to(device, non_blocking=True),
-        "game_result": torch.from_numpy(batch["game_result"].astype(np.float32)).to(device, non_blocking=True),
-        "policy_target": torch.from_numpy(batch["policy_target"].astype(np.int64)).to(device, non_blocking=True),
+        "search_score": torch.from_numpy(chunk["search_score"].astype(np.float32)).to(device, non_blocking=True),
+        "game_result": torch.from_numpy(chunk["game_result"].astype(np.float32)).to(device, non_blocking=True),
+        "policy_target": torch.from_numpy(chunk["policy_target"].astype(np.int64)).to(device, non_blocking=True),
     }
+
+
+def iter_gpu_batches(chunk: np.ndarray, device, batch_size: int, gpu_chunk_size: int):
+    """Percorre `chunk` em sub-blocos de ate `gpu_chunk_size` posicoes,
+    transferindo cada sub-bloco para `device` uma unica vez (via
+    `to_chunk_tensors`), e dentro dele fatia os batches de treino/avaliacao
+    (`batch_size`) diretamente na VRAM -- sem nenhum novo round-trip
+    host->device por batch. Em CPU o efeito e neutro (o "device" ja e a
+    propria RAM), mas em GPU isso reduz o numero de transferencias por um
+    fator de ~gpu_chunk_size/batch_size."""
+    n = len(chunk)
+    gpu_chunk_size = max(batch_size, gpu_chunk_size)
+    for gstart in range(0, n, gpu_chunk_size):
+        sub = chunk[gstart:gstart + gpu_chunk_size]
+        t = to_chunk_tensors(sub, device)
+        n_sub = len(sub)
+        for start in range(0, n_sub, batch_size):
+            end = min(start + batch_size, n_sub)
+            yield {
+                "x": t["x"][start:end],
+                "search_score": t["search_score"][start:end],
+                "game_result": t["game_result"][start:end],
+                "policy_target": t["policy_target"][start:end],
+            }
 
 
 # --- orcamento de memoria: auto batch-size (VRAM) / chunk-size (RAM) -------
@@ -240,6 +293,26 @@ def resolve_int_or_auto(value, auto_fn):
     if isinstance(value, str) and value.strip().lower() == "auto":
         return auto_fn()
     return int(value)
+
+
+def format_duration(seconds: float) -> str:
+    seconds = max(0.0, seconds)
+    m, s = divmod(int(seconds), 60)
+    h, m = divmod(m, 60)
+    if h > 0:
+        return f"{h:02d}h{m:02d}m"
+    return f"{m:02d}m{s:02d}s"
+
+
+def print_device_info(device):
+    if device.type == "cuda":
+        idx = device.index if device.index is not None else 0
+        name = torch.cuda.get_device_name(idx)
+        total_gb = torch.cuda.get_device_properties(idx).total_memory / (1024 ** 3)
+        print(f"device: {device}  |  GPU: {name}  |  VRAM total: {total_gb:.1f} GB")
+    else:
+        print(f"device: {device}  (CPU -- nenhuma GPU CUDA em uso; "
+              f"passe --device cuda se esperava usar uma)")
 
 
 def iter_chunks(n, chunk_size, rng):
@@ -378,16 +451,15 @@ def _default_quant_path(out_path: str) -> str:
 
 # --- avaliacao em chunks (limitado por RAM/VRAM) -----------------------------
 @torch.no_grad()
-def run_eval(ds, indices, batch_size, chunk_size, model, device, w_score, w_outcome, w_policy):
+def run_eval(ds, indices, batch_size, chunk_size, gpu_chunk_size, model, device,
+             w_score, w_outcome, w_policy):
     model.eval()
     total = dict(loss=0.0, score=0.0, outcome=0.0, policy=0.0, correct=0)
     n_items = len(indices)
     for start in range(0, n_items, chunk_size):
         chunk_idx = indices[start:start + chunk_size]
         chunk = ds[chunk_idx]
-        for bs in range(0, len(chunk), batch_size):
-            batch = chunk[bs:bs + batch_size]
-            t = to_batch_tensors(batch, device)
+        for t in iter_gpu_batches(chunk, device, batch_size, gpu_chunk_size):
             score_t = t["search_score"] / VALUE_SCALE
             result_t = (t["game_result"] + 1.0) / 2.0
             policy_t = t["policy_target"]
@@ -398,7 +470,7 @@ def run_eval(ds, indices, batch_size, chunk_size, model, device, w_score, w_outc
             loss_policy = F.cross_entropy(policy_logits, policy_t)
             loss = w_outcome * loss_outcome + w_score * loss_score + w_policy * loss_policy
 
-            nb = len(batch)
+            nb = len(t["x"])
             total["loss"] += loss.item() * nb
             total["score"] += loss_score.item() * nb
             total["outcome"] += loss_outcome.item() * nb
@@ -479,12 +551,19 @@ def train(args):
         print(f"split treino/validacao: {len(train_idx):,} / {len(val_idx):,} (val-split={args.val_split})")
 
     device = torch.device(args.device)
+    print_device_info(device)
     batch_size = resolve_int_or_auto(args.batch_size, lambda: compute_auto_batch_size(args.vram_budget_gb))
     chunk_size = resolve_int_or_auto(
         args.chunk_size, lambda: compute_chunk_size(len(train_idx), args.ram_budget_gb, args.ram_chunk_fraction))
+    gpu_chunk_size = batch_size * max(1, args.gpu_chunk_multiplier)
     print(f"orcamento de VRAM: {args.vram_budget_gb:.1f} GB -> batch_size={batch_size:,}")
     print(f"orcamento de RAM: {args.ram_budget_gb:.1f} GB -> chunk_size={chunk_size:,} posicoes/bloco")
-    print(f"device: {device}")
+    print(f"transferencia GPU em blocos de {gpu_chunk_size:,} posicoes "
+          f"({args.gpu_chunk_multiplier}x o batch_size)")
+    if args.grad_clip_norm and args.grad_clip_norm > 0:
+        print(f"gradient clipping: max_norm={args.grad_clip_norm}")
+    total_chunks_per_epoch = max(1, -(-len(train_idx) // chunk_size))
+    print(f"chunks por epoch (RAM): ~{total_chunks_per_epoch}")
 
     model = QuoridorNNUE().to(device)
     if args.init_from:
@@ -530,17 +609,24 @@ def train(args):
         wd = wd_at_epoch(epoch, args.epochs, args.weight_decay, args.weight_decay_min, args.wd_schedule)
         apply_lr_wd(opt, lr, wd)
 
+        if device.type == "cuda":
+            torch.cuda.reset_peak_memory_stats(device)
+
         model.train()
         tr_total = dict(loss=0.0, score=0.0, outcome=0.0, policy=0.0, correct=0)
         n_train_items = len(train_idx)
+        epoch_start_time = time.time()
+        last_progress_print = epoch_start_time
+        positions_done = 0
+        chunk_num = 0
+
         for chunk_idx in iter_chunks(n_train_items, chunk_size, rng):
+            chunk_num += 1
             global_idx = train_idx[chunk_idx]
             chunk = train_ds[global_idx]
-            perm_local = rng.permutation(len(chunk))
-            for start in range(0, len(perm_local), batch_size):
-                batch_idx = perm_local[start:start + batch_size]
-                batch = chunk[batch_idx]
-                t = to_batch_tensors(batch, device)
+            chunk = chunk[rng.permutation(len(chunk))]  # embaralha uma vez por chunk
+
+            for t in iter_gpu_batches(chunk, device, batch_size, gpu_chunk_size):
                 score_t = t["search_score"] / VALUE_SCALE
                 result_t = (t["game_result"] + 1.0) / 2.0
                 policy_t = t["policy_target"]
@@ -553,20 +639,37 @@ def train(args):
 
                 opt.zero_grad(set_to_none=True)
                 loss.backward()
+                if args.grad_clip_norm and args.grad_clip_norm > 0:
+                    torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=args.grad_clip_norm)
                 opt.step()
                 clipper(model)
 
-                nb = len(batch)
+                nb = len(t["x"])
                 tr_total["loss"] += loss.item() * nb
                 tr_total["score"] += loss_score.item() * nb
                 tr_total["outcome"] += loss_outcome.item() * nb
                 tr_total["policy"] += loss_policy.item() * nb
                 tr_total["correct"] += (policy_logits.argmax(dim=-1) == policy_t).sum().item()
+                positions_done += nb
+
+                now = time.time()
+                if args.progress_every_secs > 0 and now - last_progress_print >= args.progress_every_secs:
+                    last_progress_print = now
+                    frac = min(1.0, positions_done / max(1, n_train_items))
+                    elapsed = now - epoch_start_time
+                    eta_epoch = elapsed / frac - elapsed if frac > 0 else 0.0
+                    running_loss = tr_total["loss"] / max(1, positions_done)
+                    running_acc = tr_total["correct"] / max(1, positions_done)
+                    print(f"  epoch {epoch:3d}/{args.epochs}  chunk {chunk_num:>3}/{total_chunks_per_epoch} | "
+                          f"{frac * 100:5.1f}% | {positions_done / 1e6:6.2f}M/{n_train_items / 1e6:.2f}M pos | "
+                          f"loss={running_loss:.4f} acc={running_acc:.3f} | "
+                          f"ETA epoch: {format_duration(eta_epoch)}")
+
         for k in ("loss", "score", "outcome", "policy"):
             tr_total[k] /= max(1, n_train_items)
         tr_total["policy_acc"] = tr_total["correct"] / max(1, n_train_items)
 
-        va = run_eval(val_ds, val_idx, batch_size, chunk_size, model, device,
+        va = run_eval(val_ds, val_idx, batch_size, chunk_size, gpu_chunk_size, model, device,
                       args.w_score, args.w_outcome, args.w_policy)
 
         history["epoch"].append(epoch)
@@ -591,6 +694,14 @@ def train(args):
         if ckpt_dir and improved:
             _export_state_dict(stopper.best_state, os.path.join(ckpt_dir, "best.bin"), device)
 
+        epoch_duration = time.time() - epoch_start_time
+        avg_epoch_time = (time.time() - t0) / epoch
+        eta_run = format_duration(avg_epoch_time * (args.epochs - epoch))
+        vram_note = ""
+        if device.type == "cuda":
+            peak_gb = torch.cuda.max_memory_allocated(device) / (1024 ** 3)
+            vram_note = f" | pico VRAM: {peak_gb:.2f} GB"
+
         if epoch % args.log_every == 0 or epoch == args.epochs or improved or should_stop:
             star = " *" if improved else "  "
             print(f"epoch {epoch:3d}/{args.epochs} | lr={lr:.2e} wd={wd:.2e} | "
@@ -599,7 +710,8 @@ def train(args):
                   f"acc={tr_total['policy_acc']:.3f}) | "
                   f"val: loss={va['loss']:.4f} (score={va['score']:.4f} outcome={va['outcome']:.4f} "
                   f"policy={va['policy']:.4f} acc={va['policy_acc']:.3f}){star} | "
-                  f"{time.time() - t0:.0f}s")
+                  f"epoch: {format_duration(epoch_duration)} | total: {time.time() - t0:.0f}s | "
+                  f"ETA treino: {eta_run}{vram_note}")
 
         if should_stop:
             print(f"\nearly stopping: sem melhora em '{args.monitor}' por {stopper.patience} epochs "
@@ -751,6 +863,17 @@ def parse_args(argv=None):
     g_loss.add_argument("--w-policy", type=float, default=W_POLICY_DEFAULT)
     g_loss.add_argument("--qa", type=int, default=QA_DEFAULT)
     g_loss.add_argument("--qb", type=int, default=QB_DEFAULT)
+    g_loss.add_argument("--grad-clip-norm", type=float, default=GRAD_CLIP_NORM_DEFAULT,
+                         help=f"clip de norma do gradiente antes de cada optimizer.step; "
+                              f"0 ou negativo desliga (default {GRAD_CLIP_NORM_DEFAULT})")
+
+    g_perf = p.add_argument_group("performance / console")
+    g_perf.add_argument("--gpu-chunk-multiplier", type=int, default=GPU_CHUNK_MULTIPLIER_DEFAULT,
+                         help="quantos batches sao agrupados por transferencia host->device "
+                              f"(default {GPU_CHUNK_MULTIPLIER_DEFAULT}x o batch_size)")
+    g_perf.add_argument("--progress-every-secs", type=float, default=PROGRESS_EVERY_SECS_DEFAULT,
+                         help="intervalo minimo entre linhas de progresso dentro do epoch; "
+                              f"0 desliga (default {PROGRESS_EVERY_SECS_DEFAULT}s)")
 
     g_out = p.add_argument_group("saida")
     g_out.add_argument("--out", default=OUT_DEFAULT, help="caminho de saida dos pesos treinados (.bin)")

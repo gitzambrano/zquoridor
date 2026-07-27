@@ -52,7 +52,6 @@ from quantize_nnue import quantize_file  # noqa: E402
 # Editar aqui muda o default sem precisar de flag; toda entrada tem uma
 # flag de linha de comando correspondente que sobrescreve o valor abaixo.
 DATA_DEFAULT = [
-    os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data"),
     os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data", "selfplay")
 ]
 OUT_DEFAULT = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data", "nnue", "nnue_weights.bin")

@@ -75,10 +75,16 @@ def expand_data_paths(spec) -> list:
             continue
         if os.path.isdir(token):
             matches = sorted(glob.glob(os.path.join(token, "*.bin")))
+            if not matches:
+                raise ValueError(
+                    f"diretorio '{token}' nao contem nenhum arquivo .bin "
+                    f"(verifique se os shards de self-play estao numa subpasta, "
+                    f"ex: '{os.path.join(token, 'selfplay')}')"
+                )
         else:
             matches = sorted(glob.glob(token))
-        if not matches:
-            matches = [token]  # caminho literal; erro explicito adiante se nao existir
+            if not matches:
+                matches = [token]  # caminho literal; erro explicito adiante se nao existir
         for m in matches:
             if m not in out:
                 out.append(m)
