@@ -48,24 +48,70 @@ Recursos:
     % concluido, loss corrente, ETA do epoch) alem do ETA do treino inteiro,
     throttled por tempo (--progress-every-secs).
 
+GPU vs CPU -- UM parametro so: mude USE_GPU_DEFAULT (secao DEFAULT CONFIG
+abaixo). True usa CUDA se disponivel (cai pra CPU sozinho se nao houver
+GPU); False forca CPU mesmo com GPU disponivel. Nao existe um script
+separado "sem torch" -- o torch roda em CPU tao bem quanto qualquer
+implementacao numpy pura (e ganha o autograd de graca), entao um arquivo
+so cobre os dois casos. --device continua aceito pra casos especiais
+(ex. "cuda:1" numa maquina com varias GPUs), mas o normal e nem tocar
+nisso.
+
+CHECKPOINT / RESUME (estilo Zchezz) -- responde as duvidas de sempre:
+  - "Cada treino comeca do zero?" Nao por padrao. A CADA epoch (nao so
+    quando ha melhora) o estado COMPLETO de treino -- pesos, estado do
+    otimizador (momentos do AdamW), epoch atual, historico de metricas,
+    estado do early-stopper e os RNGs (numpy + torch + cuda) -- e gravado
+    em `<ckpt-dir>/train_state.pt`. Isso e diferente de best.bin/last.bin
+    (que sao so os PESOS, no layout binario que nnue.hpp le): train_state.pt
+    e o que permite retomar um treino como se ele nunca tivesse parado
+    (mesmo optimizer momentum, mesmo ponto do LR/WD schedule, mesmo
+    historico pros plots).
+  - "Como ele parte de um checkpoint?" Automaticamente. Ao rodar de novo
+    com o mesmo --ckpt-dir (o default ja aponta pra data/checkpoints), o
+    script procura train_state.pt sozinho, confere se a "impressao
+    digital" da arquitetura bate (NUM_FEATURES/HIDDEN/POLICY_OUT/QA/QB --
+    se mudou a arquitetura ou a escala QAT, o checkpoint antigo e
+    incompativel e e ignorado com aviso) e, se bater, carrega tudo e
+    continua exatamente do epoch seguinte. --init-from soh entra em jogo
+    quando NAO ha checkpoint de resume valido (ele so inicializa PESOS, o
+    otimizador comeca zerado). --fresh ignora qualquer checkpoint e forca
+    treino do zero mesmo que exista um.
+  - "E se parar no meio?" Ctrl+C (SIGINT) e capturado: o handler salva
+    train_state.pt e last.bin IMEDIATAMENTE com os pesos do exato momento
+    da interrupcao (nao espera terminar o epoch) e so entao encerra. Ao
+    rodar de novo, esse epoch (que estava incompleto) e refeito do zero
+    -- so o epoch em andamento se perde, nao o treino inteiro.
+  - "E se eu rodar de novo DEPOIS que o treino ja terminou (bateu o teto de
+    --epochs, ou parou por early stopping)?" Comeca um NOVO CICLO
+    automaticamente a partir dos PESOS salvos (warm start) -- otimizador,
+    LR/WD schedule e early-stopping reiniciados do zero, epoch volta a
+    contar de 1. E o comportamento certo pro fluxo de bootstrapping (gera
+    mais self-play com run_selfplay.py, retreina em cima da rede anterior,
+    repete). Se quisesse continuar exatamente o MESMO ciclo (schedule
+    contínuo), bastaria ter passado um --epochs maior desde o inicio.
+
 Todos os defaults abaixo (secao DEFAULT CONFIG) valem como "flags no
 cabecalho do arquivo": editar as constantes muda o comportamento padrao
 sem precisar passar nada na linha de comando; qualquer flag de linha de
-comando sobrescreve a constante correspondente.
+comando sobrescreve a constante correspondente. O uso normal e so
+`python3 train_nnue.py`, sem nenhuma flag -- os defaults (incluindo
+--data, --out e --ckpt-dir, todos resolvidos relativos a este arquivo) ja
+sao bons o bastante pro dia a dia.
 
-Exemplos:
-    python3 train_nnue.py --data ../data/selfplay_*.bin \
-        --out ../data/nnue/nnue_weights.bin --plot-dir ../data/plots
+Exemplos (uso normal, sem flags):
+    python3 train_nnue.py
 
-    python3 train_nnue.py --data a.bin,b.bin --init-from prev.bin \
-        --epochs 80 --weight-decay 2e-4 --wd-schedule cosine \
-        --vram-budget-gb 6 --ram-budget-gb 32 \
-        --early-stop --patience 10 --monitor val_loss \
-        --out ../data/nnue/nnue_weights.bin --ckpt-dir ../data/checkpoints
+Exemplos (casos especiais):
+    python3 train_nnue.py --data a.bin,b.bin --epochs 80 \
+        --weight-decay 2e-4 --wd-schedule cosine
+
+    python3 train_nnue.py --fresh --init-from ../data/nnue/nnue_weights_legado.bin
 """
 import argparse
 import copy
 import os
+import signal
 import sys
 import time
 import numpy as np
@@ -127,7 +173,21 @@ W_POLICY_DEFAULT = 1.0
 QA_DEFAULT = 255
 QB_DEFAULT = 64
 LOG_EVERY_DEFAULT = 1
-DEVICE_DEFAULT = "cuda" if torch.cuda.is_available() else "cpu"
+
+# GPU vs CPU: o UNICO parametro que decide isso. True = usa CUDA se
+# `torch.cuda.is_available()` (cai pra CPU sozinho, sem erro, se nao
+# houver GPU visivel). False = forca CPU mesmo com GPU disponivel (util
+# pra depurar ou comparar). --device continua aceito na CLI pra casos
+# especiais (ex. "cuda:1"), mas normalmente nem se toca nisso.
+USE_GPU_DEFAULT = True
+DEVICE_DEFAULT = "cuda" if (USE_GPU_DEFAULT and torch.cuda.is_available()) else "cpu"
+
+# --- checkpoint / resume (estilo Zchezz) ------------------------------------
+# ckpt-dir agora tem default proprio (nao mais None): resume automatico so
+# funciona se houver um diretorio consistente entre execucoes. Ver a secao
+# "CHECKPOINT / RESUME" no docstring do topo do arquivo para o fluxo completo.
+CKPT_DIR_DEFAULT = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data", "checkpoints")
+FRESH_DEFAULT = False   # True (ou --fresh) ignora qualquer checkpoint existente e comeca do zero
 
 # Estabilizacao do treino QAT (ideia do mixtrain.py). 0 ou negativo desliga.
 GRAD_CLIP_NORM_DEFAULT = 1.0
@@ -400,6 +460,110 @@ class EarlyStopper:
         return improved, should_stop
 
 
+# --- checkpoint / resume (estado COMPLETO de treino, estilo Zchezz) ---------
+# Diferenca de best.bin/last.bin: aqueles sao so os PESOS, no layout binario
+# que nnue.hpp le. train_state.pt carrega tambem otimizador, epoch, historico,
+# early-stopper e RNGs -- e o que permite retomar o treino como se ele nunca
+# tivesse parado, em vez de so reaproveitar os pesos como ponto de partida
+# (isso ja existia via --init-from, mas reseta o momentum do AdamW e o
+# progresso do LR/WD schedule).
+def compute_fingerprint(args):
+    """'Impressao digital' da arquitetura + escala QAT. Se um checkpoint
+    salvo tiver uma impressao diferente da rodada atual (mudou HIDDEN,
+    trocou QA/QB etc.), ele e incompativel e nao pode ser usado pra
+    resume -- os tensores nem teriam o shape certo."""
+    return dict(num_features=NUM_FEATURES, hidden=HIDDEN, policy_out=POLICY_OUT,
+                qa=args.qa, qb=args.qb)
+
+
+def _train_state_path(ckpt_dir):
+    return os.path.join(ckpt_dir, "train_state.pt")
+
+
+def save_train_state(ckpt_dir, model, opt, epoch, epoch_completed, history, stopper, rng, fingerprint):
+    os.makedirs(ckpt_dir, exist_ok=True)
+    payload = dict(
+        fingerprint=fingerprint,
+        epoch=epoch,
+        epoch_completed=epoch_completed,
+        model_state=model.state_dict(),
+        opt_state=opt.state_dict(),
+        history=history,
+        stopper_best=stopper.best,
+        stopper_best_epoch=stopper.best_epoch,
+        stopper_best_state=stopper.best_state,
+        stopper_num_bad_epochs=stopper.num_bad_epochs,
+        numpy_rng_state=rng.bit_generator.state,
+        torch_rng_state=torch.get_rng_state(),
+        torch_cuda_rng_state=torch.cuda.get_rng_state_all() if torch.cuda.is_available() else None,
+    )
+    path = _train_state_path(ckpt_dir)
+    tmp_path = path + ".tmp"
+    torch.save(payload, tmp_path)
+    os.replace(tmp_path, path)  # grava em arquivo temporario e renomeia -- evita
+                                 # checkpoint corrompido se o processo morrer no meio da escrita
+
+
+def try_load_train_state(ckpt_dir, fingerprint):
+    """Retorna o payload salvo se existir e a arquitetura bater, senao None
+    (silencioso se simplesmente nao existe checkpoint ainda; avisa se existe
+    mas e incompativel)."""
+    if not ckpt_dir:
+        return None
+    path = _train_state_path(ckpt_dir)
+    if not os.path.isfile(path):
+        return None
+    payload = torch.load(path, map_location="cpu", weights_only=False)
+    saved_fp = payload.get("fingerprint", {})
+    if saved_fp != fingerprint:
+        print(f"aviso: checkpoint de resume em {path} tem arquitetura/QAT diferente "
+              f"da rodada atual ({saved_fp} != {fingerprint}) -- ignorando e comecando "
+              f"do zero (apague o arquivo ou use um --ckpt-dir novo pra sumir com este aviso)")
+        return None
+    return payload
+
+
+class _RunState:
+    """Referencia mutavel compartilhada com o handler de SIGINT -- guarda so
+    o que o handler precisa pra salvar um checkpoint de emergencia a
+    qualquer momento, mesmo no meio de um epoch."""
+    def __init__(self):
+        self.model = None
+        self.opt = None
+        self.rng = None
+        self.history = None
+        self.stopper = None
+        self.ckpt_dir = None
+        self.fingerprint = None
+        self.epoch = 0
+        self.epoch_completed = False
+
+
+_run_state = _RunState()
+_ckpt_saved_on_interrupt = False
+
+
+def _sigint_handler(signum, frame):
+    """Ctrl+C: salva train_state.pt e last.bin com os pesos EXATOS do
+    momento da interrupcao (nao espera o epoch terminar) e so entao
+    encerra. Ao rodar de novo, o epoch interrompido e refeito -- so ele se
+    perde, nao o treino inteiro."""
+    global _ckpt_saved_on_interrupt
+    print("\n\n[Ctrl+C] interrompido -- salvando checkpoint de resume e pesos atuais...")
+    rs = _run_state
+    if rs.model is not None and rs.ckpt_dir and not _ckpt_saved_on_interrupt:
+        _ckpt_saved_on_interrupt = True
+        save_train_state(rs.ckpt_dir, rs.model, rs.opt, rs.epoch, rs.epoch_completed,
+                          rs.history, rs.stopper, rs.rng, rs.fingerprint)
+        export_weights(rs.model, os.path.join(rs.ckpt_dir, "last.bin"))
+        status = "completo" if rs.epoch_completed else "parcial -- sera refeito ao retomar"
+        print(f"checkpoint salvo em {rs.ckpt_dir} (epoch {rs.epoch}, {status})")
+    else:
+        print("nada para salvar ainda (interrompido antes do 1o checkpoint).")
+    print("saindo.")
+    sys.exit(130)
+
+
 # --- export no layout binario lido por nnue.hpp ------------------------------
 def export_weights(model: QuoridorNNUE, path: str):
     model.eval()
@@ -529,6 +693,8 @@ def save_plots(history, plot_dir):
 
 # --- treino ------------------------------------------------------------------
 def train(args):
+    global _ckpt_saved_on_interrupt
+    _ckpt_saved_on_interrupt = False
     train_paths, train_ds = load_multi_selfplay(args.data)
     print(f"dados de treino: {len(train_paths)} arquivo(s), {len(train_ds):,} posicoes")
     for p, n in train_ds.sizes():
@@ -565,11 +731,43 @@ def train(args):
     total_chunks_per_epoch = max(1, -(-len(train_idx) // chunk_size))
     print(f"chunks por epoch (RAM): ~{total_chunks_per_epoch}")
 
+    ckpt_dir = args.ckpt_dir
+    if ckpt_dir:
+        os.makedirs(ckpt_dir, exist_ok=True)
+    fingerprint = compute_fingerprint(args)
+    resumed = None if args.fresh else try_load_train_state(ckpt_dir, fingerprint)
+
     model = QuoridorNNUE().to(device)
-    if args.init_from:
+    new_cycle = False
+    if resumed is not None:
+        model.load_state_dict(resumed["model_state"])
+        prev_epoch = resumed["epoch"]
+        prev_completed = resumed["epoch_completed"]
+        prev_bad_epochs = resumed.get("stopper_num_bad_epochs", 0)
+        hit_ceiling = prev_epoch >= args.epochs
+        early_stopped = args.early_stop and prev_bad_epochs >= args.patience
+        cycle_exhausted = prev_completed and (hit_ceiling or early_stopped)
+        if cycle_exhausted:
+            new_cycle = True
+            print(f"pesos carregados de {_train_state_path(ckpt_dir)} "
+                  f"(ciclo anterior ja tinha terminado no epoch {prev_epoch}) -- "
+                  f"iniciando um NOVO CICLO de treino a partir desses pesos "
+                  f"(otimizador, LR/WD schedule e early-stopping reiniciados; "
+                  f"e o comportamento certo pra continuar apos gerar mais self-play). "
+                  f"Use --fresh pra tambem descartar os pesos e comecar aleatorio.")
+        else:
+            status = "completo" if prev_completed else "parcial (sera refeito)"
+            print(f"RETOMANDO treino a partir de {_train_state_path(ckpt_dir)} "
+                  f"(ultimo epoch salvo: {prev_epoch}, {status}) -- mesmo otimizador, "
+                  f"schedule e early-stopping de onde parou")
+        if args.init_from:
+            print(f"  (--init-from ignorado: ha um checkpoint valido em {ckpt_dir})")
+    elif args.init_from:
         raw = _load_raw_weights(args.init_from)
         _load_into_model(model, raw)
-        print(f"pesos iniciais carregados de {args.init_from} (continuando treino)")
+        print(f"pesos iniciais carregados de {args.init_from} (continuando treino, "
+              f"otimizador comeca do zero -- para retomar COM otimizador/schedule, "
+              f"use o mesmo --ckpt-dir de uma rodada anterior em vez de --init-from)")
     else:
         print("pesos iniciais aleatorios (treino do zero)")
 
@@ -588,22 +786,47 @@ def train(args):
     stopper = EarlyStopper(monitor=args.monitor, patience=args.patience,
                             min_delta=args.min_delta, enabled=args.early_stop)
 
-    ckpt_dir = args.ckpt_dir
-    if ckpt_dir:
-        os.makedirs(ckpt_dir, exist_ok=True)
-
     history = {k: [] for k in (
         "epoch", "train_loss", "val_loss", "train_outcome", "val_outcome",
         "train_score", "val_score", "train_policy", "val_policy",
         "train_policy_acc", "val_policy_acc", "lr", "wd",
     )}
 
+    start_epoch = 1
+    if resumed is not None and not new_cycle:
+        opt.load_state_dict(resumed["opt_state"])
+        rng.bit_generator.state = resumed["numpy_rng_state"]
+        torch.set_rng_state(resumed["torch_rng_state"])
+        if resumed.get("torch_cuda_rng_state") is not None and torch.cuda.is_available():
+            torch.cuda.set_rng_state_all(resumed["torch_cuda_rng_state"])
+        history = resumed["history"]
+        stopper.best = resumed["stopper_best"]
+        stopper.best_epoch = resumed["stopper_best_epoch"]
+        stopper.best_state = resumed["stopper_best_state"]
+        stopper.num_bad_epochs = resumed["stopper_num_bad_epochs"]
+        start_epoch = resumed["epoch"] + 1 if resumed["epoch_completed"] else resumed["epoch"]
+    # new_cycle=True: fica tudo com o default (start_epoch=1, otimizador novo,
+    # history/stopper zerados) -- so os PESOS do model vieram do checkpoint.
+
+    # handler de Ctrl+C: salva um checkpoint de emergencia com o estado atual
+    # (mesmo no meio de um epoch) antes de encerrar.
+    _run_state.model = model
+    _run_state.opt = opt
+    _run_state.rng = rng
+    _run_state.history = history
+    _run_state.stopper = stopper
+    _run_state.ckpt_dir = ckpt_dir
+    _run_state.fingerprint = fingerprint
+    signal.signal(signal.SIGINT, _sigint_handler)
+
     t0 = time.time()
     stopped_early = False
-    last_epoch = 0
+    last_epoch = start_epoch - 1
 
-    for epoch in range(1, args.epochs + 1):
+    for epoch in range(start_epoch, args.epochs + 1):
         last_epoch = epoch
+        _run_state.epoch = epoch
+        _run_state.epoch_completed = False
         lr = lr_at_epoch(epoch, args.epochs, args.lr, args.lr_min, args.lr_schedule,
                           args.warmup_epochs, args.step_size, args.step_gamma, args.exp_gamma)
         wd = wd_at_epoch(epoch, args.epochs, args.weight_decay, args.weight_decay_min, args.wd_schedule)
@@ -693,6 +916,13 @@ def train(args):
 
         if ckpt_dir and improved:
             _export_state_dict(stopper.best_state, os.path.join(ckpt_dir, "best.bin"), device)
+
+        # checkpoint de resume: gravado a CADA epoch (nao so quando melhora),
+        # e' o que permite retomar depois de fechar o processo normalmente.
+        _run_state.epoch_completed = True
+        if ckpt_dir:
+            save_train_state(ckpt_dir, model, opt, epoch, True, history, stopper, rng, fingerprint)
+            export_weights(model, os.path.join(ckpt_dir, "last.bin"))
 
         epoch_duration = time.time() - epoch_start_time
         avg_epoch_time = (time.time() - t0) / epoch
@@ -806,7 +1036,9 @@ def parse_args(argv=None):
     g_data.add_argument("--val-split", type=float, default=VAL_SPLIT_DEFAULT,
                          help=f"fracao de --data reservada para validacao quando --val-data nao "
                               f"e passado (default {VAL_SPLIT_DEFAULT})")
-    g_data.add_argument("--init-from", default=None, help="pesos .bin existentes p/ continuar o treino")
+    g_data.add_argument("--init-from", default=None,
+                         help="pesos .bin existentes p/ inicializar (so PESOS; ignorado se houver "
+                              "um checkpoint de resume valido em --ckpt-dir -- ver --fresh)")
     g_data.add_argument("--seed", type=int, default=SEED_DEFAULT)
 
     g_opt = p.add_argument_group("otimizacao")
@@ -822,7 +1054,9 @@ def parse_args(argv=None):
                         help="epochs por degrau em --lr-schedule=step")
     g_opt.add_argument("--step-gamma", type=float, default=STEP_GAMMA_DEFAULT)
     g_opt.add_argument("--exp-gamma", type=float, default=EXP_GAMMA_DEFAULT)
-    g_opt.add_argument("--device", default=DEVICE_DEFAULT)
+    g_opt.add_argument("--device", default=DEVICE_DEFAULT,
+                        help="caso especial (ex. 'cuda:1'); normalmente mude USE_GPU_DEFAULT no "
+                             f"topo do arquivo em vez desta flag (default resolvido: {DEVICE_DEFAULT})")
 
     g_wd = p.add_argument_group("weight decay (annealing)")
     g_wd.add_argument("--weight-decay", type=float, default=WEIGHT_DECAY_DEFAULT,
@@ -842,8 +1076,15 @@ def parse_args(argv=None):
                        default=MONITOR_DEFAULT)
     g_es.add_argument("--no-restore-best", action="store_true",
                        help="exporta os pesos do ultimo epoch em vez dos do melhor epoch")
-    g_es.add_argument("--ckpt-dir", default=None,
-                       help="diretorio para salvar best.bin (atualizado a cada melhora) e last.bin")
+
+    g_ckpt = p.add_argument_group("checkpoint / resume")
+    g_ckpt.add_argument("--ckpt-dir", default=CKPT_DIR_DEFAULT,
+                         help=f"diretorio de checkpoints: best.bin, last.bin e train_state.pt "
+                              f"(estado completo p/ resume automatico); passe vazio/None via codigo "
+                              f"pra desligar checkpointing (default {CKPT_DIR_DEFAULT})")
+    g_ckpt.add_argument("--fresh", dest="fresh", action="store_true", default=FRESH_DEFAULT,
+                         help="ignora qualquer checkpoint de resume existente em --ckpt-dir e "
+                              "comeca do zero (ou de --init-from, se passado)")
 
     g_mem = p.add_argument_group("orcamento de memoria (VRAM/RAM)")
     g_mem.add_argument("--vram-budget-gb", type=float, default=VRAM_BUDGET_GB_DEFAULT,
