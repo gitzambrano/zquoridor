@@ -187,7 +187,7 @@ DEVICE_DEFAULT = "cuda" if (USE_GPU_DEFAULT and torch.cuda.is_available()) else 
 # funciona se houver um diretorio consistente entre execucoes. Ver a secao
 # "CHECKPOINT / RESUME" no docstring do topo do arquivo para o fluxo completo.
 CKPT_DIR_DEFAULT = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data", "checkpoints")
-FRESH_DEFAULT = False   # True (ou --fresh) ignora qualquer checkpoint existente e comeca do zero
+FRESH_DEFAULT = True   # True (ou --fresh) ignora qualquer checkpoint existente e comeca do zero
 
 # Estabilizacao do treino QAT (ideia do mixtrain.py). 0 ou negativo desliga.
 GRAD_CLIP_NORM_DEFAULT = 1.0
