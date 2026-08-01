@@ -4,10 +4,19 @@
 #   source /caminho/pro/emsdk/emsdk_env.sh
 # engine_wasm.cpp inclui ../src/rules.hpp e ../src/search.hpp diretamente
 # (caminho relativo a partir de gui_web/, sem -I necessário aqui).
+#
+# CORREÇÃO: este script estava dessincronizado de build_wasm.bat -- faltavam
+# os 3 exports de controle de NNUE (_qr_load_nnue_weights,
+# _qr_set_eval_heuristic, _qr_eval_mode_is_nnue), então o app web não tinha
+# como ligar NNUE mesmo manualmente via JS, apesar de engine_wasm.cpp já
+# exportar essas funções com EMSCRIPTEN_KEEPALIVE. Lista sincronizada com o
+# .bat abaixo.
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 GUIWEB="$HERE/../gui_web"
+ROOT="$HERE/.."
+DEFAULT_WEIGHTS="$ROOT/data/nnue/nnue_weights_int8.bin"
 
 if ! command -v emcc >/dev/null 2>&1; then
     echo "[ERRO] emcc não encontrado no PATH." >&2
@@ -22,10 +31,23 @@ EXPORTED_FUNCS='[
   "_qr_legal_move_b","_qr_legal_move_c","_qr_apply_pawn_move",
   "_qr_apply_wall_move","_qr_engine_move","_qr_last_move_is_wall",
   "_qr_last_move_a","_qr_last_move_b","_qr_last_move_c",
-  "_qr_last_move_eval","_qr_is_draw"
+  "_qr_last_move_eval","_qr_is_draw",
+  "_qr_load_nnue_weights","_qr_set_eval_heuristic","_qr_eval_mode_is_nnue"
 ]'
 
 cd "$GUIWEB"
+
+PRELOAD_ARGS=()
+if [[ -f "$DEFAULT_WEIGHTS" ]]; then
+    echo "[*] Pesos NNUE default encontrados ($DEFAULT_WEIGHTS) -- embutindo no bundle via --preload-file."
+    echo "    No FS virtual do WASM eles ficam disponíveis em /data/nnue/nnue_weights_int8.bin;"
+    echo "    chame qr_load_nnue_weights(\"/data/nnue/nnue_weights_int8.bin\") do JS para ativar NNUE"
+    echo "    (o módulo nasce em modo heurístico -- ver comentário em engine_wasm.cpp)."
+    PRELOAD_ARGS=(--preload-file "$DEFAULT_WEIGHTS@/data/nnue/nnue_weights_int8.bin")
+else
+    echo "[!] Aviso: pesos NNUE default não encontrados em $DEFAULT_WEIGHTS -- bundle sairá sem eles"
+    echo "    (rode training/quantize_nnue.py primeiro, ou o app web fica só no modo heurístico)."
+fi
 
 emcc -O3 -std=c++17 \
   engine_wasm.cpp \
@@ -35,6 +57,7 @@ emcc -O3 -std=c++17 \
   -s EXPORTED_RUNTIME_METHODS='["ccall","cwrap"]' \
   -s ALLOW_MEMORY_GROWTH=1 \
   -s ENVIRONMENT=web \
+  "${PRELOAD_ARGS[@]}" \
   -o zquoridor.js
 
 python3 build_standalone.py

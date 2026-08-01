@@ -154,8 +154,68 @@ void benchAccumulatorUpdate(int iters) {
     printf("           o mantem no mesmo patamar do recompute total -- nao ficou mais pesado que ele.\n");
 }
 
-int main() {
+void benchNegamaxNNUE(const char* weightsPath = nullptr) {
+    printf("\n=== Negamax (eval NNUE quantizada int8/int16) -- self-play, 200ms/lance ===\n");
+    if (weightsPath) {
+        if (!loadWeightsQuant(weightsPath)) {
+            printf("[ERRO] Nao foi possivel carregar pesos de '%s'\n", weightsPath);
+            return;
+        }
+        printf("Pesos quantizados carregados de '%s'\n", weightsPath);
+    } else {
+        printf("Nenhum arquivo de pesos passado; inicializando pesos quantizados dummy para benchmark...\n");
+        auto& W = weightsQuant();
+        W.QA = QA_DEFAULT;
+        W.QB = QB_DEFAULT;
+        W.w1.assign(NUM_FEATURES, {});
+        W.wp.assign(POLICY_OUT, {});
+        W.bp.assign(POLICY_OUT, 0);
+    }
+
+    Negamax engine;
+    engine.setEvalMode(Negamax::EvalMode::NNUE);
+    State s = initialState();
+    SearchStats totalStats{};
+    uint64_t totalNodes = 0;
+    auto t0 = clockT::now();
+    int ply = 0;
+    int maxPlies = 300;
+    int depthSum = 0, depthSamples = 0;
+    RepetitionTable reptbl;
+    bool isDraw = false;
+    for (; ply < maxPlies; ply++) {
+        int w = winner(s);
+        if (w != -1) break;
+        if (reptbl.count(s.hash) >= 2) {
+            isDraw = true;
+            break;
+        }
+        SearchStats st;
+        Move m = engine.chooseMove(s, /*maxDepthCap=*/40, /*timeBudgetMs=*/200, st, reptbl);
+        totalNodes += st.nodes;
+        depthSum += st.reachedDepth;
+        depthSamples++;
+        reptbl.push(s.hash);
+        s = applyMove(s, m);
+    }
+    double totalMs = msSince(t0);
+    printf("lances jogados: %d, nos totais: %llu\n", ply, (unsigned long long)totalNodes);
+    printf("tempo total: %.1f ms -> %.0f nos/seg (media, acumuladores incrementais na pilha)\n",
+           totalMs, totalNodes / (totalMs / 1000.0));
+    printf("profundidade media alcancada por lance: %.1f\n", depthSamples ? (double)depthSum / depthSamples : 0.0);
+    int w = winner(s);
+    if (isDraw) {
+        printf("resultado: empate por repeticao\n");
+    } else {
+        printf("resultado: %s\n", w == -1 ? "nao terminou no limite de lances" :
+               (w == 0 ? "jogador 0 venceu" : "jogador 1 venceu"));
+    }
+}
+
+int main(int argc, char** argv) {
+    const char* weightsFile = (argc > 1) ? argv[1] : nullptr;
     benchNegamax();
+    benchNegamaxNNUE(weightsFile);
     benchNNUEForward(200000);
     benchAccumulatorUpdate(2000000);
     return 0;

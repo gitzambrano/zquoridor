@@ -26,10 +26,10 @@ GIT_REF1 = None               # None = versão local não comitada (ou passe str
 GIT_REF2 = "main"             # Ref Git base para o confronto (ex: 'main', 'v1.0', 'HEAD')
 
 INVERT_COLORS = True          # Se True, joga cada abertura 2x invertendo as cores (par). Se False, joga apenas 1x por abertura.
-CREATE_BIN = False            # Se True, salva os dados das partidas em data/arena/ no formato .bin de treino
-GAMES = 500                   # Quantidade total de jogos
+CREATE_BIN = True            # Se True, salva os dados das partidas em data/arena/ no formato .bin de treino
+GAMES = 5000                   # Quantidade total de jogos
 REPORT_GAMES = 50             # Atualiza e imprime o relatório parcial a cada N jogos concluídos (default 50)
-TIME_MS = 100                 # Tempo de pensamento por lance em milissegundos
+TIME_MS = 500                 # Tempo de pensamento por lance em milissegundos
 THREADS = 14                  # Número de núcleos / processos em paralelo (default 14)
 RANDOM_OPENING_PLIES = 4      # Quantidade de lances aleatórios na abertura
 SEED = 53                     # Semente aleatória
@@ -99,41 +99,84 @@ def compile_arena(dir1, dir2, output_exe):
     os.makedirs(os.path.dirname(output_exe), exist_ok=True)
     arena_src = os.path.join(PROJECT_ROOT, "teste", "arena.cpp")
 
-    _bump_mtimes(dir1, 0)
-    _bump_mtimes(dir2, 86400)
+    # CORREÇÃO: quando --ref1/--ref2 são omitidos (caso comum: comparar o
+    # build local contra ele mesmo, ex. smoke-test), prepare_engine_source
+    # devolve PROJECT_ROOT para os dois -- dir1 e dir2 acabam sendo o MESMO
+    # diretório real. Nesse caso ENGINE1_SEARCH_HPP e ENGINE2_SEARCH_HPP
+    # apontariam pro MESMO arquivo físico, e #pragma once descartaria a
+    # segunda inclusão de verdade (não é uma falsa detecção de duplicata
+    # por mtime -- é literalmente o mesmo arquivo), fazendo a compilação
+    # falhar com "qr_e2 has not been declared" etc. _bump_mtimes sozinho
+    # não resolve isso (dá timestamps diferentes ao MESMO arquivo, o que
+    # não cria um segundo arquivo). Solução: se os diretórios coincidem,
+    # cria uma cópia isolada de src/ só para a Engine 2 antes de seguir o
+    # fluxo normal de mtimes.
+    dir2_for_build = dir2
+    tmp_dir2 = None
+    if os.path.realpath(dir1) == os.path.realpath(dir2):
+        tmp_dir2 = tempfile.mkdtemp(prefix="zquoridor_arena_e2_local_")
+        shutil.copytree(os.path.join(dir2, "src"), os.path.join(tmp_dir2, "src"), dirs_exist_ok=True)
+        dir2_for_build = tmp_dir2
 
-    search1 = os.path.join(dir1, "src", "search.hpp").replace("\\", "/")
-    search2 = os.path.join(dir2, "src", "search.hpp").replace("\\", "/")
-    cmd = (
-        f"{COMPILER} {CXX_FLAGS} "
-        f"-DENGINE1_SEARCH_HPP=\"\\\"{search1}\\\"\" "
-        f"-DENGINE2_SEARCH_HPP=\"\\\"{search2}\\\"\" "
-        f"\"{arena_src}\" -o \"{output_exe}\""
-    )
+    try:
+        _bump_mtimes(dir1, 0)
+        _bump_mtimes(dir2_for_build, 86400)
 
-    res = subprocess.run(cmd, shell=True, capture_output=True, text=True)
-    if res.returncode != 0:
-        print(f"[!] ERRO DE COMPILAÇÃO (arena dual, ref1={dir1} ref2={dir2}):\n{res.stderr}")
-        sys.exit(1)
+        search1 = os.path.join(dir1, "src", "search.hpp").replace("\\", "/")
+        search2 = os.path.join(dir2_for_build, "src", "search.hpp").replace("\\", "/")
+        cmd = (
+            f"{COMPILER} {CXX_FLAGS} "
+            f"-DENGINE1_SEARCH_HPP=\"\\\"{search1}\\\"\" "
+            f"-DENGINE2_SEARCH_HPP=\"\\\"{search2}\\\"\" "
+            f"\"{arena_src}\" -o \"{output_exe}\""
+        )
+
+        res = subprocess.run(cmd, shell=True, capture_output=True, text=True)
+        if res.returncode != 0:
+            print(f"[!] ERRO DE COMPILAÇÃO (arena dual, ref1={dir1} ref2={dir2}):\n{res.stderr}")
+            sys.exit(1)
+    finally:
+        if tmp_dir2:
+            shutil.rmtree(tmp_dir2, ignore_errors=True)
+
+def _is_git_repo():
+    res = subprocess.run("git rev-parse --is-inside-work-tree", shell=True, cwd=PROJECT_ROOT,
+                          capture_output=True, text=True)
+    return res.returncode == 0 and res.stdout.strip() == "true"
 
 def prepare_engine_source(ref_name):
     """
     Se ref_name for None ou "", retorna o PROJECT_ROOT local com alterações atuais.
     Caso contrário, faz git worktree temporário da ref informada.
+
+    CORRECAO: antes, um ref_name nao-vazio (ex. GIT_REF2="main" default)
+    tentava sempre `git worktree add`, mesmo quando PROJECT_ROOT nao e um
+    repositorio git de verdade (ex. rodando a partir de um .zip extraido
+    sem .git) -- o comando falhava e o script abortava com sys.exit(1),
+    mesmo que o usuario so quisesse comparar a versao local contra ela
+    mesma. Agora detectamos isso antes e caimos para a versao local com um
+    aviso, em vez de travar.
     """
     if not ref_name or ref_name.strip() == "":
         print(f"[*] Engine: Versao Local Atual (inclui alteracoes nao comitadas)")
         return PROJECT_ROOT, None
-    else:
-        temp_dir = tempfile.mkdtemp(prefix=f"zquoridor_ref_{ref_name.replace('/', '_')}_")
-        print(f"[*] Engine: Criando git worktree temporario para '{ref_name}' em {temp_dir}")
-        cmd = f"git worktree add --detach \"{temp_dir}\" {ref_name}"
-        res = subprocess.run(cmd, shell=True, cwd=PROJECT_ROOT, capture_output=True, text=True)
-        if res.returncode != 0:
-            print(f"[!] ERRO ao criar worktree para git ref '{ref_name}':\n{res.stderr}")
-            shutil.rmtree(temp_dir, ignore_errors=True)
-            sys.exit(1)
-        return temp_dir, temp_dir
+
+    if not _is_git_repo():
+        print(f"[!] Aviso: '{ref_name}' foi pedido, mas {PROJECT_ROOT} nao e um repositorio git\n"
+              f"    (rodando a partir de uma copia/zip sem .git?). Usando a versao local em vez\n"
+              f"    de tentar 'git worktree add' -- para comparar duas refs de verdade, rode isto\n"
+              f"    de dentro de um clone git normal do projeto.")
+        return PROJECT_ROOT, None
+
+    temp_dir = tempfile.mkdtemp(prefix=f"zquoridor_ref_{ref_name.replace('/', '_')}_")
+    print(f"[*] Engine: Criando git worktree temporario para '{ref_name}' em {temp_dir}")
+    cmd = f"git worktree add --detach \"{temp_dir}\" {ref_name}"
+    res = subprocess.run(cmd, shell=True, cwd=PROJECT_ROOT, capture_output=True, text=True)
+    if res.returncode != 0:
+        print(f"[!] ERRO ao criar worktree para git ref '{ref_name}':\n{res.stderr}")
+        shutil.rmtree(temp_dir, ignore_errors=True)
+        sys.exit(1)
+    return temp_dir, temp_dir
 
 def cleanup_worktree(temp_dir):
     if temp_dir and os.path.exists(temp_dir):
@@ -144,7 +187,7 @@ def cleanup_worktree(temp_dir):
 
 import multiprocessing
 
-def worker_process(exe_path, worker_games, time_ms, random_plies, seed, report_games, bin_path, invert_colors, progress_queue):
+def worker_process(exe_path, worker_games, time_ms, random_plies, seed, report_games, bin_path, invert_colors, progress_queue, e1_nnue="", e2_nnue="", heuristic=False):
     cmd = [
         exe_path,
         "--games", str(worker_games),
@@ -158,8 +201,20 @@ def worker_process(exe_path, worker_games, time_ms, random_plies, seed, report_g
         cmd.extend(["--report-games", str(report_games)])
     if bin_path:
         cmd.extend(["--bin-file", bin_path])
-        
-    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
+    if e1_nnue:
+        cmd.extend(["--e1-nnue", e1_nnue])
+    if e2_nnue:
+        cmd.extend(["--e2-nnue", e2_nnue])
+    if heuristic:
+        cmd.append("--heuristic")
+
+    # cwd=PROJECT_ROOT: arena.exe agora tenta carregar o caminho default de
+    # pesos NNUE (data/nnue/nnue_weights_int8.bin, RELATIVO) quando
+    # --e1-nnue/--e2-nnue nao sao passados -- sem fixar o cwd aqui, esse
+    # caminho relativo dependeria de onde run_arena.py foi chamado (ex.
+    # rodar de dentro de teste/ faria o default "nao existir" e o arena
+    # cair silenciosamente para heuristico, mesmo com os pesos presentes).
+    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1, cwd=PROJECT_ROOT)
     
     for line in iter(proc.stdout.readline, ''):
         line = line.strip()
@@ -175,6 +230,13 @@ def worker_process(exe_path, worker_games, time_ms, random_plies, seed, report_g
                 progress_queue.put(("RESULT", data))
             except Exception:
                 pass
+        elif line.startswith("[arena]"):
+            # Confirmação de carregamento/fallback de NNUE (ou heurística
+            # forçada) do binário -- com NNUE virando o default, é
+            # importante o usuário conseguir ver se cada engine realmente
+            # carregou os pesos ou caiu para heurístico, em vez desses
+            # avisos ficarem mudos dentro do subprocess.
+            progress_queue.put(("LOG", line))
             
     proc.wait()
     if proc.returncode != 0:
@@ -193,6 +255,9 @@ def main():
     parser.add_argument("--seed", type=int, default=SEED, help=f"Semente RNG (padrao: {SEED})")
     parser.add_argument("--no-invert", dest="invert_colors", action="store_false", default=False, help="Nao inverte as cores na mesma abertura")
     parser.add_argument("--invert-colors", dest="invert_colors", action="store_true", default=True, help="Inverte as cores jogando a mesma abertura 2x")
+    parser.add_argument("--e1-nnue", default="", help="Caminho para pesos NNUE quantizados (.qbin) do Engine 1 (default: data/nnue/nnue_weights_int8.bin, se existir)")
+    parser.add_argument("--e2-nnue", default="", help="Caminho para pesos NNUE quantizados (.qbin) do Engine 2 (default: data/nnue/nnue_weights_int8.bin, se existir)")
+    parser.add_argument("--heuristic", action="store_true", default=False, help="Forca avaliacao heuristica (evalSimple) nas duas engines, ignorando NNUE -- debug/historico/fallback")
     
     args = parser.parse_args()
     
@@ -251,7 +316,7 @@ def main():
     for worker_games, worker_seed, worker_bin in tasks:
         p = multiprocessing.Process(
             target=worker_process,
-            args=(cand_exe, worker_games, args.time, args.random_plies, worker_seed, worker_report, worker_bin, args.invert_colors, queue)
+            args=(cand_exe, worker_games, args.time, args.random_plies, worker_seed, worker_report, worker_bin, args.invert_colors, queue, args.e1_nnue, args.e2_nnue, args.heuristic)
         )
         p.start()
         processes.append(p)
@@ -269,9 +334,17 @@ def main():
     total_games = sum(t[0] for t in tasks)
     
     finished_workers = 0
+    seen_log_lines = set()
     while finished_workers < len(tasks):
         msg_type, data = queue.get()
-        if msg_type == "PROGRESS":
+        if msg_type == "LOG":
+            # Todo worker imprime a mesma confirmação de carregamento NNUE
+            # (mesmos pesos, mesmo caminho default) -- deduplica para não
+            # repetir a mesma linha uma vez por worker/thread.
+            if data not in seen_log_lines:
+                seen_log_lines.add(data)
+                print(f"  {data}", flush=True)
+        elif msg_type == "PROGRESS":
             tot_eng1_wins += data["candWins"]
             tot_eng2_wins += data["baseWins"]
             tot_draws += data["draws"]

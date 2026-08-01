@@ -92,6 +92,28 @@ struct SelfPlayConfig {
     // comparar a taxa de empate/comportamento do selfplay com o da arena,
     // não gerar dados de treino.
     bool sharedTT = true;
+    // Caminho para os pesos NNUE quantizados (.qbin/.bin gerado por
+    // quantize_nnue.py). NNUE é o default de avaliação de folha deste
+    // binário: nnueWeightsPath já nasce apontando para
+    // defaultNnueWeightsPath() (data/nnue/nnue_weights_int8.bin) e
+    // runSelfPlay tenta carregá-lo automaticamente antes de spawnar as
+    // threads. Se esse arquivo não existir e o caminho não foi passado
+    // explicitamente via --nnue-weights (ver nnueWeightsExplicit), o
+    // fallback é silencioso: cai para evalSimple (heurístico) com um aviso
+    // no stderr. Se o caminho FOI passado explicitamente e falha ao
+    // carregar, é tratado como erro do usuário (aviso mais enfático, mas
+    // ainda sem travar o processo -- ver runSelfPlay).
+    std::string nnueWeightsPath = defaultNnueWeightsPath();
+    // true se --nnue-weights foi passado explicitamente na linha de
+    // comando (selfplay_main.cpp); false quando nnueWeightsPath ainda é
+    // só o default automático. Só afeta a mensagem/severidade do log
+    // quando o load falha, não o comportamento de fallback em si.
+    bool nnueWeightsExplicit = false;
+    // Força avaliação heurística (evalSimple) mesmo que pesos NNUE
+    // existam/carreguem com sucesso. Uso: debug, comparação histórica com
+    // versões pré-NNUE, ou fallback manual caso a NNUE se comporte mal.
+    // Equivale a --heuristic no selfplay_main.
+    bool forceHeuristic = false;
 };
 
 struct SelfPlayStats {
@@ -245,6 +267,39 @@ inline std::vector<TrainingSample> playOneGame(Negamax& engine0, Negamax& engine
 inline void runSelfPlay(const SelfPlayConfig& cfg, const std::string& outputPath, SelfPlayStats& stats) {
     int nThreads = cfg.numThreads > 0 ? cfg.numThreads
                                        : std::max(1u, std::thread::hardware_concurrency());
+
+    // Carrega pesos NNUE uma única vez antes de spawnar os threads.
+    // loadWeightsQuant escreve no singleton weightsQuant() (globals, não
+    // por thread) -- seguro porque todos os threads só LEEM a partir daqui.
+    // NNUE é o default: só pulamos o load se --heuristic foi pedido
+    // explicitamente (cfg.forceHeuristic) ou se nnueWeightsPath ficou vazio
+    // (defaultNnueWeightsPath() nunca é vazio, então isso só acontece se
+    // alguém zerar o campo manualmente via API).
+    bool useNNUE = !cfg.forceHeuristic && !cfg.nnueWeightsPath.empty();
+    if (useNNUE) {
+        if (!loadWeightsQuant(cfg.nnueWeightsPath)) {
+            if (cfg.nnueWeightsExplicit) {
+                std::fprintf(stderr, "[selfplay] ERRO: nao foi possivel carregar pesos NNUE de '%s'\n"
+                                     "  Verifique o caminho passado em --nnue-weights.\n"
+                                     "  Caindo para avaliacao heuristica (evalSimple) nesta execucao.\n",
+                             cfg.nnueWeightsPath.c_str());
+            } else {
+                std::fprintf(stderr, "[selfplay] aviso: pesos NNUE default nao encontrados em '%s'\n"
+                                     "  (rode training/quantize_nnue.py ou passe --nnue-weights <arquivo>)\n"
+                                     "  Caindo para avaliacao heuristica (evalSimple) nesta execucao.\n",
+                             cfg.nnueWeightsPath.c_str());
+            }
+            // Continua com heurístico em vez de travar o selfplay inteiro.
+            // Seguro mesmo sem load: weightsQuant() nasce zerada (ver
+            // NNUEWeightsQuant() em nnue.hpp), nunca com vetores vazios.
+            useNNUE = false;
+        } else {
+            std::fprintf(stderr, "[selfplay] pesos NNUE carregados de '%s'\n", cfg.nnueWeightsPath.c_str());
+        }
+    } else if (cfg.forceHeuristic) {
+        std::fprintf(stderr, "[selfplay] avaliacao heuristica forcada via --heuristic\n");
+    }
+
     FILE* f = std::fopen(outputPath.c_str(), "wb");
     if (!f) { std::fprintf(stderr, "erro: nao foi possivel abrir '%s' para escrita\n", outputPath.c_str()); return; }
     std::mutex fileMutex;
@@ -260,6 +315,12 @@ inline void runSelfPlay(const SelfPlayConfig& cfg, const std::string& outputPath
         std::unique_ptr<Negamax> engine1Storage;
         if (!cfg.sharedTT) engine1Storage = std::make_unique<Negamax>();
         Negamax& engine1 = cfg.sharedTT ? engine0 : *engine1Storage;
+
+        // Ativa NNUE em todas as engines se pesos foram carregados.
+        if (useNNUE) {
+            engine0.setEvalMode(Negamax::EvalMode::NNUE);
+            if (!cfg.sharedTT) engine1.setEvalMode(Negamax::EvalMode::NNUE);
+        }
 
         std::mt19937_64 rng(cfg.seed + 1000003ull * (unsigned)threadIdx);
         for (;;) {
@@ -279,7 +340,15 @@ inline void runSelfPlay(const SelfPlayConfig& cfg, const std::string& outputPath
             if (samples.empty()) { stats.gamesDiscarded++; stats.gamesPlayed++; continue; }
             {
                 std::lock_guard<std::mutex> lock(fileMutex);
-                std::fwrite(samples.data(), sizeof(TrainingSample), samples.size(), f);
+                size_t written = std::fwrite(samples.data(), sizeof(TrainingSample), samples.size(), f);
+                if (written != samples.size()) {
+                    std::fprintf(stderr, "[selfplay] ERRO: fwrite escreveu %zu de %zu amostras\n",
+                                 written, samples.size());
+                }
+                // fflush garante que os dados chegam ao SO antes de continuar
+                // -- em particular, o último jogo do chunk não fica em buffer
+                // quando o processo encerra logo depois do ultimo fwrite.
+                std::fflush(f);
             }
             stats.positionsWritten += samples.size();
             stats.gamesPlayed++;

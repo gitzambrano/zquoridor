@@ -8,6 +8,7 @@
 #include <random>
 #include <cstring>
 #include <cstdio>
+#include <cmath>
 #include <string>
 #include "rules.hpp"
 
@@ -422,6 +423,15 @@ struct NNUEWeightsQuant {
     int32_t QA = QA_DEFAULT;
     int32_t QB = QB_DEFAULT;
 
+    // true assim que loadFromFile termina com sucesso; falso no estado
+    // recém-construído (pesos zerados, ver construtor abaixo) e falso de
+    // novo se um loadFromFile subsequente falhar no meio da leitura (não
+    // dá pra garantir que os vetores ficaram num estado consistente).
+    // Consultável via nnueWeightsLoaded() -- usado pelos call-sites
+    // (selfplay/arena/wasm) para decidir se é seguro ligar EvalMode::NNUE
+    // ou se devem cair para o heurístico.
+    bool loaded = false;
+
     std::vector<std::array<int16_t, HIDDEN>> w1;  // [NUM_FEATURES][HIDDEN], escala QA
     std::array<int16_t, HIDDEN> b1{};              // escala QA
 
@@ -439,6 +449,22 @@ struct NNUEWeightsQuant {
 
     std::vector<std::array<int8_t, HIDDEN>> wp;   // [POLICY_OUT][HIDDEN], escala QB
     std::vector<int32_t> bp;                       // escala QA*QB
+
+    // CORREÇÃO: antes deste construtor, w1/wp nasciam como std::vector
+    // vazio (tamanho 0) -- só ganhavam tamanho dentro de loadFromFile.
+    // Enquanto todo call-site só ligava setEvalMode(NNUE) depois de
+    // confirmar loadFromFile()==true, isso nunca mordia. Mas com NNUE
+    // virando o default dos binários, existe agora um caminho onde
+    // addFeature()/removeFeature() são chamados (via buildAccumulatorQuant)
+    // ANTES ou SEM um load bem-sucedido -- w1[featIdx] num vetor vazio é
+    // acesso fora dos limites (UB / corrupção de heap silenciosa), não um
+    // valor "0" seguro. Pré-alocar tudo zerado aqui torna o estado
+    // recém-construído seguro de usar (eval neutra, sempre 0) em vez de UB.
+    NNUEWeightsQuant() {
+        w1.assign(NUM_FEATURES, {});
+        wp.assign(POLICY_OUT, {});
+        bp.assign(POLICY_OUT, 0);
+    }
 
     // Layout do arquivo: cabeçalho [QA:int32][QB:int32] (formato do
     // cabeçalho NÃO mudou com a QAT -- QA/QB continuam sendo lidos do
@@ -475,12 +501,34 @@ struct NNUEWeightsQuant {
         ok = ok && std::fread(bp.data(), sizeof(int32_t), POLICY_OUT, f) == (size_t)POLICY_OUT;
 
         std::fclose(f);
+        // Se a leitura falhou no meio (arquivo truncado/corrompido), os
+        // vetores podem estar parcialmente preenchidos com lixo do arquivo
+        // anterior -- não é seguro chamar isso de "carregado". `loaded`
+        // fica false nesse caso, e o singleton continua com os pesos
+        // zerados do construtor (ou os do último load bem-sucedido, se
+        // havia um antes desta tentativa).
+        loaded = ok;
         return ok;
     }
 };
 
 inline NNUEWeightsQuant& weightsQuant() { static NNUEWeightsQuant w; return w; }
 inline bool loadWeightsQuant(const std::string& path) { return weightsQuant().loadFromFile(path); }
+
+// true se os pesos do singleton vieram de um loadFromFile bem-sucedido
+// (em vez do estado zerado do construtor). Usado pelos call-sites
+// (selfplay/arena/wasm) para decidir se é seguro ligar
+// Negamax::EvalMode::NNUE ou se devem cair para o heurístico.
+inline bool nnueWeightsLoaded() { return weightsQuant().loaded; }
+
+// Caminho padrão dos pesos quantizados, relativo à raiz do repositório
+// (mesma convenção usada em readme.md/training/quantize_nnue.py e no
+// nome do arquivo publicado por training/train_nnue.py). Usado por
+// selfplay_main.cpp/arena.cpp/engine_wasm.cpp como default quando o
+// caminho não é passado explicitamente -- NNUE é o default dos
+// binários; este é o arquivo que eles tentam carregar automaticamente
+// antes de decidir cair para o heurístico.
+inline std::string defaultNnueWeightsPath() { return "data/nnue/nnue_weights_int8.bin"; }
 
 struct AccumulatorQuant {
     std::array<int32_t, HIDDEN> v{};
@@ -649,6 +697,37 @@ inline void forwardPolicyQuant(const AccumulatorQuant& acc, std::array<float, PO
         }
         out[o] = (float)((double)s / (double)QAQB);   // des-escala final em ponto flutuante, ver forwardValueQuant
     }
+}
+
+// =========================================================================
+// AccPair + nnueEvalInt: helpers usados por search.hpp para manter dois
+// acumuladores quantizados (um por perspectiva) na pilha de busca e avaliar
+// folhas via NNUE sem recomputar do zero.
+//
+// NNUE_EVAL_SCALE: fator que mapeia o logit cru da cabeça WL (~[-3,3])
+// para a mesma escala inteira que evalSimple usa (~[-600,600] em posições
+// normais). Mesmo valor que VALUE_SCALE em train_nnue.py -- essencial para
+// que aspiration windows e contempt calibrados para evalSimple continuem
+// funcionando sem re-tuning quando a NNUE assume a avaliação de folha.
+constexpr int NNUE_EVAL_SCALE = 200;
+
+// Par de acumuladores quantizados -- um por perspectiva de jogador.
+// acc[0] = perspectiva do jogador 0 (own=0, opp=1);
+// acc[1] = perspectiva do jogador 1 (own=1, opp=0).
+// Mantidos por search.hpp como pilha de pares (um por ply da busca),
+// atualizados incrementalmente via updateAccumulatorForMoveQuant.
+struct AccPair {
+    AccumulatorQuant acc[2];
+};
+
+// Avaliação NNUE do ponto de vista de `side` (quem vai jogar), em
+// unidades inteiras (escala NNUE_EVAL_SCALE) -- compatível com o valor de
+// retorno de evalSimple/evalSimpleW. Usa a cabeça quantizada de resultado
+// (WL); a cabeça auxiliar (imitação de evalSimple) nunca é chamada pela
+// busca.
+inline int nnueEvalInt(const AccPair& ap, int side) {
+    float logit = forwardValueWLQuant(ap.acc[side]);
+    return (int)std::lround(logit * (float)NNUE_EVAL_SCALE);
 }
 
 } // namespace qr

@@ -12,6 +12,7 @@
 #include "rules.hpp"
 #include "cat.hpp"
 #include "endgame_race.hpp"
+#include "nnue.hpp"   // AccPair, buildAccumulatorQuant, updateAccumulatorForMoveQuant, nnueEvalInt
 
 namespace qr {
 
@@ -128,7 +129,7 @@ struct SearchStats {
 
 class Negamax {
 public:
-    Negamax() : tt(TT_SIZE), weights(evalWeights()) {}
+    Negamax() : tt(TT_SIZE), weights(evalWeights()), nnueAccStack(MAX_PLY + QS_MAX_EXTRA_PLIES + 4) {}
     // construtor explícito (Fase 4.2.10, SPSA): cada instância carrega
     // sua própria cópia de EvalWeights, em vez de ler o singleton global
     // evalWeights() a cada chamada de evalSimple(s,side). Necessário pra
@@ -136,7 +137,7 @@ public:
     // de tuning) sem risco de uma instância ler os pesos da outra por
     // esquecer de trocar um estado global antes de cada lance -- os
     // pesos ficam fixos por instância, atribuídos uma vez na construção.
-    explicit Negamax(const EvalWeights& w) : tt(TT_SIZE), weights(w) {}
+    explicit Negamax(const EvalWeights& w) : tt(TT_SIZE), weights(w), nnueAccStack(MAX_PLY + QS_MAX_EXTRA_PLIES + 4) {}
 
     // Liga/desliga a extensão de quiescência de muro (Fase 4.2.10, item 3)
     // sem precisar recompilar -- pensado pra permitir A/B em benchmark
@@ -161,6 +162,23 @@ public:
     // propósito original do teste (validar SÓ o refactor de staging).
     void setLmrPvsEnabled(bool enabled) { lmrPvsEnabled = enabled; }
     bool isLmrPvsEnabled() const { return lmrPvsEnabled; }
+    void setRfpEnabled(bool) {}
+    void setLmpEnabled(bool) {}
+
+    // Modo de avaliação de folha:
+    //   Heuristic (default) -- usa evalSimpleW, compatível com todos os
+    //     testes e benchmarks existentes, não requer pesos carregados.
+    //   NNUE -- usa a rede treinada e quantizada (AccumulatorQuant +
+    //     forwardValueWLQuant, ver nnue.hpp). Requer que
+    //     loadWeightsQuant() tenha sido chamado antes; sem pesos
+    //     carregados o resultado é indefinido. Acumuladores são
+    //     mantidos incrementalmente na pilha de busca (nnueAccStack)
+    //     -- nenhuma recomputação do zero dentro da busca, exceto na
+    //     raiz de cada iterative deepening (buildAccumulatorQuant,
+    //     O(NUM_FEATURES) = ~330 BFS/features, uma vez por iteração).
+    enum class EvalMode { Heuristic, NNUE };
+    void setEvalMode(EvalMode m) { evalMode = m; }
+    EvalMode getEvalMode() const { return evalMode; }
 
     // Limpa toda a tabela de transposição. Deve ser chamado entre partidas
     // no self-play: scores de repetição (path-dependent) ficam gravados na
@@ -182,8 +200,14 @@ public:
         rootDepth = depth;
         deadline = std::chrono::steady_clock::now() + std::chrono::hours(1);
         g_raceExactBudgetUs = 1e18;  // só chooseMove() aplica o orçamento (ver nota lá)
+        AccPair* accForSearch = nullptr;
+        if (evalMode == EvalMode::NNUE) {
+            nnueAccStack[0].acc[0] = buildAccumulatorQuant(s, 0);
+            nnueAccStack[0].acc[1] = buildAccumulatorQuant(s, 1);
+            accForSearch = &nnueAccStack[0];
+        }
         RepetitionTable emptyHistory;
-        return negamax(s, depth, -SCORE_INF, SCORE_INF, stats, emptyHistory);
+        return negamax(s, depth, -SCORE_INF, SCORE_INF, stats, emptyHistory, accForSearch);
     }
 
     Move chooseMove(const State& root, int maxDepthCap, int timeBudgetMs, SearchStats& stats) {
@@ -262,31 +286,58 @@ public:
         g_raceExactUsedUs = 0.0;
         g_raceExactBudgetUs = std::max(1000.0, timeBudgetMs * 1000.0 * RACE_BUDGET_FRACTION);
 
+        // Acumuladores NNUE para toda a busca: construídos UMA VEZ antes do
+        // iterative deepening (a posição raiz não muda entre iterações). No
+        // modo Heuristic, accForSearch fica nullptr e negamax usa evalSimpleW.
+        AccPair* accForSearch = nullptr;
+        if (evalMode == EvalMode::NNUE) {
+            nnueAccStack[0].acc[0] = buildAccumulatorQuant(root, 0);
+            nnueAccStack[0].acc[1] = buildAccumulatorQuant(root, 1);
+            accForSearch = &nnueAccStack[0];
+        }
+
+        // CORREÇÃO (defensiva, achado em auditoria): nnueAccStack é indexado
+        // por aritmética de ponteiro (curAcc+1 = filho) sobre o ply REAL da
+        // árvore, sem bounds-check -- ao contrário de killers[]/histórico
+        // (indexados por ply com guard explícito `ply>=0 && ply<MAX_PLY`).
+        // O tamanho do vetor (MAX_PLY+QS_MAX_EXTRA_PLIES+4) cobre com folga
+        // qualquer maxDepthCap<=MAX_PLY, que é o uso atual de todos os
+        // call-sites (selfplay/arena usam 40). Mas se algum dia um chamador
+        // passar maxDepthCap>MAX_PLY com evalMode==NNUE, a pilha estouraria
+        // silenciosamente (escrita fora dos limites do vector). Trava aqui
+        // em vez de exigir que todo call-site futuro saiba desse detalhe
+        // interno; não afeta o modo heurístico (accForSearch fica nullptr).
+        int effectiveMaxDepthCap = maxDepthCap;
+        if (evalMode == EvalMode::NNUE) {
+            int cap = (int)nnueAccStack.size() - QS_MAX_EXTRA_PLIES - 1;
+            if (effectiveMaxDepthCap > cap) effectiveMaxDepthCap = cap;
+        }
+
         Move bestMove = legalMoves(root)[0];
         int prevScore = 0;
         RepetitionTable reptbl = gameHistory;
         reptbl.markRoot();  // tudo antes daqui é histórico real do jogo
-        for (int depth = 1; depth <= maxDepthCap && !stopped; depth++) {
+        for (int depth = 1; depth <= effectiveMaxDepthCap && !stopped; depth++) {
             rootDepth = depth;
             int score;
             if (depth <= 2) {
                 // aspiration window não compensa em profundidades tão rasas
                 // (a janela estreita quase sempre falha e obriga rebusca)
-                score = negamax(root, depth, -SCORE_INF, SCORE_INF, stats, reptbl);
+                score = negamax(root, depth, -SCORE_INF, SCORE_INF, stats, reptbl, accForSearch);
             } else if (prevScore <= -RACE_SCALE_THRESHOLD || prevScore >= RACE_SCALE_THRESHOLD) {
                 // prevScore já está em escala de mate/race (RACE_SCORE_BASE
                 // ou SCORE_INF-1), não em escala de evalSimple. Uma janela
                 // de +-50 centrada nesse valor sempre falha e força
                 // rebusca em janela cheia -- pulando direto evita pagar
                 // essa profundidade duas vezes.
-                score = negamax(root, depth, -SCORE_INF, SCORE_INF, stats, reptbl);
+                score = negamax(root, depth, -SCORE_INF, SCORE_INF, stats, reptbl, accForSearch);
             } else {
                 int alpha = prevScore - ASPIRATION_DELTA;
                 int beta = prevScore + ASPIRATION_DELTA;
-                score = negamax(root, depth, alpha, beta, stats, reptbl);
+                score = negamax(root, depth, alpha, beta, stats, reptbl, accForSearch);
                 if (!stopped && (score <= alpha || score >= beta)) {
                     // falhou fora da janela estreita -- rebusca com janela cheia
-                    score = negamax(root, depth, -SCORE_INF, SCORE_INF, stats, reptbl);
+                    score = negamax(root, depth, -SCORE_INF, SCORE_INF, stats, reptbl, accForSearch);
                 }
             }
             if (stopped) break;
@@ -334,6 +385,14 @@ private:
     int rootDepth = 0;
     bool quiescenceEnabled = true;
     bool lmrPvsEnabled = true;
+    EvalMode evalMode = EvalMode::Heuristic;
+    // Pilha de pares de acumuladores NNUE -- um AccPair por ply da busca,
+    // indexado por aritmética de ponteiro a partir da raiz (curAcc+1 = filho).
+    // Dimensionado para rootDepth até MAX_PLY + quiescência até QS_MAX_EXTRA_PLIES
+    // com 4 slots de folga. Heap-alocado (std::vector) para não onerar a
+    // pilha de função quando Negamax é instanciado como variável local.
+    // Custo: ~2 KB × 70 = ~140 KB por instância -- desprezível frente à TT (~40 MB).
+    std::vector<AccPair> nnueAccStack;
 
     // killer moves: 2 slots por ply, lances que causaram beta-cutoff em
     // nós irmãos na mesma distância da raiz.
@@ -388,7 +447,7 @@ private:
     void orderPawnMoves(MoveList& moves, int ply, int side) {
         bool ply0 = ply >= 0 && ply < MAX_PLY;
         size_t n = moves.size();
-        static thread_local std::pair<long long, Move> buf[ORDER_BUF_CAP];
+        std::pair<long long, Move> buf[ORDER_BUF_CAP];
         for (size_t i = 0; i < n; i++) {
             const Move& m = moves[i];
             long long sc = history[side][moveToPolicyIndex(m)];
@@ -431,7 +490,7 @@ private:
         int opp = 1 - side;
         size_t n = moves.size();
 
-        static thread_local std::pair<long long, Move> buf[ORDER_BUF_CAP];
+        std::pair<long long, Move> buf[ORDER_BUF_CAP];
         // `before` não depende do candidato `m` (só de `s`, fixo pra toda
         // a chamada) -- hoisted pra fora do laço. Achado de revisão:
         // estava sendo recomputado (BFS completa) em CADA iteração, até
@@ -484,7 +543,7 @@ private:
     // quiescência de xadrez -- só estende se algum muro crítico do lado a
     // mover melhorar sobre o stand-pat.
     int quiescence(const State& s, int alpha, int beta, int qply, SearchStats& stats, RepetitionTable& reptbl,
-                   bool rootParity) {
+                   bool rootParity, AccPair* curAcc = nullptr) {
         stats.nodes++;
         if ((stats.nodes & 0x3FF) == 0 && std::chrono::steady_clock::now() >= deadline) {
             stopped = true;
@@ -498,37 +557,47 @@ private:
         // em relação à raiz (rootParity), não em s.turn.
         if (reptbl.isRepetitionDraw(s.hash)) return rootParity ? CONTEMPT : -CONTEMPT;
 
-        // Prioridade 6 do plano-additional.md: evalSimpleW por si só já
-        // funde 4 BFS em 2 (ver rules.hpp); capturando esses 2 caches
-        // (sideCache/oppCache) aqui, o resto desta função (legalWallMoves
-        // logo abaixo, e oppDistBefore/oppRobustBefore) reaproveita o
-        // MESMO resultado em vez de recalcular -- 0 BFS adicionais no
-        // caminho comum (extensão não disparada), e só 1 BFS por
-        // candidato de muro testado (em vez de até 2) no caminho que
-        // dispara a extensão.
+        // Stand-pat: modo NNUE usa o acumulador já pronto (O(HIDDEN×32) ops);
+        // modo heurístico usa evalSimpleW que também preenche sideCache/oppCache
+        // para as checagens abaixo. No modo NNUE os caches são preenchidos
+        // separadamente via computeDistCached (mesma BFS, sem pagar a fórmula
+        // evalSimple). Em ambos os casos sideCache/oppCache são necessários
+        // para legalWallMoves e para o critério de muro crítico.
+        int side = s.turn, opp = 1 - side;
         PlayerPathCache sideCache, oppCache;
-        int standPat = evalSimpleW(s, s.turn, weights, &sideCache, &oppCache, &xdistCache);
+        int standPat;
+        if (curAcc) {
+            // NNUE: avaliação do acumulador já pronto; BFS dos dois caches
+            // são pagas aqui (não somam ao stand-pat -- são usadas só abaixo
+            // por legalWallMoves e oppDistBefore/oppRobustBefore). O xtable
+            // amortiza o custo quando a MESMA topologia+peão já foi vista.
+            computeDistCached(s.wallsH, s.wallsV, s.pawn[side], side, &xdistCache, sideCache);
+            computeDistCached(s.wallsH, s.wallsV, s.pawn[opp],  opp,  &xdistCache, oppCache);
+            standPat = nnueEvalInt(*curAcc, side);
+        } else {
+            // Heurístico: evalSimpleW preenche sideCache/oppCache como efeito
+            // colateral (Prioridade 6 do plano-additional.md) -- 2 BFS fundidas.
+            standPat = evalSimpleW(s, s.turn, weights, &sideCache, &oppCache, &xdistCache);
+        }
         if (standPat >= beta) return standPat;
         int localAlpha = alpha > standPat ? alpha : standPat;
         int best = standPat;
 
         if (qply >= QS_MAX_EXTRA_PLIES) return best;
 
-        int side = s.turn, opp = 1 - side;
         if (s.wallsLeft[side] <= 0) return best;  // sem muro pra jogar, nada a estender
 
-        // mesmo BFS já pago acima por evalSimpleW -- legalWallMoves recebe
-        // os caches (mapeados por índice de jogador, não por side/opp) já
-        // válidos e não roda BFS nenhuma internamente.
+        // Os caches (sideCache/oppCache) já estão válidos em ambos os modos
+        // acima -- legalWallMoves não roda BFS nenhuma internamente.
         MoveList wallMoves;
         uint64_t touchH0, touchV0, touchH1, touchV1;
         PlayerPathCache* cache0 = (side == 0) ? &sideCache : &oppCache;
-        PlayerPathCache* cache1 = (side == 0) ? &oppCache : &sideCache;
+        PlayerPathCache* cache1 = (side == 0) ? &oppCache  : &sideCache;
         legalWallMoves(s, side, wallMoves, &touchH0, &touchV0, &touchH1, &touchV1, cache0, cache1, &xdistCache);
         uint64_t touchHOpp = (side == 0) ? touchH1 : touchH0;
         uint64_t touchVOpp = (side == 0) ? touchV1 : touchV0;
 
-        int oppDistBefore = cachedShortestPathLen(oppCache);
+        int oppDistBefore   = cachedShortestPathLen(oppCache);
         int oppRobustBefore = cachedPathRobustness(oppCache, s.wallsH, s.wallsV);
 
         for (size_t i = 0; i < wallMoves.size(); i++) {
@@ -553,8 +622,18 @@ private:
             }
             if (!critical) continue;
 
+            // Acumulador do filho de quiescência: mesmo padrão do negamax;
+            // lances de quiescência são sempre de MURO (nunca peão aqui).
+            AccPair* childAcc = nullptr;
+            if (curAcc) {
+                childAcc = curAcc + 1;
+                childAcc->acc[0] = curAcc->acc[0];
+                childAcc->acc[1] = curAcc->acc[1];
+                updateAccumulatorForMoveQuant(childAcc->acc[0], /*viewerIsMover=*/(0 == side), s, m);
+                updateAccumulatorForMoveQuant(childAcc->acc[1], /*viewerIsMover=*/(1 == side), s, m);
+            }
             reptbl.push(ns.hash);
-            int score = -quiescence(ns, -beta, -localAlpha, qply + 1, stats, reptbl, !rootParity);
+            int score = -quiescence(ns, -beta, -localAlpha, qply + 1, stats, reptbl, !rootParity, childAcc);
             reptbl.pop();
             if (stopped) return 0;
             if (score > best) best = score;
@@ -564,7 +643,7 @@ private:
         return best;
     }
 
-    int negamax(const State& s, int depth, int alpha, int beta, SearchStats& stats, RepetitionTable& reptbl) {
+    int negamax(const State& s, int depth, int alpha, int beta, SearchStats& stats, RepetitionTable& reptbl, AccPair* curAcc = nullptr) {
         stats.nodes++;
         if ((stats.nodes & 0x3FF) == 0 && std::chrono::steady_clock::now() >= deadline) {
             stopped = true;
@@ -692,8 +771,11 @@ private:
             // direta, sem extensão de muro crítico). winner() já foi
             // resolvido acima, então não há necessidade de checá-lo de
             // novo aqui -- mesma garantia que quiescence() já tinha.
-            if (!quiescenceEnabled) return evalSimpleW(s, s.turn, weights, nullptr, nullptr, &xdistCache);
-            return quiescence(s, alpha, beta, 0, stats, reptbl, ply % 2 == 0);
+            if (!quiescenceEnabled) {
+                if (curAcc) return nnueEvalInt(*curAcc, s.turn);
+                return evalSimpleW(s, s.turn, weights, nullptr, nullptr, &xdistCache);
+            }
+            return quiescence(s, alpha, beta, 0, stats, reptbl, ply % 2 == 0, curAcc);
         }
 
         int alphaOrig = alpha;
@@ -766,6 +848,20 @@ private:
         // volta no comportamento antigo -- sempre janela completa em
         // profundidade cheia (ver setLmrPvsEnabled acima).
         auto tryMove = [&](const Move& m, int moveIndex, int catHeat) -> bool {
+            // Acumulador do filho: se modo NNUE ativo, copia o par atual
+            // (2×256 int32 = ~2 KB) e atualiza incrementalmente com o lance
+            // `m`. O update paga O(HIDDEN) + até 2 BFS (muro) ou 1 BFS
+            // (peão) -- as mesmas BFS que a ordenação já pagou via xdistCache,
+            // portanto sem custo adicional de BFS na prática. No modo
+            // Heurístico, curAcc == nullptr e nenhum acumulador é mantido.
+            AccPair* childAcc = nullptr;
+            if (curAcc) {
+                childAcc = curAcc + 1;
+                childAcc->acc[0] = curAcc->acc[0];
+                childAcc->acc[1] = curAcc->acc[1];
+                updateAccumulatorForMoveQuant(childAcc->acc[0], /*viewerIsMover=*/(0 == s.turn), s, m);
+                updateAccumulatorForMoveQuant(childAcc->acc[1], /*viewerIsMover=*/(1 == s.turn), s, m);
+            }
             State ns = applyMove(s, m);
             reptbl.push(ns.hash);
             int score;
@@ -775,7 +871,7 @@ private:
                 // cheia -- é o valor de referência que os demais lances
                 // (busca de janela nula, abaixo) tentam apenas SUPERAR ou
                 // não, sem precisar do valor exato quando não superam.
-                score = -negamax(ns, depth - 1, -beta, -alpha, stats, reptbl);
+                score = -negamax(ns, depth - 1, -beta, -alpha, stats, reptbl, childAcc);
             } else {
                 // LMR (Prioridade 3): nunca reduz lance killer, nunca
                 // reduz muro "quente" (perto do caminho ótimo do
@@ -797,20 +893,20 @@ private:
                 }
                 // PVS (Prioridade 8): janela nula em profundidade (talvez
                 // reduzida por LMR).
-                score = -negamax(ns, depth - 1 - reduction, -alpha - 1, -alpha, stats, reptbl);
+                score = -negamax(ns, depth - 1 - reduction, -alpha - 1, -alpha, stats, reptbl, childAcc);
                 if (!stopped && reduction > 0 && score > alpha) {
                     // vazou acima de alpha na profundidade reduzida --
                     // reverifica em profundidade CHEIA antes de confiar
                     // (a redução é heurística, não prova nada sozinha),
                     // ainda em janela nula.
-                    score = -negamax(ns, depth - 1, -alpha - 1, -alpha, stats, reptbl);
+                    score = -negamax(ns, depth - 1, -alpha - 1, -alpha, stats, reptbl, childAcc);
                 }
                 if (!stopped && score > alpha && score < beta) {
                     // janela nula vazou sem provar corte (score<beta) --
                     // só profundidade cheia + janela completa dá o valor
                     // exato aqui (mesmo lance pode genuinamente ser o
                     // novo melhor, não só um pouco melhor que alpha).
-                    score = -negamax(ns, depth - 1, -beta, -alpha, stats, reptbl);
+                    score = -negamax(ns, depth - 1, -beta, -alpha, stats, reptbl, childAcc);
                 }
             }
             reptbl.pop();
@@ -925,8 +1021,14 @@ public:
         deadline = std::chrono::steady_clock::now() + std::chrono::hours(1);
         g_raceExactBudgetUs = 1e18;
         stats = SearchStats{};
+        AccPair* accForSearch = nullptr;
+        if (evalMode == EvalMode::NNUE) {
+            nnueAccStack[0].acc[0] = buildAccumulatorQuant(s, 0);
+            nnueAccStack[0].acc[1] = buildAccumulatorQuant(s, 1);
+            accForSearch = &nnueAccStack[0];
+        }
         RepetitionTable emptyHistory;
-        return negamax(s, depth, -SCORE_INF, SCORE_INF, stats, emptyHistory);
+        return negamax(s, depth, -SCORE_INF, SCORE_INF, stats, emptyHistory, accForSearch);
     }
     int testFixedDepthFullWindow(const State& s, int depth, SearchStats& stats) {
         resetOrderingState();
@@ -936,6 +1038,12 @@ public:
         deadline = std::chrono::steady_clock::now() + std::chrono::hours(1);
         g_raceExactBudgetUs = 1e18;  // só chooseMove() aplica o orçamento (ver nota lá) -- senão uma chamada anterior de chooseMove() deixa o orçamento finito "vazando" pra esta busca de referência
         stats = SearchStats{};
+        AccPair* accForSearch = nullptr;
+        if (evalMode == EvalMode::NNUE) {
+            nnueAccStack[0].acc[0] = buildAccumulatorQuant(s, 0);
+            nnueAccStack[0].acc[1] = buildAccumulatorQuant(s, 1);
+            accForSearch = &nnueAccStack[0];
+        }
         RepetitionTable emptyHistory;
         // LMR/PVS desligado aqui de propósito: esta função existe pra
         // comparar a busca ESTAGIADA contra a referência monolítica
@@ -947,7 +1055,7 @@ public:
         // desligar, caso um teste futuro precise ligar isto de propósito.
         bool prevLmrPvs = lmrPvsEnabled;
         lmrPvsEnabled = false;
-        int result = negamax(s, depth, -SCORE_INF, SCORE_INF, stats, emptyHistory);
+        int result = negamax(s, depth, -SCORE_INF, SCORE_INF, stats, emptyHistory, accForSearch);
         lmrPvsEnabled = prevLmrPvs;
         return result;
     }
@@ -959,8 +1067,14 @@ public:
         deadline = std::chrono::steady_clock::now() + std::chrono::hours(1);
         g_raceExactBudgetUs = 1e18;  // só chooseMove() aplica o orçamento (ver nota lá)
         stats = SearchStats{};
+        AccPair* accForSearch = nullptr;
+        if (evalMode == EvalMode::NNUE) {
+            nnueAccStack[0].acc[0] = buildAccumulatorQuant(s, 0);
+            nnueAccStack[0].acc[1] = buildAccumulatorQuant(s, 1);
+            accForSearch = &nnueAccStack[0];
+        }
         RepetitionTable emptyHistory;
-        return negamax(s, depth, alpha, beta, stats, emptyHistory);
+        return negamax(s, depth, alpha, beta, stats, emptyHistory, accForSearch);
     }
     void testClearTT() { std::fill(tt.begin(), tt.end(), TTEntry{}); }
 #endif

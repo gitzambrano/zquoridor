@@ -12,6 +12,7 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 "$HERE/build_tests.sh"
 "$HERE/build_selfplay.sh"
 "$HERE/build_tune_spsa.sh"
+"$HERE/build_arena.sh"
 
 if [[ "${1:-}" == "wasm" ]]; then
     "$HERE/build_wasm.sh"

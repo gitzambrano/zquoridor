@@ -72,6 +72,46 @@ static inline qr_e2::Move toE2(const qr_e1::Move& m) {
     qr_e2::Move r; r.isWall = m.isWall; r.a = m.a; r.b = m.b; r.c = m.c; return r;
 }
 
+// Helpers SFINAE para tentar chamar setEvalMode / loadWeightsQuant se existirem no namespace qr_e1 / qr_e2
+// (permite compilar arena entre a versao atual e refs Git antigas que nao tinham NNUE).
+template <typename Dummy = void>
+auto tryLoadWeightsE1(const std::string& path, int) -> decltype(qr_e1::loadWeightsQuant(path)) {
+    return qr_e1::loadWeightsQuant(path);
+}
+inline bool tryLoadWeightsE1(const std::string&, ...) { return false; }
+
+template <typename Dummy = void>
+auto tryLoadWeightsE2(const std::string& path, int) -> decltype(qr_e2::loadWeightsQuant(path)) {
+    return qr_e2::loadWeightsQuant(path);
+}
+inline bool tryLoadWeightsE2(const std::string&, ...) { return false; }
+
+// Mesmo truque SFINAE para defaultNnueWeightsPath(): refs antigos (antes
+// de NNUE virar default) não têm essa função em nnue.hpp, então o overload
+// "..." devolve string vazia (== "sem default disponível para este ref",
+// tratado abaixo como "essa engine fica heurística por não ter pesos").
+template <typename Dummy = void>
+auto tryDefaultPathE1(int) -> decltype(qr_e1::defaultNnueWeightsPath()) {
+    return qr_e1::defaultNnueWeightsPath();
+}
+inline std::string tryDefaultPathE1(...) { return std::string(); }
+
+template <typename Dummy = void>
+auto tryDefaultPathE2(int) -> decltype(qr_e2::defaultNnueWeightsPath()) {
+    return qr_e2::defaultNnueWeightsPath();
+}
+inline std::string tryDefaultPathE2(...) { return std::string(); }
+
+template <typename Eng>
+auto trySetEvalModeNnue(Eng& eng, int) -> decltype(eng.setEvalMode(Eng::EvalMode::NNUE), void()) {
+    eng.setEvalMode(Eng::EvalMode::NNUE);
+}
+template <typename Eng>
+void trySetEvalModeNnue(Eng&, ...) {}
+
+static bool g_e1UseNnue = false;
+static bool g_e2UseNnue = false;
+
 // Um jogo completo. engine1PlayerIdx define quem (0=brancas,1=pretas) é
 // o engine do ref1 nesta partida. Estado é mantido em paralelo nos dois
 // namespaces; s1 é a referência canônica para regras de fim de jogo.
@@ -81,6 +121,8 @@ int playArenaGame(int engine1PlayerIdx, int timeMs, int randomPlies, std::mt1993
                    std::vector<TrainingSample>* samplesOut) {
     qr_e1::Negamax eng1;
     qr_e2::Negamax eng2;
+    if (g_e1UseNnue) trySetEvalModeNnue(eng1, 0);
+    if (g_e2UseNnue) trySetEvalModeNnue(eng2, 0);
     eng1.clearTT();
     eng2.clearTT();
 
@@ -180,6 +222,11 @@ int main(int argc, char* argv[]) {
     uint64_t seed = 42;
     std::string binFilePath = "";
     bool invertColors = true;
+    std::string e1NnuePath = "";
+    std::string e2NnuePath = "";
+    bool e1Explicit = false, e2Explicit = false;
+    bool forceHeuristic = false;
+    bool e1ForceHeuristic = false, e2ForceHeuristic = false;
 
     for (int i = 1; i < argc; i++) {
         if (std::strcmp(argv[i], "--games") == 0 && i + 1 < argc) totalGames = std::atoi(argv[++i]);
@@ -188,8 +235,59 @@ int main(int argc, char* argv[]) {
         else if (std::strcmp(argv[i], "--seed") == 0 && i + 1 < argc) seed = std::stoull(argv[++i]);
         else if (std::strcmp(argv[i], "--report-games") == 0 && i + 1 < argc) reportGames = std::atoi(argv[++i]);
         else if (std::strcmp(argv[i], "--bin-file") == 0 && i + 1 < argc) binFilePath = argv[++i];
+        else if (std::strcmp(argv[i], "--e1-nnue") == 0 && i + 1 < argc) { e1NnuePath = argv[++i]; e1Explicit = true; }
+        else if (std::strcmp(argv[i], "--e2-nnue") == 0 && i + 1 < argc) { e2NnuePath = argv[++i]; e2Explicit = true; }
+        else if (std::strcmp(argv[i], "--heuristic") == 0) forceHeuristic = true;
+        else if (std::strcmp(argv[i], "--e1-heuristic") == 0) e1ForceHeuristic = true;
+        else if (std::strcmp(argv[i], "--e2-heuristic") == 0) e2ForceHeuristic = true;
         else if (std::strcmp(argv[i], "--no-invert") == 0) invertColors = false;
     }
+
+    // NNUE é o default das duas engines. Se --e1-nnue/--e2-nnue não foram
+    // passados explicitamente, tenta o caminho default de cada ref (via
+    // SFINAE -- refs antigos sem NNUE devolvem string vazia e ficam
+    // heurísticos, sem erro). --heuristic desliga isso por completo nas
+    // duas (debug/histórico/comparação com a heurística antiga).
+    // --e1-heuristic/--e2-heuristic desligam só uma engine de cada vez --
+    // é o que permite medir a força de jogo NNUE vs heurística num mesmo
+    // confronto (--e1-heuristic sozinho: Engine 1 heurística, Engine 2
+    // NNUE default).
+    if (!forceHeuristic) {
+        if (!e1ForceHeuristic && e1NnuePath.empty()) e1NnuePath = tryDefaultPathE1(0);
+        if (!e2ForceHeuristic && e2NnuePath.empty()) e2NnuePath = tryDefaultPathE2(0);
+    }
+    if (forceHeuristic || e1ForceHeuristic) e1NnuePath.clear();
+    if (forceHeuristic || e2ForceHeuristic) e2NnuePath.clear();
+
+    if (!e1NnuePath.empty()) {
+        if (!tryLoadWeightsE1(e1NnuePath, 0)) {
+            if (e1Explicit) {
+                std::fprintf(stderr, "[arena] ERRO: falha ao carregar pesos NNUE para Engine 1 de '%s'\n", e1NnuePath.c_str());
+            } else {
+                std::fprintf(stderr, "[arena] aviso: pesos NNUE default nao encontrados para Engine 1 ('%s') -- usando heuristica\n", e1NnuePath.c_str());
+            }
+        } else {
+            g_e1UseNnue = true;
+            std::fprintf(stderr, "[arena] Engine 1 usando NNUE ('%s')\n", e1NnuePath.c_str());
+        }
+    } else if (forceHeuristic || e1ForceHeuristic) {
+        std::fprintf(stderr, "[arena] Engine 1: heuristica forcada via --%s\n", forceHeuristic ? "heuristic" : "e1-heuristic");
+    }
+    if (!e2NnuePath.empty()) {
+        if (!tryLoadWeightsE2(e2NnuePath, 0)) {
+            if (e2Explicit) {
+                std::fprintf(stderr, "[arena] ERRO: falha ao carregar pesos NNUE para Engine 2 de '%s'\n", e2NnuePath.c_str());
+            } else {
+                std::fprintf(stderr, "[arena] aviso: pesos NNUE default nao encontrados para Engine 2 ('%s') -- usando heuristica\n", e2NnuePath.c_str());
+            }
+        } else {
+            g_e2UseNnue = true;
+            std::fprintf(stderr, "[arena] Engine 2 usando NNUE ('%s')\n", e2NnuePath.c_str());
+        }
+    } else if (forceHeuristic || e2ForceHeuristic) {
+        std::fprintf(stderr, "[arena] Engine 2: heuristica forcada via --%s\n", forceHeuristic ? "heuristic" : "e2-heuristic");
+    }
+
 
     if (totalGames % 2 != 0) totalGames++;
     int totalPairs = totalGames / 2;

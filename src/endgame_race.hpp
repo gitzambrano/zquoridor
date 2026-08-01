@@ -79,6 +79,7 @@
 #include <array>
 #include <vector>
 #include <chrono>
+#include <cstring>
 #include "rules.hpp"
 
 namespace qr {
@@ -371,10 +372,23 @@ inline RaceOutcome raceExactDTM(uint64_t wallsH, uint64_t wallsV, int pawn0, int
     struct RaceCacheSlot {
         uint64_t wallsH = 0, wallsV = 0;
         bool valid = false;
-        std::vector<int8_t> win0, win1;
-        std::vector<int> dtm0, dtm1;
+        int8_t* win0 = nullptr;
+        int8_t* win1 = nullptr;
+        int* dtm0 = nullptr;
+        int* dtm1 = nullptr;
+
+        void ensureAllocated() {
+            if (!win0) {
+                win0 = new int8_t[NST]();
+                win1 = new int8_t[NST]();
+                dtm0 = new int[NST]();
+                dtm1 = new int[NST]();
+            }
+        }
     };
-    static thread_local std::vector<RaceCacheSlot> slots(NSLOTS);
+    static thread_local RaceCacheSlot* slots = nullptr;
+    if (!slots) slots = new RaceCacheSlot[NSLOTS];
+
     uint64_t h = wallsH * 0x9E3779B97F4A7C15ULL ^ (wallsV + 0x9E3779B97F4A7C15ULL + (wallsH << 6) + (wallsH >> 2));
     int slotIdx = (int)(h % NSLOTS);
     RaceCacheSlot& slot = slots[slotIdx];
@@ -387,37 +401,25 @@ inline RaceOutcome raceExactDTM(uint64_t wallsH, uint64_t wallsV, int pawn0, int
         return {-1, 0};
     }
     g_raceCacheMisses++;
-    auto& win0 = slot.win0;
-    auto& win1 = slot.win1;
-    auto& dtm0 = slot.dtm0;
-    auto& dtm1 = slot.dtm1;
+    slot.ensureAllocated();
+    int8_t* win0 = slot.win0;
+    int8_t* win1 = slot.win1;
+    int* dtm0 = slot.dtm0;
+    int* dtm1 = slot.dtm1;
 
-    // Grafo do jogo em CSR (arrays planos), reconstruído só quando a
-    // topologia de muro muda em relação à última chamada (ver nota acima
-    // sobre por que isso acontece em quase todo nó real, não é caso raro
-    // -- por isso o CUSTO POR RECONSTRUÇÃO precisa ser baixo, não só a
-    // taxa de acerto do cache). A versão anterior usava
-    // std::vector<std::vector<int>> com push_back por aresta (~65k
-    // pushes, uma alocação/realloc incremental por vetor, 13.122 vetores
-    // tocados a cada chamada) -- essa é a fonte real do custo por chamada
-    // medido (~610-790us). CSR substitui por 2 arrays planos (sem
-    // ponteiros por estado, sem realloc incremental): 1 passada gera as
-    // arestas de sucessor em ordem (contígua por `from` já que o laço
-    // externo é por estado, então succOffset sai de graça como contador
-    // corrente); a lista de predecessores é obtida por contagem
-    // (counting sort) em vez de push_back por aresta.
-    constexpr int MAXDEG = 6;  // pawnStepMoves cobre passo+pulo reto+2 diagonais -- 5 no pior caso, folga de 1
-    static thread_local std::vector<int> succData;   // tamanho NST*MAXDEG (upper bound), compactado
-    static thread_local std::vector<int> succOff;    // NST+1
-    static thread_local std::vector<int> predData;   // idem, preenchido por counting sort
-    static thread_local std::vector<int> predOff;    // NST+1
-    static thread_local std::vector<int> predCursor;  // NST, scratch reutilizado
-    if ((int)succOff.size() != NST + 1) {
-        succData.resize((size_t)NST * MAXDEG);
-        succOff.assign(NST + 1, 0);
-        predData.resize((size_t)NST * MAXDEG);
-        predOff.assign(NST + 1, 0);
-        predCursor.assign(NST, 0);
+    // Grafo do jogo em CSR (arrays planos com ponteiros crus POD, sem destruidores TLS)
+    constexpr int MAXDEG = 6;
+    static thread_local int* succData = nullptr;
+    static thread_local int* succOff = nullptr;
+    static thread_local int* predData = nullptr;
+    static thread_local int* predOff = nullptr;
+    static thread_local int* predCursor = nullptr;
+    if (!succOff) {
+        succData = new int[(size_t)NST * MAXDEG];
+        succOff = new int[NST + 1]();
+        predData = new int[(size_t)NST * MAXDEG];
+        predOff = new int[NST + 1]();
+        predCursor = new int[NST]();
     }
 
     // Tabela de abertura por casa (Fase de otimização -- achado ao
@@ -523,13 +525,18 @@ inline RaceOutcome raceExactDTM(uint64_t wallsH, uint64_t wallsV, int pawn0, int
 
     auto succSize = [&](int s) { return succOff[s + 1] - succOff[s]; };
 
-    auto solveFor = [&](int X, std::vector<int8_t>& win, std::vector<int>& dtm) {
-        win.assign(NST, 0);
-        dtm.assign(NST, -1);
-        std::vector<int> cnt(NST);
-        for (int i = 0; i < NST; i++) cnt[i] = succSize(i);
-        std::vector<int> queue;
-        queue.reserve(NST);
+    static thread_local int* solveCnt = nullptr;
+    static thread_local int* solveQueue = nullptr;
+    if (!solveCnt) {
+        solveCnt = new int[NST];
+        solveQueue = new int[NST];
+    }
+
+    auto solveFor = [&](int X, int8_t* win, int* dtm) {
+        std::memset(win, 0, NST * sizeof(int8_t));
+        for (int i = 0; i < NST; i++) dtm[i] = -1;
+        for (int i = 0; i < NST; i++) solveCnt[i] = succSize(i);
+        int queueHead = 0, queueTail = 0;
         for (int p0 = 0; p0 < NS; p0++) {
             for (int p1 = 0; p1 < NS; p1++) {
                 if (p0 == p1) continue;
@@ -539,13 +546,12 @@ inline RaceOutcome raceExactDTM(uint64_t wallsH, uint64_t wallsV, int pawn0, int
                     int s = sidx(p0, p1, t);
                     win[s] = 1;
                     dtm[s] = 0;
-                    queue.push_back(s);
+                    solveQueue[queueTail++] = s;
                 }
             }
         }
-        size_t head = 0;
-        while (head < queue.size()) {
-            int s = queue[head++];
+        while (queueHead < queueTail) {
+            int s = solveQueue[queueHead++];
             for (int pi = predOff[s]; pi < predOff[s + 1]; pi++) {
                 int p = predData[pi];
                 if (win[p]) continue;
@@ -554,8 +560,8 @@ inline RaceOutcome raceExactDTM(uint64_t wallsH, uint64_t wallsV, int pawn0, int
                     // existencial: 1 sucessor vencedor já basta
                     win[p] = 1;
                     dtm[p] = dtm[s] + 1;
-                    queue.push_back(p);
-                } else if (--cnt[p] == 0) {
+                    solveQueue[queueTail++] = p;
+                } else if (--solveCnt[p] == 0) {
                     // universal: só quando TODOS os sucessores entraram --
                     // BFS processa em ordem crescente de dtm, então o
                     // último sucessor a entrar é o de MAIOR dtm (o
@@ -563,7 +569,7 @@ inline RaceOutcome raceExactDTM(uint64_t wallsH, uint64_t wallsV, int pawn0, int
                     // semântica correta de "pior caso pro lado que perde".
                     win[p] = 1;
                     dtm[p] = dtm[s] + 1;
-                    queue.push_back(p);
+                    solveQueue[queueTail++] = p;
                 }
             }
         }

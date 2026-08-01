@@ -11,6 +11,7 @@
 #include <cstdint>
 #include "../src/rules.hpp"
 #include "../src/search.hpp"
+#include "../src/nnue.hpp"
 
 #ifdef __EMSCRIPTEN__
 #include <emscripten/emscripten.h>
@@ -36,7 +37,11 @@ extern "C" {
 EMSCRIPTEN_KEEPALIVE
 void qr_new_game() {
     g_state = initialState();
+    // Reap roveit a o modo de avaliação configurado (NNUE ou heurístico)
+    // entre partidas -- não reseta o evalMode ao recriar a engine.
+    Negamax::EvalMode prevMode = g_engine.getEvalMode();
     g_engine = Negamax();  // zera a TT: partida nova não deve herdar lixo da anterior
+    g_engine.setEvalMode(prevMode);
     g_reptbl.clear();
     g_reptbl.push(g_state.hash);
     regenMoves();
@@ -117,6 +122,30 @@ EMSCRIPTEN_KEEPALIVE int qr_last_move_c() { return g_lastEngineMove.c; }
 // quem jogou -- positivo é bom pro motor, negativo é ruim. Só reflete a
 // profundidade que a busca alcançou dentro do orçamento de tempo/lance.
 EMSCRIPTEN_KEEPALIVE int qr_last_move_eval() { return g_lastEngineScore; }
+
+// Carrega pesos NNUE quantizados de `path` e ativa NNUE no engine WASM.
+// Retorna 1 em sucesso, 0 se o arquivo não pôde ser aberto ou está corrompido.
+// Para REVERTER ao heurístico: chame qr_set_eval_heuristic() ou simplesmente
+// não chame esta função -- o engine nasce em modo heurístico por default.
+EMSCRIPTEN_KEEPALIVE
+int qr_load_nnue_weights(const char* path) {
+    if (!qr::loadWeightsQuant(path)) return 0;
+    g_engine.setEvalMode(qr::Negamax::EvalMode::NNUE);
+    return 1;
+}
+
+// Volta o engine ao modo heurístico (evalSimple), sem descarregar os pesos
+// da memória -- permite alternar sem precisar recarregar o arquivo.
+EMSCRIPTEN_KEEPALIVE
+void qr_set_eval_heuristic() {
+    g_engine.setEvalMode(qr::Negamax::EvalMode::Heuristic);
+}
+
+// Retorna 1 se o engine está em modo NNUE, 0 se heurístico.
+EMSCRIPTEN_KEEPALIVE
+int qr_eval_mode_is_nnue() {
+    return g_engine.getEvalMode() == qr::Negamax::EvalMode::NNUE ? 1 : 0;
+}
 
 EMSCRIPTEN_KEEPALIVE
 int qr_is_draw() {

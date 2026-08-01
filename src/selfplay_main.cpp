@@ -44,6 +44,13 @@ static void printUsage(const char* prog) {
         "  --chunk-games N    partidas por arquivo .bin (default 2000)\n"
         "  --depth N           profundidade maxima da busca (default 40)\n"
         "  --time-ms N         orcamento de tempo por lance em ms (default 100)\n"
+        "  --nnue-weights PATH caminho para pesos NNUE quantizados (default:\n"
+        "                      data/nnue/nnue_weights_int8.bin). NNUE e o\n"
+        "                      default de avaliacao de folha deste binario; se\n"
+        "                      o arquivo (default ou passado aqui) nao existir,\n"
+        "                      cai automaticamente para evalSimple (heuristico).\n"
+        "  --heuristic         forca avaliacao heuristica (evalSimple), mesmo\n"
+        "                      que pesos NNUE existam -- debug/historico/fallback.\n"
         "  --opening-plies N   fase 1: lances 0..N-1 com epsilon1 (default 6)\n"
         "  --epsilon F         epsilon da fase 1 (default 0.05)\n"
         "  --opening-plies2 N  fase 2: lances N1..N2-1 com epsilon2 (default 10)\n"
@@ -83,6 +90,9 @@ int main(int argc, char** argv) {
         else if (a == "--chunk-games")     chunkGames                = std::atoi(next("--chunk-games").c_str());
         else if (a == "--depth")           cfg.maxDepth              = std::atoi(next("--depth").c_str());
         else if (a == "--time-ms")         cfg.timeBudgetMs          = std::atoi(next("--time-ms").c_str());
+        else if (a == "--nnue-weights")  { cfg.nnueWeightsPath       = next("--nnue-weights");
+                                            cfg.nnueWeightsExplicit   = true; }
+        else if (a == "--heuristic")       cfg.forceHeuristic        = true;
         else if (a == "--opening-plies")   cfg.openingRandomPlies    = std::atoi(next("--opening-plies").c_str());
         else if (a == "--epsilon")         cfg.epsilon               = std::atof(next("--epsilon").c_str());
         else if (a == "--opening-plies2")  cfg.openingRandomPlies2   = std::atoi(next("--opening-plies2").c_str());
@@ -122,6 +132,10 @@ int main(int argc, char** argv) {
                 totalGames, chunkGames, nChunks);
     std::printf("busca: profundidade<=%d, %dms/lance\n",
                 cfg.maxDepth, cfg.timeBudgetMs);
+    std::printf("avaliacao de folha: %s\n",
+                cfg.forceHeuristic ? "heuristica (evalSimple) -- forcada via --heuristic"
+                                   : ("NNUE quantizada (" + cfg.nnueWeightsPath +
+                                      "), com fallback automatico para heuristica se o arquivo nao existir").c_str());
     std::printf("abertura: fase1=[0..%d) eps=%.2f | fase2=[%d..%d) eps=%.2f | midgame eps=%.3f\n",
                 cfg.openingRandomPlies, cfg.epsilon,
                 cfg.openingRandomPlies, cfg.openingRandomPlies2, cfg.epsilon2,

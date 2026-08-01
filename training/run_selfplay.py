@@ -44,11 +44,11 @@ TIME_MS       = 100     # orçamento de tempo por lance em ms
 # Fase 1: lances iniciais (óbvios no Quoridor) com muito pouco ruído
 OPENING_PLIES1   = 6       # lances 1 a N1 sujeitos a EPSILON_OPENING1
 EPSILON_OPENING1 = 0.3     # baixo: não distorce os lances óbvios da abertura
-''
+
 # Fase 2: janela de exploração pesada para diversificar posições iniciais
 OPENING_PLIES2   = 12     # lances N1+1 a N2 sujeitos a EPSILON_OPENING2
 EPSILON_OPENING2 = 0.6   # alto: cria muita variedade de abertura (lance totalmente aleatório)
-''
+
 EPSILON_MIDGAME  = 0.01   # prob. de desvio no midgame: escolhe 2º ou 3º melhor lance (não totalmente aleatório)
 
 # --- Segurança ---
@@ -70,12 +70,19 @@ THREADS       = 15      # 0 = auto (usa hardware_concurrency); ajuste se quiser
                         # reservar threads para outras tarefas
 
 # --- Semente ---
-SEED          = 25     # semente base do RNG; chunks subsequentes variam automaticamente
+SEED          = 29    # semente base do RNG; chunks subsequentes variam automaticamente
 
 # --- Saída ---
 # Use {shard:03d} para nomear os chunks automaticamente.
 # Os arquivos ficam em data/selfplay/ relativo à raiz do projeto.
 OUT_TEMPLATE  = "data/selfplay/selfplay_{shard:03d}.bin"
+
+# --- Avaliação de folha (NNUE) ---
+# Caminho para os pesos NNUE quantizados gerados por quantize_nnue.py.
+# Exemplo: "data/nnue/nnue_weights.qbin"
+# Deixe como None ou string vazia para usar avaliacão heurística (evalSimple).
+# PARA REVERTER AO HEURISTICO: defina NNUE_WEIGHTS_PATH = None
+NNUE_WEIGHTS_PATH = None  # ex: "data/nnue/nnue_weights.qbin"
 
 # =============================================================================
 # INTERNALS -- normalmente não é necessário editar abaixo desta linha
@@ -173,6 +180,10 @@ def main():
         cmd += ["--threads", str(THREADS)]
     if SEPARATE_TT:
         cmd += ["--separate-tt"]
+    if NNUE_WEIGHTS_PATH:
+        # Converte para caminho absoluto relativo à raiz do projeto
+        nnue_abs = os.path.join(root, NNUE_WEIGHTS_PATH)
+        cmd += ["--nnue-weights", nnue_abs.replace("\\", "/")]
 
     print("=" * 60)
     print(f"[run_selfplay] Iniciando geração de dados")
