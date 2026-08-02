@@ -110,6 +110,7 @@ Exemplos (casos especiais):
 """
 import argparse
 import copy
+import json
 import os
 import signal
 import sys
@@ -187,7 +188,15 @@ DEVICE_DEFAULT = "cuda" if (USE_GPU_DEFAULT and torch.cuda.is_available()) else 
 # funciona se houver um diretorio consistente entre execucoes. Ver a secao
 # "CHECKPOINT / RESUME" no docstring do topo do arquivo para o fluxo completo.
 CKPT_DIR_DEFAULT = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data", "checkpoints")
-FRESH_DEFAULT = True   # True (ou --fresh) ignora qualquer checkpoint existente e comeca do zero
+# CORRECAO: estava True, e --fresh usava action="store_true" SEM um
+# "--no-fresh" para desligar -- ou seja, args.fresh era sempre True (passando
+# --fresh ou nao, o valor era o mesmo), entao `resumed = None if args.fresh
+# else try_load_train_state(...)` nunca chamava try_load_train_state: o
+# resume automatico documentado acima ("Cada treino comeca do zero? Nao por
+# padrao.") na pratica NUNCA acontecia. False + --no-fresh (par de
+# --fresh, mesmo padrao de --early-stop/--no-early-stop abaixo) restaura o
+# comportamento pretendido.
+FRESH_DEFAULT = False   # True (ou --fresh) ignora qualquer checkpoint existente e comeca do zero
 
 # Estabilizacao do treino QAT (ideia do mixtrain.py). 0 ou negativo desliga.
 GRAD_CLIP_NORM_DEFAULT = 1.0
@@ -480,6 +489,64 @@ def _train_state_path(ckpt_dir):
     return os.path.join(ckpt_dir, "train_state.pt")
 
 
+def _config_json_path(ckpt_dir):
+    return os.path.join(ckpt_dir, "train_config.json")
+
+
+# Hiperparametros de OTIMIZACAO/loss/QAT que fazem sentido herdar de uma
+# rodada anterior via --resume-config. Deliberadamente NAO inclui caminhos
+# de I/O (--data, --val-data, --out, --ckpt-dir, --init-from, --resume-config,
+# --fresh, --device, --plot-dir) nem flags de performance/console
+# (--gpu-chunk-multiplier, --progress-every-secs, --log-every) -- esses sao
+# especificos da MAQUINA/rodada atual, nao do "treino" em si, e copia-los
+# cegamente de um JSON antigo tende a surpreender mais do que ajudar (ex.
+# reaproveitar um --out de outra maquina).
+_CONFIG_JSON_HYPERPARAM_KEYS = (
+    "epochs", "batch_size", "seed", "val_split",
+    "lr", "lr_min", "lr_schedule", "warmup_epochs", "step_size", "step_gamma", "exp_gamma",
+    "weight_decay", "weight_decay_min", "wd_schedule",
+    "early_stop", "patience", "min_delta", "monitor",
+    "w_score", "w_outcome", "w_policy", "qa", "qb", "grad_clip_norm",
+)
+
+
+def save_config_json(ckpt_dir, args, fingerprint, epoch, best_metric, weights_path):
+    """Grava train_config.json ao lado de train_state.pt: um snapshot
+    HUMANO-LEGIVEL (json.dumps, sem torch/numpy) dos hiperparametros desta
+    rodada + qual arquivo de pesos corresponde a este checkpoint. Nao
+    substitui train_state.pt para resume EXATO (nao tem otimizador/RNG) --
+    e para (a) auditoria/registro de "com que config este .bin foi
+    treinado" e (b) --resume-config, que reaproveita esses hiperparametros
+    (nao o estado do otimizador) para comecar um ciclo novo de treino."""
+    os.makedirs(ckpt_dir, exist_ok=True)
+    payload = {
+        "fingerprint": fingerprint,
+        "epoch": epoch,
+        "best_metric": best_metric,
+        "weights_path": os.path.abspath(weights_path) if weights_path else None,
+        "saved_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+        "hyperparams": {k: getattr(args, k) for k in _CONFIG_JSON_HYPERPARAM_KEYS if hasattr(args, k)},
+    }
+    path = _config_json_path(ckpt_dir)
+    tmp_path = path + ".tmp"
+    with open(tmp_path, "w", encoding="utf-8") as f:
+        json.dump(payload, f, indent=2, ensure_ascii=False)
+    os.replace(tmp_path, path)  # mesmo truque write-then-rename do train_state.pt
+
+
+def load_config_json(path):
+    """Le um train_config.json (de --resume-config OU do auto-detect em
+    --ckpt-dir). Retorna None silenciosamente se o arquivo nao existe;
+    lanca se existe mas esta corrompido/ilegivel (diferente do
+    try_load_train_state, que so avisa em incompatibilidade de arquitetura
+    -- aqui um JSON corrompido e sempre um erro do usuario apontando pro
+    arquivo errado, vale falhar alto)."""
+    if not path or not os.path.isfile(path):
+        return None
+    with open(path, "r", encoding="utf-8") as f:
+        return json.load(f)
+
+
 def save_train_state(ckpt_dir, model, opt, epoch, epoch_completed, history, stopper, rng, fingerprint):
     os.makedirs(ckpt_dir, exist_ok=True)
     payload = dict(
@@ -537,6 +604,7 @@ class _RunState:
         self.fingerprint = None
         self.epoch = 0
         self.epoch_completed = False
+        self.args = None  # p/ save_config_json (hiperparametros desta rodada)
 
 
 _run_state = _RunState()
@@ -555,7 +623,11 @@ def _sigint_handler(signum, frame):
         _ckpt_saved_on_interrupt = True
         save_train_state(rs.ckpt_dir, rs.model, rs.opt, rs.epoch, rs.epoch_completed,
                           rs.history, rs.stopper, rs.rng, rs.fingerprint)
-        export_weights(rs.model, os.path.join(rs.ckpt_dir, "last.bin"))
+        last_path = os.path.join(rs.ckpt_dir, "last.bin")
+        export_weights(rs.model, last_path)
+        if rs.args is not None:
+            best_metric = rs.stopper.best if rs.stopper is not None else None
+            save_config_json(rs.ckpt_dir, rs.args, rs.fingerprint, rs.epoch, best_metric, last_path)
         status = "completo" if rs.epoch_completed else "parcial -- sera refeito ao retomar"
         print(f"checkpoint salvo em {rs.ckpt_dir} (epoch {rs.epoch}, {status})")
     else:
@@ -817,6 +889,7 @@ def train(args):
     _run_state.stopper = stopper
     _run_state.ckpt_dir = ckpt_dir
     _run_state.fingerprint = fingerprint
+    _run_state.args = args
     signal.signal(signal.SIGINT, _sigint_handler)
 
     t0 = time.time()
@@ -922,7 +995,9 @@ def train(args):
         _run_state.epoch_completed = True
         if ckpt_dir:
             save_train_state(ckpt_dir, model, opt, epoch, True, history, stopper, rng, fingerprint)
-            export_weights(model, os.path.join(ckpt_dir, "last.bin"))
+            last_path = os.path.join(ckpt_dir, "last.bin")
+            export_weights(model, last_path)
+            save_config_json(ckpt_dir, args, fingerprint, epoch, stopper.best, last_path)
 
         epoch_duration = time.time() - epoch_start_time
         avg_epoch_time = (time.time() - t0) / epoch
@@ -1083,8 +1158,22 @@ def parse_args(argv=None):
                               f"(estado completo p/ resume automatico); passe vazio/None via codigo "
                               f"pra desligar checkpointing (default {CKPT_DIR_DEFAULT})")
     g_ckpt.add_argument("--fresh", dest="fresh", action="store_true", default=FRESH_DEFAULT,
-                         help="ignora qualquer checkpoint de resume existente em --ckpt-dir e "
-                              "comeca do zero (ou de --init-from, se passado)")
+                         help="ignora qualquer checkpoint de resume existente (train_state.pt E "
+                              "train_config.json) em --ckpt-dir e comeca do zero (ou de "
+                              "--init-from, se passado)")
+    g_ckpt.add_argument("--no-fresh", dest="fresh", action="store_false",
+                         help="forca resume automatico (default -- so precisa desta flag se "
+                              "FRESH_DEFAULT tiver sido mudado pra True no topo do arquivo)")
+    g_ckpt.add_argument("--resume-config", default=None,
+                         help="caminho para um train_config.json de uma rodada anterior (de "
+                              "QUALQUER --ckpt-dir, nao so o atual) -- usa os hiperparametros "
+                              "de otimizacao dali como default desta rodada (qualquer flag passada "
+                              "nesta chamada continua tendo prioridade) e usa os pesos que ele "
+                              "aponta como --init-from, caso --init-from nao tenha sido passado. "
+                              "Diferente do resume automatico via --ckpt-dir: nao traz otimizador/"
+                              "epoch/historico, so pesos + config -- serve para comecar um ciclo "
+                              "novo (ex. bootstrap em cima de self-play novo) com os mesmos "
+                              "hiperparametros de um treino anterior, sem redigitar cada flag.")
 
     g_mem = p.add_argument_group("orcamento de memoria (VRAM/RAM)")
     g_mem.add_argument("--vram-budget-gb", type=float, default=VRAM_BUDGET_GB_DEFAULT,
@@ -1123,6 +1212,32 @@ def parse_args(argv=None):
     g_out.add_argument("--plot-dir", default=None,
                         help="diretorio para salvar plots de convergencia/validacao (PNG)")
     g_out.add_argument("--log-every", type=int, default=LOG_EVERY_DEFAULT)
+
+    # --resume-config (ou auto-detect de <ckpt-dir>/train_config.json quando
+    # --fresh nao foi passado): faz uma pre-leitura so de
+    # --ckpt-dir/--fresh/--resume-config/--init-from para decidir se ha um
+    # JSON pra aplicar, e se houver, reescreve os DEFAULTS do parser antes do
+    # parse_args "de verdade" -- assim qualquer flag que o usuario passou
+    # NESTA chamada continua ganhando (argparse so usa o default quando a
+    # flag correspondente nao apareceu em argv).
+    pre_args, _ = p.parse_known_args(argv)
+    cfg_path = pre_args.resume_config
+    if cfg_path is None and not pre_args.fresh and pre_args.ckpt_dir:
+        auto_path = _config_json_path(pre_args.ckpt_dir)
+        if os.path.isfile(auto_path):
+            cfg_path = auto_path
+    if cfg_path is not None:
+        cfg = load_config_json(cfg_path)
+        if cfg is not None:
+            hp = {k: v for k, v in cfg.get("hyperparams", {}).items()
+                  if k in _CONFIG_JSON_HYPERPARAM_KEYS}
+            if hp:
+                p.set_defaults(**hp)
+                print(f"[config] hiperparametros herdados de {cfg_path} (epoch {cfg.get('epoch')}, "
+                      f"best_metric={cfg.get('best_metric')}): {sorted(hp.keys())}")
+            if pre_args.init_from is None and cfg.get("weights_path"):
+                p.set_defaults(init_from=cfg["weights_path"])
+                print(f"[config] --init-from herdado do JSON: {cfg['weights_path']}")
 
     args = p.parse_args(argv)
     if not args.data:

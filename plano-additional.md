@@ -1,1162 +1,289 @@
-# Plano Adicional — Melhorias de Engine (titanium-engine, Stockfish e práticas gerais)
+# Plano Adicional — zquoridor
 
 **Origem:** análise comparativa entre `zquoridor` e `titaniummachine1/titanium-engine`
-(Rust, mesmo domínio — Quoridor), mais técnicas clássicas de motores alpha-beta
-(Stockfish e afins) adaptadas para um jogo sem capturas/material.
+(Rust, mesmo domínio — Quoridor) mais técnicas clássicas de motores alpha-beta
+(Stockfish e afins). Este documento foi podado em 2026-08: itens já
+implementados e validados em produção foram condensados num resumo curto
+(seção "Já implementado"); só ficou detalhado o que ainda está pendente.
+Se precisar do histórico completo de decisão de algum item já implementado
+(alternativas descartadas, números de antes/depois, etc.), ele está no
+histórico do git deste arquivo.
 
-**Como usar este documento:** cada item tem (1) o que é, (2) por que vale a pena
-aqui, (3) como entra no código atual — arquivo e função de `zquoridor`, sem
-scope creep: cada item é uma mudança cirúrgica isolada, testável sozinha antes
-da próxima. Itens marcados **[JÁ ALINHADO]** descrevem algo que o `zquoridor`
-já faz de forma equivalente — mantidos aqui só para registrar a comparação e
-apontar o que falta de cada um.
-
-Ordem = prioridade (maior retorno / menor risco primeiro). Custo e risco de
-regressão sobem conforme desce a lista.
-
----
-
-**Atualização (v17/v18):** a primeira versão deste documento foi escrita em
-cima da `main` do titanium-engine tal como o `STATE.md` a descrevia — que já
-estava defasado. Uma varredura do histórico completo (`git log`, 178 commits,
-mais de 15 branches `v16`/`v17`/`v18`/`experiment/*`/`codex/*`) mostrou bem
-mais técnica shippada do que a documentação interna deles registra. As
-seções abaixo foram expandidas com isso — itens novos marcados **[NOVO —
-v17/v18]**, refinamentos de itens já existentes marcados **[REFINADO]**.
+**Como usar este documento:** cada prioridade pendente tem (1) o que é,
+(2) por que vale a pena aqui, (3) como entra no código atual — arquivo e
+função de `zquoridor`. Ordem = prioridade real (maior retorno / menor risco
+primeiro, e o que você pediu explicitamente primeiro).
 
 ---
 
-## Estado atual (baseline, para referência ao longo do documento)
+## Estado atual (baseline — 2026-08)
 
-- Geração de muro: pré-filtro de 2 BFS (`shortestPathTouchSlots`) + DSU
-  (`RollbackDSU`/`buildWallDSU`/`wallCandidateAmbiguous`) sobre o grafo dual de
-  muros já colocados, caindo em `hasPathToGoal` (BFS exato) só nos candidatos
-  ambíguos. — **[JÁ ALINHADO]** com o objetivo do pipeline L1→L2→TOPO→L3 do
-  titanium-engine (ver Prioridade 6).
-- Busca: negamax + alpha-beta, TT (`TT_BITS=21`, 2M entradas), iterative
-  deepening com aspiration windows, lance da TT testado antes de gerar muros
-  (`isWallMoveLegal` de 1 candidato), quiescência restrita a muros "críticos"
-  (aumentam a distância do oponente ou derrubam `pathRobustness`).
-- Eval: `evalSimpleW` (distância + mobilidade + pesos tunáveis via SPSA,
-  `tune_spsa.cpp`).
-- NNUE: 290 features esparsas (81×2 posições de peão + 128 slots de muro),
-  heads duplos valor/política planejados, bootstrap de self-play planejado.
-- Benchmark: ~540K nós/s em profundidade 14–15; lição metodológica registrada
-  de que self-play não serve para comparar move-ordering (precisa de posições
-  fixas).
-
----
-
-## Prioridade 1 — CAT (Corridor Attention Table): calor de corredor para ordenar e podar muros — **[IMPLEMENTADO]**
-
-> **Status:** implementado em `src/cat.hpp` (`computeCorridorHeat`,
-> `wallEdgeHeat`), integrado em `orderWallMoves` (`search.hpp`),
-> substituindo o antigo `WALL_TOUCH_BONUS` binário. Rodou como **só
-> ordenação**, sem poda (conforme o rollout recomendado abaixo). Testado
-> em `test_move_ordering.cpp` (forma do calor + ranking). Benchmark
-> ad-hoc (`bench_wall_touch_bonus.cpp`, 40 posições fixas, 200ms/lance):
-> **~11,7× menos nós** (2,52M vs 29,54M) até profundidade média
-> ligeiramente maior (22,60 vs 22,32) do que a versão sem o sinal. Poda
-> de muros frios (o segundo passo mencionado no rollout) **ainda não
-> implementada** — próximo item natural de CAT, mas fora do escopo desta
-> rodada.
-
-**O que é.** Uma tabela de "calor" por casa e por aresta de muro, calculada por
-jogador a cada nó de profundidade suficiente, baseada em quanto cada casa
-desvia do caminho mais curto atual:
-
-```
-delta(sq)  = dist_do_peão(sq) + dist_até_meta(sq) - dist_mais_curta_total
-heat(sq)   = round( 200 / (1 + delta × log2(delta + 2)) )   se delta ≤ 3, senão 0
-           + 40 (bônus de gargalo) se delta ≤ 2 e a casa só tem 1 continuação
-```
-
-Para um muro em `(r, c, orientação)`, o "calor da aresta" é o máximo do calor
-das duas casas que ele toca, mais 1/4 do menor dos dois. Isso captura **rotas
-quase-equivalentes** que um único caminho testemunho (o que `shortestPathLen`
-já devolve) não vê — o titanium-engine documentou isso como a principal falha
-do esquema anterior (v2 → v3): um muro que fecha um desvio de custo igual, mas
-fora do caminho testemunho, passava despercebido.
-
-**Por que vale a pena aqui.** O gargalo de Quoridor é sempre o fator de
-ramificação de muros (até 128 candidatos por turno). O `zquoridor` já corta
-grande parte disso com prefiltro BFS + DSU (legalidade), mas isso decide só
-**se** um muro é legal — não decide **quão importante** ele é para ordenação
-ou para poda de busca (LMR, prune de muros irrelevantes). CAT ataca
-exatamente essa segunda pergunta.
-
-**Como implementar em `zquoridor`.**
-1. Novo arquivo `src/cat.hpp`. Função `computeCorridorHeat(wallsH, wallsV, pawnCell, player) -> array<int,81>`
-   — reaproveita a mesma BFS multi-fonte que `shortestPathTouchSlots` já roda
-   duas vezes (distância a partir do peão + distância até a meta, por casa);
-   não é BFS nova, é o mesmo dado já calculado, só que mantendo o vetor de
-   distância completo em vez de descartá-lo depois de extrair os slots
-   tocados. Ou seja: **primeiro, refatorar `shortestPathTouchSlots` para
-   também expor o vetor de distância cru** (ver Prioridade 6, cache por nó —
-   os dois itens compartilham a mesma BFS de origem).
-2. `wallEdgeHeat(heatP0, heatP1, orientation, r, c) -> int` — máximo das duas
-   casas tocadas pelo muro, dos dois jogadores.
-3. Em `search.hpp`, no Estágio 3 (geração de muros dentro de `negamax`):
-   usar `wallEdgeHeat` como chave de ordenação (maior calor primeiro, depois
-   os "sem calor" — candidatos que passaram no prefiltro BFS sem tocar
-   ninguém, esses continuam sendo tentados por último ou descartados de LMR
-   fundo).
-4. Poda: muros com `wallEdgeHeat == 0` e profundidade restante pequena podem
-   ser pulados inteiramente em nós não-PV (ver `wall_should_search` do
-   titanium — regra: manter se cruza o caminho testemunho do oponente **ou**
-   se tem calor ≥ limiar "quente"; descartar prova de zona morta/selada).
-5. Constantes sugeridas (mesmos valores do titanium-engine como ponto de
-   partida, re-tunáveis depois via SPSA como já é feito para `EvalWeights`):
-   `CAT_CORRIDOR_CM=200`, `CAT_HOT_CM=160`, `CAT_COLD_CM=60`,
-   `BOTTLENECK_BONUS_CM=40`.
-
-**Risco / ordem de rollout.** Implementar primeiro **só como ordenação**
-(sem poda) e medir com o protocolo já estabelecido no projeto (benchmark de
-posição fixa, nunca self-play) se reduz nós para mesma profundidade. Só
-depois de confirmado, ativar a poda de muros frios como uma segunda mudança
-isolada e testável.
+- **Busca:** negamax + alpha-beta, TT (2M entradas), iterative deepening
+  com aspiration windows, LMR log-log + PVS janela nula (mesmo toggle),
+  Reverse Futility Pruning, Late Move Pruning, killer moves + history
+  heuristic, CAT (calor de corredor) para ordenar/podar muros, cache de BFS
+  por nó + cache LRU de distância por topologia, gates de perft como
+  regressão de corretude.
+- **Final "mãos vazias":** solver exato de corrida (DP retrógrado em 3
+  níveis) plugado em `chooseMove` — inclusive no caso de a própria RAIZ já
+  estar em `wallsLeft==(0,0)` (bug de escolha de lance corrigido e coberto
+  por teste de regressão dedicado; ver nota no resumo de "Já implementado"
+  abaixo, item que NÃO pode ser reintroduzido sem ler a lição registrada
+  lá).
+- **NNUE:** 332 features esparsas (81+81 posição de peão próprio/oponente,
+  64+64 slots de muro H/V, 21+21 buckets de distância BFS one-hot),
+  acumulador incremental (diff por lance, não rebuild do zero por nó) com
+  variantes float32 (treino) e int8/int16 quantizada (busca), heads duplos
+  WL + auxiliar (imita `evalSimple`) + política (209 saídas). Integrada de
+  fato na busca (`Negamax::EvalMode::NNUE`, `search.hpp`) — não é mais só
+  "treinada mas não plugada".
+  - **NNUE é o default de avaliação em `selfplay` e `arena`** (tenta
+    `data/nnue/nnue_weights_int8.bin` automaticamente; cai para
+    `evalSimple` com aviso se o arquivo não existir; `--heuristic` força o
+    modo antigo). **Ainda NÃO é o default no build WASM** — ver Prioridade 1
+    abaixo, é a lacuna mais visível hoje.
+  - Acumulador incremental **validado**: `teste/nnue_incremental_check.cpp`
+    compara incremental vs. rebuild-do-zero em milhares de posições reais,
+    0 divergências com os pesos treinados atuais.
+  - **Dois problemas reais encontrados e ainda não corrigidos** — ver
+    Prioridade 1 (são o motivo dela ser #1 agora, à frente de tudo mais):
+    quantidade de muros restantes de cada jogador não é feature de entrada
+    nenhuma, e a codificação de perspectiva não é geometricamente
+    canônica (produz eval diferente pras duas perspectivas até em posições
+    perfeitamente simétricas).
+- **Build:** `build_bench.sh/.bat`, `build_selfplay.sh/.bat`,
+  `build_tests.sh/.bat` (8 binários, incluindo os dois testes de NNUE
+  acima, wireados em 2026-08), `build_arena.sh/.bat` (compila
+  `teste/bin/arena.exe` standalone, sem precisar de `run_arena.py`/git —
+  novo, resolve a lacuna que existia antes de só dar pra compilar a arena
+  via o script Python com dois refs git) e `build_wasm.sh/.bat`.
+- **Treino NNUE** (`training/train_nnue.py`, PyTorch — roda em CPU tão bem
+  quanto uma implementação numpy pura, então não existe mais script
+  separado "sem torch"): resume automático por época via
+  `data/checkpoints/train_state.pt` (pesos + otimizador + RNGs + histórico
+  + early-stopper), captura de Ctrl+C salvando checkpoint de emergência,
+  early stopping com restauração do melhor epoch, LR/weight-decay
+  schedules com warmup, orçamento de RAM/VRAM calculando batch/chunk size
+  automaticamente. **Atualizado em 2026-08** (ver Prioridade 2: bug de
+  `--fresh` corrigido + checkpoint em JSON adicionado).
 
 ---
 
-## Prioridade 2 — Killer moves + history heuristic — **[IMPLEMENTADO]**
+## Prioridade 1 — NNUE: feature de muros restantes + correção da assimetria de perspectiva
 
-> **Status:** implementado em `search.hpp` (`killers[MAX_PLY][2]`/
-> `killerValid`, `history[2][NUM_MOVE_INDICES]`), integrado em
-> `orderPawnMoves`/`orderWallMoves` e usado como exempção de LMR/LMP
-> (Prioridades 3/3c). Pré-existente a esta rodada de sessões — só
-> corrigindo a marcação do documento, que não tinha acompanhado a
-> implementação.
+**Isto é a prioridade #1 agora, à frente de qualquer outra coisa neste
+documento.** Objetivo: ter a NNUE **completamente jogável** (default nos
+três alvos de produção — selfplay, arena e WASM — sem as duas lacunas
+abaixo) antes de seguir pra qualquer item novo.
 
-**O que é.** Duas tabelas clássicas de ordenação de Stockfish/qualquer
-alpha-beta sério, que o titanium-engine **ainda não tem** ("_(not yet)_ — CAT
-corridor heat is our positional memory" — eles usam CAT como substituto
-parcial, mas killer/history são complementares, não excludentes):
+### 1a. Muros restantes (`wallsLeft`) não é feature de entrada nenhuma
 
-- **Killer moves:** por `ply`, guardar os 1–2 lances que causaram corte
-  beta (fail-high) na última vez que essa profundidade foi visitada,
-  independente da posição exata. Testados logo depois do lance da TT.
-- **History heuristic:** tabela `history[player][from_kind][to] += depth*depth`
-  incrementada toda vez que um lance causa corte beta; usada para desempatar
-  ordenação entre lances "quietos" (sem calor CAT, sem TT-hit).
+`grep wallsLeft src/nnue.hpp` não retorna nada — confirmado tanto por
+leitura do código quanto empiricamente com `nnue_sign_check.cpp`: a
+posição inicial e uma posição idêntica exceto por "jogador 0 com 10 muros,
+oponente com 0" dão **exatamente o mesmo eval NNUE**. A rede é cega para
+quem ainda pode bloquear — informação estratégica real que hoje só entra
+no `evalSimple` (heurística), não na rede. Isso é assim desde a versão de
+290 features (documentado na versão antiga deste arquivo) até a atual de
+332 — não é regressão, é lacuna de design nunca fechada.
 
-**Por que vale a pena aqui.** Quoridor não tem MVV-LVA (não há capturas), então
-a ordenação hoje depende de: TT move → calor CAT (Prioridade 1) → resto.
-Killer/history são baratos (arrays simples, sem BFS) e cobrem exatamente o
-"resto" — lances de peão e muros frios que se repetem como boas respostas em
-posições irmãs (transposições da mesma sub-árvore).
+**Como implementar:**
+1. Adicionar um bloco de features para `wallsLeft[own]`/`wallsLeft[opp]` em
+   `nnue.hpp` — mais simples e barato que um valor escalar cru: one-hot por
+   contagem (0..10, 11 buckets cada) ou thermometer encoding (11 features
+   binárias "tenho ≥N muros", mais fácil da rede aprender monotonicidade).
+   `NUM_FEATURES` sobe de 332 para 332+22=354 (thermometer) ou +22 (one-hot,
+   mesmo custo). Atualizar `buildAccumulator`/`buildAccumulatorQuant` (as
+   duas, float e quantizada) e o `updateAccumulatorForMove`/
+   `updateAccumulatorForMoveQuant` incremental — colocar/remover um muro
+   decrementa `wallsLeft` de quem jogou, então isso vira mais um par de
+   add/remove feature no diff incremental de cada lance de muro (lance de
+   peão não mexe nisso).
+2. Atualizar `training/quantize_nnue.py` e `training/train_nnue.py`
+   (`NUM_FEATURES`, extração de feature a partir do `State` gravado pelo
+   selfplay — conferir se `read_selfplay.py`/o formato `.bin` de selfplay
+   já registra `wallsLeft` por posição; se não registrar, é preciso
+   também mexer no formato de gravação do `selfplay.hpp`/`selfplay_main.cpp`
+   antes de re-gerar dados de treino).
+3. **Retreinar do zero** (mudança de `NUM_FEATURES` invalida pesos
+   antigos — não dá pra fazer warm-start de um checkpoint com shape
+   diferente; o próprio `compute_fingerprint`/`try_load_train_state` já
+   detecta isso e recusa o checkpoint incompatível, então o pior caso é só
+   um aviso, não corrupção).
+4. Validar com `nnue_sign_check` (as duas posições de "10 vs 0 muros"
+   devem produzir eval visivelmente diferente agora) e
+   `nnue_incremental_check` (continua em 0 divergências com o novo bloco
+   de features).
 
-**Como implementar em `zquoridor`.**
-1. Em `Negamax` (`search.hpp`): adicionar `int killers[MAX_PLY][2]` (guardar
-   `moveToPolicyIndex(m)` ou um hash compacto do `Move`) e
-   `int history[2][N*N][WS*WS*2]` (ou dimensão mais enxuta — indexar por
-   destino do peão e por slot do muro separadamente, não pelo produto
-   cartesiano completo).
-2. Atualizar ambos só no ramo de corte beta (`localAlpha >= beta`) do laço de
-   muros e do laço de peão dentro de `negamax`, nunca em `quiescence`
-   (quiescência já tem seu próprio filtro de "crítico").
-3. Ordenação: TT move (já existe) → killers do ply atual, se legais → maior
-   calor CAT (Prioridade 1, se já implementada) → maior `history[...]` →
-   resto em ordem arbitrária estável.
+### 1b. Eval assimétrica em posições simétricas (bug de perspectiva)
 
-**Risco.** Baixíssimo — é aditivo e não muda legalidade nem eval. Reversível
-com uma flag de compilação enquanto mede.
+`nnue_sign_check.cpp` na posição inicial (perfeitamente simétrica) dá
+`nnue(persp0)=-3` e `nnue(persp1)=70` — deveriam ser iguais (ou os dois
+perto de 0), já que a MESMA situação abstrata "quão bem estou" é simétrica
+para os dois lados. Causa raiz identificada: `featOwnPawn`/`featWallH`/
+`featWallV` usam coordenada **bruta** do tabuleiro — só trocam qual peão é
+"meu" vs. "do oponente" (`s.pawn[me]`/`s.pawn[opp]`), sem espelhar
+linha/coluna pra canonicalizar a perspectiva do jogador 1. Isso obriga a
+rede a aprender duas "geografias" diferentes (uma para ser jogador 0, outra
+para ser jogador 1) usando as mesmas colunas de peso, em vez de ganhar
+invariância de perspectiva de graça pela própria codificação — motivo
+plausível do desvio observado (nunca vai ser exatamente 0 por acaso; sem
+espelhar, só convergiria pra simetria com MUITO mais dados/treino).
 
-### 2b — **[NOVO — v17/v18]** Histórico completo à la Stockfish: continuation history, countermove, correction history
+**Como implementar:** ao computar features pra perspectiva 1, espelhar a
+linha (`row -> N-1-row`) na indexação de célula de peão e de slot de muro
+(H e V) antes de montar o índice de feature — perspectiva 0 continua sem
+transformação (é a canônica). O bucket de distância BFS já está correto
+(usa `shortestPathLen(..., me)`, que já é relativo à identidade do
+jogador, não à coordenada crua). **Fazer isso JUNTO com 1a** (mesma
+mudança de `NUM_FEATURES`/`buildAccumulator*`, mesmo retreino, mesma
+rodada de validação) — não vale a pena treinar duas vezes.
 
-O código de busca do titanium (`titanium/search/search_impl.rs`, ramo `v17`)
-não para no history simples do item 2 — ele porta praticamente **todo** o
-conjunto de tabelas de histórico do Stockfish moderno:
+**Validação:** `nnue_sign_check` na posição inicial deve dar `nnue(persp0)
+== nnue(persp1)` (ou muito próximo — pequeno resíduo de treino é aceitável,
+73 unidades de diferença como hoje não é).
 
-- **Fórmula de gravidade** (a mesma do Stockfish) para atualizar qualquer
-  tabela de histórico: `h += bonus − h·|bonus|/HIST_MAX` — auto-saturante,
-  nunca estoura o range, e decai sozinho com o tempo sem precisar de reset
-  manual.
-- **Malus, não só bônus:** todo lance testado **antes** do corte beta num nó
-  recebe o bônus negativo (é rebaixado), não só o lance que causou o corte é
-  premiado. Isso é o que faz o histórico convergir rápido — sem malus, um
-  lance que "parecia bom" por acaso nunca é corrigido.
-- **Countermove heuristic** (`cm`, indexado pelo "código de histórico denso"
-  do lance anterior): guarda qual resposta causou corte beta contra cada
-  lance do oponente, testada logo depois dos killers.
-- **Continuation history** (`cont_hist`, tabela `[lance_anterior][lance_atual]`
-  completa, não só o melhor par como o countermove): pontua "esse muro é uma
-  boa resposta a esse lance anterior", cobrindo o par de lances inteiro em
-  vez de só o par vencedor. Custo: `HIST_SPAN² × 4 bytes` (eles documentam
-  ~256 KiB — barato).
-- **Correction history** (`corr_hist[lado][hash_da_estrutura_de_muros]`):
-  EMA (média móvel exponencial, clamped ±256) do erro entre o score de busca
-  e o eval estático, por lado e por "assinatura" da estrutura de muros no
-  tabuleiro. Serve pra **corrigir o viés sistemático do eval estático**
-  online, sem retreinar nada — se o `evalSimpleW`/NNUE consistentemente
-  superestima um certo tipo de topologia de muros, essa tabela aprende isso
-  durante a própria partida e ajusta.
-- **Flag `improving`** (Stockfish): compara o eval estático do nó atual com o
-  de 2 plies atrás (mesmo lado a mover); se está melhorando, reduções/margens
-  ficam mais conservadoras (menos agressivas), porque a posição pode estar
-  em transição boa.
+**Depois de 1a+1b (retreino), fechar a lacuna dos 3 alvos:**
+- **WASM ainda não usa NNUE por padrão** — `qr_new_game()` em
+  `engine_wasm.cpp` nunca tenta carregar pesos automaticamente, e
+  `gui_web/app.js` nunca chama `qr_load_nnue_weights`/
+  `qr_set_eval_heuristic` (confirmado por grep, zero ocorrências) — os
+  pesos ficam embutidos no bundle (`build_wasm.sh` já faz `--preload-file`
+  se `data/nnue/nnue_weights_int8.bin` existir) mas nunca são carregados.
+  Implementar um `autoLoadDefaultNnueOnce()` chamado no primeiro
+  `qr_new_game()` (mesmo padrão já usado em `selfplay_main.cpp`/
+  `arena.cpp`: tenta, cai pra heurístico com silêncio/log se não achar),
+  ou no mínimo uma chamada em `app.js` no boot da página.
 
-**Como implementar em `zquoridor`.**
-1. Trocar a atualização simples de `history[...] += depth*depth` (item 2) pela
-   fórmula de gravidade acima — é a mesma tabela, só muda a fórmula de
-   update, mudança de uma linha.
-2. Adicionar malus: no laço de muros/peão de `negamax`, todo lance tentado
-   **antes** do que causa o corte beta recebe `bonus = -depth*depth` na mesma
-   tabela.
-3. `cm[lance_anterior] = lance_que_causou_corte` — array simples do tamanho
-   do espaço de lances, atualizado só no corte beta.
-4. `cont_hist` como `vector<int>` plano `[lance_anterior * N_MOVES + lance_atual]`
-   — mesmo tamanho pequeno citado pelo titanium, cabe tranquilo.
-5. `corr_hist[side][hash]`: reaproveitar/gerar um hash barato da configuração
-   de muros (pode ser um subconjunto do próprio Zobrist já calculado em
-   `State.hash`, reduzido pra um índice pequeno tipo 12–14 bits) — atualizado
-   com `search_score - evalSimpleW(...)` depois de cada busca completa de nó,
-   lido como correção aditiva ao eval estático em `evalSimpleW`/na chamada do
-   NNUE.
-6. `improving`: guardar o eval estático por ply (`eval_stack[MAX_PLY]` igual
-   ao titanium) e comparar com `ply - 2`.
-
-**Risco.** Baixo a médio — cada peça é isolada e testável separadamente
-(ativar uma de cada vez, medir nós/qualidade antes de acumular a próxima).
-`corr_hist` é a mais delicada (mexe no eval, não só na ordenação) — testar
-por último dessa sublista.
+**Risco:** médio — mudança de arquitetura (NUM_FEATURES) exige retreino
+completo, não é hot-fix; mas a mudança em si (mais features + espelho de
+coordenada) é mecânica e bem isolada, com os dois testes de NNUE já
+existentes cobrindo regressão.
 
 ---
 
-## Prioridade 3 — LMR (Late Move Reduction) explícito com fórmula log-log — **[IMPLEMENTADO]**
+## Prioridade 2 — Protocolo UCI + `.exe` standalone
 
-> **Status:** implementado em `search.hpp` (`lmrReduction`, integrado no
-> `tryMove` de `negamax`). Fórmula igual à descrita abaixo, com o gate de
-> calor CAT (`CAT_HOT_CM=150` pula redução, `CAT_COLD_CM=30` soma +1) em
-> vez do gancho de "quiescência crítica" mencionado no item 3 original —
-> mais barato (reaproveita `oppHeat` já calculado por CAT no mesmo nó, sem
-> BFS extra por candidato) e cobre o mesmo risco (muro que muda topologia
-> de zona morta nunca é reduzido). Combinado com PVS (Prioridade 8) no
-> mesmo `tryMove`. Toggle `setLmrPvsEnabled()` — `testFixedDepthFullWindow`
-> desliga automaticamente, preservando a garantia de "0 divergências" do
-> teste de staging (Fase 4.2.3). Novo `test_lmr_pvs.cpp` valida: nunca
-> lance ilegal, concordância de score ≥85% contra referência de janela
-> cheia (medido: 89–95,5% dependendo da profundidade), concordância em
-> posições decisivas ≥90% (medido: 96,6–100%). Nós para mesma profundidade
-> (`test_lmr_pvs`, depth 4): **~0,19× (LMR+PVS+RFP+LMP juntos)**. Partidas
-> diretas (`bench_lmr_pvs.cpp`, 10 jogos, 150ms/lance): **6-3-1** a favor
-> de ligado (amostra pequena, não é SPRT — ver item 14).
->
-> **Achado de correção (não previsto no plano original):** LMR combinado
-> com LMP (3c) SEM cuidado extra é uma combinação catastroficamente pior
-> que qualquer um sozinho — medido isoladamente, **0-10** em partidas
-> diretas (LMR sozinho: 7-3; LMP sozinho: 4-3; RFP+LMP juntos: 6-6; todos
-> neutros/positivos). Causa: a busca de verificação em profundidade
-> reduzida que o próprio LMR faz é, por natureza, uma aproximação barata;
-> se ELA TAMBÉM aplica LMP, a defesa do adversário fica podada demais
-> dentro dessa verificação, fazendo lances bons parecerem ruins sem nunca
-> disparar a re-busca de segurança da qual o LMR depende para ser seguro.
-> Fix: `negamax` ganhou um parâmetro `reducedByLmr` (true só na chamada de
-> profundidade reduzida do próprio LMR); LMP nunca se aplica quando esse
-> flag está ligado. Depois do fix: LMR+LMP juntos passou a 5-5 (neutro),
-> e a combinação completa (LMR+PVS+RFP+LMP) foi de 1-9/2-8 (antes do fix)
-> para 6-3-1 (depois). Lição para futuras heurísticas de poda: sempre
-> testar PARES de heurísticas isoladamente antes de aceitar a combinação
-> completa — a soma pode ser bem pior que as partes.
+**O que é.** Um front-end de protocolo (UCI — Universal Chess Interface,
+adaptado pra Quoridor, ou um protocolo próprio texto simples equivalente)
+rodando sobre o `Negamax`/`search.hpp` já existente, empacotado como um
+binário standalone (`.exe`/ELF) que qualquer GUI externa (Arena, CuteChess,
+ou uma interface própria) ou script consegue conversar via stdin/stdout —
+sem precisar do WASM nem do `gui_web/app.js`.
 
-**O que é.** Reduzir a profundidade de busca de lances tardios na ordenação
-(que já foram ordenados por importância, então lances tardios são
-provavelmente ruins) e re-buscar em profundidade cheia só se o resultado
-reduzido superar alpha. Fórmula usada pelo titanium-engine (mesma família da
-usada em Stockfish, adaptada):
+**Por que vale a pena aqui.** Hoje o motor só é acessível via: (a) API C++
+direta (`main.cpp`, `selfplay_main.cpp`, `teste/arena.cpp`), todos com
+`main()` fechado pra um propósito específico, ou (b) WASM dentro do
+`gui_web`. Não existe um jeito de "conversar" com o motor de fora — nem
+pra testar interativamente, nem pra plugar em ferramentas de torneio
+padrão do xadrez adaptadas (várias delas já falam UCI/protocolos
+similares).
 
-```
-reduction = clamp( round( ln(depth) * ln(move_index) / 2.25 ), 0, depth / 2 )
-```
+**Como implementar em `zquoridor` (esboço, detalhar quando for a vez):**
+1. Novo `src/uci_main.cpp` (ou `teste/uci.cpp` inicialmente, promovido pra
+   `src/` quando estabilizar): loop de leitura de linha por stdin,
+   comandos mínimos primeiro (`position`, `go`, `stop`, `quit`, `isready`,
+   `uci`/`uciok`), depois `setoption` pra expor os toggles que já existem
+   (NNUE vs. heurístico, profundidade/tempo).
+2. Formato de posição/lance precisa de uma notação textual pra Quoridor
+   (protocolo UCI original é xadrez-específico — reaproveitar só o
+   ESQUELETO do protocolo: `position`/`go`/`bestmove`/`info`, não os
+   tokens de lance de xadrez). Definir essa notação é o primeiro passo
+   concreto (ex.: algo como `e3h` para peão, `e3wh`/`e3wv` para muro
+   horizontal/vertical — decidir formato antes de codar).
+3. Novo alvo de build (`build_uci.sh`/`.bat`, mesmo padrão dos outros)
+   gerando um `.exe`/binário standalone.
+4. NNUE default (mesma convenção dos outros binários de produção — ver
+   Prioridade 1) desde o início deste front-end, não como afterthought.
 
-Com reduções extras (+1) para muros "frios" (calor CAT abaixo de
-`CAT_COLD_CM`) e reduções puladas (0) para lances "quentes" (`≥ CAT_HOT_CM`,
-"tático — pula LMR").
-
-**Por que vale a pena aqui.** O `zquoridor` já tem TT + aspiration + iterative
-deepening, mas a lista atual de negamax não menciona LMR — é o item clássico
-que falta na progressão natural TT → aspiration → **LMR** → PVS (Prioridade
-8). Sem calor CAT (Prioridade 1) ainda dá pra fazer uma versão simples usando
-só o índice de ordenação; fica mais forte depois de 1 estar pronto.
-
-**Como implementar em `zquoridor`.**
-1. Em `negamax`, depois do lance da TT e antes/durante o laço principal:
-   contar `moveIndex` (1-based) conforme os lances são tentados.
-2. Para `moveIndex > LMR_MIN_MOVE_INDEX` (ex.: 3) e `depth >= LMR_MIN_DEPTH`
-   (ex.: 3) e o lance não for o da TT nem um killer (Prioridade 2, se pronta):
-   calcular `reduction` pela fórmula acima, buscar com
-   `negamax(ns, depth - 1 - reduction, -alpha-1, -alpha, stats)` (janela nula,
-   ver Prioridade 8), e se `score > alpha`, re-buscar completo
-   `negamax(ns, depth - 1, -beta, -alpha, stats)`.
-3. **Cuidado específico de Quoridor:** diferente de xadrez, aqui não existe
-   "lance de xeque" que precise ficar isento de redução por segurança tática
-   simples — mas um muro que muda a topologia de zona morta pode. Usar a
-   mesma regra do titanium: nunca reduzir lances que a checagem de
-   "quiescência crítica" (já existente em `quiescence`) marcaria como
-   crítico.
-
-**Risco.** Médio — LMR mal calibrado pode perder linhas táticas finas
-(gargalos de 1 muro). Testar com o mesmo protocolo de posições fixas já
-estabelecido, comparando nós-para-mesma-profundidade e, principalmente,
-**qualidade do lance escolhido** em posições de gargalo conhecidas antes de
-aceitar.
-
-### 3b — **[IMPLEMENTADO]** Reverse Futility Pruning (RFP / static null move)
-
-> **Status:** implementado em `search.hpp` (`rfpMargin`, integrado no topo
-> de `negamax`, logo depois da consulta à TT). Margens iguais às do
-> titanium (70/90 por depth, não re-tunadas ainda via `tune_spsa.cpp`).
-> `ply > 0` de propósito — nunca poda a raiz. Flag `improving` calculada
-> via `evalHistory[ply]`/`evalHistory[ply-2]` (array indexado por ply,
-> escrito na entrada de `negamax` sempre que `depth <= RFP_MAX_DEPTH` —
-> funciona com DFS pelo mesmo motivo que killer/history funcionam com
-> array por ply, não por caminho). Toggle `setRfpEnabled()`. Sozinho:
-> neutro em partidas diretas (4-4/10) — ver nota de correção em 3c sobre a
-> combinação com LMP.
-
-**O que é.** Em profundidade rasa (`depth ≤ 4` no titanium), se o eval
-estático **já** está tão acima de `beta` que nem uma queda razoável o
-derrubaria, corta o nó sem gerar lance nenhum. Margem usada por eles:
-`(improving ? 70 : 90) × depth` centi-pontos. É o pai do RFP clássico de
-Stockfish — mais barato ainda que LMR porque não gera nenhum lance, decide
-só olhando o eval estático do nó.
-
-**Como implementar em `zquoridor`.** No topo de `negamax`, depois do teste de
-`winner(s)` e da consulta à TT, antes de gerar qualquer lance: se
-`depth <= 4` e `evalSimpleW(s, s.turn, weights) - margin(depth, improving) >= beta`,
-retornar o eval direto (fail-high). Margem inicial: reaproveitar as mesmas
-constantes do titanium como ponto de partida (70/90 por depth), re-tunar
-depois com o `tune_spsa.cpp` já existente — é só mais um par de
-`EvalWeights`.
-
-**Risco.** Médio — corta demais se a margem for agressiva; testar com
-posições de gargalo conhecidas (mesmo protocolo do resto do documento) antes
-de aceitar valores diferentes dos do titanium.
-
-### 3c — **[IMPLEMENTADO]** Late Move Pruning (poda por contagem de lances, não por redução)
-
-> **Status:** implementado em `search.hpp` (constantes `LMP_MAX_DEPTH=2`,
-> `LMP_COUNT_IMPROVING=14`, `LMP_COUNT_NOT_IMPROVING=8`, iguais ao
-> titanium). Nunca aplica ao lance da TT (já filtrado antes de entrar no
-> laço), nunca a killer, nunca a muro "quente" no calor CAT (`CAT_HOT_CM`)
-> — usei o calor CAT como proxy da "checagem crítica de quiescência"
-> mencionada abaixo, mais barato (0 BFS extra) e cobre o mesmo risco.
-> Toggle `setLmpEnabled()`.
->
-> **Achado de correção importante:** LMP combinado com LMR (item 3) SEM
-> um guard extra é uma combinação **muito pior que qualquer um sozinho**
-> — medido isoladamente em partidas diretas: LMR+LMP juntos deu **0-10**,
-> enquanto LMR sozinho (7-3), LMP sozinho (4-3) e RFP+LMP juntos (6-6) são
-> todos neutros/positivos. A causa raiz: a busca de verificação em
-> profundidade reduzida que o próprio LMR faz (`tryMove`, janela nula) já
-> é uma aproximação; se ela TAMBÉM aplica LMP, a defesa do adversário fica
-> podada demais DENTRO dessa verificação, fazendo lances genuinamente bons
-> parecerem ruins sem nunca disparar a re-busca de segurança da qual o LMR
-> depende para não perder linhas. Fix: `negamax` ganhou um parâmetro
-> `reducedByLmr` (true só na chamada de profundidade reduzida do LMR); LMP
-> nunca roda quando esse flag está ligado. Depois do fix, LMR+LMP juntos
-> passou a 5-5 (neutro) e a combinação completa das 4 heurísticas
-> (LMR+PVS+RFP+LMP) foi de 1-9/2-8 (catastrófico, antes do fix) para
-> 6-3-1 (positivo, depois). **Lição geral:** heurísticas de poda que
-> parecem seguras isoladamente podem interagir mal quando uma delas roda
-> DENTRO da busca de verificação/redução de outra — sempre testar pares
-> isolados antes de aceitar a combinação completa.
-
-**O que é.** Diferente de LMR (que **reduz** a profundidade de lances
-tardios), Late Move Pruning **descarta inteiramente** lances quietos depois
-de já ter tentado um número suficiente deles num nó raso, sem sequer buscar
-em profundidade reduzida. No titanium aparece como o corte
-`depth <= 2 && i >= (improving ? 14 : 8)` — ou seja: em profundidade ≤2, depois
-do 8º (ou 14º, se `improving`) lance quieto testado, para de gerar mais.
-
-**Por que vale a pena junto com LMR.** É o complemento natural: LMR reduz os
-lances "médios", LMP corta de vez a cauda longa de lances "quase certamente
-irrelevantes" que nem vale a pena reduzir — combina bem com a ordenação por
-CAT/killers/history (itens 1–2), porque só é seguro cortar a cauda se a
-ordenação na frente for confiável.
-
-**Como implementar em `zquoridor`.** No mesmo laço de `negamax` de LMR: contar
-`moveIndex` por nó; se `depth <= LMP_MAX_DEPTH` (começar com 2) e
-`moveIndex >= (improving ? LMP_COUNT_IMPROVING : LMP_COUNT_NOT_IMPROVING)`
-(começar com 14/8, iguais ao titanium), parar o laço sem testar o resto —
-nunca aplicar ao lance da TT, killers, nem a lances "críticos" (mesma
-checagem que `quiescence` já usa pra distinguir muro crítico de muro
-irrelevante).
-
-**Risco.** Médio — mesma cautela do LMR: validar contra posições de gargalo
-conhecidas antes de aceitar, não só nós/segundo.
+**Risco:** baixo/médio — é um front-end fino sobre a busca já validada,
+não toca `search.hpp`/`rules.hpp`; o risco real está em definir bem a
+notação de posição/lance antes de comprometer com um formato.
 
 ---
 
-## Prioridade 4 — Solver exato de final "mãos vazias" (race/DP retrógrado) — **[IMPLEMENTADO]**
+## Backlog (pendente, prioridade menor que 1–3 acima)
 
-> **Status:** implementado em `src/endgame_race.hpp`, integrado em
-> `negamax`. Ver 4b/4c/4d/4e abaixo para os níveis internos, desvios do
-> plano original e o bug de escolha de lance corrigido numa rodada
-> anterior a esta. Pré-existente a esta rodada de sessões — só corrigindo
-> a marcação do documento.
+Itens abaixo continuam válidos mas ficam depois de NNUE completa + treino
++ UCI na ordem de trabalho. Descrição condensada — histórico completo
+(alternativas, números) no git.
 
-**O que é.** Quando **ambos** os jogadores ficam sem muros, a topologia de
-paredes fica congelada para sempre e o jogo vira uma corrida de peão pura
-(com pulos). O titanium-engine trata isso em duas camadas:
-
-- **Serviço A (barato, quase-instantâneo):** se os **conjuntos** de casas do
-  caminho mais curto dos dois jogadores são disjuntos, não há interseção
-  possível → nenhum pulo pode ocorrer → o resultado é só "quem tem o caminho
-  mais curto ajustado pelo turno" — decide sem busca nenhuma.
-- **Serviço B (exato, sob demanda):** quando os caminhos se sobrepõem, resolve
-  por DP retrógrada **todos os 81×81×2 = 13.122 estados** `(pos0, pos1, turno)`
-  daquela topologia fixa de muros — é pouco: cada estado tem no máximo ~5
-  sucessores (passos + pulos), a tabela inteira cabe resolvida em memória
-  pequena e é rápida de construir do zero a cada vez que a posição entra
-  nesse regime (não precisa persistir entre partidas).
-
-**Por que vale a pena aqui.** É o único ganho da lista que troca busca
-heurística por **certeza matemática** em parte não-trivial do jogo — finais
-"mãos vazias" são comuns (jogadores tendem a gastar todos os muros antes do
-fim) e são exatamente onde a busca heurística tradicional (mesmo com NNUE)
-ainda erra por horizonte. Resolver exato aqui é estritamente melhor que
-qualquer profundidade de busca alcançável ali.
-
-**Como implementar em `zquoridor`.**
-1. Novo arquivo `src/endgame_race.hpp`.
-2. `raceOutcomeCheap(wallsH, wallsV, pawn0, pawn1, turn) -> optional<Score>`
-   — Serviço A: computar os dois conjuntos de casas do caminho mais curto
-   (reaproveitar a BFS multi-fonte já usada por `shortestPathTouchSlots`,
-   mas coletando **células**, não slots de muro) e testar interseção vazia.
-   Se disjuntos, devolver o vencedor por comparação de distância ajustada
-   pelo turno (mais barato que qualquer busca).
-3. `raceExactDTM(wallsH, wallsV, pawn0, pawn1, turn) -> int` — Serviço B: DP
-   retrógrada sobre os 13.122 estados `(p0, p1, turn)`, gerando sucessores
-   com a mesma lógica de `pawnStepMoves` já existente em `rules.hpp` (sem
-   muros, já que estão congelados). Guardar como `+k`/`-k` plies-até-mate,
-   igual ao esquema de score que a TT já usa (`SCORE_INF - k`).
-4. Gancho em `negamax`: logo depois do teste de `winner(s)`, se
-   `s.wallsLeft[0] == 0 && s.wallsLeft[1] == 0`, tentar Serviço A primeiro; se
-   `Unknown`, tentar Serviço B (13k estados resolve em microssegundos, vale a
-   pena mesmo custando mais que um nó de busca comum) e retornar o valor
-   exato em vez de continuar a busca heurística.
-5. **Nunca** confundir isso com "captura obrigatória" — como o próprio
-   titanium-engine registra como um bug já corrigido (episódio 11): não é
-   sobre esgotar muros, é sobre a interseção dos caminhos.
-
-**Risco.** Baixo, é aditivo e só ativa numa condição de borda claramente
-identificável (`wallsLeft[0]==0 && wallsLeft[1]==0`), fácil de testar
-isoladamente com posições construídas à mão.
-
-### 4b — **[REFINADO — v17/v18]** o Serviço A na verdade tem 3 níveis, não 1
-
-A primeira versão deste plano descreveu o Serviço A como um único teste
-(caminhos disjuntos). O histórico completo mostra que ele evoluiu pra 3
-níveis em ordem de custo crescente, cada um só ativado se o anterior não
-decidiu:
-
-- **Nível 1 — portão de ETA:** se `delta_eta > 1` (a diferença de distância
-  ajustada por turno entre os dois jogadores é grande o bastante), a
-  interceptação é fisicamente impossível — decide sem nem checar sobreposição
-  de caminho. É o teste mais barato de todos (só subtração de 2 inteiros já
-  calculados).
-- **Nível 2 — sobreposição de caminho:** o que já estava descrito (conjuntos
-  de casas disjuntos → corrida de tempo pura).
-- **Nível 3 — certificado de dominância por desvio:** quando os caminhos se
-  cruzam mas um lado ainda domina de forma comprovável, um "winner table"
-  assimétrico (construído e cacheado por topologia sob demanda, via grafo de
-  predecessores) resolve sem precisar da DP completa de 13.122 estados.
-
-Só se os 3 falharem é que o Serviço B (DP retrógrada exata) entra.
-
-**Como isso muda a Prioridade 4 em `zquoridor`.** Implementar nessa mesma
-ordem, um nível de cada vez, cada um testável isoladamente antes do próximo:
-nível 1 é uma comparação de inteiros (praticamente grátis, fazer primeiro);
-nível 2 é o que já foi descrito acima; nível 3 (winner table assimétrico) só
-vale a pena implementar depois que 1 e 2 estiverem rodando e sobrar volume
-suficiente de posições "sobrepostas mas ainda decidíveis" pra justificar o
-cache extra — é o item mais custoso de engenharia dos 3, deixar por último.
-
-### 4c — **[NOVO — v17/v18]** precisão de ±1 tempo com distância "jump-aware"
-
-O titanium ajustou a distância usada nos níveis acima para contar **pulos**
-como parte do cálculo de tempo, não só passos simples — sem isso, o
-Serviço A subestima/superestima corridas por até 1 tempo em posições onde os
-dois peões ficam adjacentes. Ajuste fino, mas fácil de errar: ao portar
-qualquer um dos níveis acima, testar explicitamente posições onde os peões
-ficam vizinhos (regra de pulo reto/diagonal) antes de confiar no resultado.
-
-**Risco de 4b/4c.** Mesmo do item 4 original — aditivo, mas correção de tempo
-por ±1 casa é sutil o bastante pra merecer testes de posição construídos à
-mão (pulos retos e diagonais nos dois lados) antes de aceitar qualquer
-nível.
-
-### 4d — **[IMPLEMENTADO, com 2 desvios do plano original]** status real após a integração
-
-A Prioridade 4 foi implementada (`src/endgame_race.hpp`, gancho em
-`search.hpp::negamax`, `src/test_endgame_race.cpp`) e está em produção,
-mas com duas divergências importantes em relação ao que 4b/4c descreviam
-— ambas achadas DEPOIS da integração inicial, uma por teste dirigido e
-outra por medição de força em arena externa. Registradas aqui pra quem
-for portar algo parecido não repetir os mesmos dois erros.
-
-**1. Nível 1 (portão de ETA) foi removido do pipeline de decisão, não só
-"refinado".** A margem do item 4c (delta de tempo grande o bastante pra
-descartar interceptação) assumia que bloqueio físico custa no máximo 1
-tempo a mais que um pulo — um teste aleatório amplo
-(`testRandomWallTopologiesGatesAgreeWithExact`) achou um contraexemplo
-real onde bloqueio custa mais que isso. Em vez de tentar consertar a
-margem (arriscado sem uma prova nova), `raceETAGate` foi mantida como
-utilitário isolado, testado, mas **não é mais chamada** por
-`resolveEmptyHandedEndgame` — só o Nível 2 (corrigido, ver abaixo) e o
-Serviço B decidem em produção.
-
-**2. Nível 2 (sobreposição de caminho) tinha a base geométrica errada —
-achado e corrigido depois de já estar em produção.** A versão original
-testava disjunção dos **conjuntos de casas em algum caminho mais curto**
-(`onShortestPathMask`) e tratava isso como certeza de que nenhuma
-interação era possível. Isso é falso: um jogador que está perdendo a
-corrida de tempo pura não é obrigado a seguir um caminho mínimo — pode
-desviar pra dentro do território do outro só pra bloquear fisicamente,
-mesmo sem nunca pisar numa casa do caminho mínimo do oponente. Um
-contraexemplo real foi encontrado por busca em topologias sintéticas:
-caminhos mínimos disjuntos (colunas 2-3 vs. 4-5) no mesmo tabuleiro
-totalmente conectado (as 81 casas continuam mutuamente alcançáveis
-ignorando o outro peão) — o gate antigo decidia "vitória do jogador 0 em
-10 lances"; o resultado verdadeiro (confirmado pelo Serviço B e por duas
-reimplementações independentes de checagem cruzada) era **empate por
-perseguição infinita**. Corrigido trocando a base para disjunção da
-**região inteira alcançável** (`reachableRegionMask`, BFS única sem meta)
-— essa sim é condição necessária e suficiente (regiões disjuntas ⇒
-nenhuma aresta atravessável as liga ⇒ os dois jogadores nunca ficam
-sequer adjacentes, em qualquer rota, ótima ou não).
-
-**3. Consequência de engenharia da correção acima: o Serviço B precisou
-de cache por topologia de muro, e isso não era opcional.** O comentário
-original do plano ("13k estados resolve em microssegundos, vale a pena
-mesmo custando mais que um nó de busca comum") só era verdade *na
-prática* porque o Nível 2 antigo (mesmo incorreto) decidia sozinho com
-bastante frequência em tabuleiros típicos, evitando a maioria das
-chamadas ao Serviço B. A versão corrigida do Nível 2 decide bem menos
-(a condição sã é mais rara — a maioria dos tabuleiros reais continua
-totalmente conectada mesmo com vários muros), então passou a cair no
-Serviço B em quase todo nó da fase "mãos vazias" — e cada chamada
-reconstruía o grafo de 13.122 estados e rodava as duas BFS retrógradas
-**do zero**, medido em ~790 microssegundos por chamada (não
-"microssegundos" desprezíveis). Isso derrubou nós/s em mais de 50× numa
-sessão de arena externa (Elo -166 medido contra a versão anterior) antes
-de ser identificado e corrigido. A correção: como
-`wallsLeft[0]==0 && wallsLeft[1]==0` (única condição de entrada do
-gancho) implica que nenhum muro pode mais ser colocado pro resto daquela
-subárvore de busca inteira, `wallsH`/`wallsV` ficam **congelados** por
-potencialmente milhares de nós consecutivos — um cache de 1 slot
-(`raceExactDTM` só recalcula a DP quando a topologia recebida muda em
-relação à última chamada) resolveu: de ~1.267 chamadas/s (sem cache) para
-~276.000 chamadas/s (com cache) num benchmark isolado de chamadas
-repetidas, e de ~1.600 nós/s pra ~84.000 nós/s num benchmark ponta-a-ponta
-com `Negamax::chooseMove` real e orçamento de tempo por lance, mesma
-posição. Lição pro roadmap: **qualquer** camada nova que se proponha
-"barata o bastante pra não precisar de cache" precisa ser medida sob a
-frequência de chamada real esperada em produção antes de assumir isso —
-principalmente quando uma correção de corretude futura pode
-legitimamente mudar essa frequência pra pior, como aconteceu aqui.
-
-Nível 3 (certificado de dominância por desvio, item 4b) segue não
-implementado — nenhum problema de volume o justificou até agora, já que
-o Serviço B com cache resolve a fase inteira rápido o bastante.
-
-### 4e — **[CORRIGIDO]** cache por topologia não bastava sozinho, e um bug de ESCOLHA DE LANCE (não de valor) sobrevivera a tudo isso
-
-Depois de 4d (cache de 1 slot por topologia), duas rodadas adicionais de
-correção aconteceram, uma de performance e outra — mais séria — de
-corretude na escolha do lance em si.
-
-**1. Orçamento de tempo real para o Serviço B (performance).** O cache de
-1 slot de 4d só ajuda quando chamadas consecutivas compartilham a MESMA
-topologia — e medição em busca real mostrou taxa de acerto de cache
-**~0,5%**, não os >90% que o benchmark sintético (chamadas repetidas de
-propósito) sugeria. O motivo: perto do fim de jogo, o alpha-beta ainda
-está decidindo ONDE colocar os ÚLTIMOS muros de cada lado, e cada
-candidato de posição de muro testado nessa borda gera uma topologia
-FINAL diferente — o cache não tem o que reaproveitar entre candidatos
-irmãos. Isso fazia o Serviço B (~0,6–0,9ms/chamada sem acerto de cache)
-rodar do zero em quase todo nó dessa fase de decisão. Corrigido com um
-orçamento de TEMPO REAL (medido via `chrono` a cada chamada cara, não
-uma contagem estimada de chamadas) reservado ao solver exato — uma
-fração pequena (3%) do orçamento de tempo total daquela busca
-(`g_raceExactBudgetUs`/`g_raceExactUsedUs`, resetado a cada
-`chooseMove`). Quando o orçamento acaba, o nó cai de volta pro heurístico
-de sempre em vez de continuar pagando o rebuild caro — no pior caso,
-nós/s fica igual ao que seria sem a feature de race, nunca pior. Some-se
-a isso: uma posição EXATA repetida (mesmo hash — comum via
-transposição/re-busca de PVS/aspiration/iterative deepening) agora é
-armazenada e lida da própria TT do motor (`EXACT`, `depth=127` pra nunca
-ser sobrescrita por uma entrada de profundidade menor), sem precisar de
-estrutura de cache nova pra esse caso.
-
-**2. Bug de escolha de LANCE na raiz — achado só depois de já ter nós/s
-saudável (>900k) e AINDA ASSIM perder a maioria das partidas em arena
-externa.** `resolveEmptyHandedEndgame` devolve o VALOR exato de uma
-posição, mas se comporta como nó-folha: nunca gera nem recursiona sobre
-os próprios filhos (igual `winner()`). Isso é correto e barato quando
-essa posição é FILHA de outro nó — o pai continua comparando vários
-candidatos normalmente, cada um recursando pra um filho que aciona o
-atalho só pra fornecer um valor pra comparação. O problema é quando a
-própria RAIZ real da partida (a posição que `chooseMove` recebe, vinda
-do jogo de verdade — não um nó interno) já satisfaz
-`wallsLeft==(0,0)`: não existe "nó pai" nenhum fazendo essa comparação, e
-o "melhor lance" que `chooseMove` lia da TT era um PLACEHOLDER
-(`legalMoves(s)[0]`, gravado só pra garantir legalidade de retorno, ver
-comentário em `negamax`) — não o lance que de fato realiza o DTM ótimo.
-O motor "sabia" quem ia ganhar (score correto, TT correta) mas jogava um
-lance essencialmente arbitrário pra chegar lá, durante toda a fase de
-final — tipicamente a maior parte de uma partida real, já que os muros
-costumam acabar bem antes do jogo terminar. Isso explica por que nós/s
-podia estar SAUDÁVEL ou até melhor que a linha de base (cada "busca" na
-raiz, quando já em mãos-vazias, resolve instantaneamente por não haver
-recursão nenhuma) e mesmo assim o motor perder a maioria das partidas —
-sintoma que não bate com "está lento", bate com "está decidindo mal".
-Corrigido em `chooseMove`: antes do loop de iterative deepening, se a
-própria raiz já satisfaz `wallsLeft==(0,0)`, compara os candidatos (só
-peão — sem muro nessa fase) por **1 ply usando o valor exato** de cada
-filho (mesma fórmula de `resolveEmptyHandedEndgame`) — maximizar sobre
-valores já exatos é ótimo por construção, não precisa de busca alguma.
-
-**Validação (não só teste unitário — arena real, mesma ferramenta que
-detectou o problema originalmente):** `teste/arena.cpp` compilando o
-código REAL de dois refs (não a mesma engine duplicada) — antes da
-correção do item 2, ~113 vitórias em 502 jogos contra a v1.1 (Elo
-≈−132, apesar de nós/s ALTO); depois da correção, duas amostras
-independentes (50 e 50 jogos, seeds diferentes) deram 24–24–2 e
-21–28–1 — combinado, 45–52–3 em 100 jogos (score ≈46,5%, Elo ≈−24,
-dentro do ruído estatístico dessa quantidade de jogos). Também um teste
-de regressão dedicado
-(`test_endgame_race.cpp::testChooseMoveAtEmptyHandedRootPicksOptimalMove`)
-que constrói uma posição de raiz com um único lance objetivamente ótimo
-e confirma que `chooseMove` o escolhe — falha contra a versão sem a
-correção (confirmado rodando o teste contra ambas), passa com ela.
-
-**Lição pro roadmap, reforçando a de 4d:** um atalho que devolve só um
-VALOR (sem lance) é seguro em qualquer nó INTERNO da árvore (o pai
-sempre compara), mas quebra silenciosamente se o mesmo atalho puder ser
-atingido diretamente pela RAIZ de uma busca real — `chooseMove` precisa
-de um LANCE, não só um score, e nada detecta esse descompasso em tempo
-de compilação nem em testes que só chamam o solver isoladamente (como os
-de 4d faziam). Qualquer atalho parecido no futuro (Nível 3, ou outro
-solver exato de subjogo) precisa de um teste que chame explicitamente o
-ponto de entrada de escolha de lance (`chooseMove`) a partir de uma
-posição-raiz já dentro da zona do atalho — não só o solver isolado.
+- **Continuation/countermove/correction history** (extensão de killers +
+  history já implementados) — retorno alto, risco baixo/médio, usa
+  infraestrutura que já existe.
+- **LUT O(1) para movimento de peão** — só vale depois de medir profiling
+  mostrando que `pawnStepMoves` pesa de verdade (peão tem no máx. 5
+  destinos/turno, ganho absoluto é bem menor que geração de muro).
+- **Certificado formal de vitória** (eval floor + refutação do último
+  muro, estilo ACE) — depende de CAT + solver de corrida (já prontos);
+  risco médio-alto (certificação incorreta é pior que não ter — exige
+  bateria adversarial antes de confiar).
+- **Livro de abertura** — subproduto quase de graça do pipeline de
+  self-play do NNUE; baixa prioridade até haver volume de partidas.
+- **Lazy SMP (paralelismo de busca)** — ganho real de nós/s multi-core,
+  mas multiplica o que já existe em vez de corrigir ineficiência por nó;
+  fazer depois que a fila de algoritmo (LMR/PVS/RFP/LMP, já prontos) e o
+  NNUE (Prioridade 1) estiverem estáveis. Lição registrada de outro
+  motor do mesmo domínio: não estreitar a busca da thread principal
+  achando que as auxiliares compensam — thread principal faz busca normal
+  completa, auxiliares são buscas extras com pequenas variações.
+- **Gerência de tempo dedicada** (`timeman.hpp` — alocação por lance
+  baseada em tempo restante/incremento/estabilidade do bestmove, não só
+  profundidade/deadline fixos) — baixo risco, não toca busca nem regras.
+- **Revisão de Zobrist/Undo enxuto** — **recomendação é NÃO fazer**: o
+  `zquoridor` copia `State` (não faz make/unmake in-place), então isso só
+  se aplicaria com evidência de profiling mostrando que a cópia é gargalo
+  real. Mantido só como registro de análise.
+- **Pondering** (pensar no tempo do adversário) — nice-to-have de produto
+  (GUI), não de motor; depende de timeman + UI de turno; menor retorno da
+  lista.
+- **Internal Iterative Reduction (IIR)** — técnica Stockfish barata e
+  isolada (reduzir profundidade em 1 quando não há lance de TT e
+  profundidade ≥ limiar), sem dependência de nenhum outro item.
 
 ---
 
-## Prioridade 5 — Gates de perft como oracle de regressão de corretude — **[IMPLEMENTADO]**
-
-> **Status:** implementado em `test_rules_sanity.cpp` (`perft(1)=131`,
-> `perft(2)=16677`, `perft(3)=2062264`, valores exatos travados como
-> asserção). Pré-existente a esta rodada de sessões — só corrigindo a
-> marcação do documento.
-
-**O que é.** O titanium-engine trava contagens exatas de nós em profundidades
-3–6 (`2.062.264`, `247.569.030`, `28.837.934.502`, `3.257.436.276.501`) como
-teste de CI — não é benchmark de velocidade, é prova de que a geração de
-lances (incluindo regras de pulo, muro, borda) não regrediu, ainda que a
-implementação interna mude completamente.
-
-**Por que vale a pena aqui.** O `zquoridor` já tem disciplina forte de
-validação (`test_rules_sanity.cpp`, prova formal do DSU documentada em
-`dsu.hpp`, prototype Python validado antes do port C++) — isso é o
-complemento natural: um número fixo e público que qualquer refatoração de
-`legalMoves`/`applyMove` tem que continuar reproduzindo, sem precisar
-reler a prova toda vez.
-
-**Como implementar em `zquoridor`.**
-1. Adicionar `perft(state, depth) -> uint64_t` em `rules.hpp` (função pura:
-   soma recursiva de `legalMoves(applyMove(s, m))` até profundidade 0).
-2. Rodar uma vez a partir da posição inicial para profundidades 1–4 (ou até
-   onde o tempo permitir), fixar os números encontrados como constantes em
-   `teste/test_rules_sanity.cpp` (`PERFT_D3_EXPECTED`, etc. — nomeando ao
-   estilo do `PERFT5_STARTPOS`/`PERFT6_STARTPOS` do titanium, já que a
-   convenção de nome é boa).
-3. Rodar de novo depois de qualquer mudança em `rules.hpp`/`dsu.hpp` como
-   parte do `teste/` já existente.
-
-**Risco.** Nenhum — é puramente aditivo, só trava um número já verdadeiro.
-
----
-
-## Prioridade 6 — Cache de BFS por nó (compartilhar entre ordenação, poda e CAT) — **[IMPLEMENTADO]**
-
-> **Status:** implementado em `rules.hpp` (`PlayerPathCache`,
-> `computeDistFull`, `cachedShortestPathLen`/`cachedPathRobustness`/
-> `cachedTouchSlots`) e propagado em `search.hpp` (`evalSimpleW`,
-> `legalWallMoves`, `orderWallMoves`, `quiescence`, Estágio 3 de
-> `negamax`). `shortestPathLen`/`pathRobustness`/`shortestPathTouchSlots`
-> continuam existindo com a assinatura antiga (usadas fora de
-> `search.hpp` — `nnue.hpp`, `selfplay.hpp`, `endgame_race.hpp`,
-> `gui_web/engine_wasm.cpp`, testes), agora como wrappers finos sobre o
-> mesmo motor `detail::runBFS`, mantendo o resultado bit a bit idêntico
-> ao de antes (validado por `test_search_staging.cpp`, 0 divergências).
-> `computeCorridorHeat` (CAT) **não** foi fundida neste cache — precisa de
-> BFS completa (todas as células, não só até a meta), e forçar isso no
-> cache de early-exit mudaria sutilmente o resultado de `pathRobustness`
-> em casos de borda (ver comentário grande em `rules.hpp` sobre a
-> diferença entre "early exit total" e "corte só na última célula do
-> caminho"). Resultado medido (benchmark de profundidade fixa,
-> `bench_fixed_depth.cpp`): **~57% mais nós/s** sobre a versão anterior a
-> esta rodada.
-
-**O que é.** O titanium-engine documentou (episódio 11, "performance pass")
-que a busca ficava em ~10K nós/s (vs. ~18M nós/s de perft puro) porque a
-**mesma** BFS de distância era recalculada 3× por nó: uma vez em
-`collect_search_moves`, outra em `order_moves`, outra dentro do LMR. A
-correção foi computar uma vez por nó e compartilhar.
-
-**Por que vale a pena aqui.** É diretamente aplicável e barato: `negamax` já
-chama `legalWallMoves` (que já roda a BFS de prefiltro internamente) e depois,
-separadamente, chama `shortestPathLen`/`pathRobustness` de novo dentro de
-`quiescence` para o mesmo oponente. Se Prioridades 1 e 3 (CAT, LMR) forem
-implementadas, cada uma vai querer sua própria BFS de distância — é o momento
-certo de consolidar antes que a duplicação se multiplique.
-
-**Como implementar em `zquoridor`.**
-1. Criar uma struct `NodeDistCache { array<int,81> distFrom0, distFrom1; }`
-   preenchida **uma vez por nó** (não por lance) logo no topo de `negamax`,
-   a partir da mesma BFS multi-fonte que `shortestPathTouchSlots` já roda.
-2. Refatorar `shortestPathTouchSlots`, `shortestPathLen`, `pathRobustness` e
-   a futura `computeCorridorHeat` (Prioridade 1) para aceitarem o vetor de
-   distância já calculado como parâmetro opcional, em vez de recalcular BFS
-   internamente sempre.
-3. Passar `NodeDistCache` por referência para `legalWallMoves`,
-   `quiescence` e qualquer coisa de CAT/LMR chamada dentro do mesmo nó.
-
-**Risco.** Médio na refatoração (mexe em várias assinaturas de função core),
-baixo na lógica (é só evitar recomputação, sem mudar nenhum resultado) — bom
-candidato para fazer com testes de regressão de `test_rules_sanity.cpp`
-rodando antes/depois em cada função tocada.
-
-### 6b — **[IMPLEMENTADO]** cache de distância entre nós (LRU por topologia de muros), não só dentro do nó
-
-> **Status:** implementado em `rules.hpp` (`PlayerPathCacheTable`,
-> chave `hash(wallsH, wallsV, pawnCell, player)` via mistura splitmix64,
-> `PLAYER_PATH_TT_BITS=16` → 65536 entradas, ~48MB, populado em tamanho de
-> regime desde o início como o plano pedia). Substituição "always
-> replace" em vez de LRU real com lista ligada — mais simples, O(1),
-> aproxima LRU sem overhead de ponteiros. Ao contrário da TT de score
-> (`tt`), **não precisa ser limpo entre partidas** — o valor cacheado é
-> função pura da chave. Validado por um fuzz test dedicado (3 passadas
-> sobre ~12 mil consultas reais, forçando acertos/colisões de slot): 0
-> divergências entre valor cacheado e BFS fresca. Taxa de acerto medida
-> em busca real: ~28%. Ganho adicional sobre o item 6 sozinho: **~5% mais
-> nós/s** (benchmark de profundidade fixa) — menor que o esperado dado o
-> hit rate, porque a fusão do item 6 já havia removido a maior parte do
-> tempo gasto em BFS pura por nó.
-
-O item 6 acima resolve a duplicação **dentro** de um nó. O titanium foi além:
-um cache **LRU entre nós diferentes**, chaveado pela topologia de muros (não
-pela posição inteira — a distância BFS de um jogador só depende de onde estão
-os muros, não de onde está o peão do adversário), com tamanho adaptativo "à
-la TT" (começa no tamanho de regime permanente, sem rampa fria). Faz sentido
-porque a mesma topologia de muros aparece repetidamente em nós irmãos/
-transposições — sem esse cache, a mesma BFS é refeita do zero em cada
-sub-árvore que chega numa topologia já vista antes.
-
-**Como implementar em `zquoridor`.** Depois do item 6 (cache por nó) estar
-funcionando: extrair a chave de cache como `hash(wallsH, wallsV, pawnCell,
-player)` (não o `State.hash` completo, que já inclui `turn`/`wallsLeft` —
-esses não afetam a distância BFS) e envolver `shortestPathLen`/o cálculo de
-distância completo por casa (item 6) numa tabela hash pequena com política
-LRU (`std::unordered_map` + lista duplamente ligada, ou um array circular
-simples do tamanho da TT). Popular o tamanho inicial já no valor de regime
-(evitar a "rampa fria" que o titanium documentou ter sido um desperdício
-mensurável).
-
-**Risco.** Médio — cache incorreto (chave que esquece alguma dependência) é
-pior que não ter cache; testar explicitamente que a chave realmente não
-depende de nada além de `(wallsH, wallsV, pawnCell, player)` antes de
-confiar (ex.: mesma topologia + mesmo peão, dois jogos diferentes, tem que
-dar o mesmo resultado — teste determinístico fácil de escrever).
-
----
-
-## Prioridade 7 — Lookup table O(1) para movimento de peão
-
-**O que é.** O titanium-engine pré-computa offline
-`PAWN_LEGAL[casa][enemy_key][wall_key] -> bitmask` e extrai o índice de muros
-relevantes com uma instrução `PEXT` (BMI2), eliminando o cálculo de
-adjacência/pulo por chamada.
-
-**Por que vale a pena aqui — com ressalva.** Diferente da geração de muro
-(128 candidatos, gargalo real), o peão só tem no máximo 5 destinos por turno;
-o ganho absoluto é bem menor que CAT/LMR/cache-por-nó acima. Vale a pena
-**depois** dos itens 1–6, e só se o profiling mostrar que `pawnStepMoves`
-aparece de forma mensurável no tempo total (o titanium-engine só valeu a pena
-por causa do volume de perft; em busca real com eval cara, o peso relativo é
-menor).
-
-**Como implementar em `zquoridor` (se o profiling justificar).**
-1. Gerar offline (script Python separado, fora do hot path) uma tabela
-   indexada por `(casa do peão, casa do peão adversário relativa, byte
-   compacto dos slots de muro ao redor)` → bitmask de destinos legais,
-   cobrindo passo simples, pulo reto e pulos diagonais.
-2. Como `zquoridor` não depende de BMI2/PEXT hoje (portabilidade WASM/mobile
-   é prioridade do projeto — GUI já roda em WebAssembly), usar a versão
-   **escalar** do empacotamento de chave (o próprio titanium mantém isso como
-   fallback obrigatório para builds sem BMI2) — ainda ganha por eliminar
-   ramificação, mesmo sem a instrução PEXT.
-3. Tabela cabe em poucos KB (peão tem muito menos combinações relevantes que
-   muro); gerar em `teste/` ou script `tools/gen_pawn_lut.py`, versionar o
-   `.bin`/header gerado.
-
-**Risco.** Baixo, mas esforço só se justifica depois de medir — não
-implementar "porque o outro engine tem".
-
----
-
-## Prioridade 8 — PVS (Principal Variation Search) com janela nula — **[IMPLEMENTADO]**
-
-> **Status:** implementado junto com LMR (item 3) no mesmo `tryMove` de
-> `negamax`/`search.hpp` — 1º lance sempre janela completa/profundidade
-> cheia; os demais em janela nula, promovida a janela completa se
-> `score > alpha && score < beta`. Toggle único `setLmrPvsEnabled()`
-> (compartilhado com LMR, já que os dois vivem no mesmo bloco de código e
-> sempre foram medidos juntos). Ver nota de resultados/achados em
-> Prioridade 3 acima (a validação foi feita para os dois juntos, não
-> isoladamente — combinam por natureza).
-
-**O que é.** Refinamento clássico de alpha-beta: buscar o primeiro lance
-(esperado ser o melhor, geralmente o da TT) com janela completa `(alpha,
-beta)`; todos os seguintes com **janela nula** `(-alpha-1, -alpha)` — muito
-mais barato quando o lance realmente é pior — e só re-buscar com janela
-completa se a busca de janela nula "vazar" acima de `alpha`.
-
-**Por que vale a pena aqui.** É o parceiro natural de LMR (Prioridade 3): LMR
-já reduz profundidade dos lances tardios, PVS reduz a **largura da janela**
-deles também. Junto, é a dupla clássica que separa um alpha-beta simples de
-um alpha-beta "sério" (é literalmente o que Stockfish faz em todo nó não-raiz
-não-PV).
-
-**Como implementar em `zquoridor`.** Trocar o laço principal de `negamax`
-(depois do primeiro lance) de sempre `-negamax(ns, depth-1, -beta, -alpha,
-stats)` para: primeiro lance com janela completa; demais com
-`-negamax(ns, depth-1, -alpha-1, -alpha, stats)`, promovendo para janela
-completa só se `score > alpha && score < beta`. Combina diretamente com a
-estrutura de LMR do item 3 (a busca reduzida já é de janela nula; a
-re-busca completa acontece só se necessário, exatamente como descrito ali).
-
-**Risco.** Baixo — é uma reestruturação local do laço de busca, sem mudar
-geração de lances nem eval; fácil de isolar e comparar nós-por-profundidade
-antes/depois.
-
----
-
-## Prioridade 9 — Certificado formal de vitória (estilo ACE: eval floor + refutação do último muro)
-
-**O que é.** Um verificador que, além do score heurístico, tenta **provar**
-formalmente uma vitória combinando: (a) um piso de eval acima do qual só
-posições genuinamente ganhas aparecem, com (b) um "portão de refutação do
-último muro" — checar se existe algum muro restante do oponente capaz de
-desfazer a vantagem antes de aceitar a prova.
-
-**Por que vale a pena aqui.** É mais barato e mais robusto que aumentar
-profundidade de busca só para confirmar um final que já parece decidido —
-reduz nós desperdiçados "só para ter certeza" em posições de final que a
-Prioridade 4 (race exato) não cobre (ainda há muros no jogo, então não é
-"mãos vazias" ainda, mas a vantagem já é grande).
-
-**Como implementar em `zquoridor`.** Depende de 1 (CAT) e 4 (race exato)
-estarem prontos primeiro — usa calor de corredor pra saber quais muros do
-oponente são candidatos plausíveis de refutação, e usa o solver de corrida
-como sub-rotina quando a checagem reduz a posição a "mãos vazias". Prioridade
-relativamente baixa na ordem geral — é um refinamento avançado, não uma
-correção de gargalo.
-
-**Risco.** Médio-alto — lógica de certificação incorreta é pior que não ter
-certificação (pode declarar vitória cedo demais). Exige bateria de testes
-adversariais antes de confiar, exatamente como o titanium documentou (2
-deciders anteriores descobertos **incorretos** em topologias com muro e
-descartados).
-
----
-
-## Prioridade 10 — Livro de abertura
-
-**O que é.** Banco de posições iniciais (até ~15 lances) com estatística de
-taxa de vitória, usado para viés de ordenação na raiz (não forçar lance, só
-bonificar), minerado de partidas de self-play/engine-vs-engine.
-
-**Por que vale a pena aqui.** Zquoridor já planeja bootstrap de self-play
-para o NNUE — o mesmo pipeline de partidas gera dados suficientes para um
-livro de abertura como subproduto, quase de graça.
-
-**Como implementar em `zquoridor`.** Depois que o pipeline de self-play do
-NNUE estiver rodando (já planejado): agregar `(posição inicial normalizada,
-lance, resultado)` das primeiras ~15 jogadas de cada partida de treino num
-arquivo simples (JSON ou binário pequeno — Quoridor não precisa de algo tão
-elaborado quanto SQLite/DAG do titanium; a árvore de abertura de Quoridor é
-muito mais rasa que xadrez). Usar só como bônus de ordenação na raiz, nunca
-forçado, e só até a profundidade coberta pelos dados.
-
-**Risco.** Baixo, mas trabalho real só compensa depois que houver volume de
-partidas de self-play — não adiantar esse item.
-
----
-
-## Prioridade 11 — NNUE incremental (accumulator diff) e input de calor CAT — **[REESCRITO — v17/v18]**
-
-A primeira versão deste item falava só da rede de atenção "Ka" (137 saídas)
-como algo caro e de retorno incerto — mantenho essa parte, mas o histórico
-completo mostrou que o titanium ganhou muito mais performance em algo bem
-mais barato e mais próximo do que o `zquoridor` já faz:
-
-- **Diff incremental do accumulator (o "NNUE" de verdade):** em vez de rodar
-  a rede inteira do zero em cada nó, atualizar só as features que mudaram
-  entre um `State` e o filho (`applyMove`), a partir de um diff de bitboard —
-  exatamente a técnica que você **já usou no Zchezz** ("incremental
-  accumulator, diff-based undo frame"). O commit deles descreve isso junto
-  com "eval cache" e "route by-bit tables" como o pacote que resolveu a
-  maior parte do custo de NPS na busca real (não no perft).
-- **Input de calor CAT na própria rede** (não só na busca): a rede NNUE deles
-  (v16, "ws20 eval inputs") ganhou um plano de entrada extra com o calor de
-  corredor (item 1 deste documento) normalizado, alargando a camada oculta de
-  32 para 48 — ou seja, o CAT não é usado só pra ordenar/podar, é também
-  **feature de eval**. O formato do arquivo de pesos é auto-descritivo
-  (cabeçalho com a largura `NET_H`), então pesos antigos continuam
-  carregando com o plano novo zerado — mudança de arquitetura sem quebrar
-  compatibilidade.
-
-**Como implementar em `zquoridor` — prioridade real, maior que a rede "Ka".**
-1. **Primeiro:** confirmar que o NNUE de 290 features do `zquoridor`
-   (`nnue.hpp`) já faz diff incremental do accumulator entre `applyMove`s
-   consecutivos dentro da árvore de busca, do mesmo jeito que o Zchezz já
-   faz — se ainda não faz (por ser mais novo/em desenvolvimento), portar essa
-   técnica é o item de maior retorno de toda esta seção, porque evita
-   recomputar a rede inteira em cada um dos milhões de nós da busca.
-2. **Depois:** se o item 1 (CAT) estiver implementado, considerar adicionar o
-   calor de corredor como plano de entrada extra do NNUE (não só como sinal
-   de busca) — decisão de arquitetura pra depois que o head duplo
-   valor/política planejado estiver estável, seguindo o mesmo princípio de
-   cabeçalho auto-descritivo pra não quebrar pesos já treinados.
-3. **Rede "Ka" (attention, 137 saídas):** mantém a nota original — só
-   considerar depois dos itens 1–2 acima, e só se a head de política do NNUE
-   dual-head não bastar.
-
-**Risco.** Item 1 (accumulator incremental) é baixo risco — é uma otimização
-de implementação que não muda o resultado da rede, só a velocidade;
-testável comparando saída da rede incremental vs. forward completo em cada
-posição (devem bater exatamente). Item 2 (input de CAT na rede) é maior
-risco por exigir retreino.
-
----
-
-## Prioridade 12 — Paralelismo de busca (Lazy SMP)
-
-**O que é.** Rodar N threads fazendo a mesma busca iterative-deepening a
-partir da raiz, compartilhando a TT (com pequenas variações de ordem/ruído
-entre threads para não convergir todas no mesmo caminho), agregando o
-resultado da thread que chegou mais fundo.
-
-**Por que vale a pena aqui.** O titanium-engine **rejeita explicitamente**
-paralelismo dentro da geração de lances ("Single-thread hot path only — no
-movegen multithreading, no GPU") — mas isso é sobre movegen, não sobre busca:
-Lazy SMP é ortogonal e paralelizaria a busca do `zquoridor` sem tocar
-`rules.hpp`/DSU/BFS. É um ganho real de nós/s em máquinas multi-core, mas
-não é prioridade enquanto os itens de algoritmo (1–8) ainda não foram
-esgotados — paralelismo multiplica o que já existe, não corrige ineficiência
-por nó.
-
-**Como implementar em `zquoridor`.** TT (`std::vector<TTEntry>`) precisa
-virar acesso atômico/lock-free por entrada (ou aceitar races benignas,
-como Stockfish faz — colisão de TT sob concorrência é tolerada, não é bug
-crítico). Cada thread roda `Negamax::search` a partir da mesma raiz com
-profundidades levemente escalonadas; thread principal decide o `bestmove`
-pela busca mais profunda concluída.
-
-**[REFINADO — v17/v18]** Isso deixou de ser especulativo: o titanium **já
-ships** Lazy SMP de verdade (WASM com threads, "v16 threaded WASM"), e eles
-mesmos passaram por uma calibração que vale registrar: a thread principal
-inicialmente explorava só 10% da largura da raiz (deixando o resto pras
-threads auxiliares) e isso piorou — reverteram pra thread principal explorar
-quase a largura inteira da raiz (95%), com as auxiliares fazendo variações
-mais estreitas/decaladas. Ou seja: **não estreitar demais a busca da thread
-principal** achando que "as outras compensam" — comece com a thread
-principal fazendo a busca normal completa e só adicione threads auxiliares
-como buscas *extras* com pequenas variações de ordenação, sem tirar largura
-da principal.
-
-**Risco.** Médio-alto de engenharia (concorrência), mas isolado — não muda
-nenhuma regra nem eval, só multiplica throughput.
-
----
-
-## Prioridade 13 — Gerência de tempo dedicada
-
-**O que é.** Módulo separado (não misturado no laço de `negamax`) que decide
-quanto tempo alocar por lance com base em: tempo restante, incremento,
-estabilidade do `bestmove` entre iterações do iterative deepening (se o
-melhor lance para de mudar, corta cedo; se muda muito, estica).
-
-**Por que vale a pena aqui.** O `zquoridor` já tem `deadline` checado dentro
-de `negamax`/`quiescence` — falta só a camada de **decisão** de quanto tempo
-dar por jogada em partidas com relógio real (hoje aparenta ser profundidade
-fixa ou deadline fixo por chamada).
-
-**Como implementar em `zquoridor`.** Novo `src/timeman.hpp`: função
-`allocateTimeMs(remainingMs, incrementMs, movesPlayed, bestMoveStability) ->
-int`. Chamada uma vez por jogada (não por nó), define a `deadline` que já é
-passada para `Negamax`. Bônus simples: parar o iterative deepening 1 iteração
-mais cedo se `bestmove` não mudou nas últimas 3 profundidades e o tempo usado
-já passou de ~40% do alocado.
-
-**[REFINADO — v17/v18]** números concretos que eles chegaram, bons como
-ponto de partida (em vez de tunar do zero): plano-base de **30 lances
-próprios restantes** (derivado de duração média observada de partida, ~60
-plies — evitar usar P90/P95 daqui, isso é só telemetria); esse horizonte é
-**esticado** quando o Serviço A/B do solver de final (Prioridade 4) já
-consegue estimar `min(plies_até_vitória_p0, plies_até_vitória_p1)` — ou seja,
-o próprio solver de corrida alimenta a gerência de tempo, não só a busca.
-Teto rígido: nunca gastar mais que **1.25× o tempo "ótimo"** calculado
-(mesmo `MAX_RATIO` que o Stockfish usa como limite de "roubo" de tempo de
-lances futuros). Parada suave dentro da busca em **85%/92%** do tempo
-alocado (dois níveis, não um só) além do `deadline` duro que já existe.
-
-**Risco.** Baixo — não toca busca nem regras, só a política de quando parar.
-
----
-
-## Prioridade 14 — Infra de teste estatístico (estilo SPRT) para variantes do motor
-
-**O que é.** Em vez de medir só "nós por segundo" numa posição fixa, rodar
-lotes de partidas motor-vs-motor (versão A vs versão B) e comparar Elo com
-significância estatística (SPRT — sequential probability ratio test), a
-mesma disciplina que motores de xadrez usam para aceitar/rejeitar mudanças.
-
-**Por que vale a pena aqui.** O projeto já tem a lição metodológica certa
-registrada ("self-play não serve para comparar move-ordering; precisa de
-posições fixas") — SPRT motor-vs-motor é o complemento que falta: posições
-fixas validam *nós por profundidade*; partidas completas com SPRT validam
-*força de jogo real*, que é o que efetivamente importa para aceitar CAT, LMR,
-etc. como melhorias reais e não só "mais rápido, mesma qualidade".
-
-**Como implementar em `zquoridor`.** Não precisa da infra distribuída
-(Cloudflare Worker) do titanium — um script local (`teste/sprt_match.py` ou
-C++ simples) que roda N partidas engine-A vs engine-B (dois binários ou dois
-conjuntos de pesos/flags do mesmo binário), alternando quem começa, contando
-vitórias/derrotas/empates, e aplicando o teste SPRT (fórmula padrão, poucas
-linhas) para decidir "aceitar", "rejeitar" ou "precisa de mais jogos".
-
-**Risco.** Nenhum no motor em si — é infraestrutura de validação, roda por
-fora do binário de jogo.
-
----
-
-## Prioridade 15 — Revisão de Zobrist/make-unmake (Undo enxuto)
-
-**O que é.** O titanium-engine lista como próxima prioridade de perf
-"profile e enxugar a struct `Undo`" — o custo de desfazer um lance
-(recalcular hash Zobrist incremental, restaurar estado) pode dominar em
-motores que fazem make/unmake ao invés de copiar estado.
-
-**Por que vale a pena aqui — nota de arquitetura.** O `zquoridor` usa
-`applyMove(s, m) -> State` (copia o estado, não faz unmake) — é uma escolha
-de design diferente da do titanium (que faz make/unmake in-place com Undo).
-**Este item não se aplica diretamente** enquanto `State` for pequeno o
-suficiente pra copiar barato (2× `uint64_t` de muros + posições + contagens —
-provavelmente cabe em poucas dezenas de bytes, copiável mais rápido que o
-overhead de um Undo bem-feito). Incluído aqui só para registrar a análise:
-**não migrar para make/unmake** a menos que profiling mostre que a cópia de
-`State` é gargalo real — trocar de arquitetura sem essa evidência seria
-scope creep sem retorno comprovado.
-
-**Risco.** N/A — recomendação é **não fazer** a menos que medido.
-
----
-
-## Prioridade 16 (nice-to-have, fora do motor) — Pondering
-
-**O que é.** Pensar no tempo do adversário: assim que o oponente move, o
-motor já vinha buscando a posição prevista/child esperado, aproveitando o
-tempo ocioso.
-
-**Por que é baixa prioridade aqui.** O próprio titanium-engine marca isso
-como "prepared, not implemented" — depende de UI/protocolo (turno do
-adversário, WebSocket/worker) mais do que do motor de busca em si. Só faz
-sentido depois que os itens 1–8 (algoritmo) e 13 (timeman) estiverem prontos,
-e é mais uma feature de produto (GUI) que de engine.
-
-**Como implementar em `zquoridor` (quando chegar a vez).** No `gui_web/app.js`,
-depois do lance do adversário via WASM: já ter iniciado uma busca em
-background na resposta mais provável do humano assim que a IA joga (nó cap,
-sem deadline de relógio); descartar se o lance real do humano não bater com o
-previsto, senão reaproveitar a árvore/TT já aquecida.
-
-**Risco.** Baixo, mas é o item de menor retorno da lista — deixar por último.
-
----
-
-## Prioridade 17 — **[NOVO, Stockfish puro — não encontrado no titanium]** Internal Iterative Reduction (IIR)
-
-**O que é.** Quando um nó não tem lance de TT (não foi visitado antes ou
-sofreu colisão de hash) e a profundidade é razoavelmente alta, reduzir a
-profundidade de busca desse nó em 1 antes de gerar lances — a lógica é: sem
-lance de TT pra guiar a ordenação, o nó provavelmente vai custar caro e
-render pouco; melhor gastar menos nele agora e deixar a iteração seguinte do
-iterative deepening (ou uma re-busca) aprofundar se realmente valer a pena.
-Isso não apareceu em nenhum commit do titanium que encontrei — é uma técnica
-puramente do Stockfish moderno, barata e sem dependência de nenhum outro
-item deste documento.
-
-**Como implementar em `zquoridor`.** Em `negamax`, logo depois da consulta à
-TT: se `!hasTTMove && depth >= IIR_MIN_DEPTH` (começar com 4), decrementar
-`depth` em 1 antes de prosseguir para a geração de lances desse nó (não
-afeta os filhos, só a profundidade restante deste nó específico).
-
-**Risco.** Baixo — mudança de poucas linhas, isolada, fácil de comparar
-nós-por-profundidade antes/depois.
+## Já implementado (resumo — histórico completo no git)
+
+Busca: CAT, killer moves + history, LMR log-log + PVS (mesmo toggle),
+Reverse Futility Pruning, Late Move Pruning, gates de perft, cache de BFS
+por nó + cache LRU de distância por topologia, solver exato de final
+"mãos vazias" (DP retrógrado, 3 níveis de serviço).
+
+**Lição que precisa sobreviver a qualquer poda deste documento:** um
+atalho que devolve só um VALOR (sem lance) é seguro em qualquer nó
+INTERNO da árvore (o pai sempre compara os filhos), mas quebra
+silenciosamente se o mesmo atalho puder ser atingido diretamente pela
+RAIZ de uma busca real — `chooseMove` precisa de um LANCE, não só um
+score. Isso já causou um bug real (motor com nós/s saudável mas perdendo
+a maioria das partidas, porque jogava lance arbitrário em vez do ótimo
+assim que a própria raiz caía em `wallsLeft==(0,0)`), corrigido e coberto
+por `test_endgame_race.cpp::testChooseMoveAtEmptyHandedRootPicksOptimalMove`.
+Qualquer atalho parecido no futuro (novo nível de serviço, outro solver
+exato de subjogo) precisa de um teste que chame `chooseMove` a partir de
+uma posição-RAIZ já dentro da zona do atalho — não só o solver isolado.
+
+Também já implementado (fora da busca): acumulador NNUE incremental
+(diff por lance, validado por `nnue_incremental_check`), NNUE plugada de
+fato na busca com default automático em selfplay/arena, `build_arena.sh`/
+`.bat` standalone, checkpoint/resume de treino (ver Prioridade 2).
 
 ---
 
 ## Resumo de prioridade (visão rápida)
 
-| # | Item | Retorno esperado | Risco | Depende de | Status |
-|---|------|-------------------|-------|------------|--------|
-| 1 | CAT — calor de corredor | Alto | Baixo/médio | — | ✅ implementado |
-| 2 | Killer moves + history | Médio-alto | Baixo | — | ✅ implementado |
-| 2b | Continuation/countermove/correction history (Stockfish real) | Alto | Baixo/médio | 2 | pendente |
-| 3 | LMR log-log | Alto | Médio | idealmente 1 | ✅ implementado |
-| 3b | Reverse Futility Pruning (RFP) | Médio-alto | Médio | — | ✅ implementado |
-| 3c | Late Move Pruning (poda por contagem) | Médio | Médio | 1, 2 | ✅ implementado |
-| 4 | Solver exato "mãos vazias" (Serviço B) | Alto (certeza) | Baixo | — | ✅ implementado |
-| 4b | Serviço A em 3 níveis (ETA/overlap/winner-table) | Alto | Baixo→médio | 4 | ✅ implementado |
-| 4c | Distância jump-aware (±1 tempo) | Médio | Baixo | 4, 4b | ✅ implementado |
-| 5 | Gates de perft | Médio (correção) | Nenhum | — | ✅ implementado |
-| 6 | Cache de BFS por nó | Alto (eficiência) | Médio | facilita 1 e 3 | ✅ implementado |
-| 6b | Cache LRU de distância entre nós (por topologia) | Alto | Médio | 6 | ✅ implementado |
-| 7 | LUT O(1) de peão | Baixo-médio | Baixo | medir antes | pendente |
-| 8 | PVS janela nula | Médio-alto | Baixo | combina com 3 | ✅ implementado |
-| 9 | Certificado de vitória | Médio | Médio-alto | 1, 4 | pendente |
-| 10 | Livro de abertura | Médio | Baixo | self-play do NNUE | pendente |
-| 11 | NNUE incremental (accumulator diff) + input CAT | **Alto** | Baixo (diff) / médio (input) | 1 p/ input | pendente (NNUE treinada, não plugada na busca) |
-| 12 | Lazy SMP (já real no titanium — root 95%/5%) | Alto (throughput) | Médio-alto | esgotar 1–8 antes | pendente |
-| 13 | Gerência de tempo (30 lances base, MAX_RATIO 1.25, soft-stop 85/92%) | Médio | Baixo | 4/4b alimenta horizonte | pendente |
-| 14 | Infra SPRT | Metodológico | Nenhum | — | pendente |
-| 15 | Zobrist/Undo enxuto | N/A | N/A | **não fazer sem medir** | pendente |
-| 16 | Pondering | Baixo | Baixo | 1–8, 13; é GUI | pendente |
-| 17 | Internal Iterative Reduction (IIR) | Médio | Baixo | — | pendente |
-
-**Nota sobre o item 11:** na primeira versão deste documento ele estava
-listado como baixa prioridade ("rede Ka", incerta). A varredura completa do
-histórico mostrou que o ganho real e comprovado deles nessa área foi outro
-(accumulator incremental + cache de eval), bem mais alinhado ao que o
-`zquoridor` já faz — por isso ele subiu de posição na tabela.
-
-**Nota sobre 3/3b/3c/8 (achado de correção):** LMR combinado com LMP sem
-cuidado extra formava uma combinação catastroficamente pior que qualquer
-uma das duas sozinha (0-10 em partidas diretas isoladas). Corrigido com um
-parâmetro `reducedByLmr` em `negamax` que desliga LMP dentro da própria
-busca de verificação reduzida do LMR — ver nota completa na Prioridade 3c
-acima. Serve de lição para o restante do roadmap: pares de heurísticas de
-poda/redução (ex.: qualquer coisa nova + LMR) precisam ser validados
-isoladamente, não só em conjunto, antes de aceitar.
-
-**Próximo foco recomendado:** com 3/3b/3c/8 fechados, o próximo item
-natural na progressão de força é **2b** (continuation/countermove/
-correction history) — usa a mesma infraestrutura de `killers`/`history`
-já existente, e o próprio documento o classifica como retorno "Alto" com
-risco baixo/médio. **11** (NNUE incremental) continua sendo o maior
-retorno esperado do documento inteiro, mas só depois da busca estabilizar
-(evita misturar duas fontes de mudança de Elo ao mesmo tempo).
+| # | Item | Retorno esperado | Risco | Status |
+|---|------|-------------------|-------|--------|
+| 1 | NNUE: feature de muros restantes + correção de perspectiva + default WASM | **Alto** | Médio (retreino) | **pendente — prioridade #1** |
+| 2 | Protocolo UCI + `.exe` standalone | Alto (acessibilidade) | Baixo/médio | pendente |
+| — | Continuation/countermove/correction history | Alto | Baixo/médio | backlog |
+| — | LUT O(1) de peão | Baixo-médio | Baixo | backlog (medir antes) |
+| — | Certificado de vitória | Médio | Médio-alto | backlog |
+| — | Livro de abertura | Médio | Baixo | backlog |
+| — | Lazy SMP | Alto (throughput) | Médio-alto | backlog |
+| — | Gerência de tempo dedicada | Médio | Baixo | backlog |
+| — | Infra SPRT | Metodológico | Nenhum | backlog |
+| — | Zobrist/Undo enxuto | N/A | N/A | **não fazer sem medir** |
+| — | Pondering | Baixo | Baixo | backlog |
+| — | Internal Iterative Reduction (IIR) | Médio | Baixo | backlog |
+| — | CAT, killers/history, LMR+PVS, RFP, LMP, perft gates, cache BFS/distância, solver de corrida | — | — | ✅ implementado |
