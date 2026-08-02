@@ -61,11 +61,11 @@ primeiro, e o que você pediu explicitamente primeiro).
   quanto uma implementação numpy pura, então não existe mais script
   separado "sem torch"): resume automático por época via
   `data/checkpoints/train_state.pt` (pesos + otimizador + RNGs + histórico
-  + early-stopper), captura de Ctrl+C salvando checkpoint de emergência,
-  early stopping com restauração do melhor epoch, LR/weight-decay
-  schedules com warmup, orçamento de RAM/VRAM calculando batch/chunk size
-  automaticamente. **Atualizado em 2026-08** (ver Prioridade 2: bug de
-  `--fresh` corrigido + checkpoint em JSON adicionado).
+  - early-stopper), captura de Ctrl+C salvando checkpoint de emergência,
+    early stopping com restauração do melhor epoch, LR/weight-decay
+    schedules com warmup, orçamento de RAM/VRAM calculando batch/chunk size
+    automaticamente. **Atualizado em 2026-08** (ver Prioridade 2: bug de
+    `--fresh` corrigido + checkpoint em JSON adicionado).
 
 ---
 
@@ -88,6 +88,7 @@ no `evalSimple` (heurística), não na rede. Isso é assim desde a versão de
 332 — não é regressão, é lacuna de design nunca fechada.
 
 **Como implementar:**
+
 1. Adicionar um bloco de features para `wallsLeft[own]`/`wallsLeft[opp]` em
    `nnue.hpp` — mais simples e barato que um valor escalar cru: one-hot por
    contagem (0..10, 11 buckets cada) ou thermometer encoding (11 features
@@ -139,11 +140,11 @@ jogador, não à coordenada crua). **Fazer isso JUNTO com 1a** (mesma
 mudança de `NUM_FEATURES`/`buildAccumulator*`, mesmo retreino, mesma
 rodada de validação) — não vale a pena treinar duas vezes.
 
-**Validação:** `nnue_sign_check` na posição inicial deve dar `nnue(persp0)
-== nnue(persp1)` (ou muito próximo — pequeno resíduo de treino é aceitável,
+**Validação:** `nnue_sign_check` na posição inicial deve dar `nnue(persp0) == nnue(persp1)` (ou muito próximo — pequeno resíduo de treino é aceitável,
 73 unidades de diferença como hoje não é).
 
 **Depois de 1a+1b (retreino), fechar a lacuna dos 3 alvos:**
+
 - **WASM ainda não usa NNUE por padrão** — `qr_new_game()` em
   `engine_wasm.cpp` nunca tenta carregar pesos automaticamente, e
   `gui_web/app.js` nunca chama `qr_load_nnue_weights`/
@@ -180,6 +181,7 @@ padrão do xadrez adaptadas (várias delas já falam UCI/protocolos
 similares).
 
 **Como implementar em `zquoridor` (esboço, detalhar quando for a vez):**
+
 1. Novo `src/uci_main.cpp` (ou `teste/uci.cpp` inicialmente, promovido pra
    `src/` quando estabilizar): loop de leitura de linha por stdin,
    comandos mínimos primeiro (`position`, `go`, `stop`, `quit`, `isready`,
@@ -202,11 +204,12 @@ notação de posição/lance antes de comprometer com um formato.
 
 ---
 
-## Backlog (pendente, prioridade menor que 1–3 acima)
+## Backlog (pendente, prioridade menor que 1–2 acima)
 
 Itens abaixo continuam válidos mas ficam depois de NNUE completa + treino
-+ UCI na ordem de trabalho. Descrição condensada — histórico completo
-(alternativas, números) no git.
+
+- UCI na ordem de trabalho. Descrição condensada — histórico completo
+  (alternativas, números) no git.
 
 - **Continuation/countermove/correction history** (extensão de killers +
   history já implementados) — retorno alto, risco baixo/médio, usa
@@ -273,16 +276,15 @@ fato na busca com default automático em selfplay/arena, `build_arena.sh`/
 ## Resumo de prioridade (visão rápida)
 
 | # | Item | Retorno esperado | Risco | Status |
-|---|------|-------------------|-------|--------|
+| -- | --------------------------------------------------------------------------------------------- | --------------------- | ----------------- | ----------------------------------- |
 | 1 | NNUE: feature de muros restantes + correção de perspectiva + default WASM | **Alto** | Médio (retreino) | **pendente — prioridade #1** |
-| 2 | Protocolo UCI + `.exe` standalone | Alto (acessibilidade) | Baixo/médio | pendente |
+| 2 | Protocolo UCI +`.exe` standalone | Alto (acessibilidade) | Baixo/médio | pendente |
 | — | Continuation/countermove/correction history | Alto | Baixo/médio | backlog |
 | — | LUT O(1) de peão | Baixo-médio | Baixo | backlog (medir antes) |
 | — | Certificado de vitória | Médio | Médio-alto | backlog |
 | — | Livro de abertura | Médio | Baixo | backlog |
 | — | Lazy SMP | Alto (throughput) | Médio-alto | backlog |
 | — | Gerência de tempo dedicada | Médio | Baixo | backlog |
-| — | Infra SPRT | Metodológico | Nenhum | backlog |
 | — | Zobrist/Undo enxuto | N/A | N/A | **não fazer sem medir** |
 | — | Pondering | Baixo | Baixo | backlog |
 | — | Internal Iterative Reduction (IIR) | Médio | Baixo | backlog |
