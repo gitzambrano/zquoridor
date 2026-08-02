@@ -52,7 +52,24 @@ import numpy as np
 
 N, WS = 9, 8
 DIST_BUCKETS = 21  # ver DIST_BUCKETS em nnue.hpp (Seção 7.10 do plano)
-NUM_FEATURES = N * N + N * N + WS * WS * 2 + 2 * DIST_BUCKETS  # 332
+# WALLS_LEFT_BUCKETS: feature nova de 2026-08 -- ver nota completa em
+# WALLS_LEFT_BUCKETS/NUM_FEATURES em nnue.hpp. Muros restantes de cada
+# jogador (0..WALLS_PER_PLAYER=10), one-hot, 11 buckets por lado.
+WALLS_PER_PLAYER = 10
+WALLS_LEFT_BUCKETS = WALLS_PER_PLAYER + 1  # 11
+# CUIDADO: NUM_FEATURES está duplicado em TRÊS lugares (nnue.hpp,
+# train_nnue.py, aqui) -- não existe hoje uma fonte única compartilhada
+# entre C++ e os dois scripts Python. Mudar a arquitetura exige atualizar
+# os três em conjunto (é exatamente o que aconteceu de errado uma vez:
+# este arquivo ficou com NUM_FEATURES=332 depois de nnue.hpp/train_nnue.py
+# já terem ido para 354, e como load_float_weights() só validava a
+# contagem de floats LIDA contra essa mesma constante desatualizada -- uma
+# checagem tautológica, nunca contra o tamanho real do arquivo em disco --
+# o script "funcionava" silenciosamente enquanto lia tudo a partir de
+# w1 em diante nos offsets ERRADOS. Ver a checagem de tamanho real do
+# arquivo em load_float_weights() abaixo, adicionada para isso não se
+# repetir de novo).
+NUM_FEATURES = N * N + N * N + WS * WS * 2 + 2 * DIST_BUCKETS + 2 * WALLS_LEFT_BUCKETS  # 354
 HIDDEN = 256
 POLICY_OUT = N * N + WS * WS * 2  # 209
 
@@ -69,6 +86,22 @@ _HEAD_FIELDS = ("wv1_wl", "bv1_wl", "wv2_wl", "bv2_wl",
 
 
 def load_float_weights(path):
+    import os
+    expected = (NUM_FEATURES * HIDDEN + HIDDEN
+                + 2 * (HIDDEN * 32 + 32 + 32 + 1)
+                + POLICY_OUT * HIDDEN + POLICY_OUT)
+    expected_bytes = expected * 4  # float32
+    actual_bytes = os.path.getsize(path)
+    if actual_bytes != expected_bytes:
+        raise ValueError(
+            f"'{path}' tem {actual_bytes} bytes, esperado {expected_bytes} "
+            f"({expected} floats) para NUM_FEATURES={NUM_FEATURES} -- "
+            f"verifique se o arquivo foi gerado com a MESMA arquitetura "
+            f"(NUM_FEATURES) deste script; ver nota sobre a constante "
+            f"NUM_FEATURES estar duplicada em três lugares, no topo do "
+            f"arquivo. NÃO era checado antes (só comparava a contagem de "
+            f"floats lida contra a mesma constante usada pra ler -- "
+            f"tautológico, nunca pegava esse tipo de desalinhamento).")
     with open(path, "rb") as f:
         w1 = np.fromfile(f, dtype="<f4", count=NUM_FEATURES * HIDDEN).reshape(NUM_FEATURES, HIDDEN)
         b1 = np.fromfile(f, dtype="<f4", count=HIDDEN)
@@ -84,9 +117,6 @@ def load_float_weights(path):
         wv1_aux, bv1_aux, wv2_aux, bv2_aux = read_head()
         wp = np.fromfile(f, dtype="<f4", count=POLICY_OUT * HIDDEN).reshape(POLICY_OUT, HIDDEN)
         bp = np.fromfile(f, dtype="<f4", count=POLICY_OUT)
-    expected = (NUM_FEATURES * HIDDEN + HIDDEN
-                + 2 * (HIDDEN * 32 + 32 + 32 + 1)
-                + POLICY_OUT * HIDDEN + POLICY_OUT)
     got = (w1.size + b1.size
            + wv1_wl.size + bv1_wl.size + wv2_wl.size + 1
            + wv1_aux.size + bv1_aux.size + wv2_aux.size + 1

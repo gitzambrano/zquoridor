@@ -120,8 +120,8 @@ void benchAccumulatorUpdate(int iters) {
     // (so soma/subtrai uma linha de w1, sem BFS -- serve de piso de custo)
     t0 = clockT::now();
     for (int i = 0; i < iters; i++) {
-        acc.addFeature(featWallH(slotIdx(3, 3)));
-        acc.removeFeature(featWallH(slotIdx(3, 3)));  // desfaz, mantem acc estavel
+        acc.addFeature(featWallH(slotIdx(3, 3), 0));
+        acc.removeFeature(featWallH(slotIdx(3, 3), 0));  // desfaz, mantem acc estavel
     }
     double msRawFeatureToggle = msSince(t0);
 

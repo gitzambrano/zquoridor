@@ -43,29 +43,39 @@ namespace qr {
 // --- formato do registro de treino -------------------------------------
 #pragma pack(push, 1)
 struct TrainingSample {
-    uint8_t  ownPawn;       // célula (0..80) do peão de quem tem o lance ("mover")
-    uint8_t  oppPawn;       // célula (0..80) do peão adversário
-    uint64_t wallsH;        // bitboard de muros horizontais (mesma orientação p/ os 2 lados)
-    uint64_t wallsV;        // bitboard de muros verticais
-    int8_t   wallsLeftOwn;  // muros restantes do mover
-    int8_t   wallsLeftOpp;  // muros restantes do adversário
+    // ATENÇÃO (mudança 2026-08, arquitetura de walls-restantes + correção
+    // de perspectiva em nnue.hpp): ownPawn/oppPawn/wallsH/wallsV/
+    // policyTarget abaixo são gravados JÁ ESPELHADOS pra perspectiva
+    // canônica do mover (mesmo mirroredPawnCell/mirrorWallBitboard/
+    // mirrorMoveForPerspective usados por buildAccumulator em nnue.hpp) --
+    // NÃO são mais coordenada crua do tabuleiro. Datasets .bin gravados
+    // ANTES desta mudança têm essas mesmas 4 colunas em coordenada crua
+    // (sem espelho) e precisam ser regerados; não misturar os dois no
+    // mesmo treino (sem marca de versão no arquivo pra detectar isso
+    // automaticamente -- ver nota em train_nnue.py).
+    uint8_t  ownPawn;       // célula (0..80) do peão de quem tem o lance ("mover"), já espelhada
+    uint8_t  oppPawn;       // célula (0..80) do peão adversário, já espelhada
+    uint64_t wallsH;        // bitboard de muros horizontais, já espelhado
+    uint64_t wallsV;        // bitboard de muros verticais, já espelhado
+    int8_t   wallsLeftOwn;  // muros restantes do mover (escalar -- não precisa de espelho)
+    int8_t   wallsLeftOpp;  // muros restantes do adversário (escalar -- não precisa de espelho)
     int16_t  searchScore;   // evalSimple(posição, mover) no momento do lance -- alvo auxiliar p/ bootstrapping
     int8_t   gameResult;    // +1 se o mover desta amostra venceu a partida, -1 se perdeu
-    uint16_t policyTarget;  // índice do lance jogado, 0..208 (81 destino peão + 128 slot de muro)
+    uint16_t policyTarget;  // índice do lance jogado (0..208), já espelhado -- ver mirrorMoveForPerspective
     // Distância BFS (shortestPathLen, rules.hpp) até a linha de chegada,
     // já calculada aqui (não derivada em Python) por um motivo específico:
     // "de quem é o lance" (mover) é a única informação que dá o índice de
     // jogador (0/1) certo pra saber qual GOAL_ROW usar -- e essa
     // informação NÃO sobrevive no arquivo (o registro guarda só a célula
-    // absoluta do peão, não o índice de jogador). Calcular aqui, onde
-    // `mover`/`opp` ainda são conhecidos com certeza, evita ter que
-    // reconstruir a identidade do jogador a partir de heurísticas de
+    // absoluta -- espelhada -- do peão, não o índice de jogador). Calcular
+    // aqui, onde `mover`/`opp` ainda são conhecidos com certeza, evita ter
+    // que reconstruir a identidade do jogador a partir de heurísticas de
     // posição no lado Python (frágil: um peão pode legalmente recuar).
     // uint8_t comporta até 255, bem acima de qualquer distância possível
     // no tabuleiro 9x9 (máximo teórico bem menor); nunca precisa de clamp
     // aqui (isso só acontece no lado do bucket, em nnue.hpp/nnue.py).
-    uint8_t  ownDist;       // shortestPathLen do peão do mover até a meta dele
-    uint8_t  oppDist;       // shortestPathLen do peão do oponente até a meta dele
+    uint8_t  ownDist;       // shortestPathLen do peão do mover até a meta dele (escalar -- não precisa de espelho)
+    uint8_t  oppDist;       // shortestPathLen do peão do oponente até a meta dele (escalar -- não precisa de espelho)
 };
 #pragma pack(pop)
 static_assert(sizeof(TrainingSample) == 27,
@@ -221,15 +231,22 @@ inline std::vector<TrainingSample> playOneGame(Negamax& engine0, Negamax& engine
 
         TrainingSample rec;
         int mover = s.turn, opp = 1 - s.turn;
-        rec.ownPawn = s.pawn[mover];
-        rec.oppPawn = s.pawn[opp];
-        rec.wallsH = s.wallsH;
-        rec.wallsV = s.wallsV;
+        // Gravar já espelhado (ver nota em TrainingSample acima e em
+        // mirroredPawnCell/mirrorWallBitboard/mirrorMoveForPerspective,
+        // nnue.hpp): ownDist/oppDist abaixo continuam usando s.wallsH/
+        // s.wallsV CRUS (shortestPathLen opera em coordenada real de
+        // tabuleiro; o "mover"/"opp" já bastam pra saber o GOAL_ROW certo,
+        // não precisam do espelho) -- só os campos gravados em `rec` é que
+        // vão espelhados.
+        rec.ownPawn = (uint8_t)mirroredPawnCell(s.pawn[mover], mover);
+        rec.oppPawn = (uint8_t)mirroredPawnCell(s.pawn[opp], mover);
+        rec.wallsH = mirrorWallBitboard(s.wallsH, mover);
+        rec.wallsV = mirrorWallBitboard(s.wallsV, mover);
         rec.wallsLeftOwn = s.wallsLeft[mover];
         rec.wallsLeftOpp = s.wallsLeft[opp];
         rec.searchScore = (int16_t)std::max(-30000, std::min(30000, searchScore));
         rec.gameResult = 0;  // preenchido abaixo, depois que a partida terminar
-        rec.policyTarget = moveToPolicyIndex(chosen);
+        rec.policyTarget = moveToPolicyIndex(mirrorMoveForPerspective(chosen, mover));
         rec.ownDist = (uint8_t)std::min(255, shortestPathLen(s.wallsH, s.wallsV, s.pawn[mover], mover));
         rec.oppDist = (uint8_t)std::min(255, shortestPathLen(s.wallsH, s.wallsV, s.pawn[opp], opp));
         samples.push_back(rec);

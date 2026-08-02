@@ -21,6 +21,15 @@ import numpy as np
 
 # Layout deve casar byte a byte com TrainingSample em selfplay.hpp.
 # '<' = little-endian, sem padding.
+#
+# ATENÇÃO (mudança 2026-08): own_pawn/opp_pawn/walls_h/walls_v abaixo são
+# gravados por selfplay.hpp JÁ ESPELHADOS pra perspectiva canônica do
+# mover (mirroredPawnCell/mirrorWallBitboard, nnue.hpp) -- não são mais
+# coordenada crua do tabuleiro. O layout de bytes NÃO mudou (mesmo dtype,
+# mesmo tamanho de arquivo), só o SIGNIFICADO desses 4 campos -- não há
+# como distinguir um dataset antigo (coordenada crua) de um novo
+# (espelhado) só olhando o arquivo. Não misturar .bin gravados antes e
+# depois desta mudança no mesmo treino.
 SAMPLE_DTYPE = np.dtype([
     ("own_pawn",       "<u1"),   # 0..80
     ("opp_pawn",       "<u1"),   # 0..80
@@ -39,6 +48,13 @@ assert SAMPLE_DTYPE.itemsize == 27
 # Bucket one-hot da distancia BFS -- mesma constante/semantica de
 # DIST_BUCKETS em nnue.hpp: 0..19 exato, 20 = "20 ou mais".
 DIST_BUCKETS = 21
+
+# Muros restantes (feature nova, 2026-08) -- mesma constante/semantica de
+# WALLS_LEFT_BUCKETS em nnue.hpp: 0..WALLS_PER_PLAYER, one-hot.
+WALLS_PER_PLAYER = 10
+WALLS_LEFT_BUCKETS = WALLS_PER_PLAYER + 1  # 11
+N, WS = 9, 8
+NUM_FEATURES = N * N + N * N + WS * WS * 2 + 2 * DIST_BUCKETS + 2 * WALLS_LEFT_BUCKETS  # 354
 
 
 def dist_bucket(dist: np.ndarray) -> np.ndarray:
@@ -164,12 +180,18 @@ def unpack_wall_bits(walls_u64: np.ndarray) -> np.ndarray:
 
 
 def to_dense_features(batch: np.ndarray) -> np.ndarray:
-    """Converte um batch de TrainingSample nas 332 features esparsas one-hot
-    (81 peao proprio + 81 peao oponente + 64 muro H + 64 muro V + 21 bucket
-    dist. propria + 21 bucket dist. oponente) como matriz densa float32
-    (N, 332)."""
+    """Converte um batch de TrainingSample nas NUM_FEATURES features
+    esparsas one-hot (81 peao proprio + 81 peao oponente + 64 muro H + 64
+    muro V + 21 bucket dist. propria + 21 bucket dist. oponente + 11
+    bucket muros restantes proprios + 11 bucket muros restantes do
+    oponente = 354) como matriz densa float32 (N, NUM_FEATURES).
+    own_pawn/opp_pawn/walls_h/walls_v já chegam espelhados pra perspectiva
+    canônica do mover (ver nota em SAMPLE_DTYPE acima) -- nada a
+    transformar aqui, só espalhar em one-hot. Mantida em sincronia manual
+    com to_chunk_tensors em train_nnue.py (mesma ressalva de duplicação
+    de NUM_FEATURES em três lugares, ver nota lá)."""
     n = len(batch)
-    x = np.zeros((n, 332), dtype=np.float32)
+    x = np.zeros((n, NUM_FEATURES), dtype=np.float32)
     x[np.arange(n), batch["own_pawn"]] = 1.0
     x[np.arange(n), 81 + batch["opp_pawn"]] = 1.0
     x[:, 162:162 + 64] = unpack_wall_bits(batch["walls_h"])
@@ -178,6 +200,11 @@ def to_dense_features(batch: np.ndarray) -> np.ndarray:
     opp_bucket = dist_bucket(batch["opp_dist"])
     x[np.arange(n), 290 + own_bucket] = 1.0
     x[np.arange(n), 290 + DIST_BUCKETS + opp_bucket] = 1.0
+    wl_base = 290 + 2 * DIST_BUCKETS  # 332
+    own_wl_bucket = np.clip(batch["walls_left_own"].astype(np.int64), 0, WALLS_LEFT_BUCKETS - 1)
+    opp_wl_bucket = np.clip(batch["walls_left_opp"].astype(np.int64), 0, WALLS_LEFT_BUCKETS - 1)
+    x[np.arange(n), wl_base + own_wl_bucket] = 1.0
+    x[np.arange(n), wl_base + WALLS_LEFT_BUCKETS + opp_wl_bucket] = 1.0
     return x
 
 
@@ -204,4 +231,4 @@ if __name__ == "__main__":
     print(f"opp_dist: min={data['opp_dist'].min()} max={data['opp_dist'].max()} "
           f"media={data['opp_dist'].astype(np.float64).mean():.2f}")
     feats = to_dense_features(data[:8])
-    print(f"exemplo: to_dense_features(data[:8]).shape = {feats.shape} (esperado (8, 332))")
+    print(f"exemplo: to_dense_features(data[:8]).shape = {feats.shape} (esperado (8, {NUM_FEATURES}))")

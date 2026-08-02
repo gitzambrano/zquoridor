@@ -30,27 +30,30 @@ primeiro, e o que você pediu explicitamente primeiro).
   por teste de regressão dedicado; ver nota no resumo de "Já implementado"
   abaixo, item que NÃO pode ser reintroduzido sem ler a lição registrada
   lá).
-- **NNUE:** 332 features esparsas (81+81 posição de peão próprio/oponente,
-  64+64 slots de muro H/V, 21+21 buckets de distância BFS one-hot),
-  acumulador incremental (diff por lance, não rebuild do zero por nó) com
-  variantes float32 (treino) e int8/int16 quantizada (busca), heads duplos
-  WL + auxiliar (imita `evalSimple`) + política (209 saídas). Integrada de
-  fato na busca (`Negamax::EvalMode::NNUE`, `search.hpp`) — não é mais só
-  "treinada mas não plugada".
+- **NNUE:** 354 features esparsas (81+81 posição de peão próprio/oponente,
+  64+64 slots de muro H/V, 21+21 buckets de distância BFS one-hot, 11+11
+  buckets de muros restantes — feature nova de 2026-08, ver histórico da
+  Prioridade 1 abaixo), acumulador incremental (diff por lance, não
+  rebuild do zero por nó) com variantes float32 (treino) e int8/int16
+  quantizada (busca), heads duplos WL + auxiliar (imita `evalSimple`) +
+  política (209 saídas). Integrada de fato na busca
+  (`Negamax::EvalMode::NNUE`, `search.hpp`) — não é mais só "treinada mas
+  não plugada". Perspectiva geometricamente canônica (espelho de
+  linha/coluna pra jogador 1, ver Prioridade 1) — posições simétricas dão
+  eval idêntica pras duas perspectivas.
   - **NNUE é o default de avaliação em `selfplay` e `arena`** (tenta
     `data/nnue/nnue_weights_int8.bin` automaticamente; cai para
     `evalSimple` com aviso se o arquivo não existir; `--heuristic` força o
     modo antigo). **Ainda NÃO é o default no build WASM** — ver Prioridade 1
     abaixo, é a lacuna mais visível hoje.
   - Acumulador incremental **validado**: `teste/nnue_incremental_check.cpp`
-    compara incremental vs. rebuild-do-zero em milhares de posições reais,
-    0 divergências com os pesos treinados atuais.
-  - **Dois problemas reais encontrados e ainda não corrigidos** — ver
-    Prioridade 1 (são o motivo dela ser #1 agora, à frente de tudo mais):
-    quantidade de muros restantes de cada jogador não é feature de entrada
-    nenhuma, e a codificação de perspectiva não é geometricamente
-    canônica (produz eval diferente pras duas perspectivas até em posições
-    perfeitamente simétricas).
+    compara incremental vs. rebuild-do-zero, 0 divergências, incluindo o
+    bloco novo de muros restantes.
+  - **Pesos treinados precisam ser regerados** — mudança de arquitetura
+    (332→354 features) invalida qualquer `.bin` anterior; carregar um
+    arquivo do formato antigo agora falha alto com mensagem clara (checagem
+    de tamanho adicionada nesta sessão) em vez de crashar ou desalinhar
+    silenciosamente.
 - **Build:** `build_bench.sh/.bat`, `build_selfplay.sh/.bat`,
   `build_tests.sh/.bat` (8 binários, incluindo os dois testes de NNUE
   acima, wireados em 2026-08), `build_arena.sh/.bat` (compila
@@ -61,109 +64,162 @@ primeiro, e o que você pediu explicitamente primeiro).
   quanto uma implementação numpy pura, então não existe mais script
   separado "sem torch"): resume automático por época via
   `data/checkpoints/train_state.pt` (pesos + otimizador + RNGs + histórico
-  - early-stopper), captura de Ctrl+C salvando checkpoint de emergência,
-    early stopping com restauração do melhor epoch, LR/weight-decay
-    schedules com warmup, orçamento de RAM/VRAM calculando batch/chunk size
-    automaticamente. **Atualizado em 2026-08** (ver Prioridade 2: bug de
-    `--fresh` corrigido + checkpoint em JSON adicionado).
+  + early-stopper), captura de Ctrl+C salvando checkpoint de emergência,
+  early stopping com restauração do melhor epoch, LR/weight-decay
+  schedules com warmup, orçamento de RAM/VRAM calculando batch/chunk size
+  automaticamente. **Atualizado em 2026-08** (ver Prioridade 2: bug de
+  `--fresh` corrigido + checkpoint em JSON adicionado).
 
 ---
 
 ## Prioridade 1 — NNUE: feature de muros restantes + correção da assimetria de perspectiva
 
-**Isto é a prioridade #1 agora, à frente de qualquer outra coisa neste
-documento.** Objetivo: ter a NNUE **completamente jogável** (default nos
-três alvos de produção — selfplay, arena e WASM — sem as duas lacunas
-abaixo) antes de seguir pra qualquer item novo.
+**Status: 1a e 1b implementadas e validadas nesta sessão (2026-08).** O que
+falta pra fechar de vez esta prioridade: (i) **retreino de verdade** com
+volume real de self-play (o que valida a arquitetura até aqui foi um
+smoke-test de 2 epochs em ~1.150 posições sintéticas — suficiente pra
+provar que o pipeline inteiro funciona ponta a ponta, não pra jogar bem)
+e (ii) o **default no WASM** (item que continua pendente, não fazia parte
+do escopo desta rodada).
 
-### 1a. Muros restantes (`wallsLeft`) não é feature de entrada nenhuma
+### 1a. Muros restantes (`wallsLeft`) como feature — **[IMPLEMENTADO]**
 
-`grep wallsLeft src/nnue.hpp` não retorna nada — confirmado tanto por
-leitura do código quanto empiricamente com `nnue_sign_check.cpp`: a
-posição inicial e uma posição idêntica exceto por "jogador 0 com 10 muros,
-oponente com 0" dão **exatamente o mesmo eval NNUE**. A rede é cega para
-quem ainda pode bloquear — informação estratégica real que hoje só entra
-no `evalSimple` (heurística), não na rede. Isso é assim desde a versão de
-290 features (documentado na versão antiga deste arquivo) até a atual de
-332 — não é regressão, é lacuna de design nunca fechada.
+`NUM_FEATURES` foi de 332 para **354** (+22 = 2×11 buckets one-hot,
+`wallsLeft` de 0 a `WALLS_PER_PLAYER`=10, por lado). `buildAccumulator`/
+`buildAccumulatorQuant` (float e quantizada) e o incremental
+`updateAccumulatorForMove(Quant)` foram atualizados — colocar um muro
+decrementa o `wallsLeft` de quem jogou, e isso agora dispara um par
+remove/add de feature no acumulador (só do lado de quem jogou; lance de
+peão não mexe nisso). `training/quantize_nnue.py`,
+`training/train_nnue.py` e `training/read_selfplay.py` (que tinha sua
+própria cópia duplicada da lógica de feature, `to_dense_features` — não
+detectada até esta sessão) foram todos atualizados em conjunto.
 
-**Como implementar:**
+**Formato de self-play mudou também:** `TrainingSample::wallsLeftOwn/Opp`
+já existiam desde antes (não precisou mudar o struct), só não eram usados
+como feature — bastou ligar o fio no lado Python.
 
-1. Adicionar um bloco de features para `wallsLeft[own]`/`wallsLeft[opp]` em
-   `nnue.hpp` — mais simples e barato que um valor escalar cru: one-hot por
-   contagem (0..10, 11 buckets cada) ou thermometer encoding (11 features
-   binárias "tenho ≥N muros", mais fácil da rede aprender monotonicidade).
-   `NUM_FEATURES` sobe de 332 para 332+22=354 (thermometer) ou +22 (one-hot,
-   mesmo custo). Atualizar `buildAccumulator`/`buildAccumulatorQuant` (as
-   duas, float e quantizada) e o `updateAccumulatorForMove`/
-   `updateAccumulatorForMoveQuant` incremental — colocar/remover um muro
-   decrementa `wallsLeft` de quem jogou, então isso vira mais um par de
-   add/remove feature no diff incremental de cada lance de muro (lance de
-   peão não mexe nisso).
-2. Atualizar `training/quantize_nnue.py` e `training/train_nnue.py`
-   (`NUM_FEATURES`, extração de feature a partir do `State` gravado pelo
-   selfplay — conferir se `read_selfplay.py`/o formato `.bin` de selfplay
-   já registra `wallsLeft` por posição; se não registrar, é preciso
-   também mexer no formato de gravação do `selfplay.hpp`/`selfplay_main.cpp`
-   antes de re-gerar dados de treino).
-3. **Retreinar do zero** (mudança de `NUM_FEATURES` invalida pesos
-   antigos — não dá pra fazer warm-start de um checkpoint com shape
-   diferente; o próprio `compute_fingerprint`/`try_load_train_state` já
-   detecta isso e recusa o checkpoint incompatível, então o pior caso é só
-   um aviso, não corrupção).
-4. Validar com `nnue_sign_check` (as duas posições de "10 vs 0 muros"
-   devem produzir eval visivelmente diferente agora) e
-   `nnue_incremental_check` (continua em 0 divergências com o novo bloco
-   de features).
+**Validado:** `nnue_incremental_check` continua em 0 divergências com o
+novo bloco de features (4758 posições checadas); `nnue_sign_check` com
+pesos treinados (mesmo que só o smoke-test) já não dá mais eval idêntico
+entre "10 vs 0 muros" e a posição inicial — a rede agora enxerga a
+diferença (ainda não aprendeu o suficiente pra valorizar corretamente,
+questão de volume de treino, não de arquitetura).
 
-### 1b. Eval assimétrica em posições simétricas (bug de perspectiva)
+### 1b. Eval assimétrica em posições simétricas (bug de perspectiva) — **[IMPLEMENTADO]**
 
-`nnue_sign_check.cpp` na posição inicial (perfeitamente simétrica) dá
-`nnue(persp0)=-3` e `nnue(persp1)=70` — deveriam ser iguais (ou os dois
-perto de 0), já que a MESMA situação abstrata "quão bem estou" é simétrica
-para os dois lados. Causa raiz identificada: `featOwnPawn`/`featWallH`/
-`featWallV` usam coordenada **bruta** do tabuleiro — só trocam qual peão é
-"meu" vs. "do oponente" (`s.pawn[me]`/`s.pawn[opp]`), sem espelhar
-linha/coluna pra canonicalizar a perspectiva do jogador 1. Isso obriga a
-rede a aprender duas "geografias" diferentes (uma para ser jogador 0, outra
-para ser jogador 1) usando as mesmas colunas de peso, em vez de ganhar
-invariância de perspectiva de graça pela própria codificação — motivo
-plausível do desvio observado (nunca vai ser exatamente 0 por acaso; sem
-espelhar, só convergiria pra simetria com MUITO mais dados/treino).
+Causa raiz era exatamente a identificada: `featOwnPawn`/`featWallH`/
+`featWallV` usavam coordenada bruta do tabuleiro, sem espelhar
+linha/coluna pra canonicalizar a perspectiva do jogador 1. Corrigido com
+`mirroredPawnCell`/`mirroredWallSlot` (`nnue.hpp`) — espelham a linha
+(`row -> N-1-row` peão / `WS-1-row` muro) quando `perspective==1`, coluna
+nunca muda, perspectiva 0 continua sem transformação (é a canônica).
 
-**Como implementar:** ao computar features pra perspectiva 1, espelhar a
-linha (`row -> N-1-row`) na indexação de célula de peão e de slot de muro
-(H e V) antes de montar o índice de feature — perspectiva 0 continua sem
-transformação (é a canônica). O bucket de distância BFS já está correto
-(usa `shortestPathLen(..., me)`, que já é relativo à identidade do
-jogador, não à coordenada crua). **Fazer isso JUNTO com 1a** (mesma
-mudança de `NUM_FEATURES`/`buildAccumulator*`, mesmo retreino, mesma
-rodada de validação) — não vale a pena treinar duas vezes.
+**Achado durante a implementação, não estava no escopo original:** o
+formato de gravação de self-play (`TrainingSample` em `selfplay.hpp`) não
+guarda a identidade física (0/1) de quem jogou cada lance — só a célula
+crua do peão. Sem isso, seria impossível reconstruir no lado Python se uma
+amostra precisa ser espelhada ou não. Resolvido no mesmo espírito já usado
+pra `ownDist`/`oppDist` (calculado em C++, onde `mover`/`opp` ainda são
+conhecidos com certeza): `selfplay.hpp` agora grava `ownPawn`/`oppPawn`/
+`wallsH`/`wallsV`/`policyTarget` **já espelhados** pra perspectiva
+canônica do mover, usando os mesmos `mirroredPawnCell`/
+`mirrorWallBitboard`/`mirrorMoveForPerspective` de `nnue.hpp`. Efeito
+colateral: **datasets `.bin` de self-play gravados ANTES desta mudança
+ficam com essas 4 colunas em coordenada crua** (mesmo dtype/tamanho de
+arquivo — não dá pra distinguir automaticamente) e precisam ser
+regerados; não misturar com dados novos no mesmo treino.
 
-**Validação:** `nnue_sign_check` na posição inicial deve dar `nnue(persp0) == nnue(persp1)` (ou muito próximo — pequeno resíduo de treino é aceitável,
-73 unidades de diferença como hoje não é).
+**Validado com pesos treinados reais (não só aleatórios):** posição
+inicial simétrica dá `nnue(persp0) == nnue(persp1)` exatamente (testado:
+os dois em `-4`) — antes da correção dava `-3`/`70`.
 
-**Depois de 1a+1b (retreino), fechar a lacuna dos 3 alvos:**
+### Bug relacionado encontrado e corrigido durante a implementação: checagem de arquitetura frágil ao carregar pesos
 
-- **WASM ainda não usa NNUE por padrão** — `qr_new_game()` em
-  `engine_wasm.cpp` nunca tenta carregar pesos automaticamente, e
-  `gui_web/app.js` nunca chama `qr_load_nnue_weights`/
-  `qr_set_eval_heuristic` (confirmado por grep, zero ocorrências) — os
-  pesos ficam embutidos no bundle (`build_wasm.sh` já faz `--preload-file`
-  se `data/nnue/nnue_weights_int8.bin` existir) mas nunca são carregados.
-  Implementar um `autoLoadDefaultNnueOnce()` chamado no primeiro
-  `qr_new_game()` (mesmo padrão já usado em `selfplay_main.cpp`/
-  `arena.cpp`: tenta, cai pra heurístico com silêncio/log se não achar),
-  ou no mínimo uma chamada em `app.js` no boot da página.
+Nem `quantize_nnue.py` nem `NNUEWeightsQuant::loadFromFile` (`nnue.hpp`)
+validavam o TAMANHO REAL do arquivo contra a arquitetura esperada —
+`quantize_nnue.py` tinha seu próprio `NUM_FEATURES` duplicado e
+desatualizado com uma checagem tautológica (comparava a contagem de
+floats lida contra a mesma constante usada pra ler — nunca detectava
+desalinhamento real); `loadFromFile` só confiava em `fread` falhar por
+EOF no meio do caminho, o que por coincidência funcionou pra pegar um
+arquivo do layout antigo (332 features) mas não é uma garantia estrutural
+(se os tamanhos totais dos dois formatos ficassem parecidos o bastante,
+um arquivo errado poderia "carregar" com sucesso e só desalinhar os
+campos, silenciosamente). Os dois agora fazem uma checagem explícita de
+bytes-no-disco vs. bytes-esperados-pela-arquitetura ANTES de ler, com
+mensagem de erro clara em vez de falha silenciosa ou desalinhamento.
 
-**Risco:** médio — mudança de arquitetura (NUM_FEATURES) exige retreino
-completo, não é hot-fix; mas a mudança em si (mais features + espelho de
-coordenada) é mecânica e bem isolada, com os dois testes de NNUE já
-existentes cobrindo regressão.
+**Pendências reais desta prioridade (o que ainda falta):**
+1. **Retreino de verdade** — gerar volume real de self-play (milhares de
+   partidas, não as ~20 do smoke-test) com o `selfplay.hpp` atualizado, e
+   rodar `train_nnue.py` por epochs suficientes (early-stopping já cuida
+   de parar na hora certa). Pesos antigos (formato 332-feature) são
+   **incompatíveis** — não dá pra fazer warm-start via `--init-from`
+   (`try_load_train_state`/o novo checa de tamanho recusa e avisa, não
+   corrompe).
+2. **WASM ainda não usa NNUE por padrão** — `qr_new_game()` em
+   `engine_wasm.cpp` nunca tenta carregar pesos automaticamente, e
+   `gui_web/app.js` nunca chama `qr_load_nnue_weights`/
+   `qr_set_eval_heuristic` (confirmado por grep, zero ocorrências) — os
+   pesos ficam embutidos no bundle (`build_wasm.sh` já faz `--preload-file`
+   se `data/nnue/nnue_weights_int8.bin` existir) mas nunca são carregados.
+   Implementar um `autoLoadDefaultNnueOnce()` chamado no primeiro
+   `qr_new_game()` (mesmo padrão já usado em `selfplay_main.cpp`/
+   `arena.cpp`: tenta, cai pra heurístico com silêncio/log se não achar),
+   ou no mínimo uma chamada em `app.js` no boot da página.
+
+**Risco:** baixo pro que falta — a parte de arquitetura (a parte
+realmente arriscada, por mudar `NUM_FEATURES`) já está feita e validada;
+retreino é só tempo de máquina, WASM é mecânico (mesmo padrão já usado
+duas vezes em selfplay/arena).
 
 ---
 
-## Prioridade 2 — Protocolo UCI + `.exe` standalone
+## Prioridade 2 — Pipeline de treinamento: checkpoint em JSON + resume + LR — **[IMPLEMENTADO — 2026-08]**
+
+> **Status:** feito e testado ponta a ponta (treino real com dados de
+> self-play, incluindo Ctrl+C e resume) nesta rodada.
+
+**Bug real corrigido:** `--fresh` usava `action="store_true"` com
+`default=True` em `train_nnue.py` — ou seja, `args.fresh` era **sempre
+`True`**, independente de passar a flag ou não (não existia `--no-fresh`
+pra desligar). Isso deixava `try_load_train_state`/o resume automático
+documentado no topo do arquivo como código morto: nunca disparava na
+prática. Corrigido: `FRESH_DEFAULT = False` + par `--fresh`/`--no-fresh`
+(mesmo padrão de `--early-stop`/`--no-early-stop` já usado no arquivo).
+Testado: rodar de novo com o mesmo `--ckpt-dir` agora realmente imprime
+"RETOMANDO treino a partir de .../train_state.pt".
+
+**JSON de pesos + configuração, com opção de reaproveitar ou não:**
+- `train_config.json` gravado a cada epoch (e no handler de Ctrl+C) ao
+  lado de `train_state.pt`, em `<ckpt-dir>/`: JSON legível (sem
+  torch/numpy) com fingerprint da arquitetura, epoch, melhor métrica,
+  caminho absoluto dos pesos (`last.bin`) e todos os hiperparâmetros de
+  otimização/loss/QAT usados naquela rodada (`lr`, schedules, weight
+  decay, early-stop, `qa`/`qb`, etc. — deliberadamente SEM caminhos de
+  I/O como `--data`/`--out`, que são específicos da máquina/rodada, não do
+  "treino" em si).
+- `--resume-config PATH`: aponta pra um `train_config.json` de QUALQUER
+  `--ckpt-dir` (não só o atual) e herda os hiperparâmetros de lá como
+  default desta rodada — qualquer flag explícita nesta chamada continua
+  ganhando prioridade (testado: `--epochs` explícito sobrepõe o herdado).
+  Também usa o `weights_path` do JSON como `--init-from` automático se
+  `--init-from` não foi passado. Diferente do resume via `--ckpt-dir`
+  (que também traz otimizador/RNGs/histórico): isto só traz pesos +
+  config, pensado pra começar um CICLO NOVO (ex.: bootstrap em cima de
+  self-play novo) com os mesmos hiperparâmetros de uma rodada anterior,
+  sem redigitar cada flag.
+- **Opção de usar checkpoint anterior ou não:** `--fresh`/`--no-fresh`
+  controla os dois (train_state.pt E train_config.json/auto-detect)
+  igualmente — `--fresh` ignora ambos e começa do zero.
+- **Learning rate inicial:** já existia (`--lr`, default `LR_DEFAULT`) e
+  continua funcionando — testado e confirmado que o valor passado é
+  aplicado e gravado no JSON corretamente.
+
+---
+
+## Prioridade 3 — Protocolo UCI + `.exe` standalone
 
 **O que é.** Um front-end de protocolo (UCI — Universal Chess Interface,
 adaptado pra Quoridor, ou um protocolo próprio texto simples equivalente)
@@ -181,7 +237,6 @@ padrão do xadrez adaptadas (várias delas já falam UCI/protocolos
 similares).
 
 **Como implementar em `zquoridor` (esboço, detalhar quando for a vez):**
-
 1. Novo `src/uci_main.cpp` (ou `teste/uci.cpp` inicialmente, promovido pra
    `src/` quando estabilizar): loop de leitura de linha por stdin,
    comandos mínimos primeiro (`position`, `go`, `stop`, `quit`, `isready`,
@@ -204,12 +259,11 @@ notação de posição/lance antes de comprometer com um formato.
 
 ---
 
-## Backlog (pendente, prioridade menor que 1–2 acima)
+## Backlog (pendente, prioridade menor que 1–3 acima)
 
 Itens abaixo continuam válidos mas ficam depois de NNUE completa + treino
-
-- UCI na ordem de trabalho. Descrição condensada — histórico completo
-  (alternativas, números) no git.
++ UCI na ordem de trabalho. Descrição condensada — histórico completo
+(alternativas, números) no git.
 
 - **Continuation/countermove/correction history** (extensão de killers +
   history já implementados) — retorno alto, risco baixo/médio, usa
@@ -233,6 +287,9 @@ Itens abaixo continuam válidos mas ficam depois de NNUE completa + treino
 - **Gerência de tempo dedicada** (`timeman.hpp` — alocação por lance
   baseada em tempo restante/incremento/estabilidade do bestmove, não só
   profundidade/deadline fixos) — baixo risco, não toca busca nem regras.
+- **Infra de teste estatístico (SPRT) motor-vs-motor** — complementa os
+  gates de perft (que validam corretude, não força de jogo); script local
+  rodando N partidas com SPRT pra aceitar/rejeitar mudanças por Elo.
 - **Revisão de Zobrist/Undo enxuto** — **recomendação é NÃO fazer**: o
   `zquoridor` copia `State` (não faz make/unmake in-place), então isso só
   se aplicaria com evidência de profiling mostrando que a cópia é gargalo
@@ -276,15 +333,17 @@ fato na busca com default automático em selfplay/arena, `build_arena.sh`/
 ## Resumo de prioridade (visão rápida)
 
 | # | Item | Retorno esperado | Risco | Status |
-| -- | --------------------------------------------------------------------------------------------- | --------------------- | ----------------- | ----------------------------------- |
-| 1 | NNUE: feature de muros restantes + correção de perspectiva + default WASM | **Alto** | Médio (retreino) | **pendente — prioridade #1** |
-| 2 | Protocolo UCI +`.exe` standalone | Alto (acessibilidade) | Baixo/médio | pendente |
+|---|------|-------------------|-------|--------|
+| 1 | NNUE: feature de muros restantes + correção de perspectiva | **Alto** | Médio (retreino) | ✅ arquitetura implementada (2026-08) — falta retreino real + default WASM |
+| 2 | Treino: checkpoint JSON + resume + LR | Médio (infra) | Baixo | ✅ implementado (2026-08) |
+| 3 | Protocolo UCI + `.exe` standalone | Alto (acessibilidade) | Baixo/médio | pendente |
 | — | Continuation/countermove/correction history | Alto | Baixo/médio | backlog |
 | — | LUT O(1) de peão | Baixo-médio | Baixo | backlog (medir antes) |
 | — | Certificado de vitória | Médio | Médio-alto | backlog |
 | — | Livro de abertura | Médio | Baixo | backlog |
 | — | Lazy SMP | Alto (throughput) | Médio-alto | backlog |
 | — | Gerência de tempo dedicada | Médio | Baixo | backlog |
+| — | Infra SPRT | Metodológico | Nenhum | backlog |
 | — | Zobrist/Undo enxuto | N/A | N/A | **não fazer sem medir** |
 | — | Pondering | Baixo | Baixo | backlog |
 | — | Internal Iterative Reduction (IIR) | Médio | Baixo | backlog |

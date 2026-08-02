@@ -41,28 +41,115 @@ inline int distBucket(int dist) {
     return dist >= DIST_BUCKETS ? DIST_BUCKETS - 1 : dist;
 }
 
+// WALLS_LEFT_BUCKETS: muros restantes de cada jogador (0..WALLS_PER_PLAYER,
+// one-hot -- mesma família de codificação de DIST_BUCKETS acima, mesmo
+// motivo: mantém tudo na família sparse-linear/soma-de-linhas-de-w1 usada
+// pro resto do acumulador). ANTES desta sessão (2026-08), wallsLeft NÃO
+// era feature nenhuma -- confirmado por teste (nnue_sign_check.cpp): duas
+// posições idênticas em peões/muros no tabuleiro, diferindo só em
+// "jogador 0 com 10 muros vs. jogador 1 com 0", davam eval NNUE
+// *idêntico*, porque a rede simplesmente não via essa informação (só
+// entrava em evalSimple, a heurística). Rules.hpp já grava
+// State::wallsLeft[2] com WALLS_PER_PLAYER=10 de default, e o formato de
+// self-play (read_selfplay.py: walls_left_own/walls_left_opp) já registra
+// isso por posição -- só faltava usar. WALLS_LEFT_BUCKETS = 11 (0..10,
+// sem "ou mais" como em DIST_BUCKETS -- a contagem real nunca passa de
+// WALLS_PER_PLAYER, não precisa de bucket de saturação).
+constexpr int WALLS_LEFT_BUCKETS = WALLS_PER_PLAYER + 1;   // 11
+inline int wallsLeftBucket(int n) {
+    if (n < 0) return 0;                              // defensivo
+    return n >= WALLS_LEFT_BUCKETS ? WALLS_LEFT_BUCKETS - 1 : n;
+}
+
 // NUM_FEATURES = 81 (peão próprio) + 81 (peão oponente) + 64 (muro H) +
-// 64 (muro V) + 21 (bucket dist. própria) + 21 (bucket dist. oponente)
-// = 332. Crescimento de tamanho sobre os 290 originais: w1 ganha
-// 42*HIDDEN pesos a mais (42*256 = 10.752 floats ~= 42 KB em float32,
-// ~21 KB já quantizado em int16) -- desprezível frente aos ~290*256
-// já existentes, exatamente o "não deixar pesada" pedido: a rede cresce
-// ~14% em w1 e 0% nas cabeças (value/policy continuam HIDDEN->*, alheias
-// a quantas features alimentam o acumulador).
-constexpr int NUM_FEATURES = N * N + N * N + WS * WS * 2 + 2 * DIST_BUCKETS;  // 332
+// 64 (muro V) + 21 (bucket dist. própria) + 21 (bucket dist. oponente) +
+// 11 (bucket muros restantes próprios) + 11 (bucket muros restantes do
+// oponente) = 354. Mudança de arquitetura (2026-08): pesos treinados para
+// NUM_FEATURES=332 são INCOMPATÍVEIS com esta versão -- não dá pra fazer
+// warm-start via --init-from de um checkpoint antigo (o fingerprint em
+// compute_fingerprint()/try_load_train_state() já detecta e recusa isso).
+// É preciso retreinar do zero com training/train_nnue.py atualizado.
+constexpr int NUM_FEATURES = N * N + N * N + WS * WS * 2 + 2 * DIST_BUCKETS + 2 * WALLS_LEFT_BUCKETS;  // 354
 constexpr int HIDDEN = 256;
 constexpr int POLICY_OUT = N * N + WS * WS * 2;             // 81 destino peão + 128 muro = 209
 
+// Espelha a coordenada bruta do tabuleiro para a perspectiva do jogador 1
+// (CORREÇÃO 2026-08 -- bug de assimetria de perspectiva encontrado via
+// nnue_sign_check.cpp: a posição inicial, perfeitamente simétrica, dava
+// eval NNUE diferente pras duas perspectivas, porque featOwnPawn/
+// featWallH/featWallV usavam coordenada CRUA do tabuleiro, só trocando
+// qual peão é "meu" -- sem espelhar linha/coluna. Como o jogador 0 nasce
+// na linha 0 e vai pra linha N-1 (GOAL_ROW em rules.hpp) e o jogador 1 é o
+// espelho disso (nasce em N-1, vai pra 0), canonicalizar exige espelhar a
+// LINHA (r -> N-1-r pra peão / WS-1-r pra muro) quando a perspectiva é do
+// jogador 1 -- a coluna não muda, o tabuleiro não tem assimetria nesse
+// eixo. Perspectiva 0 continua sem transformação nenhuma (é a canônica);
+// SEM isso, a rede precisava aprender duas "geografias" diferentes
+// usando as mesmas colunas de peso, uma pra cada perspectiva.
+inline int mirroredPawnCell(int cell, int perspective) {
+    if (perspective == 0) return cell;
+    return cellIdx(N - 1 - rowOf(cell), colOf(cell));
+}
+inline int mirroredWallSlot(int slot, int perspective) {
+    if (perspective == 0) return slot;
+    int r = slot / WS, c = slot % WS;
+    return (WS - 1 - r) * WS + c;
+}
+
+// Espelha um bitboard de muro inteiro (todos os 64 bits) -- usado por
+// selfplay.hpp pra gravar TrainingSample::wallsH/wallsV JÁ canônicos
+// (mesma perspectiva do mover), em vez de crus. Motivo de gravar já
+// espelhado em vez de espelhar depois em Python: o formato binário de
+// self-play NÃO registra a identidade física (0/1) de quem jogou --
+// só existe aqui, em selfplay.hpp, no momento da gravação (mesmo
+// raciocínio já usado pra TrainingSample::ownDist/oppDist, ver comentário
+// lá). Sem isso, seria impossível reconstruir no lado Python se uma
+// amostra precisa ser espelhada ou não.
+inline uint64_t mirrorWallBitboard(uint64_t bits, int perspective) {
+    if (perspective == 0) return bits;
+    uint64_t out = 0;
+    for (int i = 0; i < WS * WS; i++) {
+        if ((bits >> i) & 1ull) out |= (1ull << mirroredWallSlot(i, perspective));
+    }
+    return out;
+}
+
+// Espelha um Move inteiro (mesma perspectiva) -- usado por selfplay.hpp
+// pra gravar TrainingSample::policyTarget já no mesmo referencial
+// canônico de ownPawn/oppPawn/wallsH/wallsV, senão o alvo de policy
+// ficaria dessincronizado da entrada (rótulo em coordenada crua, feature
+// em coordenada espelhada) pra metade das amostras (as gravadas com
+// mover=jogador 1). A orientação do muro (H/V) não muda no espelho --
+// só a linha, nunca a coluna nem a orientação.
+inline Move mirrorMoveForPerspective(const Move& m, int perspective) {
+    if (perspective == 0) return m;
+    if (!m.isWall) return Move::pawn(mirroredPawnCell(m.a, perspective));
+    int mirroredSlot = mirroredWallSlot(slotIdx(m.b, m.c), perspective);
+    return Move::wall(m.a, mirroredSlot / WS, mirroredSlot % WS);
+}
+
 // índices de feature: [0,81) peão próprio, [81,162) peão oponente,
 // [162,226) muro H, [226,290) muro V, [290,311) bucket dist. própria,
-// [311,332) bucket dist. oponente
-inline int featOwnPawn(int cell) { return cell; }
-inline int featOppPawn(int cell) { return N * N + cell; }
-inline int featWallH(int slot) { return N * N + N * N + slot; }
-inline int featWallV(int slot) { return N * N + N * N + WS * WS + slot; }
+// [311,332) bucket dist. oponente, [332,343) bucket muros restantes
+// próprios, [343,354) bucket muros restantes do oponente.
+//
+// featOwnPawn/featOppPawn/featWallH/featWallV agora recebem `perspective`
+// (0 ou 1, mesmo valor passado a buildAccumulator/buildAccumulatorQuant)
+// e aplicam o espelho acima -- todo call site precisa passar a
+// perspectiva correta (ver updateAccumulatorForMove(Quant): a perspectiva
+// de um Accumulator não muda durante sua vida, então "viewerPlayer",
+// calculado uma vez por lance a partir de viewerIsMover/mover, É a
+// perspectiva).
+inline int featOwnPawn(int cell, int perspective) { return mirroredPawnCell(cell, perspective); }
+inline int featOppPawn(int cell, int perspective) { return N * N + mirroredPawnCell(cell, perspective); }
+inline int featWallH(int slot, int perspective) { return N * N + N * N + mirroredWallSlot(slot, perspective); }
+inline int featWallV(int slot, int perspective) { return N * N + N * N + WS * WS + mirroredWallSlot(slot, perspective); }
 constexpr int DIST_FEAT_BASE = N * N + N * N + WS * WS * 2;              // 290
 inline int featOwnDist(int bucket) { return DIST_FEAT_BASE + bucket; }
 inline int featOppDist(int bucket) { return DIST_FEAT_BASE + DIST_BUCKETS + bucket; }
+constexpr int WALLS_LEFT_FEAT_BASE = DIST_FEAT_BASE + 2 * DIST_BUCKETS;  // 332
+inline int featOwnWallsLeft(int bucket) { return WALLS_LEFT_FEAT_BASE + bucket; }
+inline int featOppWallsLeft(int bucket) { return WALLS_LEFT_FEAT_BASE + WALLS_LEFT_BUCKETS + bucket; }
 
 // Duas cabeças de "valor" (mudança desta sessão, ver plano_quoridor.md):
 // antes havia uma única saída escalar alimentando duas losses ao mesmo
@@ -196,6 +283,8 @@ struct Accumulator {
     // ver benchAccumulatorUpdate em main.cpp.
     int ownDistBucket = 0;
     int oppDistBucket = 0;
+    int ownWallsLeftBucket = 0;   // cache do bucket de muros restantes ativo -- mesmo padrão de ownDistBucket
+    int oppWallsLeftBucket = 0;
 
     void addFeature(int featIdx) {
         auto& row = weights().w1[featIdx];
@@ -212,11 +301,11 @@ inline Accumulator buildAccumulator(const State& s, int perspective) {
     Accumulator acc;
     acc.v = weights().b1;
     int me = perspective, opp = 1 - perspective;
-    acc.addFeature(featOwnPawn(s.pawn[me]));
-    acc.addFeature(featOppPawn(s.pawn[opp]));
+    acc.addFeature(featOwnPawn(s.pawn[me], perspective));
+    acc.addFeature(featOppPawn(s.pawn[opp], perspective));
     for (int i = 0; i < WS * WS; i++) {
-        if ((s.wallsH >> i) & 1ull) acc.addFeature(featWallH(i));
-        if ((s.wallsV >> i) & 1ull) acc.addFeature(featWallV(i));
+        if ((s.wallsH >> i) & 1ull) acc.addFeature(featWallH(i, perspective));
+        if ((s.wallsV >> i) & 1ull) acc.addFeature(featWallV(i, perspective));
     }
     // features de distância BFS (ver nota em DIST_BUCKETS acima): 2 BFS,
     // O(81) cada, sem alocação (shortestPathLen usa arrays thread_local
@@ -226,6 +315,11 @@ inline Accumulator buildAccumulator(const State& s, int perspective) {
     acc.oppDistBucket = distBucket(shortestPathLen(s.wallsH, s.wallsV, s.pawn[opp], opp));
     acc.addFeature(featOwnDist(acc.ownDistBucket));
     acc.addFeature(featOppDist(acc.oppDistBucket));
+    // muros restantes (feature nova, 2026-08 -- ver nota em WALLS_LEFT_BUCKETS acima)
+    acc.ownWallsLeftBucket = wallsLeftBucket(s.wallsLeft[me]);
+    acc.oppWallsLeftBucket = wallsLeftBucket(s.wallsLeft[opp]);
+    acc.addFeature(featOwnWallsLeft(acc.ownWallsLeftBucket));
+    acc.addFeature(featOppWallsLeft(acc.oppWallsLeftBucket));
     return acc;
 }
 
@@ -333,9 +427,10 @@ inline void updateAccumulatorForMove(Accumulator& acc, bool viewerIsMover, const
         int destCell = m.a;
         int moverCell = before.pawn[mover];
         int newBucket = distBucket(shortestPathLen(after.wallsH, after.wallsV, destCell, mover));
+        int viewerPlayer = viewerIsMover ? mover : opp;
         if (viewerIsMover) {
-            acc.removeFeature(featOwnPawn(moverCell));
-            acc.addFeature(featOwnPawn(destCell));
+            acc.removeFeature(featOwnPawn(moverCell, viewerPlayer));
+            acc.addFeature(featOwnPawn(destCell, viewerPlayer));
             if (acc.ownDistBucket != newBucket) {
                 acc.removeFeature(featOwnDist(acc.ownDistBucket));
                 acc.addFeature(featOwnDist(newBucket));
@@ -343,20 +438,21 @@ inline void updateAccumulatorForMove(Accumulator& acc, bool viewerIsMover, const
             }
             // acc.oppDistBucket não muda: lance de peão não altera muro nenhum.
         } else {
-            acc.removeFeature(featOppPawn(moverCell));
-            acc.addFeature(featOppPawn(destCell));
+            acc.removeFeature(featOppPawn(moverCell, viewerPlayer));
+            acc.addFeature(featOppPawn(destCell, viewerPlayer));
             if (acc.oppDistBucket != newBucket) {
                 acc.removeFeature(featOppDist(acc.oppDistBucket));
                 acc.addFeature(featOppDist(newBucket));
                 acc.oppDistBucket = newBucket;
             }
         }
+        // lance de peão não muda wallsLeft de ninguém -- nada a atualizar aqui.
     } else {
         int slot = slotIdx(m.b, m.c);
-        acc.addFeature(m.a == 0 ? featWallH(slot) : featWallV(slot));
-
         int viewerPlayer = viewerIsMover ? mover : opp;
         int otherPlayer = 1 - viewerPlayer;
+        acc.addFeature(m.a == 0 ? featWallH(slot, viewerPlayer) : featWallV(slot, viewerPlayer));
+
         int newOwn = distBucket(shortestPathLen(after.wallsH, after.wallsV, after.pawn[viewerPlayer], viewerPlayer));
         if (acc.ownDistBucket != newOwn) {
             acc.removeFeature(featOwnDist(acc.ownDistBucket));
@@ -368,6 +464,24 @@ inline void updateAccumulatorForMove(Accumulator& acc, bool viewerIsMover, const
             acc.removeFeature(featOppDist(acc.oppDistBucket));
             acc.addFeature(featOppDist(newOpp));
             acc.oppDistBucket = newOpp;
+        }
+        // muros restantes: SÓ quem jogou o lance perde 1 muro (regra em
+        // rules.hpp: `ns.wallsLeft[player] -= 1`, nunca os dois). `mover`
+        // é sempre quem jogou -- independente de quem seja o viewer.
+        if (mover == viewerPlayer) {
+            int newBucket = wallsLeftBucket(after.wallsLeft[viewerPlayer]);
+            if (acc.ownWallsLeftBucket != newBucket) {
+                acc.removeFeature(featOwnWallsLeft(acc.ownWallsLeftBucket));
+                acc.addFeature(featOwnWallsLeft(newBucket));
+                acc.ownWallsLeftBucket = newBucket;
+            }
+        } else {
+            int newBucket = wallsLeftBucket(after.wallsLeft[mover]);
+            if (acc.oppWallsLeftBucket != newBucket) {
+                acc.removeFeature(featOppWallsLeft(acc.oppWallsLeftBucket));
+                acc.addFeature(featOppWallsLeft(newBucket));
+                acc.oppWallsLeftBucket = newBucket;
+            }
         }
     }
 }
@@ -477,6 +591,43 @@ struct NNUEWeightsQuant {
     bool loadFromFile(const std::string& path) {
         FILE* f = std::fopen(path.c_str(), "rb");
         if (!f) return false;
+
+        // Checagem explícita de tamanho ANTES de ler -- não confiar só no
+        // fread() ir falhando por EOF no meio do caminho pra pegar um
+        // arquivo de arquitetura diferente (ex.: pesos do layout antigo,
+        // NUM_FEATURES=332, contra este binário compilado com
+        // NUM_FEATURES=354, 2026-08). Descoberto porque `fread`-e-deixar-
+        // falhar-no-meio É frágil por coincidência: se o total de bytes
+        // dos dois formatos ficasse parecido o suficiente, um arquivo do
+        // layout errado poderia ler campos inteiros com sucesso e só
+        // desalinhar (sem nunca retornar false) -- mesma classe de bug já
+        // encontrada e corrigida em quantize_nnue.py nesta sessão (lá era
+        // uma checagem tautológica; aqui nem havia checagem de tamanho
+        // nenhuma, só o encadeamento de `ok = ok && fread(...)`).
+        std::fseek(f, 0, SEEK_END);
+        long actualBytes = std::ftell(f);
+        std::fseek(f, 0, SEEK_SET);
+        long expectedBytes =
+            (long)sizeof(int32_t) * 2                                  // QA, QB
+            + (long)NUM_FEATURES * HIDDEN * sizeof(int16_t)            // w1
+            + (long)HIDDEN * sizeof(int16_t)                           // b1
+            + 2 * ((long)HIDDEN * 32 * sizeof(int8_t)                  // wv1_wl/wv1_aux
+                   + 32 * sizeof(int32_t)                              // bv1_wl/bv1_aux
+                   + 32 * sizeof(int8_t)                               // wv2_wl/wv2_aux
+                   + sizeof(int32_t))                                  // bv2_wl/bv2_aux
+            + (long)POLICY_OUT * HIDDEN * sizeof(int8_t)               // wp
+            + (long)POLICY_OUT * sizeof(int32_t);                      // bp
+        if (actualBytes != expectedBytes) {
+            std::fclose(f);
+            std::fprintf(stderr,
+                "[nnue] '%s' tem %ld bytes, esperado %ld para NUM_FEATURES=%d "
+                "(arquivo de arquitetura antiga/diferente? precisa "
+                "retreinar/re-quantizar) -- carregamento recusado.\n",
+                path.c_str(), actualBytes, expectedBytes, NUM_FEATURES);
+            loaded = false;
+            return false;
+        }
+
         bool ok = true;
         ok = ok && std::fread(&QA, sizeof(int32_t), 1, f) == 1;
         ok = ok && std::fread(&QB, sizeof(int32_t), 1, f) == 1;
@@ -534,6 +685,8 @@ struct AccumulatorQuant {
     std::array<int32_t, HIDDEN> v{};
     int ownDistBucket = 0;   // cache do bucket ativo -- mesma razão de ser do campo em Accumulator (float)
     int oppDistBucket = 0;
+    int ownWallsLeftBucket = 0;
+    int oppWallsLeftBucket = 0;
 
     void addFeature(int featIdx) {
         auto& row = weightsQuant().w1[featIdx];
@@ -550,16 +703,20 @@ inline AccumulatorQuant buildAccumulatorQuant(const State& s, int perspective) {
     auto& b1 = weightsQuant().b1;
     for (int i = 0; i < HIDDEN; i++) acc.v[i] = b1[i];
     int me = perspective, opp = 1 - perspective;
-    acc.addFeature(featOwnPawn(s.pawn[me]));
-    acc.addFeature(featOppPawn(s.pawn[opp]));
+    acc.addFeature(featOwnPawn(s.pawn[me], perspective));
+    acc.addFeature(featOppPawn(s.pawn[opp], perspective));
     for (int i = 0; i < WS * WS; i++) {
-        if ((s.wallsH >> i) & 1ull) acc.addFeature(featWallH(i));
-        if ((s.wallsV >> i) & 1ull) acc.addFeature(featWallV(i));
+        if ((s.wallsH >> i) & 1ull) acc.addFeature(featWallH(i, perspective));
+        if ((s.wallsV >> i) & 1ull) acc.addFeature(featWallV(i, perspective));
     }
     acc.ownDistBucket = distBucket(shortestPathLen(s.wallsH, s.wallsV, s.pawn[me], me));
     acc.oppDistBucket = distBucket(shortestPathLen(s.wallsH, s.wallsV, s.pawn[opp], opp));
     acc.addFeature(featOwnDist(acc.ownDistBucket));
     acc.addFeature(featOppDist(acc.oppDistBucket));
+    acc.ownWallsLeftBucket = wallsLeftBucket(s.wallsLeft[me]);
+    acc.oppWallsLeftBucket = wallsLeftBucket(s.wallsLeft[opp]);
+    acc.addFeature(featOwnWallsLeft(acc.ownWallsLeftBucket));
+    acc.addFeature(featOppWallsLeft(acc.oppWallsLeftBucket));
     return acc;
 }
 
@@ -576,29 +733,31 @@ inline void updateAccumulatorForMoveQuant(AccumulatorQuant& acc, bool viewerIsMo
         int destCell = m.a;
         int moverCell = before.pawn[mover];
         int newBucket = distBucket(shortestPathLen(after.wallsH, after.wallsV, destCell, mover));
+        int viewerPlayer = viewerIsMover ? mover : opp;
         if (viewerIsMover) {
-            acc.removeFeature(featOwnPawn(moverCell));
-            acc.addFeature(featOwnPawn(destCell));
+            acc.removeFeature(featOwnPawn(moverCell, viewerPlayer));
+            acc.addFeature(featOwnPawn(destCell, viewerPlayer));
             if (acc.ownDistBucket != newBucket) {
                 acc.removeFeature(featOwnDist(acc.ownDistBucket));
                 acc.addFeature(featOwnDist(newBucket));
                 acc.ownDistBucket = newBucket;
             }
         } else {
-            acc.removeFeature(featOppPawn(moverCell));
-            acc.addFeature(featOppPawn(destCell));
+            acc.removeFeature(featOppPawn(moverCell, viewerPlayer));
+            acc.addFeature(featOppPawn(destCell, viewerPlayer));
             if (acc.oppDistBucket != newBucket) {
                 acc.removeFeature(featOppDist(acc.oppDistBucket));
                 acc.addFeature(featOppDist(newBucket));
                 acc.oppDistBucket = newBucket;
             }
         }
+        // lance de peão não muda wallsLeft de ninguém -- nada a atualizar aqui.
     } else {
         int slot = slotIdx(m.b, m.c);
-        acc.addFeature(m.a == 0 ? featWallH(slot) : featWallV(slot));
-
         int viewerPlayer = viewerIsMover ? mover : opp;
         int otherPlayer = 1 - viewerPlayer;
+        acc.addFeature(m.a == 0 ? featWallH(slot, viewerPlayer) : featWallV(slot, viewerPlayer));
+
         int newOwn = distBucket(shortestPathLen(after.wallsH, after.wallsV, after.pawn[viewerPlayer], viewerPlayer));
         if (acc.ownDistBucket != newOwn) {
             acc.removeFeature(featOwnDist(acc.ownDistBucket));
@@ -610,6 +769,23 @@ inline void updateAccumulatorForMoveQuant(AccumulatorQuant& acc, bool viewerIsMo
             acc.removeFeature(featOppDist(acc.oppDistBucket));
             acc.addFeature(featOppDist(newOpp));
             acc.oppDistBucket = newOpp;
+        }
+        // muros restantes: SÓ quem jogou perde 1 muro -- ver comentário
+        // equivalente em updateAccumulatorForMove (float).
+        if (mover == viewerPlayer) {
+            int newWlBucket = wallsLeftBucket(after.wallsLeft[viewerPlayer]);
+            if (acc.ownWallsLeftBucket != newWlBucket) {
+                acc.removeFeature(featOwnWallsLeft(acc.ownWallsLeftBucket));
+                acc.addFeature(featOwnWallsLeft(newWlBucket));
+                acc.ownWallsLeftBucket = newWlBucket;
+            }
+        } else {
+            int newWlBucket = wallsLeftBucket(after.wallsLeft[mover]);
+            if (acc.oppWallsLeftBucket != newWlBucket) {
+                acc.removeFeature(featOppWallsLeft(acc.oppWallsLeftBucket));
+                acc.addFeature(featOppWallsLeft(newWlBucket));
+                acc.oppWallsLeftBucket = newWlBucket;
+            }
         }
     }
 }

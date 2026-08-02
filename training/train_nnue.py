@@ -3,7 +3,7 @@ train_nnue.py -- treino da NNUE do zquoridor em PyTorch, a partir dos
 dados de self-play gerados pelo harness C++ (selfplay). Espelho exato da
 arquitetura em nnue.hpp:
 
-  acumulador: Linear(332, 256)                    -> w1, b1
+  acumulador: Linear(354, 256)                    -> w1, b1
   ativacao do acumulador: SCReLU  (clip(x,0,1)^2)
   cabeca de RESULTADO (WL, sem empate):
       Linear(256, 32) -> ClippedReLU -> Linear(32, 1)   -> wv1_wl,bv1_wl,wv2_wl,bv2_wl
@@ -213,7 +213,17 @@ PROGRESS_EVERY_SECS_DEFAULT = 5.0
 # =============================================================================
 
 N, WS = 9, 8
-NUM_FEATURES = N * N + N * N + WS * WS * 2 + 2 * DIST_BUCKETS   # 332
+# WALLS_LEFT_BUCKETS: feature nova de 2026-08 -- ver nota completa em
+# WALLS_LEFT_BUCKETS/NUM_FEATURES em nnue.hpp. Muros restantes de cada
+# jogador (0..WALLS_PER_PLAYER=10), one-hot, 11 buckets por lado.
+WALLS_PER_PLAYER = 10   # deve bater com WALLS_PER_PLAYER em rules.hpp
+WALLS_LEFT_BUCKETS = WALLS_PER_PLAYER + 1  # 11
+# CUIDADO: NUM_FEATURES está duplicado em TRÊS lugares (nnue.hpp,
+# quantize_nnue.py, aqui) -- não existe hoje uma fonte única compartilhada
+# entre C++ e os dois scripts Python. Mudar a arquitetura exige atualizar
+# os três em conjunto -- ver a mesma nota (com o incidente real que isso
+# já causou) em quantize_nnue.py.
+NUM_FEATURES = N * N + N * N + WS * WS * 2 + 2 * DIST_BUCKETS + 2 * WALLS_LEFT_BUCKETS  # 354
 HIDDEN = 256
 POLICY_OUT = N * N + WS * WS * 2                                # 209
 VALUE_SCALE = 200.0
@@ -283,7 +293,17 @@ def to_chunk_tensors(chunk: np.ndarray, device):
     tensores densos e transfere tudo para `device` de uma vez so. Chamar
     isso uma vez por bloco grande (em vez de uma vez por batch) e o que
     permite ao `iter_gpu_batches` amortizar o custo de transferencia
-    host->device entre varios batches."""
+    host->device entre varios batches.
+
+    NOTA (2026-08): own_pawn/opp_pawn/walls_h/walls_v em `chunk` já vêm
+    ESPELHADOS pra perspectiva canônica do mover (mirroredPawnCell/
+    mirrorWallBitboard em selfplay.hpp, no momento da gravação) -- não é
+    preciso (nem seria possível: o formato não registra a identidade
+    física 0/1 do mover) espelhar de novo aqui. Datasets .bin gravados
+    ANTES desta mudança de arquitetura têm essas 4 colunas em coordenada
+    CRUA (sem espelho) -- misturar com dados novos é silencioso (mesmo
+    dtype/tamanho de arquivo) e corrompe o treino sem erro nenhum; regere
+    o dataset de self-play inteiro ao adotar esta versão."""
     n = len(chunk)
     x = np.zeros((n, NUM_FEATURES), dtype=np.float32)
     x[np.arange(n), chunk["own_pawn"]] = 1.0
@@ -298,6 +318,15 @@ def to_chunk_tensors(chunk: np.ndarray, device):
     opp_bucket = np.minimum(chunk["opp_dist"].astype(np.int64), DIST_BUCKETS - 1)
     x[np.arange(n), 290 + own_bucket] = 1.0
     x[np.arange(n), 290 + DIST_BUCKETS + opp_bucket] = 1.0
+    # muros restantes (feature nova, 2026-08 -- ver WALLS_LEFT_BUCKETS
+    # acima e a nota equivalente em nnue.hpp). walls_left_own/opp já
+    # existiam no formato (read_selfplay.py) desde antes desta mudança --
+    # só não eram usados como feature de entrada nenhuma.
+    wl_base = 290 + 2 * DIST_BUCKETS  # 332
+    own_wl_bucket = np.clip(chunk["walls_left_own"].astype(np.int64), 0, WALLS_LEFT_BUCKETS - 1)
+    opp_wl_bucket = np.clip(chunk["walls_left_opp"].astype(np.int64), 0, WALLS_LEFT_BUCKETS - 1)
+    x[np.arange(n), wl_base + own_wl_bucket] = 1.0
+    x[np.arange(n), wl_base + WALLS_LEFT_BUCKETS + opp_wl_bucket] = 1.0
 
     return {
         "x": torch.from_numpy(x).to(device, non_blocking=True),
