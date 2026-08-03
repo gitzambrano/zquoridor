@@ -2,7 +2,7 @@
 read_selfplay.py -- leitura do dataset binario de self-play gerado por
 `selfplay` (harness C++, ver selfplay.hpp).
 
-O arquivo e um array cru de structs `TrainingSample` (packed, 27 bytes por
+O arquivo e um array cru de structs `TrainingSample` (packed, 32 bytes por
 posicao). `load_selfplay` abre um unico arquivo via memmap (zero-copy).
 `load_multi_selfplay`/`MultiFileSelfPlay` fazem o mesmo para varios
 arquivos ao mesmo tempo SEM concatenar em RAM: cada shard continua
@@ -19,31 +19,41 @@ import os
 import sys
 import numpy as np
 
-# Layout deve casar byte a byte com TrainingSample em selfplay.hpp.
+# Layout deve casar byte a byte com TrainingSample em selfplay.hpp (e com
+# a copia duplicada em teste/arena.cpp -- ver nota lá sobre --bin-file).
 # '<' = little-endian, sem padding.
 #
 # ATENÇÃO (mudança 2026-08): own_pawn/opp_pawn/walls_h/walls_v abaixo são
 # gravados por selfplay.hpp JÁ ESPELHADOS pra perspectiva canônica do
 # mover (mirroredPawnCell/mirrorWallBitboard, nnue.hpp) -- não são mais
-# coordenada crua do tabuleiro. O layout de bytes NÃO mudou (mesmo dtype,
-# mesmo tamanho de arquivo), só o SIGNIFICADO desses 4 campos -- não há
-# como distinguir um dataset antigo (coordenada crua) de um novo
-# (espelhado) só olhando o arquivo. Não misturar .bin gravados antes e
-# depois desta mudança no mesmo treino.
+# coordenada crua do tabuleiro. Datasets .bin gravados ANTES desta
+# mudança tem 27 bytes/amostra (sem mover/own_cat_total/opp_cat_total, e
+# as 4 colunas acima em coordenada CRUA, sem espelho) -- NÃO são
+# compatíveis com este dtype (tamanho errado, np.fromfile falha alto em
+# vez de desalinhar silenciosamente, mas ainda assim: não misturar .bin
+# antigos e novos no mesmo treino).
 SAMPLE_DTYPE = np.dtype([
-    ("own_pawn",       "<u1"),   # 0..80
-    ("opp_pawn",       "<u1"),   # 0..80
-    ("walls_h",        "<u8"),   # bitboard 64 bits
-    ("walls_v",        "<u8"),   # bitboard 64 bits
+    ("own_pawn",       "<u1"),   # 0..80, já espelhado
+    ("opp_pawn",       "<u1"),   # 0..80, já espelhado
+    ("walls_h",        "<u8"),   # bitboard 64 bits, já espelhado
+    ("walls_v",        "<u8"),   # bitboard 64 bits, já espelhado
     ("walls_left_own", "<i1"),
     ("walls_left_opp", "<i1"),
     ("search_score",   "<i2"),   # evalSimple no momento do lance
     ("game_result",    "<i1"),   # +1 vitoria do mover / -1 derrota
-    ("policy_target",  "<u2"),   # 0..208: indice do lance jogado
+    ("policy_target",  "<u2"),   # 0..208: indice do lance jogado, já espelhado
     ("own_dist",       "<u1"),   # distancia BFS (shortestPathLen) ate a meta
     ("opp_dist",       "<u1"),
+    # Campos novos (2026-08, mesma leva de mudança de formato):
+    ("mover",          "<u1"),   # 0/1 -- identidade FÍSICA de quem jogou (não confundir com
+                                  # own/opp, que são sempre relativos ao mover). Não é feature de
+                                  # entrada da NNUE -- serve pra reconstruir o tabuleiro real fora
+                                  # do referencial espelhado (debug/visualização/ferramentas externas).
+    ("own_cat_total",  "<i2"),   # soma do calor de corredor (cat.hpp) do mover sobre as 81 casas --
+    ("opp_cat_total",  "<i2"),   # candidato a feature futura, NÃO usado em to_dense_features/
+                                  # to_chunk_tensors ainda (ver plano-additional.md).
 ])
-assert SAMPLE_DTYPE.itemsize == 27
+assert SAMPLE_DTYPE.itemsize == 32
 
 # Bucket one-hot da distancia BFS -- mesma constante/semantica de
 # DIST_BUCKETS em nnue.hpp: 0..19 exato, 20 = "20 ou mais".

@@ -23,7 +23,7 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 #     GIT_REF2 = "HEAD~3"      -> 3 commits atrás
 #     GIT_REF2 = "minha-branch"-> Outra branch
 GIT_REF1 = None               # None = versão local não comitada (ou passe string de ref git)
-GIT_REF2 = "main"             # Ref Git base para o confronto (ex: 'main', 'v1.0', 'HEAD')
+GIT_REF2 = None             # Ref Git base para o confronto (ex: 'main', 'v1.0', 'HEAD')
 
 INVERT_COLORS = True          # Se True, joga cada abertura 2x invertendo as cores (par). Se False, joga apenas 1x por abertura.
 CREATE_BIN = True            # Se True, salva os dados das partidas em data/arena/ no formato .bin de treino
@@ -35,6 +35,18 @@ RANDOM_OPENING_PLIES = 4      # Quantidade de lances aleatórios na abertura
 SEED = 53                     # Semente aleatória
 COMPILER = "g++"              # Compilador C++
 CXX_FLAGS = "-O3 -std=c++17"  # Flags de compilação
+
+# --- Avaliação de folha (NNUE vs. heurística) ---
+# NNUE é o default de avaliação em arena.exe (tenta carregar
+# data/nnue/nnue_weights_int8.bin automaticamente; cai para evalSimple
+# com aviso se o arquivo não existir). As DUAS constantes abaixo são
+# SEPARADAS por engine -- permite configurar heurística vs. NNUE no mesmo
+# confronto só editando aqui, sem precisar de flag nenhuma (ex.:
+# E1_HEURISTIC=True, E2_HEURISTIC=False roda Engine 1 heurística contra
+# Engine 2 NNUE). --e1-heuristic/--e2-heuristic/--heuristic na linha de
+# comando sobrepõem isto por execução, sem precisar editar o arquivo.
+E1_HEURISTIC = False
+E2_HEURISTIC = True
 # ==============================================================================
 
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
@@ -187,7 +199,7 @@ def cleanup_worktree(temp_dir):
 
 import multiprocessing
 
-def worker_process(exe_path, worker_games, time_ms, random_plies, seed, report_games, bin_path, invert_colors, progress_queue, e1_nnue="", e2_nnue="", heuristic=False):
+def worker_process(exe_path, worker_games, time_ms, random_plies, seed, report_games, bin_path, invert_colors, progress_queue, e1_nnue="", e2_nnue="", heuristic=False, e1_heuristic=False, e2_heuristic=False):
     cmd = [
         exe_path,
         "--games", str(worker_games),
@@ -207,6 +219,10 @@ def worker_process(exe_path, worker_games, time_ms, random_plies, seed, report_g
         cmd.extend(["--e2-nnue", e2_nnue])
     if heuristic:
         cmd.append("--heuristic")
+    if e1_heuristic:
+        cmd.append("--e1-heuristic")
+    if e2_heuristic:
+        cmd.append("--e2-heuristic")
 
     # cwd=PROJECT_ROOT: arena.exe agora tenta carregar o caminho default de
     # pesos NNUE (data/nnue/nnue_weights_int8.bin, RELATIVO) quando
@@ -258,6 +274,10 @@ def main():
     parser.add_argument("--e1-nnue", default="", help="Caminho para pesos NNUE quantizados (.qbin) do Engine 1 (default: data/nnue/nnue_weights_int8.bin, se existir)")
     parser.add_argument("--e2-nnue", default="", help="Caminho para pesos NNUE quantizados (.qbin) do Engine 2 (default: data/nnue/nnue_weights_int8.bin, se existir)")
     parser.add_argument("--heuristic", action="store_true", default=False, help="Forca avaliacao heuristica (evalSimple) nas duas engines, ignorando NNUE -- debug/historico/fallback")
+    parser.add_argument("--e1-heuristic", dest="e1_heuristic", action="store_true", default=E1_HEURISTIC, help=f"Forca heuristica so no Engine 1 (padrao: {E1_HEURISTIC})")
+    parser.add_argument("--e1-nnue-default", dest="e1_heuristic", action="store_false", help="Sobrepoe E1_HEURISTIC=True do arquivo, forcando NNUE default no Engine 1 sem editar/recompilar")
+    parser.add_argument("--e2-heuristic", dest="e2_heuristic", action="store_true", default=E2_HEURISTIC, help=f"Forca heuristica so no Engine 2 (padrao: {E2_HEURISTIC})")
+    parser.add_argument("--e2-nnue-default", dest="e2_heuristic", action="store_false", help="Sobrepoe E2_HEURISTIC=True do arquivo, forcando NNUE default no Engine 2 sem editar/recompilar")
     
     args = parser.parse_args()
     
@@ -316,7 +336,7 @@ def main():
     for worker_games, worker_seed, worker_bin in tasks:
         p = multiprocessing.Process(
             target=worker_process,
-            args=(cand_exe, worker_games, args.time, args.random_plies, worker_seed, worker_report, worker_bin, args.invert_colors, queue, args.e1_nnue, args.e2_nnue, args.heuristic)
+            args=(cand_exe, worker_games, args.time, args.random_plies, worker_seed, worker_report, worker_bin, args.invert_colors, queue, args.e1_nnue, args.e2_nnue, args.heuristic, args.e1_heuristic, args.e2_heuristic)
         )
         p.start()
         processes.append(p)

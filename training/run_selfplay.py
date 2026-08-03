@@ -13,13 +13,14 @@ selfplay_000.bin, selfplay_001.bin, etc. O train_nnue.py aceita passar
 vários arquivos de uma vez com --data.
 
 SIZING GUIDE (hardware: 32 GB RAM, 6 GB VRAM):
-  - TrainingSample = 27 bytes; partida media ~120 posicoes -> ~3.2 KB/partida
-  - CHUNK_GAMES = 2000 -> arquivo de ~6.5 MB (carrega inteiro em RAM sem stress)
-  - TOTAL_GAMES = 20000 -> 10 chunks, ~65 MB total -> dataset sólido p/ inicio
+  - TrainingSample = 32 bytes; partida media ~120 posicoes -> ~3.8 KB/partida
+  - CHUNK_GAMES = 2000 -> arquivo de ~7.7 MB (carrega inteiro em RAM sem stress)
+  - TOTAL_GAMES = 20000 -> 10 chunks, ~77 MB total -> dataset sólido p/ inicio
   - Para treino com train_nnue.py: o default --ram-budget-gb 32 e
     --vram-budget-gb 6 já usam os 200k-posições de chunk size automaticamente.
 """
 
+import argparse
 import os
 import subprocess
 import sys
@@ -77,12 +78,24 @@ SEED          = 29    # semente base do RNG; chunks subsequentes variam automati
 # Os arquivos ficam em data/selfplay/ relativo à raiz do projeto.
 OUT_TEMPLATE  = "data/selfplay/selfplay_{shard:03d}.bin"
 
-# --- Avaliação de folha (NNUE) ---
-# Caminho para os pesos NNUE quantizados gerados por quantize_nnue.py.
-# Exemplo: "data/nnue/nnue_weights.qbin"
-# Deixe como None ou string vazia para usar avaliacão heurística (evalSimple).
-# PARA REVERTER AO HEURISTICO: defina NNUE_WEIGHTS_PATH = None
-NNUE_WEIGHTS_PATH = None  # ex: "data/nnue/nnue_weights.qbin"
+# --- Avaliação de folha (NNUE vs. heurística) ---
+# NNUE é o default de avaliação deste binário desde 2026-08 (selfplay
+# tenta carregar data/nnue/nnue_weights_int8.bin automaticamente; cai
+# para evalSimple com aviso se o arquivo não existir) -- NAO É MAIS "None
+# = heurístico, caminho = NNUE" como antes. Os dois controles agora são
+# INDEPENDENTES:
+#
+# FORCE_HEURISTIC: o liga/desliga de verdade. True = ignora qualquer NNUE
+#   e usa evalSimple sempre (equivalente a --heuristic na linha de
+#   comando) -- é isto que você muda pra gerar uma bateria de testes
+#   heurística pura. False (default) = tenta NNUE, cai pra heurístico
+#   sozinho se não achar pesos.
+FORCE_HEURISTIC = False
+#
+# NNUE_WEIGHTS_PATH: só use se quiser apontar pra um arquivo de pesos
+# DIFERENTE do default (data/nnue/nnue_weights_int8.bin). Deixe None pra
+# usar o caminho default do binário.
+NNUE_WEIGHTS_PATH = None  # ex: "data/nnue/nnue_weights_experimental.bin"
 
 # =============================================================================
 # INTERNALS -- normalmente não é necessário editar abaixo desta linha
@@ -133,7 +146,41 @@ def next_free_shard(root, template):
         shard += 1
 
 
+def parse_args():
+    """CLI opcional -- toda flag aqui tem a constante correspondente na
+    seção CONFIG acima como default. Rodar `python3 run_selfplay.py` sem
+    argumento nenhum usa 100% das constantes do arquivo; qualquer flag
+    passada aqui sobrepõe só aquela constante para esta execução, sem
+    precisar editar/recompilar nada. Mesmo padrão já usado em
+    selfplay_main.cpp (FORCE_HEURISTIC_DEFAULT/--heuristic/--nnue) e em
+    teste/run_arena.py."""
+    p = argparse.ArgumentParser(description="Orquestrador de self-play (config no topo do arquivo ou via flags)")
+    p.add_argument("--games", type=int, default=TOTAL_GAMES, help=f"partidas totais (padrao: {TOTAL_GAMES})")
+    p.add_argument("--chunk-games", type=int, default=CHUNK_GAMES, help=f"partidas por arquivo .bin (padrao: {CHUNK_GAMES})")
+    p.add_argument("--depth", type=int, default=MAX_DEPTH, help=f"profundidade maxima (padrao: {MAX_DEPTH})")
+    p.add_argument("--time-ms", type=int, default=TIME_MS, help=f"ms por lance (padrao: {TIME_MS})")
+    p.add_argument("--opening-plies", type=int, default=OPENING_PLIES1)
+    p.add_argument("--epsilon", type=float, default=EPSILON_OPENING1)
+    p.add_argument("--opening-plies2", type=int, default=OPENING_PLIES2)
+    p.add_argument("--epsilon-opening2", type=float, default=EPSILON_OPENING2)
+    p.add_argument("--epsilon-midgame", type=float, default=EPSILON_MIDGAME)
+    p.add_argument("--max-plies", type=int, default=MAX_PLIES)
+    p.add_argument("--threads", type=int, default=THREADS)
+    p.add_argument("--seed", type=int, default=SEED)
+    p.add_argument("--out", default=OUT_TEMPLATE, help=f"template de saida (padrao: {OUT_TEMPLATE})")
+    p.add_argument("--separate-tt", dest="separate_tt", action="store_true", default=SEPARATE_TT)
+    p.add_argument("--shared-tt", dest="separate_tt", action="store_false", help="sobrepoe SEPARATE_TT=True do arquivo")
+    # NNUE vs. heuristica -- ver nota completa em FORCE_HEURISTIC acima.
+    p.add_argument("--heuristic", dest="force_heuristic", action="store_true", default=FORCE_HEURISTIC,
+                    help=f"forca avaliacao heuristica, ignorando NNUE (padrao: {FORCE_HEURISTIC})")
+    p.add_argument("--nnue", dest="force_heuristic", action="store_false",
+                    help="sobrepoe FORCE_HEURISTIC=True do arquivo, forcando NNUE default sem editar/recompilar")
+    p.add_argument("--nnue-weights", default=NNUE_WEIGHTS_PATH, help="caminho alternativo de pesos NNUE (padrao: o default do binario)")
+    return p.parse_args()
+
+
 def main():
+    args = parse_args()
     root = find_project_root()
     exe  = find_selfplay_exe(root)
 
@@ -146,55 +193,58 @@ def main():
             sys.exit(1)
 
     # Garante que o diretório de saída existe.
-    out_dir = os.path.dirname(os.path.join(root, OUT_TEMPLATE.split("{")[0]))
+    out_dir = os.path.dirname(os.path.join(root, args.out.split("{")[0]))
     if out_dir:
         os.makedirs(out_dir, exist_ok=True)
 
     # Detecta o próximo shard livre para não sobrescrever dados existentes.
-    start_shard = next_free_shard(root, OUT_TEMPLATE)
+    start_shard = next_free_shard(root, args.out)
     if start_shard > 0:
         print(f"[run_selfplay] {start_shard} shard(s) existente(s) detectado(s); "
               f"iniciando a partir do shard {start_shard:03d}.")
 
     # Monta o path de saída relativo à raiz do projeto.
-    out_full = os.path.join(root, OUT_TEMPLATE).replace("\\", "/")
+    out_full = os.path.join(root, args.out).replace("\\", "/")
 
     # Monta os argumentos do executável.
     cmd = [
         exe,
-        "--games",           str(TOTAL_GAMES),
-        "--chunk-games",     str(CHUNK_GAMES),
-        "--depth",           str(MAX_DEPTH),
-        "--time-ms",         str(TIME_MS),
-        "--opening-plies",   str(OPENING_PLIES1),
-        "--epsilon",         str(EPSILON_OPENING1),
-        "--opening-plies2",  str(OPENING_PLIES2),
-        "--epsilon-opening2", str(EPSILON_OPENING2),
-        "--epsilon-midgame", str(EPSILON_MIDGAME),
-        "--max-plies",       str(MAX_PLIES),
-        "--seed",            str(SEED + start_shard),   # semente varia por sessão
+        "--games",           str(args.games),
+        "--chunk-games",     str(args.chunk_games),
+        "--depth",           str(args.depth),
+        "--time-ms",         str(args.time_ms),
+        "--opening-plies",   str(args.opening_plies),
+        "--epsilon",         str(args.epsilon),
+        "--opening-plies2",  str(args.opening_plies2),
+        "--epsilon-opening2", str(args.epsilon_opening2),
+        "--epsilon-midgame", str(args.epsilon_midgame),
+        "--max-plies",       str(args.max_plies),
+        "--seed",            str(args.seed + start_shard),   # semente varia por sessão
         "--start-shard",     str(start_shard),
         "--out",             out_full,
     ]
-    if THREADS > 0:
-        cmd += ["--threads", str(THREADS)]
-    if SEPARATE_TT:
+    if args.threads > 0:
+        cmd += ["--threads", str(args.threads)]
+    if args.separate_tt:
         cmd += ["--separate-tt"]
-    if NNUE_WEIGHTS_PATH:
+    if args.force_heuristic:
+        cmd += ["--heuristic"]
+    elif args.nnue_weights:
         # Converte para caminho absoluto relativo à raiz do projeto
-        nnue_abs = os.path.join(root, NNUE_WEIGHTS_PATH)
+        nnue_abs = os.path.join(root, args.nnue_weights)
         cmd += ["--nnue-weights", nnue_abs.replace("\\", "/")]
 
     print("=" * 60)
     print(f"[run_selfplay] Iniciando geração de dados")
     print(f"  Executável  : {exe}")
-    print(f"  Partidas    : {TOTAL_GAMES} total / {CHUNK_GAMES} por chunk")
-    print(f"  Busca       : depth<={MAX_DEPTH}, {TIME_MS} ms/lance")
-    print(f"  Abertura    : fase1=[lances 1..{OPENING_PLIES1}] eps={EPSILON_OPENING1} (lance aleatório)")
-    print(f"                fase2=[lances {OPENING_PLIES1+1}..{OPENING_PLIES2}] eps={EPSILON_OPENING2} (lance aleatório)")
-    print(f"                midgame eps={EPSILON_MIDGAME} (2º/3º melhor lance)")
-    print(f"  Threads     : {THREADS or 'auto'}")
-    print(f"  TT          : {'separada por cor' if SEPARATE_TT else 'compartilhada entre as 2 cores (default)'}")
+    print(f"  Partidas    : {args.games} total / {args.chunk_games} por chunk")
+    print(f"  Busca       : depth<={args.depth}, {args.time_ms} ms/lance")
+    print(f"  Abertura    : fase1=[lances 1..{args.opening_plies}] eps={args.epsilon} (lance aleatório)")
+    print(f"                fase2=[lances {args.opening_plies+1}..{args.opening_plies2}] eps={args.epsilon_opening2} (lance aleatório)")
+    print(f"                midgame eps={args.epsilon_midgame} (2º/3º melhor lance)")
+    print(f"  Avaliação   : {'heurística (evalSimple) -- forçada' if args.force_heuristic else 'NNUE (default do binário), com fallback automático para heurística se os pesos não existirem'}")
+    print(f"  Threads     : {args.threads or 'auto'}")
+    print(f"  TT          : {'separada por cor' if args.separate_tt else 'compartilhada entre as 2 cores (default)'}")
     print(f"  Shard início: {start_shard:03d}")
     print(f"  Saída       : {out_full}")
     print("=" * 60)

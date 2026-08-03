@@ -49,6 +49,36 @@
 #include ENGINE2_SEARCH_HPP
 #undef qr
 
+// =============================================================================
+// CONFIG DEFAULTS -- edite aqui para mudar o comportamento padrao sem
+// precisar passar flag nenhuma. Cada constante tem uma flag equivalente
+// (ver o parsing em main() abaixo); a flag, quando passada, tem
+// prioridade sobre a constante. Rodar `./arena.exe` sem argumento nenhum
+// usa TODOS os valores daqui.
+//
+// E1_FORCE_HEURISTIC_DEFAULT / E2_FORCE_HEURISTIC_DEFAULT SEPARADOS (nao
+// um unico liga/desliga global): permite configurar heuristica vs. NNUE
+// no mesmo confronto so mudando estas duas linhas -- ex. E1=true,
+// E2=false roda Engine 1 heuristica contra Engine 2 NNUE sem precisar de
+// nenhuma flag de linha de comando. As flags --heuristic (as duas de
+// uma vez), --e1-heuristic/--e2-heuristic (uma de cada vez) e
+// --e1-nnue/--e2-nnue (caminho de pesos especifico) continuam disponiveis
+// pra sobrepor isso por execucao, sem precisar recompilar.
+// =============================================================================
+constexpr int GAMES_DEFAULT = 40;
+constexpr int TIME_MS_DEFAULT = 10;
+constexpr int RANDOM_PLIES_DEFAULT = 4;
+constexpr int REPORT_GAMES_DEFAULT = 0;
+constexpr uint64_t SEED_DEFAULT = 42;
+constexpr const char* BIN_FILE_DEFAULT = "";   // vazio = nao grava dataset .bin
+constexpr bool INVERT_COLORS_DEFAULT = true;
+// Gerar uma bateria de testes SEM NNUE (so heuristica, as duas engines):
+// mude as duas constantes abaixo para true, OU passe --heuristic na
+// linha de comando toda vez -- mesmo efeito, a flag so existe pra nao
+// precisar editar/recompilar.
+constexpr bool E1_FORCE_HEURISTIC_DEFAULT = false;
+constexpr bool E2_FORCE_HEURISTIC_DEFAULT = false;
+
 // Struct de amostra de treino local (independente das duas engines) --
 // layout idêntico ao TrainingSample de selfplay.hpp/arena.cpp original.
 #pragma pack(push, 1)
@@ -64,9 +94,12 @@ struct TrainingSample {
     uint16_t policyTarget;
     uint8_t  ownDist;
     uint8_t  oppDist;
+    uint8_t  mover;         // 0/1 -- ver nota completa em selfplay.hpp
+    int16_t  ownCatTotal;   // soma do calor de corredor (cat.hpp) do mover -- ver nota em selfplay.hpp
+    int16_t  oppCatTotal;
 };
 #pragma pack(pop)
-static_assert(sizeof(TrainingSample) == 27, "TrainingSample precisa ficar packed");
+static_assert(sizeof(TrainingSample) == 32, "TrainingSample precisa ficar packed");
 
 static inline qr_e2::Move toE2(const qr_e1::Move& m) {
     qr_e2::Move r; r.isWall = m.isWall; r.a = m.a; r.b = m.b; r.c = m.c; return r;
@@ -195,18 +228,33 @@ int playArenaGame(int engine1PlayerIdx, int timeMs, int randomPlies, std::mt1993
 
     if (samplesOut && winnerPlayer != -1) {
         for (const auto& rec : gameRecords) {
+            int mover = rec.moverTurn, opp = 1 - rec.moverTurn;
+            // Mesmo espelho de perspectiva de selfplay.hpp (nnue.hpp,
+            // 2026-08) -- sem isso este --bin-file gerava dados em
+            // coordenada CRUA, incompatível com o que selfplay.hpp grava
+            // hoje (silenciosamente: mesmo dtype/tamanho de arquivo,
+            // corrompe o treino se misturado).
             TrainingSample ts{};
-            ts.ownPawn = rec.state.pawn[rec.moverTurn];
-            ts.oppPawn = rec.state.pawn[1 - rec.moverTurn];
-            ts.wallsH = rec.state.wallsH;
-            ts.wallsV = rec.state.wallsV;
-            ts.wallsLeftOwn = rec.state.wallsLeft[rec.moverTurn];
-            ts.wallsLeftOpp = rec.state.wallsLeft[1 - rec.moverTurn];
+            ts.ownPawn = (uint8_t)qr_e1::mirroredPawnCell(rec.state.pawn[mover], mover);
+            ts.oppPawn = (uint8_t)qr_e1::mirroredPawnCell(rec.state.pawn[opp], mover);
+            ts.wallsH = qr_e1::mirrorWallBitboard(rec.state.wallsH, mover);
+            ts.wallsV = qr_e1::mirrorWallBitboard(rec.state.wallsV, mover);
+            ts.wallsLeftOwn = rec.state.wallsLeft[mover];
+            ts.wallsLeftOpp = rec.state.wallsLeft[opp];
             ts.searchScore = (int16_t)rec.searchScore;
-            ts.gameResult = (rec.moverTurn == winnerPlayer) ? (int8_t)1 : (int8_t)-1;
-            ts.policyTarget = qr_e1::moveToPolicyIndex(rec.move);
-            ts.ownDist = (uint8_t)std::min(255, qr_e1::shortestPathLen(rec.state.wallsH, rec.state.wallsV, rec.state.pawn[rec.moverTurn], rec.moverTurn));
-            ts.oppDist = (uint8_t)std::min(255, qr_e1::shortestPathLen(rec.state.wallsH, rec.state.wallsV, rec.state.pawn[1 - rec.moverTurn], 1 - rec.moverTurn));
+            ts.gameResult = (mover == winnerPlayer) ? (int8_t)1 : (int8_t)-1;
+            ts.policyTarget = qr_e1::moveToPolicyIndex(qr_e1::mirrorMoveForPerspective(rec.move, mover));
+            ts.ownDist = (uint8_t)std::min(255, qr_e1::shortestPathLen(rec.state.wallsH, rec.state.wallsV, rec.state.pawn[mover], mover));
+            ts.oppDist = (uint8_t)std::min(255, qr_e1::shortestPathLen(rec.state.wallsH, rec.state.wallsV, rec.state.pawn[opp], opp));
+            ts.mover = (uint8_t)mover;
+            {
+                qr_e1::CorridorHeat ownHeat = qr_e1::computeCorridorHeat(rec.state.wallsH, rec.state.wallsV, rec.state.pawn[mover], mover);
+                qr_e1::CorridorHeat oppHeat = qr_e1::computeCorridorHeat(rec.state.wallsH, rec.state.wallsV, rec.state.pawn[opp], opp);
+                int ownSum = 0, oppSum = 0;
+                for (int i = 0; i < qr_e1::N * qr_e1::N; i++) { ownSum += ownHeat.heat[i]; oppSum += oppHeat.heat[i]; }
+                ts.ownCatTotal = (int16_t)ownSum;
+                ts.oppCatTotal = (int16_t)oppSum;
+            }
             samplesOut->push_back(ts);
         }
     }
@@ -215,18 +263,18 @@ int playArenaGame(int engine1PlayerIdx, int timeMs, int randomPlies, std::mt1993
 }
 
 int main(int argc, char* argv[]) {
-    int totalGames = 40;
-    int timeMs = 10;
-    int randomPlies = 4;
-    int reportGames = 0;
-    uint64_t seed = 42;
-    std::string binFilePath = "";
-    bool invertColors = true;
+    int totalGames = GAMES_DEFAULT;
+    int timeMs = TIME_MS_DEFAULT;
+    int randomPlies = RANDOM_PLIES_DEFAULT;
+    int reportGames = REPORT_GAMES_DEFAULT;
+    uint64_t seed = SEED_DEFAULT;
+    std::string binFilePath = BIN_FILE_DEFAULT;
+    bool invertColors = INVERT_COLORS_DEFAULT;
     std::string e1NnuePath = "";
     std::string e2NnuePath = "";
     bool e1Explicit = false, e2Explicit = false;
     bool forceHeuristic = false;
-    bool e1ForceHeuristic = false, e2ForceHeuristic = false;
+    bool e1ForceHeuristic = E1_FORCE_HEURISTIC_DEFAULT, e2ForceHeuristic = E2_FORCE_HEURISTIC_DEFAULT;
 
     for (int i = 1; i < argc; i++) {
         if (std::strcmp(argv[i], "--games") == 0 && i + 1 < argc) totalGames = std::atoi(argv[++i]);
@@ -235,11 +283,13 @@ int main(int argc, char* argv[]) {
         else if (std::strcmp(argv[i], "--seed") == 0 && i + 1 < argc) seed = std::stoull(argv[++i]);
         else if (std::strcmp(argv[i], "--report-games") == 0 && i + 1 < argc) reportGames = std::atoi(argv[++i]);
         else if (std::strcmp(argv[i], "--bin-file") == 0 && i + 1 < argc) binFilePath = argv[++i];
-        else if (std::strcmp(argv[i], "--e1-nnue") == 0 && i + 1 < argc) { e1NnuePath = argv[++i]; e1Explicit = true; }
-        else if (std::strcmp(argv[i], "--e2-nnue") == 0 && i + 1 < argc) { e2NnuePath = argv[++i]; e2Explicit = true; }
+        else if (std::strcmp(argv[i], "--e1-nnue") == 0 && i + 1 < argc) { e1NnuePath = argv[++i]; e1Explicit = true; e1ForceHeuristic = false; }
+        else if (std::strcmp(argv[i], "--e2-nnue") == 0 && i + 1 < argc) { e2NnuePath = argv[++i]; e2Explicit = true; e2ForceHeuristic = false; }
         else if (std::strcmp(argv[i], "--heuristic") == 0) forceHeuristic = true;
         else if (std::strcmp(argv[i], "--e1-heuristic") == 0) e1ForceHeuristic = true;
         else if (std::strcmp(argv[i], "--e2-heuristic") == 0) e2ForceHeuristic = true;
+        else if (std::strcmp(argv[i], "--e1-nnue-default") == 0) e1ForceHeuristic = false;
+        else if (std::strcmp(argv[i], "--e2-nnue-default") == 0) e2ForceHeuristic = false;
         else if (std::strcmp(argv[i], "--no-invert") == 0) invertColors = false;
     }
 
@@ -271,7 +321,7 @@ int main(int argc, char* argv[]) {
             std::fprintf(stderr, "[arena] Engine 1 usando NNUE ('%s')\n", e1NnuePath.c_str());
         }
     } else if (forceHeuristic || e1ForceHeuristic) {
-        std::fprintf(stderr, "[arena] Engine 1: heuristica forcada via --%s\n", forceHeuristic ? "heuristic" : "e1-heuristic");
+        std::fprintf(stderr, "[arena] Engine 1: heuristica (via --heuristic/--e1-heuristic, ou E1_FORCE_HEURISTIC_DEFAULT no topo do arquivo)\n");
     }
     if (!e2NnuePath.empty()) {
         if (!tryLoadWeightsE2(e2NnuePath, 0)) {
@@ -285,7 +335,7 @@ int main(int argc, char* argv[]) {
             std::fprintf(stderr, "[arena] Engine 2 usando NNUE ('%s')\n", e2NnuePath.c_str());
         }
     } else if (forceHeuristic || e2ForceHeuristic) {
-        std::fprintf(stderr, "[arena] Engine 2: heuristica forcada via --%s\n", forceHeuristic ? "heuristic" : "e2-heuristic");
+        std::fprintf(stderr, "[arena] Engine 2: heuristica (via --heuristic/--e2-heuristic, ou E2_FORCE_HEURISTIC_DEFAULT no topo do arquivo)\n");
     }
 
 
