@@ -9,7 +9,7 @@ de valor, ver nota "MUDANÇA DESTA SESSÃO" abaixo) e escreve um segundo
 arquivo com:
 
     cabeçalho: QA (int32), QB (int32)
-    w1      (332x256, int16, escala QA)
+    w1      (354x256, int16, escala QA)
     b1      (256,     int16, escala QA)
     wv1_wl  (256x32,  int8,  escala QB)
     bv1_wl  (32,      int32, escala QA*QB)
@@ -47,6 +47,7 @@ o arquivo de pesos não passou pelo clipper (ex. treino antigo, ou --qa/
 Uso:
     python3 quantize_nnue.py ../data/nnue/nnue_weights.bin ../data/nnue/nnue_weights_int8.bin
 """
+import os
 import sys
 import numpy as np
 
@@ -74,10 +75,16 @@ HIDDEN = 256
 POLICY_OUT = N * N + WS * WS * 2  # 209
 
 # QAT: constantes fixas -- devem bater com QA_DEFAULT/QB_DEFAULT em
-# nnue.hpp e train_nnue.py/train_nnue_numpy.py.
+# nnue.hpp e train_nnue.py.
 QA_DEFAULT = 255
 QB_DEFAULT = 64
 QA = QA_DEFAULT  # nome curto mantido por compatibilidade com uso anterior deste módulo
+
+# Caminhos default (editar aqui, ou passar via linha de comando --
+# `python3 quantize_nnue.py` sem argumento nenhum usa os dois abaixo).
+# Mesma convenção de OUT_DEFAULT em train_nnue.py.
+SRC_DEFAULT = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data", "nnue", "nnue_weights.bin")
+DST_DEFAULT = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data", "nnue", "nnue_weights_int8.bin")
 INT8_MAX = 127
 INT16_MAX = 32767
 
@@ -230,9 +237,14 @@ def quantize_file(src_path, dst_path, qa=QA_DEFAULT, qb=QB_DEFAULT):
 
 
 if __name__ == "__main__":
-    if len(sys.argv) != 3:
-        print(__doc__)
-        sys.exit(1)
-    src, dst = sys.argv[1], sys.argv[2]
-    Q = quantize_file(src, dst)
-    print(f"pesos quantizados gravados em {dst}")
+    import argparse
+    p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    p.add_argument("src", nargs="?", default=SRC_DEFAULT,
+                    help=f"pesos float32 de entrada (padrao: {SRC_DEFAULT})")
+    p.add_argument("dst", nargs="?", default=DST_DEFAULT,
+                    help=f"pesos int8/int16 quantizados de saida (padrao: {DST_DEFAULT})")
+    p.add_argument("--qa", type=int, default=QA_DEFAULT, help=f"escala QA (padrao: {QA_DEFAULT})")
+    p.add_argument("--qb", type=int, default=QB_DEFAULT, help=f"escala QB (padrao: {QB_DEFAULT})")
+    args = p.parse_args()
+    Q = quantize_file(args.src, args.dst, qa=args.qa, qb=args.qb)
+    print(f"pesos quantizados gravados em {args.dst}")

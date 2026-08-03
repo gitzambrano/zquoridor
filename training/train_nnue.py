@@ -62,26 +62,33 @@ CHECKPOINT / RESUME (estilo Zchezz) -- responde as duvidas de sempre:
     quando ha melhora) o estado COMPLETO de treino -- pesos, estado do
     otimizador (momentos do AdamW), epoch atual, historico de metricas,
     estado do early-stopper e os RNGs (numpy + torch + cuda) -- e gravado
-    em `<ckpt-dir>/train_state.pt`. Isso e diferente de best.bin/last.bin
-    (que sao so os PESOS, no layout binario que nnue.hpp le): train_state.pt
-    e o que permite retomar um treino como se ele nunca tivesse parado
-    (mesmo optimizer momentum, mesmo ponto do LR/WD schedule, mesmo
-    historico pros plots).
+    em `<ckpt-dir>/train_state_<data>_<hora>_ep<N>.pt` (NAO sobrescreve o
+    epoch anterior -- fica com o historico completo, nomeado por
+    data/horario/epoca; ver find_latest_checkpoint_suffix). Isso e
+    diferente de best_..._ep<N>.bin/last_..._ep<N>.bin (que sao so os
+    PESOS, no layout binario que nnue.hpp le): train_state_*.pt e o que
+    permite retomar um treino como se ele nunca tivesse parado (mesmo
+    optimizer momentum, mesmo ponto do LR/WD schedule, mesmo historico
+    pros plots).
   - "Como ele parte de um checkpoint?" Automaticamente. Ao rodar de novo
     com o mesmo --ckpt-dir (o default ja aponta pra data/checkpoints), o
-    script procura train_state.pt sozinho, confere se a "impressao
+    script acha o train_state_*.pt de MAIOR epoca, confere se a "impressao
     digital" da arquitetura bate (NUM_FEATURES/HIDDEN/POLICY_OUT/QA/QB --
     se mudou a arquitetura ou a escala QAT, o checkpoint antigo e
     incompativel e e ignorado com aviso) e, se bater, carrega tudo e
     continua exatamente do epoch seguinte. --init-from soh entra em jogo
     quando NAO ha checkpoint de resume valido (ele so inicializa PESOS, o
     otimizador comeca zerado). --fresh ignora qualquer checkpoint e forca
-    treino do zero mesmo que exista um.
-  - "E se parar no meio?" Ctrl+C (SIGINT) e capturado: o handler salva
-    train_state.pt e last.bin IMEDIATAMENTE com os pesos do exato momento
-    da interrupcao (nao espera terminar o epoch) e so entao encerra. Ao
-    rodar de novo, esse epoch (que estava incompleto) e refeito do zero
-    -- so o epoch em andamento se perde, nao o treino inteiro.
+    treino do zero mesmo que exista um. --resume-config aponta pra um
+    train_config_*.json ESPECIFICO (nao precisa ser o mais recente -- da
+    pra voltar pra uma epoca antiga de proposito) e reaproveita so os
+    hiperparametros + os pesos que ele referencia, sem o otimizador.
+  - "E se parar no meio?" Ctrl+C (SIGINT) e capturado: o handler salva o
+    trio train_state/train_config/last daquele epoch IMEDIATAMENTE com os
+    pesos do exato momento da interrupcao (nao espera terminar o epoch) e
+    so entao encerra. Ao rodar de novo, esse epoch (que estava incompleto)
+    e refeito do zero -- so o epoch em andamento se perde, nao o treino
+    inteiro.
   - "E se eu rodar de novo DEPOIS que o treino ja terminou (bateu o teto de
     --epochs, ou parou por early stopping)?" Comeca um NOVO CICLO
     automaticamente a partir dos PESOS salvos (warm start) -- otimizador,
@@ -514,12 +521,50 @@ def compute_fingerprint(args):
                 qa=args.qa, qb=args.qb)
 
 
-def _train_state_path(ckpt_dir):
-    return os.path.join(ckpt_dir, "train_state.pt")
+def _checkpoint_suffix(epoch):
+    """Sufixo `{timestamp}_ep{epoch:04d}` usado em TODOS os arquivos de um
+    mesmo save (train_state_<suffix>.pt, train_config_<suffix>.json,
+    last_<suffix>.bin, best_<suffix>.bin quando há um novo melhor) --
+    checkpoints não se sobrescrevem mais a cada epoch, ficam com histórico
+    completo, nomeados por data/horário/época (pedido explícito). Calculado
+    UMA VEZ por evento de save (no chamador, não dentro de cada função de
+    save individual) -- os arquivos de um mesmo save precisam compartilhar
+    o MESMO sufixo, senão fica impossível re-associar train_state/config/
+    bin do mesmo momento (ver find_latest_checkpoint_suffix abaixo)."""
+    return f"{time.strftime('%Y%m%d_%H%M%S')}_ep{epoch:04d}"
 
 
-def _config_json_path(ckpt_dir):
-    return os.path.join(ckpt_dir, "train_config.json")
+def find_latest_checkpoint_suffix(ckpt_dir):
+    """Varre ckpt_dir por train_state_*_ep*.pt e devolve o sufixo do mais
+    recente -- maior época primeiro; empate (pode acontecer se um save de
+    emergência via Ctrl+C cair na mesma época de um save normal) resolvido
+    pelo timestamp mais recente. None se não houver checkpoint nenhum."""
+    import glob as _glob
+    import re as _re
+    if not ckpt_dir or not os.path.isdir(ckpt_dir):
+        return None
+    candidates = []
+    for path in _glob.glob(os.path.join(ckpt_dir, "train_state_*_ep*.pt")):
+        m = _re.search(r"train_state_(\d{8}_\d{6}_ep\d+)\.pt$", os.path.basename(path))
+        if m:
+            candidates.append(m.group(1))
+    if not candidates:
+        return None
+
+    def _sort_key(suffix):
+        ts, ep_part = suffix.rsplit("_ep", 1)
+        return (int(ep_part), ts)
+
+    candidates.sort(key=_sort_key)
+    return candidates[-1]
+
+
+def _train_state_path(ckpt_dir, suffix):
+    return os.path.join(ckpt_dir, f"train_state_{suffix}.pt")
+
+
+def _config_json_path(ckpt_dir, suffix):
+    return os.path.join(ckpt_dir, f"train_config_{suffix}.json")
 
 
 # Hiperparametros de OTIMIZACAO/loss/QAT que fazem sentido herdar de uma
@@ -539,14 +584,16 @@ _CONFIG_JSON_HYPERPARAM_KEYS = (
 )
 
 
-def save_config_json(ckpt_dir, args, fingerprint, epoch, best_metric, weights_path):
-    """Grava train_config.json ao lado de train_state.pt: um snapshot
-    HUMANO-LEGIVEL (json.dumps, sem torch/numpy) dos hiperparametros desta
-    rodada + qual arquivo de pesos corresponde a este checkpoint. Nao
-    substitui train_state.pt para resume EXATO (nao tem otimizador/RNG) --
-    e para (a) auditoria/registro de "com que config este .bin foi
-    treinado" e (b) --resume-config, que reaproveita esses hiperparametros
-    (nao o estado do otimizador) para comecar um ciclo novo de treino."""
+def save_config_json(ckpt_dir, args, fingerprint, epoch, best_metric, weights_path, suffix):
+    """Grava train_config_<suffix>.json ao lado de train_state_<suffix>.pt:
+    um snapshot HUMANO-LEGIVEL (json.dumps, sem torch/numpy) dos
+    hiperparametros desta rodada + qual arquivo de pesos corresponde a
+    este checkpoint. Nao substitui train_state.pt para resume EXATO (nao
+    tem otimizador/RNG) -- e para (a) auditoria/registro de "com que
+    config este .bin foi treinado" e (b) --resume-config, que reaproveita
+    esses hiperparametros (nao o estado do otimizador) para comecar um
+    ciclo novo de treino -- inclusive de uma epoca antiga especifica, nao
+    só a mais recente, já que cada uma tem seu próprio arquivo agora."""
     os.makedirs(ckpt_dir, exist_ok=True)
     payload = {
         "fingerprint": fingerprint,
@@ -556,7 +603,7 @@ def save_config_json(ckpt_dir, args, fingerprint, epoch, best_metric, weights_pa
         "saved_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
         "hyperparams": {k: getattr(args, k) for k in _CONFIG_JSON_HYPERPARAM_KEYS if hasattr(args, k)},
     }
-    path = _config_json_path(ckpt_dir)
+    path = _config_json_path(ckpt_dir, suffix)
     tmp_path = path + ".tmp"
     with open(tmp_path, "w", encoding="utf-8") as f:
         json.dump(payload, f, indent=2, ensure_ascii=False)
@@ -576,7 +623,7 @@ def load_config_json(path):
         return json.load(f)
 
 
-def save_train_state(ckpt_dir, model, opt, epoch, epoch_completed, history, stopper, rng, fingerprint):
+def save_train_state(ckpt_dir, model, opt, epoch, epoch_completed, history, stopper, rng, fingerprint, suffix):
     os.makedirs(ckpt_dir, exist_ok=True)
     payload = dict(
         fingerprint=fingerprint,
@@ -593,7 +640,7 @@ def save_train_state(ckpt_dir, model, opt, epoch, epoch_completed, history, stop
         torch_rng_state=torch.get_rng_state(),
         torch_cuda_rng_state=torch.cuda.get_rng_state_all() if torch.cuda.is_available() else None,
     )
-    path = _train_state_path(ckpt_dir)
+    path = _train_state_path(ckpt_dir, suffix)
     tmp_path = path + ".tmp"
     torch.save(payload, tmp_path)
     os.replace(tmp_path, path)  # grava em arquivo temporario e renomeia -- evita
@@ -601,20 +648,22 @@ def save_train_state(ckpt_dir, model, opt, epoch, epoch_completed, history, stop
 
 
 def try_load_train_state(ckpt_dir, fingerprint):
-    """Retorna o payload salvo se existir e a arquitetura bater, senao None
-    (silencioso se simplesmente nao existe checkpoint ainda; avisa se existe
-    mas e incompativel)."""
+    """Localiza o checkpoint MAIS RECENTE em ckpt_dir (ver
+    find_latest_checkpoint_suffix) e retorna o payload salvo se a
+    arquitetura bater, senao None (silencioso se simplesmente nao existe
+    checkpoint ainda; avisa se existe mas e incompativel)."""
     if not ckpt_dir:
         return None
-    path = _train_state_path(ckpt_dir)
-    if not os.path.isfile(path):
+    suffix = find_latest_checkpoint_suffix(ckpt_dir)
+    if suffix is None:
         return None
+    path = _train_state_path(ckpt_dir, suffix)
     payload = torch.load(path, map_location="cpu", weights_only=False)
     saved_fp = payload.get("fingerprint", {})
     if saved_fp != fingerprint:
         print(f"aviso: checkpoint de resume em {path} tem arquitetura/QAT diferente "
               f"da rodada atual ({saved_fp} != {fingerprint}) -- ignorando e comecando "
-              f"do zero (apague o arquivo ou use um --ckpt-dir novo pra sumir com este aviso)")
+              f"do zero (apague os arquivos ou use um --ckpt-dir novo pra sumir com este aviso)")
         return None
     return payload
 
@@ -641,24 +690,25 @@ _ckpt_saved_on_interrupt = False
 
 
 def _sigint_handler(signum, frame):
-    """Ctrl+C: salva train_state.pt e last.bin com os pesos EXATOS do
-    momento da interrupcao (nao espera o epoch terminar) e so entao
-    encerra. Ao rodar de novo, o epoch interrompido e refeito -- so ele se
-    perde, nao o treino inteiro."""
+    """Ctrl+C: salva train_state_<suffix>.pt e last_<suffix>.bin com os
+    pesos EXATOS do momento da interrupcao (nao espera o epoch terminar) e
+    so entao encerra. Ao rodar de novo, o epoch interrompido e refeito --
+    so ele se perde, nao o treino inteiro."""
     global _ckpt_saved_on_interrupt
     print("\n\n[Ctrl+C] interrompido -- salvando checkpoint de resume e pesos atuais...")
     rs = _run_state
     if rs.model is not None and rs.ckpt_dir and not _ckpt_saved_on_interrupt:
         _ckpt_saved_on_interrupt = True
+        suffix = _checkpoint_suffix(rs.epoch)
         save_train_state(rs.ckpt_dir, rs.model, rs.opt, rs.epoch, rs.epoch_completed,
-                          rs.history, rs.stopper, rs.rng, rs.fingerprint)
-        last_path = os.path.join(rs.ckpt_dir, "last.bin")
+                          rs.history, rs.stopper, rs.rng, rs.fingerprint, suffix)
+        last_path = os.path.join(rs.ckpt_dir, f"last_{suffix}.bin")
         export_weights(rs.model, last_path)
         if rs.args is not None:
             best_metric = rs.stopper.best if rs.stopper is not None else None
-            save_config_json(rs.ckpt_dir, rs.args, rs.fingerprint, rs.epoch, best_metric, last_path)
+            save_config_json(rs.ckpt_dir, rs.args, rs.fingerprint, rs.epoch, best_metric, last_path, suffix)
         status = "completo" if rs.epoch_completed else "parcial -- sera refeito ao retomar"
-        print(f"checkpoint salvo em {rs.ckpt_dir} (epoch {rs.epoch}, {status})")
+        print(f"checkpoint salvo em {rs.ckpt_dir} (epoch {rs.epoch}, sufixo {suffix}, {status})")
     else:
         print("nada para salvar ainda (interrompido antes do 1o checkpoint).")
     print("saindo.")
@@ -850,7 +900,7 @@ def train(args):
         cycle_exhausted = prev_completed and (hit_ceiling or early_stopped)
         if cycle_exhausted:
             new_cycle = True
-            print(f"pesos carregados de {_train_state_path(ckpt_dir)} "
+            print(f"pesos carregados de {_train_state_path(ckpt_dir, find_latest_checkpoint_suffix(ckpt_dir))} "
                   f"(ciclo anterior ja tinha terminado no epoch {prev_epoch}) -- "
                   f"iniciando um NOVO CICLO de treino a partir desses pesos "
                   f"(otimizador, LR/WD schedule e early-stopping reiniciados; "
@@ -858,7 +908,7 @@ def train(args):
                   f"Use --fresh pra tambem descartar os pesos e comecar aleatorio.")
         else:
             status = "completo" if prev_completed else "parcial (sera refeito)"
-            print(f"RETOMANDO treino a partir de {_train_state_path(ckpt_dir)} "
+            print(f"RETOMANDO treino a partir de {_train_state_path(ckpt_dir, find_latest_checkpoint_suffix(ckpt_dir))} "
                   f"(ultimo epoch salvo: {prev_epoch}, {status}) -- mesmo otimizador, "
                   f"schedule e early-stopping de onde parou")
         if args.init_from:
@@ -1016,17 +1066,21 @@ def train(args):
                      "val_policy_acc": va["policy_acc"]}[args.monitor]
         improved, should_stop = stopper.step(monitored, epoch, model)
 
-        if ckpt_dir and improved:
-            _export_state_dict(stopper.best_state, os.path.join(ckpt_dir, "best.bin"), device)
-
         # checkpoint de resume: gravado a CADA epoch (nao so quando melhora),
         # e' o que permite retomar depois de fechar o processo normalmente.
+        # UM sufixo por epoch, reaproveitado nos 3 arquivos (+ best.bin
+        # quando ha melhora) -- precisa ser o MESMO em todos pra poderem
+        # ser re-associados depois (ver find_latest_checkpoint_suffix).
+        suffix = _checkpoint_suffix(epoch)
+        if ckpt_dir and improved:
+            _export_state_dict(stopper.best_state, os.path.join(ckpt_dir, f"best_{suffix}.bin"), device)
+
         _run_state.epoch_completed = True
         if ckpt_dir:
-            save_train_state(ckpt_dir, model, opt, epoch, True, history, stopper, rng, fingerprint)
-            last_path = os.path.join(ckpt_dir, "last.bin")
+            save_train_state(ckpt_dir, model, opt, epoch, True, history, stopper, rng, fingerprint, suffix)
+            last_path = os.path.join(ckpt_dir, f"last_{suffix}.bin")
             export_weights(model, last_path)
-            save_config_json(ckpt_dir, args, fingerprint, epoch, stopper.best, last_path)
+            save_config_json(ckpt_dir, args, fingerprint, epoch, stopper.best, last_path, suffix)
 
         epoch_duration = time.time() - epoch_start_time
         avg_epoch_time = (time.time() - t0) / epoch
@@ -1149,7 +1203,16 @@ def parse_args(argv=None):
     g_opt.add_argument("--epochs", type=int, default=EPOCHS_DEFAULT)
     g_opt.add_argument("--batch-size", default=BATCH_SIZE_DEFAULT,
                          help='inteiro, ou "auto" para calcular a partir de --vram-budget-gb (default "auto")')
-    g_opt.add_argument("--lr", type=float, default=LR_DEFAULT)
+    g_opt.add_argument("--lr", type=str, default="auto",
+                        help="learning rate inicial. 'auto' (default): herda do "
+                             "train_config.json do checkpoint retomado (--ckpt-dir "
+                             "auto-detectado ou --resume-config); se não há checkpoint/"
+                             "config nenhum pra herdar, avisa e usa LR_DEFAULT "
+                             f"({LR_DEFAULT}). Um valor numérico aqui SEMPRE sobrepõe "
+                             "o herdado, mesmo em resume -- o schedule (--lr-schedule "
+                             "etc.) recalcula a partir do novo valor a cada epoch, então "
+                             "trocar o LR no meio de um treino retomado tem efeito "
+                             "imediato (ver apply_lr_wd() no loop principal).")
     g_opt.add_argument("--lr-min", type=float, default=LR_MIN_DEFAULT)
     g_opt.add_argument("--lr-schedule", choices=["none", "step", "exponential", "cosine"],
                         default=LR_SCHEDULE_DEFAULT)
@@ -1183,13 +1246,17 @@ def parse_args(argv=None):
 
     g_ckpt = p.add_argument_group("checkpoint / resume")
     g_ckpt.add_argument("--ckpt-dir", default=CKPT_DIR_DEFAULT,
-                         help=f"diretorio de checkpoints: best.bin, last.bin e train_state.pt "
-                              f"(estado completo p/ resume automatico); passe vazio/None via codigo "
-                              f"pra desligar checkpointing (default {CKPT_DIR_DEFAULT})")
+                         help=f"diretorio de checkpoints. Cada epoch grava um trio "
+                              f"train_state_<data>_<hora>_ep<N>.pt / train_config_..._ep<N>.json / "
+                              f"last_..._ep<N>.bin (+ best_..._ep<N>.bin quando ha melhora) -- "
+                              f"nao sobrescreve os anteriores, fica com o historico completo. "
+                              f"Resume automatico usa o de maior epoca (ver "
+                              f"find_latest_checkpoint_suffix); passe vazio/None via codigo pra "
+                              f"desligar checkpointing (default {CKPT_DIR_DEFAULT})")
     g_ckpt.add_argument("--fresh", dest="fresh", action="store_true", default=FRESH_DEFAULT,
-                         help="ignora qualquer checkpoint de resume existente (train_state.pt E "
-                              "train_config.json) em --ckpt-dir e comeca do zero (ou de "
-                              "--init-from, se passado)")
+                         help="ignora qualquer checkpoint de resume existente (o trio train_state/"
+                              "train_config/last mais recente) em --ckpt-dir e comeca do zero (ou "
+                              "de --init-from, se passado)")
     g_ckpt.add_argument("--no-fresh", dest="fresh", action="store_false",
                          help="forca resume automatico (default -- so precisa desta flag se "
                               "FRESH_DEFAULT tiver sido mudado pra True no topo do arquivo)")
@@ -1252,14 +1319,18 @@ def parse_args(argv=None):
     pre_args, _ = p.parse_known_args(argv)
     cfg_path = pre_args.resume_config
     if cfg_path is None and not pre_args.fresh and pre_args.ckpt_dir:
-        auto_path = _config_json_path(pre_args.ckpt_dir)
-        if os.path.isfile(auto_path):
-            cfg_path = auto_path
+        latest_suffix = find_latest_checkpoint_suffix(pre_args.ckpt_dir)
+        if latest_suffix is not None:
+            auto_path = _config_json_path(pre_args.ckpt_dir, latest_suffix)
+            if os.path.isfile(auto_path):
+                cfg_path = auto_path
+    hp_lr = None  # valor de lr herdado do JSON, se houver -- usado por --lr auto abaixo
     if cfg_path is not None:
         cfg = load_config_json(cfg_path)
         if cfg is not None:
             hp = {k: v for k, v in cfg.get("hyperparams", {}).items()
                   if k in _CONFIG_JSON_HYPERPARAM_KEYS}
+            hp_lr = hp.get("lr")
             if hp:
                 p.set_defaults(**hp)
                 print(f"[config] hiperparametros herdados de {cfg_path} (epoch {cfg.get('epoch')}, "
@@ -1271,6 +1342,25 @@ def parse_args(argv=None):
     args = p.parse_args(argv)
     if not args.data:
         args.data = DATA_DEFAULT
+
+    # Resolve --lr auto (ver help do argumento acima). Resolvido aqui (não
+    # deixado pra set_defaults sozinho) pra cobrir também o caso de alguém
+    # digitar "--lr auto" explicitamente mesmo quando havia um hp_lr
+    # herdável -- set_defaults só se aplica quando a flag NÃO aparece em
+    # argv, então um "--lr auto" literal escondia o valor herdado sem essa
+    # resolução explícita.
+    if args.lr == "auto":
+        if hp_lr is not None:
+            args.lr = float(hp_lr)
+            print(f"[lr] auto: herdado de {cfg_path} (lr={args.lr})")
+        else:
+            print(f"[lr] aviso: --lr auto pedido, mas nao ha checkpoint/config anterior "
+                  f"em --ckpt-dir nem --resume-config -- comecando do zero com "
+                  f"lr={LR_DEFAULT} (LR_DEFAULT)")
+            args.lr = LR_DEFAULT
+    else:
+        args.lr = float(args.lr)
+
     return args
 
 
