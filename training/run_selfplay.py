@@ -31,8 +31,8 @@ import time
 # =============================================================================
 
 # --- Geração de partidas ---
-TOTAL_GAMES   = 100000   # partidas totais a gerar nesta rodada
-CHUNK_GAMES   = 3000    # partidas por arquivo .bin
+TOTAL_GAMES   = 300000   # partidas totais a gerar nesta rodada
+CHUNK_GAMES   = 2000    # partidas por arquivo .bin
                         # Cada chunk fica ~6.5 MB -- confortável pra 32 GB RAM
 
 # --- Busca ---
@@ -40,19 +40,19 @@ MAX_DEPTH     = 50      # profundidade máxima do negamax (iterative deepening)
 TIME_MS       = 100     # orçamento de tempo por lance em ms
                         # 200 ms = boa qualidade; reduza para 50-100 ms se quiser
                         # gerar muito volume rapidamente (em detrimento da força)
-
+ 
 # --- Abertura aleatória ---
 # Fase 1: lances iniciais (óbvios no Quoridor) com muito pouco ruído
-OPENING_PLIES1   = 6       # lances 1 a N1 sujeitos a EPSILON_OPENING1
+OPENING_PLIES1   = 4       # lances 1 a N1 sujeitos a EPSILON_OPENING1
 EPSILON_OPENING1 = 0.3     # baixo: não distorce os lances óbvios da abertura
 
 # Fase 2: janela de exploração pesada para diversificar posições iniciais
-OPENING_PLIES2   = 12     # lances N1+1 a N2 sujeitos a EPSILON_OPENING2
-EPSILON_OPENING2 = 0.6   # alto: cria muita variedade de abertura (lance totalmente aleatório)
-
+OPENING_PLIES2   = 10     # lances N1+1 a N2 sujeitos a EPSILON_OPENING2
+EPSILON_OPENING2 = 0.5    # alto: cria muita variedade de abertura (lance totalmente aleatório)
+ 
 EPSILON_MIDGAME  = 0.01   # prob. de desvio no midgame: escolhe 2º ou 3º melhor lance (não totalmente aleatório)
-
-# --- Segurança ---
+ 
+# --- Segurança ---  
 MAX_PLIES     = 300     # corte: partidas que não terminam são descartadas
 
 # --- TT (transposition table) ---
@@ -67,11 +67,11 @@ MAX_PLIES     = 300     # corte: partidas que não terminam são descartadas
 SEPARATE_TT   = False
 
 # --- Paralelismo ---
-THREADS       = 15      # 0 = auto (usa hardware_concurrency); ajuste se quiser
+THREADS       = 10      # 0 = auto (usa hardware_concurrency); ajuste se quiser
                         # reservar threads para outras tarefas
 
 # --- Semente ---
-SEED          = 29    # semente base do RNG; chunks subsequentes variam automaticamente
+SEED          = 923    # semente base do RNG; chunks subsequentes variam automaticamente
 
 # --- Saída ---
 # Use {shard:03d} para nomear os chunks automaticamente.
@@ -91,7 +91,7 @@ OUT_TEMPLATE  = "data/selfplay/selfplay_{shard:03d}.bin"
 #   heurística pura. False (default) = tenta NNUE, cai pra heurístico
 #   sozinho se não achar pesos.
 FORCE_HEURISTIC = False
-#
+# 
 # NNUE_WEIGHTS_PATH: só use se quiser apontar pra um arquivo de pesos
 # DIFERENTE do default (data/nnue/nnue_weights_int8.bin). Deixe None pra
 # usar o caminho default do binário.
