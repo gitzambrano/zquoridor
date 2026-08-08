@@ -37,7 +37,7 @@ CHUNK_GAMES   = 2000    # partidas por arquivo .bin
 
 # --- Busca ---
 MAX_DEPTH     = 50      # profundidade máxima do negamax (iterative deepening)
-TIME_MS       = 100     # orçamento de tempo por lance em ms
+TIME_MS       = 50     # orçamento de tempo por lance em ms
                         # 200 ms = boa qualidade; reduza para 50-100 ms se quiser
                         # gerar muito volume rapidamente (em detrimento da força)
  
@@ -71,7 +71,7 @@ THREADS       = 10      # 0 = auto (usa hardware_concurrency); ajuste se quiser
                         # reservar threads para outras tarefas
 
 # --- Semente ---
-SEED          = 923    # semente base do RNG; chunks subsequentes variam automaticamente
+SEED          = 983    # semente base do RNG; chunks subsequentes variam automaticamente
 
 # --- Saída ---
 # Use {shard:03d} para nomear os chunks automaticamente.
