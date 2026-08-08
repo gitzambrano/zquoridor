@@ -49,7 +49,7 @@ else
     echo "    (rode training/quantize_nnue.py primeiro, ou o app web fica só no modo heurístico)."
 fi
 
-emcc -O3 -std=c++17 \
+emcc -O3 -std=c++17 -msimd128 \
   engine_wasm.cpp \
   -s MODULARIZE=1 \
   -s EXPORT_NAME=ZquoridorModule \

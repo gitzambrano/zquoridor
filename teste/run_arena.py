@@ -27,12 +27,12 @@ GIT_REF2 = "main"             # Ref Git base para o confronto (ex: 'main', 'v1.0
 
 INVERT_COLORS = True          # Se True, joga cada abertura 2x invertendo as cores (par). Se False, joga apenas 1x por abertura.
 CREATE_BIN = True            # Se True, salva os dados das partidas em data/arena/ no formato .bin de treino
-GAMES = 1000                   # Quantidade total de jogos
+GAMES = 400                   # Quantidade total de jogos
 REPORT_GAMES = 50             # Atualiza e imprime o relatório parcial a cada N jogos concluídos (default 50)
-TIME_MS = 300                 # Tempo de pensamento por lance em milissegundos
+TIME_MS = 200                 # Tempo de pensamento por lance em milissegundos
 THREADS = 14                  # Número de núcleos / processos em paralelo (default 14)
 RANDOM_OPENING_PLIES = 4      # Quantidade de lances aleatórios na abertura
-SEED = 253                     # Semente aleatória
+SEED = 353                     # Semente aleatória
 COMPILER = "g++"              # Compilador C++
 CXX_FLAGS = "-O3 -std=c++17"  # Flags de compilação
 

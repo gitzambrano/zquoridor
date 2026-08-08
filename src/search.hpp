@@ -202,8 +202,8 @@ public:
         g_raceExactBudgetUs = 1e18;  // só chooseMove() aplica o orçamento (ver nota lá)
         AccPair* accForSearch = nullptr;
         if (evalMode == EvalMode::NNUE) {
-            nnueAccStack[0].acc[0] = buildAccumulatorQuant(s, 0);
-            nnueAccStack[0].acc[1] = buildAccumulatorQuant(s, 1);
+            nnueAccStack[0].acc[0] = buildAccumulatorQuant(s, 0, &xdistCache);
+            nnueAccStack[0].acc[1] = buildAccumulatorQuant(s, 1, &xdistCache);
             accForSearch = &nnueAccStack[0];
         }
         RepetitionTable emptyHistory;
@@ -291,8 +291,8 @@ public:
         // modo Heuristic, accForSearch fica nullptr e negamax usa evalSimpleW.
         AccPair* accForSearch = nullptr;
         if (evalMode == EvalMode::NNUE) {
-            nnueAccStack[0].acc[0] = buildAccumulatorQuant(root, 0);
-            nnueAccStack[0].acc[1] = buildAccumulatorQuant(root, 1);
+            nnueAccStack[0].acc[0] = buildAccumulatorQuant(root, 0, &xdistCache);
+            nnueAccStack[0].acc[1] = buildAccumulatorQuant(root, 1, &xdistCache);
             accForSearch = &nnueAccStack[0];
         }
 
@@ -629,8 +629,8 @@ private:
                 childAcc = curAcc + 1;
                 childAcc->acc[0] = curAcc->acc[0];
                 childAcc->acc[1] = curAcc->acc[1];
-                updateAccumulatorForMoveQuant(childAcc->acc[0], /*viewerIsMover=*/(0 == side), s, m);
-                updateAccumulatorForMoveQuant(childAcc->acc[1], /*viewerIsMover=*/(1 == side), s, m);
+                updateAccumulatorForMoveQuant(childAcc->acc[0], /*viewerIsMover=*/(0 == side), s, m, &xdistCache);
+                updateAccumulatorForMoveQuant(childAcc->acc[1], /*viewerIsMover=*/(1 == side), s, m, &xdistCache);
             }
             reptbl.push(ns.hash);
             int score = -quiescence(ns, -beta, -localAlpha, qply + 1, stats, reptbl, !rootParity, childAcc);
@@ -859,8 +859,8 @@ private:
                 childAcc = curAcc + 1;
                 childAcc->acc[0] = curAcc->acc[0];
                 childAcc->acc[1] = curAcc->acc[1];
-                updateAccumulatorForMoveQuant(childAcc->acc[0], /*viewerIsMover=*/(0 == s.turn), s, m);
-                updateAccumulatorForMoveQuant(childAcc->acc[1], /*viewerIsMover=*/(1 == s.turn), s, m);
+                updateAccumulatorForMoveQuant(childAcc->acc[0], /*viewerIsMover=*/(0 == s.turn), s, m, &xdistCache);
+                updateAccumulatorForMoveQuant(childAcc->acc[1], /*viewerIsMover=*/(1 == s.turn), s, m, &xdistCache);
             }
             State ns = applyMove(s, m);
             reptbl.push(ns.hash);
@@ -1023,8 +1023,8 @@ public:
         stats = SearchStats{};
         AccPair* accForSearch = nullptr;
         if (evalMode == EvalMode::NNUE) {
-            nnueAccStack[0].acc[0] = buildAccumulatorQuant(s, 0);
-            nnueAccStack[0].acc[1] = buildAccumulatorQuant(s, 1);
+            nnueAccStack[0].acc[0] = buildAccumulatorQuant(s, 0, &xdistCache);
+            nnueAccStack[0].acc[1] = buildAccumulatorQuant(s, 1, &xdistCache);
             accForSearch = &nnueAccStack[0];
         }
         RepetitionTable emptyHistory;
@@ -1040,8 +1040,8 @@ public:
         stats = SearchStats{};
         AccPair* accForSearch = nullptr;
         if (evalMode == EvalMode::NNUE) {
-            nnueAccStack[0].acc[0] = buildAccumulatorQuant(s, 0);
-            nnueAccStack[0].acc[1] = buildAccumulatorQuant(s, 1);
+            nnueAccStack[0].acc[0] = buildAccumulatorQuant(s, 0, &xdistCache);
+            nnueAccStack[0].acc[1] = buildAccumulatorQuant(s, 1, &xdistCache);
             accForSearch = &nnueAccStack[0];
         }
         RepetitionTable emptyHistory;
@@ -1069,8 +1069,8 @@ public:
         stats = SearchStats{};
         AccPair* accForSearch = nullptr;
         if (evalMode == EvalMode::NNUE) {
-            nnueAccStack[0].acc[0] = buildAccumulatorQuant(s, 0);
-            nnueAccStack[0].acc[1] = buildAccumulatorQuant(s, 1);
+            nnueAccStack[0].acc[0] = buildAccumulatorQuant(s, 0, &xdistCache);
+            nnueAccStack[0].acc[1] = buildAccumulatorQuant(s, 1, &xdistCache);
             accForSearch = &nnueAccStack[0];
         }
         RepetitionTable emptyHistory;

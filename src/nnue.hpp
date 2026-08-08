@@ -297,7 +297,27 @@ struct Accumulator {
 };
 
 // recomputa do zero -- só usada ao entrar numa posição "fria" (raiz da busca)
-inline Accumulator buildAccumulator(const State& s, int perspective) {
+// Ponte pro cache de BFS entre nós (rules.hpp: PlayerPathCacheTable /
+// computeDistCached), pra updateAccumulatorForMove(Quant) parar de pagar
+// shortestPathLen CRU a cada nó. `xtable == nullptr` cai pro
+// comportamento antigo (shortestPathLen direto) -- mantém tune_spsa.cpp,
+// testes em teste/, etc. funcionando sem precisar passar uma tabela.
+// Ganho duplo ao plugar aqui: (1) o mesmo (wallsH,wallsV,pawnCell,player)
+// reaparece o tempo todo entre nós irmãos/transposições (exatamente o que
+// PlayerPathCacheTable já explora pro heurístico); (2) dentro de UM SÓ
+// lance, updateAccumulatorForMove(Quant) é chamada 2x (uma vez por
+// acumulador/perspectiva) e as duas chamadas acabam pedindo as MESMAS duas
+// distâncias (a do mover e a do oponente, só que em ordem own/opp
+// trocada) -- com xtable, a segunda chamada acerta cache na hora (posta
+// pela primeira), o que sozinho já elimina metade das BFS pagas aqui.
+inline int distLenCached(uint64_t wallsH, uint64_t wallsV, int cell, int player, PlayerPathCacheTable* xtable) {
+    if (!xtable) return shortestPathLen(wallsH, wallsV, cell, player);
+    PlayerPathCache c;
+    computeDistCached(wallsH, wallsV, cell, player, xtable, c);
+    return cachedShortestPathLen(c);
+}
+
+inline Accumulator buildAccumulator(const State& s, int perspective, PlayerPathCacheTable* xtable = nullptr) {
     Accumulator acc;
     acc.v = weights().b1;
     int me = perspective, opp = 1 - perspective;
@@ -311,8 +331,8 @@ inline Accumulator buildAccumulator(const State& s, int perspective) {
     // O(81) cada, sem alocação (shortestPathLen usa arrays thread_local
     // fixos) -- barato frente ao custo de recompute total do acumulador,
     // que já percorre 128 slots de muro.
-    acc.ownDistBucket = distBucket(shortestPathLen(s.wallsH, s.wallsV, s.pawn[me], me));
-    acc.oppDistBucket = distBucket(shortestPathLen(s.wallsH, s.wallsV, s.pawn[opp], opp));
+    acc.ownDistBucket = distBucket(distLenCached(s.wallsH, s.wallsV, s.pawn[me], me, xtable));
+    acc.oppDistBucket = distBucket(distLenCached(s.wallsH, s.wallsV, s.pawn[opp], opp, xtable));
     acc.addFeature(featOwnDist(acc.ownDistBucket));
     acc.addFeature(featOppDist(acc.oppDistBucket));
     // muros restantes (feature nova, 2026-08 -- ver nota em WALLS_LEFT_BUCKETS acima)
@@ -420,13 +440,14 @@ inline void forwardPolicy(const Accumulator& acc, std::array<float, POLICY_OUT>&
 // o lance em `before`. Pré-condição: acc.ownDistBucket/oppDistBucket
 // precisam refletir corretamente `before` (garantido se todo Accumulator
 // nasce de buildAccumulator e só é mutado por esta função).
-inline void updateAccumulatorForMove(Accumulator& acc, bool viewerIsMover, const State& before, const Move& m) {
+inline void updateAccumulatorForMove(Accumulator& acc, bool viewerIsMover, const State& before, const Move& m,
+                                      PlayerPathCacheTable* xtable = nullptr) {
     State after = applyMove(before, m);
     int mover = before.turn, opp = 1 - mover;
     if (!m.isWall) {
         int destCell = m.a;
         int moverCell = before.pawn[mover];
-        int newBucket = distBucket(shortestPathLen(after.wallsH, after.wallsV, destCell, mover));
+        int newBucket = distBucket(distLenCached(after.wallsH, after.wallsV, destCell, mover, xtable));
         int viewerPlayer = viewerIsMover ? mover : opp;
         if (viewerIsMover) {
             acc.removeFeature(featOwnPawn(moverCell, viewerPlayer));
@@ -453,13 +474,13 @@ inline void updateAccumulatorForMove(Accumulator& acc, bool viewerIsMover, const
         int otherPlayer = 1 - viewerPlayer;
         acc.addFeature(m.a == 0 ? featWallH(slot, viewerPlayer) : featWallV(slot, viewerPlayer));
 
-        int newOwn = distBucket(shortestPathLen(after.wallsH, after.wallsV, after.pawn[viewerPlayer], viewerPlayer));
+        int newOwn = distBucket(distLenCached(after.wallsH, after.wallsV, after.pawn[viewerPlayer], viewerPlayer, xtable));
         if (acc.ownDistBucket != newOwn) {
             acc.removeFeature(featOwnDist(acc.ownDistBucket));
             acc.addFeature(featOwnDist(newOwn));
             acc.ownDistBucket = newOwn;
         }
-        int newOpp = distBucket(shortestPathLen(after.wallsH, after.wallsV, after.pawn[otherPlayer], otherPlayer));
+        int newOpp = distBucket(distLenCached(after.wallsH, after.wallsV, after.pawn[otherPlayer], otherPlayer, xtable));
         if (acc.oppDistBucket != newOpp) {
             acc.removeFeature(featOppDist(acc.oppDistBucket));
             acc.addFeature(featOppDist(newOpp));
@@ -698,7 +719,7 @@ struct AccumulatorQuant {
     }
 };
 
-inline AccumulatorQuant buildAccumulatorQuant(const State& s, int perspective) {
+inline AccumulatorQuant buildAccumulatorQuant(const State& s, int perspective, PlayerPathCacheTable* xtable = nullptr) {
     AccumulatorQuant acc;
     auto& b1 = weightsQuant().b1;
     for (int i = 0; i < HIDDEN; i++) acc.v[i] = b1[i];
@@ -709,8 +730,8 @@ inline AccumulatorQuant buildAccumulatorQuant(const State& s, int perspective) {
         if ((s.wallsH >> i) & 1ull) acc.addFeature(featWallH(i, perspective));
         if ((s.wallsV >> i) & 1ull) acc.addFeature(featWallV(i, perspective));
     }
-    acc.ownDistBucket = distBucket(shortestPathLen(s.wallsH, s.wallsV, s.pawn[me], me));
-    acc.oppDistBucket = distBucket(shortestPathLen(s.wallsH, s.wallsV, s.pawn[opp], opp));
+    acc.ownDistBucket = distBucket(distLenCached(s.wallsH, s.wallsV, s.pawn[me], me, xtable));
+    acc.oppDistBucket = distBucket(distLenCached(s.wallsH, s.wallsV, s.pawn[opp], opp, xtable));
     acc.addFeature(featOwnDist(acc.ownDistBucket));
     acc.addFeature(featOppDist(acc.oppDistBucket));
     acc.ownWallsLeftBucket = wallsLeftBucket(s.wallsLeft[me]);
@@ -726,13 +747,14 @@ inline AccumulatorQuant buildAccumulatorQuant(const State& s, int perspective) {
 // quantizado -- mantida como função separada (em vez de template único)
 // pra não esconder o tipo int32_t/float por trás de deducao automática
 // nos pontos de chamada da busca.
-inline void updateAccumulatorForMoveQuant(AccumulatorQuant& acc, bool viewerIsMover, const State& before, const Move& m) {
+inline void updateAccumulatorForMoveQuant(AccumulatorQuant& acc, bool viewerIsMover, const State& before, const Move& m,
+                                           PlayerPathCacheTable* xtable = nullptr) {
     State after = applyMove(before, m);
     int mover = before.turn, opp = 1 - mover;
     if (!m.isWall) {
         int destCell = m.a;
         int moverCell = before.pawn[mover];
-        int newBucket = distBucket(shortestPathLen(after.wallsH, after.wallsV, destCell, mover));
+        int newBucket = distBucket(distLenCached(after.wallsH, after.wallsV, destCell, mover, xtable));
         int viewerPlayer = viewerIsMover ? mover : opp;
         if (viewerIsMover) {
             acc.removeFeature(featOwnPawn(moverCell, viewerPlayer));
@@ -758,13 +780,13 @@ inline void updateAccumulatorForMoveQuant(AccumulatorQuant& acc, bool viewerIsMo
         int otherPlayer = 1 - viewerPlayer;
         acc.addFeature(m.a == 0 ? featWallH(slot, viewerPlayer) : featWallV(slot, viewerPlayer));
 
-        int newOwn = distBucket(shortestPathLen(after.wallsH, after.wallsV, after.pawn[viewerPlayer], viewerPlayer));
+        int newOwn = distBucket(distLenCached(after.wallsH, after.wallsV, after.pawn[viewerPlayer], viewerPlayer, xtable));
         if (acc.ownDistBucket != newOwn) {
             acc.removeFeature(featOwnDist(acc.ownDistBucket));
             acc.addFeature(featOwnDist(newOwn));
             acc.ownDistBucket = newOwn;
         }
-        int newOpp = distBucket(shortestPathLen(after.wallsH, after.wallsV, after.pawn[otherPlayer], otherPlayer));
+        int newOpp = distBucket(distLenCached(after.wallsH, after.wallsV, after.pawn[otherPlayer], otherPlayer, xtable));
         if (acc.oppDistBucket != newOpp) {
             acc.removeFeature(featOppDist(acc.oppDistBucket));
             acc.addFeature(featOppDist(newOpp));
