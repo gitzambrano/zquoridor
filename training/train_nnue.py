@@ -21,6 +21,13 @@ Recursos:
   - Varios arquivos .bin em --data (lista separada por virgula, diretorio,
     glob, ou --data repetido), via MultiFileSelfPlay (read_selfplay.py) --
     os shards nunca sao concatenados inteiros em RAM.
+  - Alternativa a --data: DATA_SOURCES_DEFAULT (topo do arquivo, ou
+    --data-sources) mistura VARIAS pastas com uma fracao [0,1] de posicoes
+    sorteada aleatoriamente por pasta (estilo mixtrain.py) -- ex. treinar
+    principalmente com o self-play mais recente mas mantendo uma fatia
+    pequena de geracoes antigas, pra rede nao esquecer padroes antigos e
+    driftar pra um otimo local do gen atual. Ver resolve_data_source_path()
+    / load_training_population().
   - Split treino/validacao por fracao (--val-split) ou --val-data explicito.
   - Treino em chunks dimensionados por orcamentos de RAM e VRAM
     (--ram-budget-gb, --vram-budget-gb; default calibrado para 32GB RAM /
@@ -123,15 +130,51 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from read_selfplay import SAMPLE_DTYPE, DIST_BUCKETS, load_multi_selfplay  # noqa: E402
+from read_selfplay import SAMPLE_DTYPE, DIST_BUCKETS, load_multi_selfplay, expand_data_paths  # noqa: E402
 from quantize_nnue import quantize_file  # noqa: E402
 
 # ============================== DEFAULT CONFIG ==============================
 # Editar aqui muda o default sem precisar de flag; toda entrada tem uma
 # flag de linha de comando correspondente que sobrescreve o valor abaixo.
 DATA_DEFAULT = [
-    os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data", "selfplay")
+    os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data", "")
 ]
+DATA_ROOT_DEFAULT = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data")
+
+# --- fontes de treino por pasta, com fracao (estilo mixtrain.py) -----------
+# Alternativa a DATA_DEFAULT/--data acima: uma LISTA de fontes, cada uma
+# {"path": <subpasta ou caminho>, "frac": <0.0-1.0>}.
+#   - "path" e resolvido nessa ordem: (1) como foi escrito -- absoluto, ou
+#     relativo ao cwd; (2) DATA_ROOT/selfplay/<path>; (3) DATA_ROOT/arena/
+#     <path>; (4) DATA_ROOT/<path> (raiz de data/). A primeira que existir
+#     "ganha" -- ver resolve_data_source_path().
+#   - "frac" e a fracao [0.0, 1.0] de POSICOES (nao arquivos/shards
+#     inteiros) sorteada aleatoriamente (sem reposicao, usando --seed --
+#     reprodutivel) daquela pasta. 1.0 usa tudo; 0.0 ignora a entrada.
+#   - Cada pasta so pode aparecer em UMA fonte (pastas nao podem se
+#     sobrepor -- erro explicito se um mesmo arquivo .bin cair em duas).
+# Se DATA_SOURCES_DEFAULT estiver vazia, o comportamento e o antigo:
+# DATA_DEFAULT/--data direto, sem amostragem por pasta (ver
+# load_training_population()).
+#
+# Motivacao pratica: manter uma fatia pequena de geracoes antigas de
+# self-play no treino evita que a rede "esqueca" padroes antigos e drifte
+# para um otimo local do gen mais recente.
+#
+# Exemplo (edite aqui -- pastas dentro de data/selfplay/):
+#   DATA_SOURCES_DEFAULT = [
+#       {"path": "gen7", "frac": 1.0},   # gen atual: usa tudo
+#       {"path": "gen6", "frac": 0.4},
+#       {"path": "gen5", "frac": 0.2},
+#       {"path": "gen4", "frac": 0.1},
+#       {"path": "gen3", "frac": 0.05},  # gens antigos: so uma pitada, contra o esquecimento
+#   ]
+DATA_SOURCES_DEFAULT = [
+      {"path": "selfplay/gen1", "frac": 0.2},   
+      {"path": "selfplay/gen2", "frac": 1.0},
+      {"path": "arena", "frac": 0.2},
+]
+
 OUT_DEFAULT = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data", "nnue", "nnue_weights.bin")
 
 EPOCHS_DEFAULT = 60
@@ -143,6 +186,21 @@ LR_DEFAULT = 1e-3
 LR_MIN_DEFAULT = 1e-5
 LR_SCHEDULE_DEFAULT = "cosine"        # none | step | exponential | cosine
 WARMUP_EPOCHS_DEFAULT = 2
+
+# LR default usado quando um NOVO CICLO e detectado automaticamente (ver
+# "new_cycle"/cycle_exhausted em train(): checkpoint anterior tinha
+# terminado um treino COMPLETO -- nao no meio de um epoch -- e estamos
+# retomando so os PESOS pra treinar de novo, tipicamente sobre um selfplay
+# novo gerado com a rede anterior). Nesse caso LR_DEFAULT (pensado pra
+# treino do zero) e alto demais: com otimizador/schedule reiniciados, o
+# warmup+cosine trataria 1e-3 como pico de novo e arriscaria afastar os
+# pesos ja convergidos do otimo local em vez de so refina-los. 5e-5 e um
+# ponto de partida razoavel para fine-tuning nesse cenario (mesma ordem de
+# grandeza do fim do cosine annealing de um treino normal); ajuste via
+# --new-cycle-lr se notar que esta convergindo devagar demais ou de menos.
+# So se aplica quando --lr fica em "auto" (nao sobrescreve um --lr
+# numerico explicito).
+NEW_CYCLE_LR_DEFAULT = 5e-5
 STEP_SIZE_DEFAULT = 10
 STEP_GAMMA_DEFAULT = 0.5
 EXP_GAMMA_DEFAULT = 0.97
@@ -170,12 +228,26 @@ RAM_BUDGET_GB_DEFAULT = 32.0
 RAM_CHUNK_FRACTION_DEFAULT = 0.25     # fracao do orcamento de RAM usada como buffer de shuffle
 CHUNK_SIZE_DEFAULT = "auto"           # inteiro, ou "auto" (calculado a partir de --ram-budget-gb)
 
+# Tetos superiores de batch_size/chunk_size "auto". Antes eram constantes
+# fixas (16_384 / 5_000_000) dentro das proprias funcoes de calculo, bem
+# abaixo do que os orcamentos de VRAM/RAM acima realmente permitem para
+# esta rede (pico medido ~0.39 GB de VRAM contra um orcamento de 6.0 GB) --
+# ou seja, o "auto" na pratica nunca estava usando o orcamento informado,
+# so batendo nesses tetos. Agora sao configuraveis via --batch-size-max /
+# --chunk-size-max, e o "auto" volta a ser regido pelo orcamento de
+# verdade. Valores default ainda com folga de seguranca (nao no limite
+# teorico do orcamento) por causa de picos de memoria fora da formula
+# (fragmentacao do allocator CUDA, overhead do dataloader, etc).
+BATCH_SIZE_MAX_DEFAULT = 131_072
+CHUNK_SIZE_MAX_DEFAULT = 20_000_000
+
 W_SCORE_DEFAULT = 0.3
 W_OUTCOME_DEFAULT = 1.0
 W_POLICY_DEFAULT = 1.0
 QA_DEFAULT = 255
 QB_DEFAULT = 64
 LOG_EVERY_DEFAULT = 1
+PLOT_EVERY_EPOCHS_DEFAULT = 5
 
 # GPU vs CPU: o UNICO parametro que decide isso. True = usa CUDA se
 # `torch.cuda.is_available()` (cai pra CPU sozinho, sem erro, se nao
@@ -210,6 +282,10 @@ GPU_CHUNK_MULTIPLIER_DEFAULT = 8
 
 # Intervalo minimo (segundos) entre linhas de progresso dentro do epoch.
 PROGRESS_EVERY_SECS_DEFAULT = 5.0
+# A cada quantas atualizacoes de progresso (--progress-every-secs) uma linha
+# fica fixa no scrollback -- as outras so atualizam a linha viva via \r.
+# Com o default de 5s/atualizacao, 6 da uma linha fixa a cada ~30s.
+PROGRESS_PERMANENT_EVERY_DEFAULT = 6
 # =============================================================================
 
 N, WS = 9, 8
@@ -361,13 +437,15 @@ def iter_gpu_batches(chunk: np.ndarray, device, batch_size: int, gpu_chunk_size:
 
 
 # --- orcamento de memoria: auto batch-size (VRAM) / chunk-size (RAM) -------
-def compute_auto_batch_size(vram_budget_gb, reserved_gb=1.0, min_bs=64, max_bs=16384):
+def compute_auto_batch_size(vram_budget_gb, reserved_gb=1.0, min_bs=64, max_bs=BATCH_SIZE_MAX_DEFAULT):
     """Estimativa conservadora de quantas amostras cabem por batch dentro do
     orcamento de VRAM informado. `reserved_gb` cobre o contexto CUDA e os
     pesos/estados do otimizador (a rede e minuscula, isso domina o
     orcamento fixo). Para o restante, soma-se entrada + ativacoes de todas
     as camadas + gradientes, com fator de seguranca 4x para os buffers
-    intermediarios que o autograd mantem vivos durante o backward."""
+    intermediarios que o autograd mantem vivos durante o backward.
+    `max_bs` e so um teto de seguranca (ver --batch-size-max) -- nao deveria
+    ser o fator dominante quando o orcamento de VRAM informado da folga."""
     elems_per_sample = NUM_FEATURES + HIDDEN + 2 * 32 + POLICY_OUT
     bytes_per_sample = elems_per_sample * 4 * 4  # float32, fwd+bwd, margem 4x
     usable = max(0.0, (vram_budget_gb - reserved_gb)) * (1024 ** 3)
@@ -376,10 +454,11 @@ def compute_auto_batch_size(vram_budget_gb, reserved_gb=1.0, min_bs=64, max_bs=1
 
 
 def compute_chunk_size(n_total, ram_budget_gb, fraction=RAM_CHUNK_FRACTION_DEFAULT,
-                        min_size=20_000, max_size=5_000_000):
+                        min_size=20_000, max_size=CHUNK_SIZE_MAX_DEFAULT):
     """Numero de posicoes lidas por vez do dataset (structs crus) para
     formar o buffer de shuffle, escolhido para caber em `fraction` do
-    orcamento de RAM informado."""
+    orcamento de RAM informado. `max_size` e so um teto de seguranca (ver
+    --chunk-size-max), nao deveria dominar sobre o orcamento de RAM real."""
     budget_bytes = ram_budget_gb * (1024 ** 3) * fraction
     bytes_per_sample = SAMPLE_DTYPE.itemsize + NUM_FEATURES * 4
     size = int(budget_bytes // max(1, bytes_per_sample))
@@ -700,6 +779,9 @@ def _sigint_handler(signum, frame):
         if rs.args is not None:
             best_metric = rs.stopper.best if rs.stopper is not None else None
             save_config_json(rs.ckpt_dir, rs.args, rs.fingerprint, rs.epoch, best_metric, last_path, suffix)
+            if rs.args.plot_dir and rs.history and len(rs.history.get("epoch", [])) > 0:
+                save_plots(rs.history, rs.args.plot_dir)
+                print(f"plots parciais salvos em {rs.args.plot_dir}")
         status = "completo" if rs.epoch_completed else "parcial -- sera refeito ao retomar"
         print(f"checkpoint salvo em {rs.ckpt_dir} (epoch {rs.epoch}, sufixo {suffix}, {status})")
     else:
@@ -835,14 +917,116 @@ def save_plots(history, plot_dir):
     return out_path
 
 
+# --- fontes de treino (pastas com fracao, estilo mixtrain.py) ---------------
+def resolve_data_source_path(path: str, data_root: str) -> str:
+    """Resolve o `path` de uma entrada de DATA_SOURCES/--data-sources (ver
+    DEFAULT CONFIG no topo do arquivo). Tenta, nessa ordem: (1) o caminho
+    como foi passado -- absoluto, ou relativo ao cwd; (2)
+    <data_root>/selfplay/<path>; (3) <data_root>/arena/<path>; (4)
+    <data_root>/<path> (raiz de data/). A primeira que existir (arquivo OU
+    diretorio) e usada."""
+    candidates = [
+        path,
+        os.path.join(data_root, "selfplay", path),
+        os.path.join(data_root, "arena", path),
+        os.path.join(data_root, path),
+    ]
+    for c in candidates:
+        if os.path.exists(c):
+            return c
+    tried = "\n  - ".join(candidates)
+    raise FileNotFoundError(f"[data-sources] '{path}' nao encontrado. Tentei:\n  - {tried}")
+
+
+def load_training_population(data_arg, sources_arg, data_root, seed):
+    """Monta a populacao de treino a partir de --data (fluxo antigo, uma
+    lista/glob/diretorio achatada, sem amostragem) OU --data-sources/
+    DATA_SOURCES_DEFAULT (fluxo novo: lista de {"path", "frac"}, uma fracao
+    [0,1] de POSICOES sorteada aleatoriamente por pasta).
+
+    Retorna (train_paths, train_ds, base_idx):
+      - train_paths / train_ds: iguais ao retorno de load_multi_selfplay,
+        cobrindo TODOS os arquivos .bin de TODAS as fontes envolvidas.
+      - base_idx: array de indices GLOBAIS (posicoes dentro de train_ds) ja
+        filtrado pelas fracoes por fonte -- e a populacao que train() usa
+        para o split treino/validacao (--val-split fatia DENTRO de
+        base_idx, nao do total bruto). Sem --data-sources, base_idx e
+        simplesmente arange(len(train_ds)) (comportamento antigo,
+        inalterado).
+    """
+    if not sources_arg:
+        train_paths, train_ds = load_multi_selfplay(data_arg)
+        return train_paths, train_ds, np.arange(len(train_ds))
+
+    rng = np.random.default_rng(seed)
+    all_paths, source_file_counts, kept_sources = [], [], []
+    for entry in sources_arg:
+        raw_path = entry["path"]
+        frac = float(entry.get("frac", 1.0))
+        if frac <= 0.0:
+            print(f"[data-sources] ignorado (frac=0): {raw_path}")
+            continue
+        if not (0.0 < frac <= 1.0):
+            raise ValueError(f"[data-sources] frac invalido ({frac}) para '{raw_path}' -- "
+                              f"precisa estar em (0.0, 1.0]")
+        resolved = resolve_data_source_path(raw_path, data_root)
+        src_paths = expand_data_paths(resolved)
+        if not src_paths:
+            raise ValueError(f"[data-sources] nenhum .bin encontrado em '{resolved}' (fonte '{raw_path}')")
+        all_paths.extend(src_paths)
+        source_file_counts.append(len(src_paths))
+        kept_sources.append((raw_path, frac, resolved))
+
+    if not all_paths:
+        raise ValueError("[data-sources] todas as fontes tem frac=0 (ou a lista esta vazia) -- "
+                          "nada para treinar")
+    if len(all_paths) != len(set(all_paths)):
+        dupes = sorted({p for p in all_paths if all_paths.count(p) > 1})
+        raise ValueError(f"[data-sources] pastas de fontes se sobrepoem -- arquivo(s) repetido(s) "
+                          f"em mais de uma fonte: {dupes}")
+
+    train_paths, train_ds = load_multi_selfplay(all_paths)
+    file_lens = [n for _, n in train_ds.sizes()]
+
+    selected_chunks = []
+    idx_cursor = 0
+    global_offset = 0
+    print(f"fontes de treino ({len(kept_sources)} pasta(s), sorteio aleatorio por posicao, seed={seed}):")
+    for (raw_path, frac, resolved), nfiles in zip(kept_sources, source_file_counts):
+        n_source = sum(file_lens[idx_cursor:idx_cursor + nfiles])
+        start = global_offset
+        idx_cursor += nfiles
+        global_offset += n_source
+        if frac >= 1.0:
+            sel = np.arange(start, start + n_source)
+        else:
+            n_take = max(1, round(n_source * frac))
+            local = rng.choice(n_source, size=n_take, replace=False)
+            sel = start + np.sort(local)
+        selected_chunks.append(sel)
+        print(f"  - {raw_path:24s} ({resolved}): {nfiles} arquivo(s), {n_source:,} posicoes, "
+              f"frac={frac:.2f} -> {len(sel):,} selecionadas")
+
+    base_idx = np.concatenate(selected_chunks)
+    print(f"total (todas as fontes, pos-amostragem): {len(base_idx):,} / {global_offset:,} posicoes "
+          f"({100.0 * len(base_idx) / max(1, global_offset):.1f}%)")
+    return train_paths, train_ds, base_idx
+
+
 # --- treino ------------------------------------------------------------------
 def train(args):
     global _ckpt_saved_on_interrupt
     _ckpt_saved_on_interrupt = False
-    train_paths, train_ds = load_multi_selfplay(args.data)
-    print(f"dados de treino: {len(train_paths)} arquivo(s), {len(train_ds):,} posicoes")
-    for p, n in train_ds.sizes():
-        print(f"  - {p}: {n:,} posicoes")
+    sources = args.data_sources if args.data_sources else DATA_SOURCES_DEFAULT
+    train_paths, train_ds, base_idx = load_training_population(
+        args.data, sources, DATA_ROOT_DEFAULT, args.seed)
+    if sources:
+        print(f"dados de treino: {len(train_paths)} arquivo(s), {len(train_ds):,} posicoes no total "
+              f"(--data-sources ativo -- ver amostragem por fonte acima)")
+    else:
+        print(f"dados de treino: {len(train_paths)} arquivo(s), {len(train_ds):,} posicoes")
+        for p, n in train_ds.sizes():
+            print(f"  - {p}: {n:,} posicoes")
 
     rng = np.random.default_rng(args.seed)
     torch.manual_seed(args.seed)
@@ -850,21 +1034,23 @@ def train(args):
     if args.val_data:
         val_paths, val_ds = load_multi_selfplay(args.val_data)
         print(f"dados de validacao (explicitos): {len(val_paths)} arquivo(s), {len(val_ds):,} posicoes")
-        train_idx = np.arange(len(train_ds))
+        train_idx = base_idx
         val_idx = np.arange(len(val_ds))
     else:
-        n_total = len(train_ds)
+        n_total = len(base_idx)
         n_val = max(1, int(n_total * args.val_split))
         perm = rng.permutation(n_total)
-        val_idx, train_idx = perm[:n_val], perm[n_val:]
+        val_idx, train_idx = base_idx[perm[:n_val]], base_idx[perm[n_val:]]
         val_ds = train_ds
         print(f"split treino/validacao: {len(train_idx):,} / {len(val_idx):,} (val-split={args.val_split})")
 
     device = torch.device(args.device)
     print_device_info(device)
-    batch_size = resolve_int_or_auto(args.batch_size, lambda: compute_auto_batch_size(args.vram_budget_gb))
+    batch_size = resolve_int_or_auto(
+        args.batch_size, lambda: compute_auto_batch_size(args.vram_budget_gb, max_bs=args.batch_size_max))
     chunk_size = resolve_int_or_auto(
-        args.chunk_size, lambda: compute_chunk_size(len(train_idx), args.ram_budget_gb, args.ram_chunk_fraction))
+        args.chunk_size, lambda: compute_chunk_size(len(train_idx), args.ram_budget_gb, args.ram_chunk_fraction,
+                                                      max_size=args.chunk_size_max))
     gpu_chunk_size = batch_size * max(1, args.gpu_chunk_multiplier)
     print(f"orcamento de VRAM: {args.vram_budget_gb:.1f} GB -> batch_size={batch_size:,}")
     print(f"orcamento de RAM: {args.ram_budget_gb:.1f} GB -> chunk_size={chunk_size:,} posicoes/bloco")
@@ -899,6 +1085,12 @@ def train(args):
                   f"(otimizador, LR/WD schedule e early-stopping reiniciados; "
                   f"e o comportamento certo pra continuar apos gerar mais self-play). "
                   f"Use --fresh pra tambem descartar os pesos e comecar aleatorio.")
+            if getattr(args, "lr_auto", False):
+                print(f"[lr] novo ciclo detectado -- usando LR baixo de bootstrap "
+                      f"--new-cycle-lr={args.new_cycle_lr} (em vez do default de treino do "
+                      f"zero, LR_DEFAULT={LR_DEFAULT}) pra nao afastar demais os pesos ja "
+                      f"convergidos do otimo local; passe --lr explicito pra sobrescrever")
+                args.lr = args.new_cycle_lr
         else:
             status = "completo" if prev_completed else "parcial (sera refeito)"
             print(f"RETOMANDO treino a partir de {_train_state_path(ckpt_dir, find_latest_checkpoint_suffix(ckpt_dir))} "
@@ -987,6 +1179,8 @@ def train(args):
         last_progress_print = epoch_start_time
         positions_done = 0
         chunk_num = 0
+        progress_print_count = 0
+        last_progress_was_inline = False
 
         for chunk_idx in iter_chunks(n_train_items, chunk_size, rng):
             chunk_num += 1
@@ -1023,19 +1217,35 @@ def train(args):
                 now = time.time()
                 if args.progress_every_secs > 0 and now - last_progress_print >= args.progress_every_secs:
                     last_progress_print = now
+                    progress_print_count += 1
                     frac = min(1.0, positions_done / max(1, n_train_items))
                     elapsed = now - epoch_start_time
                     eta_epoch = elapsed / frac - elapsed if frac > 0 else 0.0
                     running_loss = tr_total["loss"] / max(1, positions_done)
                     running_acc = tr_total["correct"] / max(1, positions_done)
-                    print(f"  epoch {epoch:3d}/{args.epochs}  chunk {chunk_num:>3}/{total_chunks_per_epoch} | "
-                          f"{frac * 100:5.1f}% | {positions_done / 1e6:6.2f}M/{n_train_items / 1e6:.2f}M pos | "
-                          f"loss={running_loss:.4f} acc={running_acc:.3f} | "
-                          f"ETA epoch: {format_duration(eta_epoch)}")
+                    line = (f"  epoch {epoch:3d}/{args.epochs}  {frac * 100:5.1f}% "
+                            f"({positions_done / 1e6:.2f}M/{n_train_items / 1e6:.2f}M pos) | "
+                            f"loss={running_loss:.4f} acc={running_acc:.3f} | "
+                            f"ETA epoch: {format_duration(eta_epoch)}")
+                    # Atualiza a mesma linha (\r) na maioria das vezes; a cada
+                    # --progress-permanent-every atualizacoes, deixa uma linha
+                    # fixa no scrollback (estilo mixtrain.py) pra ter historico
+                    # visivel sem inundar o terminal com uma linha nova a cada
+                    # poucos segundos.
+                    permanent = (progress_print_count % max(1, args.progress_permanent_every) == 0)
+                    if permanent:
+                        print(line)
+                        last_progress_was_inline = False
+                    else:
+                        print(line + " " * 8, end="\r", flush=True)
+                        last_progress_was_inline = True
 
         for k in ("loss", "score", "outcome", "policy"):
             tr_total[k] /= max(1, n_train_items)
         tr_total["policy_acc"] = tr_total["correct"] / max(1, n_train_items)
+
+        if last_progress_was_inline:
+            print()  # fecha a linha viva (\r) antes de qualquer print permanente do epoch
 
         va = run_eval(val_ds, val_idx, batch_size, chunk_size, gpu_chunk_size, model, device,
                       args.w_score, args.w_outcome, args.w_policy)
@@ -1081,18 +1291,20 @@ def train(args):
         vram_note = ""
         if device.type == "cuda":
             peak_gb = torch.cuda.max_memory_allocated(device) / (1024 ** 3)
-            vram_note = f" | pico VRAM: {peak_gb:.2f} GB"
+            vram_note = f"  vram={peak_gb:.2f}GB"
 
         if epoch % args.log_every == 0 or epoch == args.epochs or improved or should_stop:
-            star = " *" if improved else "  "
-            print(f"epoch {epoch:3d}/{args.epochs} | lr={lr:.2e} wd={wd:.2e} | "
-                  f"treino: loss={tr_total['loss']:.4f} (score={tr_total['score']:.4f} "
-                  f"outcome={tr_total['outcome']:.4f} policy={tr_total['policy']:.4f} "
-                  f"acc={tr_total['policy_acc']:.3f}) | "
-                  f"val: loss={va['loss']:.4f} (score={va['score']:.4f} outcome={va['outcome']:.4f} "
-                  f"policy={va['policy']:.4f} acc={va['policy_acc']:.3f}){star} | "
-                  f"epoch: {format_duration(epoch_duration)} | total: {time.time() - t0:.0f}s | "
-                  f"ETA treino: {eta_run}{vram_note}")
+            star = " *" if improved else ""
+            print(f"epoch {epoch:3d}/{args.epochs}  lr={lr:.2e}  wd={wd:.2e}  "
+                  f"time={format_duration(epoch_duration)}  total={format_duration(time.time() - t0)}  "
+                  f"ETA={eta_run}{vram_note}{star}")
+            print(f"  treino  loss={tr_total['loss']:.4f}  acc={tr_total['policy_acc']:.3f}  "
+                  f"(score={tr_total['score']:.4f} outcome={tr_total['outcome']:.4f} policy={tr_total['policy']:.4f})")
+            print(f"  valid   loss={va['loss']:.4f}  acc={va['policy_acc']:.3f}  "
+                  f"(score={va['score']:.4f} outcome={va['outcome']:.4f} policy={va['policy']:.4f})")
+
+        if args.plot_dir and (epoch % args.plot_every_epochs == 0 or epoch == args.epochs or should_stop):
+            save_plots(history, args.plot_dir)
 
         if should_stop:
             print(f"\nearly stopping: sem melhora em '{args.monitor}' por {stopper.patience} epochs "
@@ -1180,7 +1392,15 @@ def parse_args(argv=None):
     g_data = p.add_argument_group("dados")
     g_data.add_argument("--data", action="append", default=None,
                          help="arquivo(s) .bin de self-play; aceita lista separada por virgula, "
-                              "diretorio, glob, ou a flag repetida varias vezes")
+                              "diretorio, glob, ou a flag repetida varias vezes. Ignorado se "
+                              "--data-sources (ou DATA_SOURCES_DEFAULT no topo do arquivo) "
+                              "estiver configurado")
+    g_data.add_argument("--data-sources", default=None,
+                         help="JSON com lista de fontes por pasta + fracao de posicoes, "
+                              "sobrepondo DATA_SOURCES_DEFAULT -- mesmo formato: "
+                              '\'[{"path":"gen7","frac":1.0},{"path":"gen6","frac":0.3}]\'. '
+                              "Uso normal e editar DATA_SOURCES_DEFAULT no topo do arquivo em "
+                              "vez desta flag (ver comentario ali)")
     g_data.add_argument("--val-data", action="append", default=None,
                          help="arquivo(s) .bin usados so para validacao (mesmas regras de --data); "
                               "se omitido, a validacao vem de uma fracao de --data (--val-split)")
@@ -1206,6 +1426,12 @@ def parse_args(argv=None):
                              "etc.) recalcula a partir do novo valor a cada epoch, então "
                              "trocar o LR no meio de um treino retomado tem efeito "
                              "imediato (ver apply_lr_wd() no loop principal).")
+    g_opt.add_argument("--new-cycle-lr", type=float, default=NEW_CYCLE_LR_DEFAULT,
+                        help=f"LR usado no lugar de LR_DEFAULT quando um NOVO CICLO e detectado "
+                             f"(checkpoint anterior completou um treino inteiro; resume so os "
+                             f"pesos, ver cycle_exhausted em train()) e --lr ficou em 'auto' "
+                             f"(default {NEW_CYCLE_LR_DEFAULT}; nunca sobrescreve um --lr "
+                             f"numerico explicito)")
     g_opt.add_argument("--lr-min", type=float, default=LR_MIN_DEFAULT)
     g_opt.add_argument("--lr-schedule", choices=["none", "step", "exponential", "cosine"],
                         default=LR_SCHEDULE_DEFAULT)
@@ -1275,6 +1501,12 @@ def parse_args(argv=None):
                         help="fracao do orcamento de RAM reservada ao buffer de shuffle")
     g_mem.add_argument("--chunk-size", default=CHUNK_SIZE_DEFAULT,
                         help='inteiro, ou "auto" para calcular a partir de --ram-budget-gb (default "auto")')
+    g_mem.add_argument("--batch-size-max", type=int, default=BATCH_SIZE_MAX_DEFAULT,
+                        help=f"teto de seguranca para --batch-size=auto, independente do quanto "
+                             f"--vram-budget-gb permitiria (default {BATCH_SIZE_MAX_DEFAULT})")
+    g_mem.add_argument("--chunk-size-max", type=int, default=CHUNK_SIZE_MAX_DEFAULT,
+                        help=f"teto de seguranca para --chunk-size=auto, independente do quanto "
+                             f"--ram-budget-gb permitiria (default {CHUNK_SIZE_MAX_DEFAULT})")
 
     g_loss = p.add_argument_group("pesos de loss / QAT")
     g_loss.add_argument("--w-score", type=float, default=W_SCORE_DEFAULT)
@@ -1291,15 +1523,24 @@ def parse_args(argv=None):
                          help="quantos batches sao agrupados por transferencia host->device "
                               f"(default {GPU_CHUNK_MULTIPLIER_DEFAULT}x o batch_size)")
     g_perf.add_argument("--progress-every-secs", type=float, default=PROGRESS_EVERY_SECS_DEFAULT,
-                         help="intervalo minimo entre linhas de progresso dentro do epoch; "
-                              f"0 desliga (default {PROGRESS_EVERY_SECS_DEFAULT}s)")
+                         help="intervalo minimo entre atualizacoes da linha viva de progresso "
+                              f"dentro do epoch; 0 desliga (default {PROGRESS_EVERY_SECS_DEFAULT}s)")
+    g_perf.add_argument("--progress-permanent-every", type=int, default=PROGRESS_PERMANENT_EVERY_DEFAULT,
+                         help="a cada quantas atualizacoes de progresso uma linha fica fixa no "
+                              "scrollback (as demais so atualizam a linha viva via \\r), estilo "
+                              f"mixtrain.py (default {PROGRESS_PERMANENT_EVERY_DEFAULT})")
 
     g_out = p.add_argument_group("saida")
     g_out.add_argument("--out", default=OUT_DEFAULT, help="caminho de saida dos pesos treinados (.bin)")
     g_out.add_argument("--no-quantize", action="store_true")
     g_out.add_argument("--quant-out", default=None)
     g_out.add_argument("--plot-dir", default=None,
-                        help="diretorio para salvar plots de convergencia/validacao (PNG)")
+                        help="diretorio para salvar plots de convergencia/validacao (PNG). Regravado "
+                             "periodicamente durante o treino (ver --plot-every-epochs), nao so no "
+                             "final -- da pra abrir e acompanhar com o treino ainda rodando.")
+    g_out.add_argument("--plot-every-epochs", type=int, default=PLOT_EVERY_EPOCHS_DEFAULT,
+                        help="a cada quantos epochs o PNG de --plot-dir e regravado "
+                             f"(default {PLOT_EVERY_EPOCHS_DEFAULT})")
     g_out.add_argument("--log-every", type=int, default=LOG_EVERY_DEFAULT)
 
     # --resume-config (ou auto-detect de <ckpt-dir>/train_config.json quando
@@ -1325,7 +1566,18 @@ def parse_args(argv=None):
                   if k in _CONFIG_JSON_HYPERPARAM_KEYS}
             hp_lr = hp.get("lr")
             if hp:
-                p.set_defaults(**hp)
+                # "lr" fica de fora do set_defaults: seu valor ja foi
+                # capturado em hp_lr acima e e aplicado mais abaixo via
+                # a resolucao de --lr "auto" (que tambem decide entre
+                # hp_lr e --new-cycle-lr quando um NOVO CICLO e detectado
+                # em train()). Se "lr" entrar aqui, o set_defaults troca o
+                # default de --lr (que e a string sentinela "auto") pelo
+                # float herdado, e isso quebra a deteccao de
+                # args.lr_auto logo abaixo -- o override de
+                # --new-cycle-lr no cycle_exhausted nunca dispara.
+                hp_for_defaults = {k: v for k, v in hp.items() if k != "lr"}
+                if hp_for_defaults:
+                    p.set_defaults(**hp_for_defaults)
                 print(f"[config] hiperparametros herdados de {cfg_path} (epoch {cfg.get('epoch')}, "
                       f"best_metric={cfg.get('best_metric')}): {sorted(hp.keys())}")
             if pre_args.init_from is None and cfg.get("weights_path"):
@@ -1342,7 +1594,8 @@ def parse_args(argv=None):
     # herdável -- set_defaults só se aplica quando a flag NÃO aparece em
     # argv, então um "--lr auto" literal escondia o valor herdado sem essa
     # resolução explícita.
-    if args.lr == "auto":
+    args.lr_auto = (args.lr == "auto")
+    if args.lr_auto:
         if hp_lr is not None:
             args.lr = float(hp_lr)
             print(f"[lr] auto: herdado de {cfg_path} (lr={args.lr})")
@@ -1351,8 +1604,19 @@ def parse_args(argv=None):
                   f"em --ckpt-dir nem --resume-config -- comecando do zero com "
                   f"lr={LR_DEFAULT} (LR_DEFAULT)")
             args.lr = LR_DEFAULT
+        # NOTA: se train() detectar um NOVO CICLO (checkpoint anterior com
+        # treino completo, so pesos sendo retomados), args.lr e sobrescrito
+        # de novo ali para --new-cycle-lr (ver cycle_exhausted) -- o valor
+        # herdado/LR_DEFAULT acima e so o default pra treino "normal"
+        # (do zero ou resume no meio de um epoch).
     else:
         args.lr = float(args.lr)
+
+    if args.data_sources:
+        try:
+            args.data_sources = json.loads(args.data_sources)
+        except json.JSONDecodeError as e:
+            p.error(f"--data-sources: JSON invalido ({e})")
 
     return args
 

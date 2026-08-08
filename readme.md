@@ -15,16 +15,6 @@ A meta de força é vencer a esmagadora maioria dos jogadores humanos
 (por volta de 99%) e, na sequência, medir o motor contra os
 motores públicos de Quoridor mais fortes que existirem.
 
-**Status atual**: A busca (negamax, alpha-beta, tabela de transposição,
-killer/history, CAT, LMR+PVS, RFP+LMP, quiescência de muro, cache de BFS
-por nó e entre nós, solver exato de final "mãos vazias") está 100% implementada
-e validada por testes de regressão. A **NNUE está inteiramente integrada na busca**
-(`src/search.hpp`, `src/nnue.hpp`), permitindo alternância em tempo de execução entre
-avaliação heurística (`EvalMode::Heuristic`) e rede neural quantizada (`EvalMode::NNUE`).
-O pipeline de treino em PyTorch (`train_nnue.py`), quantização QAT (`quantize_nnue.py`)
-e geração de dados em self-play de 32 bytes (`selfplay.exe` / `read_selfplay.py`) estão
-completos e operacionais.
-
 ---
 
 ## 1. Estrutura de diretórios
@@ -95,13 +85,13 @@ inclui `../src/rules.hpp` e `../src/search.hpp` diretamente.
 
 ### 2.1 Windows (`build/*.bat`, precisa de MinGW-w64 `g++` no PATH)
 
-| Script                 | Gera em`bin/`                                                                                         | Flags                                       |
+| Script | Gera em`bin/` | Flags |
 | ---------------------- | ------------------------------------------------------------------------------------------------------- | ------------------------------------------- |
-| `build_bench.bat`    | `bench.exe`, `bench_quiescence_toggle.exe`                                                          | `-O3 -march=native -mavx2 -mfma`          |
-| `build_tests.bat`    | `test_rules_sanity.exe`, `test_search_staging.exe`, `test_move_ordering.exe`, `nnue_verify.exe` | `-O2`                                     |
-| `build_selfplay.bat` | `selfplay.exe`                                                                                        | `-O3 -march=native -mavx2 -mfma -pthread` |
-| `build_wasm.bat`     | `gui_web/quoridor.js` + `.wasm`                                                                     | requer`emsdk_env.bat` ativado antes       |
-| `build_all.bat`      | os alvos nativos acima;`build_all.bat wasm` inclui o WASM                                             | —                                          |
+| `build_bench.bat` | `bench.exe`, `bench_quiescence_toggle.exe` | `-O3 -march=native -mavx2 -mfma` |
+| `build_tests.bat` | `test_rules_sanity.exe`, `test_search_staging.exe`, `test_move_ordering.exe`, `nnue_verify.exe` | `-O2` |
+| `build_selfplay.bat` | `selfplay.exe` | `-O3 -march=native -mavx2 -mfma -pthread` |
+| `build_wasm.bat` | `gui_web/quoridor.js` + `.wasm` | requer`emsdk_env.bat` ativado antes |
+| `build_all.bat` | os alvos nativos acima;`build_all.bat wasm` inclui o WASM | — |
 
 ### 2.2 Linux/macOS (`build/*.sh`)
 
@@ -273,13 +263,13 @@ datasets grandes sem precisar calcular batch/chunk na mão:
 
 **Pesos de loss e quantização (QAT)**
 
-| Flag              | Default | O que faz                                                                       |
+| Flag | Default | O que faz |
 | ----------------- | ------- | ------------------------------------------------------------------------------- |
-| `--w-score F`   | 0.3     | peso da cabeça auxiliar (imita`evalSimple`) na loss total                    |
-| `--w-outcome F` | 1.0     | peso da cabeça WL (resultado real da partida) na loss total                    |
-| `--w-policy F`  | 1.0     | peso da cabeça de política na loss total                                      |
-| `--qa N`        | 255     | fator de quantização QA; precisa bater com`nnue.hpp` e `quantize_nnue.py` |
-| `--qb N`        | 64      | fator de quantização QB; precisa bater com`nnue.hpp` e `quantize_nnue.py` |
+| `--w-score F` | 0.3 | peso da cabeça auxiliar (imita`evalSimple`) na loss total |
+| `--w-outcome F` | 1.0 | peso da cabeça WL (resultado real da partida) na loss total |
+| `--w-policy F` | 1.0 | peso da cabeça de política na loss total |
+| `--qa N` | 255 | fator de quantização QA; precisa bater com`nnue.hpp` e `quantize_nnue.py` |
+| `--qb N` | 64 | fator de quantização QB; precisa bater com`nnue.hpp` e `quantize_nnue.py` |
 
 **Fluxo de Checkpointing, Interrupção (Ctrl+C) e Quantização**
 
@@ -326,13 +316,6 @@ neural, depois os testes que garantem que nada disso quebrou.
   Essa última pergunta (robustez do caminho) é usada tanto na avaliação
   da posição quanto para decidir quando a busca precisa "olhar mais
   fundo" antes de confiar no resultado (quiescência, ver abaixo).
-- **Avaliação heurística** (`evalSimple`): a função que dá uma nota
-  numérica para uma posição, usada por enquanto no lugar da rede neural.
-  Soma, com pesos ajustáveis (`EvalWeights`): a diferença de distância
-  até a meta entre os dois jogadores, a mobilidade do peão (quantas
-  casas ele pode alcançar), a urgência (o quanto vale estar perto de
-  vencer, que pesa mais quando a distância já é pequena) e a robustez do
-  caminho mencionada acima.
 
 ### Busca (`search.hpp`)
 
@@ -516,11 +499,11 @@ Detalhes da arquitetura de 354 features e 3 cabeças na Seção 4.
 `332 → 256 (acumulador, ativação SCReLU)` seguido de três cabeças
 independentes (nada compartilhado além do acumulador):
 
-| Cabeça        | Forma               | Treinada contra                         | Papel                                                                                                                      |
+| Cabeça | Forma | Treinada contra | Papel |
 | -------------- | ------------------- | --------------------------------------- | -------------------------------------------------------------------------------------------------------------------------- |
-| WL (resultado) | `256→32→1`      | resultado real da partida (+1/-1), BCE  | é a que a busca vai consumir (`forwardValueWLQuant`)                                                                    |
-| Auxiliar       | `256→32→1`      | `evalSimple` no momento do lance, MSE | andaime de treino enquanto o self-play ainda vem da heurística; removida quando o self-play passar a vir da própria rede |
-| Política      | `256→209` logits | lance jogado, CrossEntropy              | ordenação de lances na busca, não é probabilidade de vitória                                                          |
+| WL (resultado) | `256→32→1` | resultado real da partida (+1/-1), BCE | é a que a busca vai consumir (`forwardValueWLQuant`) |
+| Auxiliar | `256→32→1` | `evalSimple` no momento do lance, MSE | andaime de treino enquanto o self-play ainda vem da heurística; removida quando o self-play passar a vir da própria rede |
+| Política | `256→209` logits | lance jogado, CrossEntropy | ordenação de lances na busca, não é probabilidade de vitória |
 
 A rede não tem conceito fixo de branco/preto: toda entrada e toda saída
 são relativas a uma perspectiva (`buildAccumulator(state, perspective)`),
@@ -540,80 +523,3 @@ de distância fica cacheado no acumulador para não recalcular a BFS a
 cada atualização.
 
 ---
-
-## 5. Roadmap
-
-Ordem geral: primeiro deixar o motor heurístico (negamax + `evalSimple`,
-sem rede) o mais forte possível — é ele quem gera os dados de bootstrap.
-Depois treinar a NNUE nesses dados, plugá-la na busca, e então trocar a
-fonte do self-play para a própria rede (loop de auto-melhoria, começando
-de uma heurística forte em vez de pesos aleatórios).
-
-### Fase A — Fortalecer o motor heurístico (sem rede)
-
-Tudo aqui usa só `evalSimple`, sem NNUE.
-
-1. Continuation history (1-ply) para combos de muro sequenciais — a
-   history hoje é `[lado][lance]`, sem contexto do lance anterior.
-2. ~~LMR em muros ordenados tarde~~, ~~PVS~~, ~~futility/razoring raso em
-   lance de peão quiet com profundidade ≤ 2~~ — **feito** (plano-
-   additional.md, Prioridades 3/3b/3c/8: LMR+PVS+RFP+LMP, ver Seção 3
-   "Busca" acima). Ainda falta **null-move pruning** com guarda de
-   zugzwang (`wallsLeft[side] > 0` e gap não muito apertado) — técnica
-   diferente de RFP (dá um lance "de graça" ao adversário em vez de só
-   olhar o eval estático), não coberta pelo que já está pronto.
-3. Calibrar os limiares da quiescência de muro
-   (`QS_CRITICAL_BFS_DELTA`, `QS_CRITICAL_ROBUSTNESS_DROP_TO`), hoje
-   valores iniciais não calibrados. As margens de RFP (`RFP_MARGIN_*`) e
-   contagens de LMP (`LMP_COUNT_*`) também herdaram valores de partida
-   (do titanium-engine) ainda não recalibrados via `tune_spsa.cpp` para
-   este motor.
-4. Ladder interno de ELO para o motor heurístico puro — cada otimização
-   acima validada por partidas diretas, não só por nós/s e profundidade.
-   Serve também de baseline de força para comparar com a NNUE mais tarde
-   (Fase D).
-
-### Fase B — Bootstrap: self-play do motor heurístico → treino da NNUE
-
-Gera dados de treino com o motor da Fase A e usa isso para dar à NNUE seu
-primeiro conjunto de pesos utilizável.
-
-1. Rodar um treino completo com o pipeline de regularização
-   (`--early-stop --plot-dir`, Seção 2.6) e registrar o resultado.
-2. Plugar a NNUE na busca: trocar `evalSimple` por `forwardValueWLQuant`
-   na folha do negamax (`search.hpp`).
-3. Medir o custo real de nós/s da rede quantizada dentro do laço de
-    busca (hoje só medido como microbenchmark isolado, fora do laço).
-4. Suíte de força NNUE vs. heurística — a NNUE só substitui `evalSimple`
-    se vencer o ladder da Fase A de forma estatisticamente clara.
-
-### Fase C — Self-play da própria NNUE (loop de auto-melhoria)
-
-Começa depois que a Fase B mostrar que a NNUE joga pelo menos tão bem
-quanto `evalSimple` (item 11).
-
-1. Gerar self-play usando a NNUE integrada (não mais `evalSimple`) como
-    avaliadora da busca.
-2. Zerar/remover a cabeça auxiliar (`--w-score 0` ou remoção dos campos
-    e do termo de loss correspondente) — ela existe só para imitar
-    `evalSimple` enquanto o self-play ainda vem da heurística.
-3. Retreinar a NNUE sobre o novo dataset (gerado pela própria rede) e
-    repetir o ciclo: joga melhor → gera dados melhores → treina de novo.
-4. Migrar `pathRobustness` de termo de `evalSimple` para feature de
-    entrada da NNUE — só faz sentido depois que `evalSimple` deixa de
-    ser a fonte de verdade.
-
-### Fase D — Infraestrutura e validação externa
-
-1. `engine_cli/`: executável falando um protocolo tipo-UCI por
-    stdin/stdout (`uci`, `isready`, `position`, `go movetime`/`go depth`,
-    `bestmove`, `stop`, `quit`), reusando `rules.hpp`/`search.hpp`/`nnue.hpp`
-    sem modificação. Notação: casas `a1`-`i9`, muro = casa + orientação
-    (`e3h`/`e3v`). Só depois do motor estar numa versão mais madura
-    (Fase C razoavelmente avançada).
-2. Benchmark contra motores externos open-source
-    (`github.com/dzionek/quoridorAI`, `github.com/mehrshad-sdtn/AI-Quoridor`)
-    e partidas contra humanos reais de níveis variados, para calibrar a
-    meta de ~99% empiricamente. Não existe um benchmark público único de
-    "melhor motor de Quoridor" — essas duas fontes junto com o ladder
-    interno (item 5) são a validação disponível.
