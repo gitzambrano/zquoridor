@@ -19,6 +19,7 @@ HERE = Path(__file__).parent
 
 def main():
     wasm_path = HERE / "zquoridor.wasm"
+    data_path = HERE / "zquoridor.data"
     loader_path = HERE / "zquoridor.js"
     html_path = HERE / "style.html"
     app_path = HERE / "app.js"
@@ -30,6 +31,7 @@ def main():
             sys.exit(f"faltando {p} -- rode ./build_wasm.sh primeiro")
 
     wasm_b64 = base64.b64encode(wasm_path.read_bytes()).decode("ascii")
+    data_b64 = base64.b64encode(data_path.read_bytes()).decode("ascii") if data_path.exists() else None
     loader_js = loader_path.read_text(encoding="utf-8")
     app_js = app_path.read_text(encoding="utf-8")
     html = html_path.read_text(encoding="utf-8")
@@ -37,9 +39,13 @@ def main():
     # standalone precisa passar os bytes do wasm direto pro módulo em vez
     # de deixar o Emscripten buscar zquoridor.wasm via fetch/XHR (que exige
     # servidor HTTP -- não funciona em file://).
+    module_args = ["wasmBinary: __QR_WASM_BYTES__"]
+    if data_b64:
+        module_args.append("getPreloadedPackage: (remoteName, remotePackageSize) => __QR_DATA_BYTES__")
+    
     app_js_standalone = app_js.replace(
         "ZquoridorModule().then((Module) => {",
-        "ZquoridorModule({ wasmBinary: __QR_WASM_BYTES__ }).then((Module) => {",
+        f"ZquoridorModule({{ {', '.join(module_args)} }}).then((Module) => {{",
     )
     if app_js_standalone == app_js:
         sys.exit("não encontrei o padrão ZquoridorModule().then(...) em app.js pra adaptar")
@@ -60,12 +66,15 @@ def main():
         "    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);\n"
         "    return bytes;\n"
         "}\n"
-        f'const __QR_WASM_BYTES__ = __qr_b64ToBytes("{wasm_b64}");\n\n'
+        f'const __QR_WASM_BYTES__ = __qr_b64ToBytes("{wasm_b64}");\n'
     )
+    if data_b64:
+        b2b += f'const __QR_DATA_BYTES__ = __qr_b64ToBytes("{data_b64}").buffer;\n'
+    b2b += "\n"
 
     inline = (
         "<script>\n"
-        "// --- WASM embutido em base64 (build standalone, sem servidor HTTP) ---\n"
+        "// --- WASM/DATA embutidos em base64 (build standalone, sem servidor HTTP) ---\n"
         f"{b2b}"
         f"{loader_js}\n"
         "</script>\n"
