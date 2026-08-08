@@ -1,7 +1,3 @@
-# CLAUDE.md
-
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
-
 ## Project
 
 Zquoridor is a 2-player Quoridor engine (9×9, 10 walls each; the 4-player variant is out of scope). Negamax + alpha-beta search, with an NNUE that is trained on the engine's own self-play games. Sister project of the chess engine **Zchezz**, whose conventions this repo deliberately mirrors.
@@ -15,6 +11,7 @@ Zquoridor is a 2-player Quoridor engine (9×9, 10 walls each; the 4-player varia
 Header-only engine: everything in `src/` except `main.cpp`/`selfplay_main.cpp` is a `.hpp` included directly. There is no build system — each binary is one `g++` invocation over one translation unit, with `-Isrc`. `teste/*.cpp` and `gui_web/engine_wasm.cpp` include the same headers; no `.hpp` is ever duplicated.
 
 Two flag profiles, deliberately different:
+
 - **Performance targets** (`src/main.cpp`, benchmarks, selfplay, tune_spsa, arena): `-O3 -std=c++17 -march=native -mavx2 -mfma`
 - **Correctness tests** (`teste/test_*.cpp`, `nnue_verify.cpp`): `-O2 -std=c++17` only — no `-march=native`/AVX2, so numerical-parity results stay reproducible.
 
