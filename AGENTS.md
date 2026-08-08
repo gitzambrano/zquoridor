@@ -1,6 +1,6 @@
-# AGENTS.md
+# CLAUDE.md
 
-This file provides guidance to Codex (Codex.ai/code) when working with code in this repository.
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
 ## Project
 
@@ -8,7 +8,7 @@ Zquoridor is a 2-player Quoridor engine (9×9, 10 walls each; the 4-player varia
 
 `readme.md` (620 lines) and `plano-additional.md` (1162 lines) are the design documents, both in Portuguese. `plano-additional.md` is organized by numbered "Prioridades" that the code comments reference directly (e.g. "Prioridade 4" = endgame race solver) — when touching search or eval, read the relevant Prioridade section first; several of them document approaches that were **tried and rejected** and should not be re-attempted.
 
-**Language: comments, commit messages, and docs are in Portuguese.** Match that when editing existing files.
+**Language: comments, commit messages, and docs are in English.**
 
 ## Layout & build model
 

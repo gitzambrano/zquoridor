@@ -499,8 +499,8 @@ let modalStrength = engineTimeMs;
 let modalTheme = theme;
 
 const THEME_LABELS = {
-    chess: ["clara", "escura"],
-    classic: ["azul", "vermelho"],
+    chess: ["light", "dark"],
+    classic: ["blue", "red"],
 };
 
 function applyTheme(t) {

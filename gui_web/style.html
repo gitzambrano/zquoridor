@@ -319,17 +319,17 @@
 
   <div class="controls">
     <div class="toolbar">
-      <button class="tbtn wall h" id="wallH" type="button" title="Muro horizontal — toque ou arraste no tabuleiro" aria-label="Muro horizontal">
+      <button class="tbtn wall h" id="wallH" type="button" title="Horizontal wall — tap or drag on board" aria-label="Horizontal wall">
         <span class="icon-wrap"><span class="swatch"></span></span><span class="tbtn-label">Horizontal</span>
       </button>
-      <button class="tbtn wall v" id="wallV" type="button" title="Muro vertical — toque ou arraste no tabuleiro" aria-label="Muro vertical">
+      <button class="tbtn wall v" id="wallV" type="button" title="Vertical wall — tap or drag on board" aria-label="Vertical wall">
         <span class="icon-wrap"><span class="swatch"></span></span><span class="tbtn-label">Vertical</span>
       </button>
-      <button class="tbtn" id="flipBtn" type="button" title="Virar tabuleiro" aria-label="Virar tabuleiro">
+      <button class="tbtn" id="flipBtn" type="button" title="Flip board" aria-label="Flip board">
         <span class="icon-wrap"><span style="font-size:1.2rem;line-height:1">⇅</span></span><span class="tbtn-label">Flip</span>
       </button>
-      <button class="tbtn primary" id="newGame" type="button" title="Nova partida" aria-label="Nova partida">
-        <span class="icon-wrap"><span style="font-size:1.2rem;line-height:1">↺</span></span><span class="tbtn-label">Nova partida</span>
+      <button class="tbtn primary" id="newGame" type="button" title="New Game" aria-label="New Game">
+        <span class="icon-wrap"><span style="font-size:1.2rem;line-height:1">↺</span></span><span class="tbtn-label">New Game</span>
       </button>
     </div>
 
@@ -341,33 +341,33 @@
 
 <div class="modal-overlay" id="newGameModal" hidden>
   <div class="modal-card">
-    <h2>Nova partida</h2>
-    <div class="modal-label">Você joga</div>
+    <h2>New Game</h2>
+    <div class="modal-label">Play as</div>
     <div class="modal-choices" id="sideChoices">
       <button class="choice-btn p0" data-side="0" type="button">
-        <span class="choice-dot"></span>Primeiro<span class="choice-sub" id="sideSubP0">clara</span>
+        <span class="choice-dot"></span>First<span class="choice-sub" id="sideSubP0">light</span>
       </button>
       <button class="choice-btn p1" data-side="1" type="button">
-        <span class="choice-dot"></span>Segundo<span class="choice-sub" id="sideSubP1">escura</span>
+        <span class="choice-dot"></span>Second<span class="choice-sub" id="sideSubP1">dark</span>
       </button>
     </div>
-    <div class="modal-label">Tema das peças</div>
+    <div class="modal-label">Piece Theme</div>
     <div class="modal-choices" id="themeChoices">
       <button class="choice-btn theme-btn" data-theme="chess" type="button">
-        <span class="theme-swatch"><span class="sw"></span><span class="sw"></span></span>Madeira
+        <span class="theme-swatch"><span class="sw"></span><span class="sw"></span></span>Wood
       </button>
       <button class="choice-btn theme-btn" data-theme="classic" type="button">
-        <span class="theme-swatch"><span class="sw"></span><span class="sw"></span></span>Clássico
+        <span class="theme-swatch"><span class="sw"></span><span class="sw"></span></span>Classic
       </button>
     </div>
-    <div class="modal-label">Força do motor</div>
+    <div class="modal-label">Engine Level</div>
     <div class="modal-choices strength" id="strengthChoices">
       <button class="choice-btn" data-ms="200" type="button">⚡</button>
       <button class="choice-btn" data-ms="500" type="button">⚡⚡</button>
       <button class="choice-btn" data-ms="1500" type="button">⚡⚡⚡</button>
       <button class="choice-btn" data-ms="4000" type="button">⚡⚡⚡⚡</button>
     </div>
-    <button class="modal-confirm" id="modalConfirm" type="button">Começar</button>
+    <button class="modal-confirm" id="modalConfirm" type="button">Start</button>
   </div>
 </div>
 
