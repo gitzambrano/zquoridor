@@ -1,26 +1,29 @@
 # Zquoridor
 
+🎮 **[Jogue online contra o Zquoridor no navegador!](https://gitzambrano.github.io/zquoridor/)** *(Interface gráfica Web com engine em C++ compilada em WebAssembly)*
+
 Zquoridor é um motor de Quoridor para dois jogadores, jogado num
 tabuleiro 9×9 com 10 muros por jogador. A variante de 4 jogadores está
 fora do escopo do projeto.
 
-O motor busca lances com negamax e poda alpha-beta, hoje avaliando cada
-posição com uma função heurística. A meta de médio prazo é substituir
-essa heurística por uma rede neural (NNUE) treinada em cima de partidas
-geradas pelo próprio motor, o mesmo caminho já percorrido no **Zchezz**,
-motor de xadrez irmão deste projeto.
+O motor busca lances com negamax e poda alpha-beta, avaliando posições via
+rede neural (NNUE com acumulador incremental) ou por função heurística (`evalSimple`).
+O projeto é um motor irmão do **Zchezz** (motor de xadrez), cujas convenções
+e arquitetura ele espelha.
 
 A meta de força é vencer a esmagadora maioria dos jogadores humanos
 (por volta de 99%) e, na sequência, medir o motor contra os
 motores públicos de Quoridor mais fortes que existirem.
 
-**Status atual**: a busca (negamax, alpha-beta, tabela de transposição,
+**Status atual**: A busca (negamax, alpha-beta, tabela de transposição,
 killer/history, CAT, LMR+PVS, RFP+LMP, quiescência de muro, cache de BFS
-por nó e entre nós, solver exato de final "mãos vazias") está implementada
-e validada por testes de regressão. A NNUE também está implementada —
-arquitetura, treino e quantização — mas ainda não foi plugada na busca,
-que por enquanto continua usando só a avaliação heurística
-(`evalSimple`). O caminho até lá está descrito no Roadmap (Seção 5).
+por nó e entre nós, solver exato de final "mãos vazias") está 100% implementada
+e validada por testes de regressão. A **NNUE está inteiramente integrada na busca**
+(`src/search.hpp`, `src/nnue.hpp`), permitindo alternância em tempo de execução entre
+avaliação heurística (`EvalMode::Heuristic`) e rede neural quantizada (`EvalMode::NNUE`).
+O pipeline de treino em PyTorch (`train_nnue.py`), quantização QAT (`quantize_nnue.py`)
+e geração de dados em self-play de 32 bytes (`selfplay.exe` / `read_selfplay.py`) estão
+completos e operacionais.
 
 ---
 
@@ -278,18 +281,14 @@ datasets grandes sem precisar calcular batch/chunk na mão:
 | `--qa N`        | 255     | fator de quantização QA; precisa bater com`nnue.hpp` e `quantize_nnue.py` |
 | `--qb N`        | 64      | fator de quantização QB; precisa bater com`nnue.hpp` e `quantize_nnue.py` |
 
-**Saída**
+**Fluxo de Checkpointing, Interrupção (Ctrl+C) e Quantização**
 
-| Flag                 | Default                        | O que faz                                                        |
-| -------------------- | ------------------------------ | ---------------------------------------------------------------- |
-| `--out PATH`       | (obrigatório)                 | caminho de saída dos pesos treinados, float32                   |
-| `--no-quantize`    | desligado                      | pula a quantização automática pós-treino                     |
-| `--quant-out PATH` | `<out>` com sufixo `_int8` | caminho de saída dos pesos quantizados                          |
-| `--plot-dir PATH`  | nenhum                         | diretório para salvar plots de convergência/validação em PNG |
-| `--log-every N`    | 1                              | a cada quantas épocas imprimir progresso no terminal            |
-
-`quantize_nnue.py` não usa flags nomeadas, só dois argumentos
-posicionais: `quantize_nnue.py <entrada.bin> <saida_int8.bin>`.
+- **Atualização da pasta final `data/nnue/`**: Os arquivos `data/nnue/nnue_weights.bin` e `data/nnue/nnue_weights_int8.bin` **só são gravados quando o treino é concluído por completo** (seja atingindo o limite de `--epochs` ou por *early stopping*). Ao finalizar, o script seleciona automaticamente os pesos da **melhor época** (menor `val_loss`), exporta o float32 e executa a quantização int8 automática.
+- **Interrupção com Ctrl+C**: Se o treino for interrompido no meio (ex: Ctrl+C na época 10), um checkpoint de emergência é salvo na pasta `data/checkpoints/` (`train_state_*.pt`, `last_*.bin`, `train_config_*.json`). A pasta `data/nnue/` **não é alterada no Ctrl+C** para preservar o último modelo validado.
+- **Retomada (*Resume*)**: Ao rodar `python3 train_nnue.py` novamente, ele detecta automaticamente o `train_state_*` de maior época em `data/checkpoints/`, restaura pesos + estado do AdamW + RNGs, recalcula a curva de *learning rate* para aquela época e recomeça a época interrompida do zero.
+- **Uso do `quantize_nnue.py`**:
+  - Sem argumentos (`python3 quantize_nnue.py`): quantiza o arquivo padrão `data/nnue/nnue_weights.bin` -> `data/nnue/nnue_weights_int8.bin`.
+  - Com argumentos (`python3 quantize_nnue.py <entrada.bin> <saida_int8.bin>`): permite quantizar manualmente qualquer checkpoint float32 específico (ex: um `.bin` da pasta `data/checkpoints/`).
 
 ---
 
@@ -463,11 +462,11 @@ neural, depois os testes que garantem que nada disso quebrou.
 
 ### NNUE (`nnue.hpp`)
 
-A rede neural em si já está implementada — arquitetura, cálculo direto
-(forward) e quantização — mas ainda não é usada pela busca, que hoje
-continua avaliando posições só com `evalSimple`. Detalhes da arquitetura
-na Seção 4; o plano para plugá-la na busca está na Fase B do roadmap
-(Seção 5).
+A rede neural está **100% plugada e integrada na busca** (`src/search.hpp` e `src/nnue.hpp`).
+A busca mantém a pilha de acumuladores de forma incremental (`nnueAccStack`) ao longo da árvore de busca.
+É possível alternar em tempo de execução entre avaliação heurística e avaliação por rede neural quantizada (`Negamax::setEvalMode(EvalMode::Heuristic | EvalMode::NNUE)`).
+Esta funcionalidade está exposta em todos os binários da aplicação (Self-play, Arena, Benchmarks e Shell WebAssembly).
+Detalhes da arquitetura de 354 features e 3 cabeças na Seção 4.
 
 ### Testes
 
