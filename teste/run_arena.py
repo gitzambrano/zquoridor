@@ -23,16 +23,16 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 #     GIT_REF2 = "HEAD~3"      -> 3 commits atrás
 #     GIT_REF2 = "minha-branch"-> Outra branch
 GIT_REF1 = None               # None = versão local não comitada (ou passe string de ref git)
-GIT_REF2 = None             # Ref Git base para o confronto (ex: 'main', 'v1.0', 'HEAD')
+GIT_REF2 = "main"             # Ref Git base para o confronto (ex: 'main', 'v1.0', 'HEAD')
 
 INVERT_COLORS = True          # Se True, joga cada abertura 2x invertendo as cores (par). Se False, joga apenas 1x por abertura.
 CREATE_BIN = True            # Se True, salva os dados das partidas em data/arena/ no formato .bin de treino
-GAMES = 5000                   # Quantidade total de jogos
+GAMES = 1000                   # Quantidade total de jogos
 REPORT_GAMES = 50             # Atualiza e imprime o relatório parcial a cada N jogos concluídos (default 50)
-TIME_MS = 100                 # Tempo de pensamento por lance em milissegundos
+TIME_MS = 300                 # Tempo de pensamento por lance em milissegundos
 THREADS = 14                  # Número de núcleos / processos em paralelo (default 14)
 RANDOM_OPENING_PLIES = 4      # Quantidade de lances aleatórios na abertura
-SEED = 53                     # Semente aleatória
+SEED = 253                     # Semente aleatória
 COMPILER = "g++"              # Compilador C++
 CXX_FLAGS = "-O3 -std=c++17"  # Flags de compilação
 
@@ -46,7 +46,7 @@ CXX_FLAGS = "-O3 -std=c++17"  # Flags de compilação
 # Engine 2 NNUE). --e1-heuristic/--e2-heuristic/--heuristic na linha de
 # comando sobrepõem isto por execução, sem precisar editar o arquivo.
 E1_HEURISTIC = False
-E2_HEURISTIC = True
+E2_HEURISTIC = False
 # ==============================================================================
 
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))

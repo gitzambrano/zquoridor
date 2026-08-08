@@ -1,126 +1,117 @@
 """
-train_nnue.py -- treino da NNUE do zquoridor em PyTorch, a partir dos
-dados de self-play gerados pelo harness C++ (selfplay). Espelho exato da
-arquitetura em nnue.hpp:
-
+train_nnue.py -- treino da NNUE do zquoridor (PyTorch), a partir dos dados
+de self-play gerados pelo harness C++. Espelho exato da arquitetura em
+nnue.hpp:
+ 
   acumulador: Linear(354, 256)                    -> w1, b1
-  ativacao do acumulador: SCReLU  (clip(x,0,1)^2)
-  cabeca de RESULTADO (WL, sem empate):
+  SCReLU (clip(x,0,1)^2) na saida do acumulador
+  cabeca RESULTADO (WL, sem empate):
       Linear(256, 32) -> ClippedReLU -> Linear(32, 1)   -> wv1_wl,bv1_wl,wv2_wl,bv2_wl
-  cabeca AUXILIAR (imitacao da heuristica evalSimple):
+  cabeca AUXILIAR (imita a heuristica evalSimple):
       Linear(256, 32) -> ClippedReLU -> Linear(32, 1)   -> wv1_aux,bv1_aux,wv2_aux,bv2_aux
-  policy head: Linear(256, 209), aplicado direto na saida do SCReLU        -> wp, bp
-
-Quantization-aware training (QAT): QA/QB sao constantes fixas (--qa/--qb,
-mesmos valores usados em nnue.hpp/quantize_nnue.py) e um WeightClipper
-(nos moldes do nnue-pytorch do Stockfish) e aplicado a cada passo do
-otimizador, travando os pesos dentro do range representavel em int8
-(cabecas) / int16 (acumulador).
-
-Recursos:
-  - Varios arquivos .bin em --data (lista separada por virgula, diretorio,
-    glob, ou --data repetido), via MultiFileSelfPlay (read_selfplay.py) --
-    os shards nunca sao concatenados inteiros em RAM.
-  - Alternativa a --data: DATA_SOURCES_DEFAULT (topo do arquivo, ou
-    --data-sources) mistura VARIAS pastas com uma fracao [0,1] de posicoes
-    sorteada aleatoriamente por pasta (estilo mixtrain.py) -- ex. treinar
-    principalmente com o self-play mais recente mas mantendo uma fatia
-    pequena de geracoes antigas, pra rede nao esquecer padroes antigos e
-    driftar pra um otimo local do gen atual. Ver resolve_data_source_path()
-    / load_training_population().
-  - Split treino/validacao por fracao (--val-split) ou --val-data explicito.
-  - Treino em chunks dimensionados por orcamentos de RAM e VRAM
-    (--ram-budget-gb, --vram-budget-gb; default calibrado para 32GB RAM /
-    6GB VRAM). --batch-size e --chunk-size aceitam "auto" (default) para
-    serem calculados a partir desses orcamentos, ou um inteiro explicito.
-  - AdamW com weight decay desacoplado (so em pesos, nunca em bias) e
-    annealing (--weight-decay, --weight-decay-min, --wd-schedule).
-  - LR schedule com warmup (--lr-schedule, --warmup-epochs, --lr-min,
-    --step-size, --step-gamma, --exp-gamma).
-  - Early stopping com melhor checkpoint salvo automaticamente
-    (--early-stop, --patience, --min-delta, --monitor, --ckpt-dir); ao
-    final, os pesos exportados sao os do melhor epoch (nao os do ultimo),
-    a menos que --no-restore-best seja passado.
-  - Plots de convergencia/validacao em PNG (--plot-dir).
-  - Gradient clipping (--grad-clip-norm) aplicado antes de cada optimizer.step,
-    estabiliza o treino QAT (ideia portada do mixtrain.py).
-  - Diagnostico de device no inicio do treino: nome da GPU, VRAM total, e
-    pico de VRAM alocado ao final de cada epoch (torch.cuda.max_memory_allocated).
-  - Transferencia CPU->GPU em blocos (--gpu-chunk-multiplier): cada chunk lido
-    do disco e enviado a GPU em sub-blocos de `batch_size * multiplier`
-    posicoes, e os batches de treino sao fatiados diretamente na VRAM --
-    reduz bastante o numero de round-trips host->device comparado a
-    transferir por batch.
-  - Console verboso com progresso dentro do epoch (posicoes processadas,
-    % concluido, loss corrente, ETA do epoch) alem do ETA do treino inteiro,
-    throttled por tempo (--progress-every-secs).
-
-GPU vs CPU -- UM parametro so: mude USE_GPU_DEFAULT (secao DEFAULT CONFIG
-abaixo). True usa CUDA se disponivel (cai pra CPU sozinho se nao houver
-GPU); False forca CPU mesmo com GPU disponivel. Nao existe um script
-separado "sem torch" -- o torch roda em CPU tao bem quanto qualquer
-implementacao numpy pura (e ganha o autograd de graca), entao um arquivo
-so cobre os dois casos. --device continua aceito pra casos especiais
-(ex. "cuda:1" numa maquina com varias GPUs), mas o normal e nem tocar
-nisso.
-
-CHECKPOINT / RESUME & EXPORT / QUANTIZAÇÃO -- responde às dúvidas de fluxo:
-  - "Quando a pasta data/nnue/ é atualizada com os arquivos finais?"
-    A pasta final `data/nnue/` (com `nnue_weights.bin` e `nnue_weights_int8.bin`)
-    SÓ É ATUALIZADA QUANDO O TREINO TERMINA COMPLETO (seja por atingir o limite
-    de --epochs ou por acionamento do early stopping).
-    Ao terminar, o script seleciona automaticamente os pesos do MELHOR epoch
-    (menor val_loss, salvo via early-stopping; pode ser desativado via
-    --no-restore-best), exporta para `data/nnue/nnue_weights.bin` e roda a
-    quantização automática para `data/nnue/nnue_weights_int8.bin`.
-  - "O que acontece ao interromper com Ctrl+C (SIGINT)?"
-    Se você der Ctrl+C no meio do treino (ex: no epoch 10), o handler de
-    emergência grava um checkpoint na pasta `data/checkpoints/` contendo:
-      * `train_state_<suffix>.pt` (pesos + momentos do AdamW + sementes RNG + histórico)
-      * `last_<suffix>.bin` (pesos float32 do instante do Ctrl+C)
-      * `train_config_<suffix>.json` (hiperparâmetros da rodada)
-    NENHUM arquivo em `data/nnue/` é alterado no Ctrl+C para não corromper o
-    último modelo estável validado.
-  - "Como funciona o resume ao rodar de novo?"
-    Ao executar `python3 train_nnue.py` novamente:
-      1. Ele detecta automaticamente o `train_state_*_ep*.pt` de maior época em `data/checkpoints/`.
-      2. Se o epoch foi interrompido no meio (`epoch_completed = False`), ele recomeça o epoch 10
-         do zero (para manter o shuffle alinhado), mas restaurando os pesos, momentos do AdamW
-         e sementes RNG do momento da gravação.
-      3. O Learning Rate (LR) e Weight Decay continuam do ponto exato da curva de schedule
-         correspondente àquela época. Se você passar `--lr` novo na CLI, o schedule é recalculado
-         a partir do novo valor a cada época.
-  - "Cada treino comeca do zero?" Nao por padrao. A CADA epoch (nao so
-    quando ha melhora) o estado COMPLETO de treino e gravado em
-    `<ckpt-dir>/train_state_<data>_<hora>_ep<N>.pt` (NAO sobrescreve o
-    epoch anterior -- fica com o historico completo, nomeado por
-    data/horario/epoca; ver find_latest_checkpoint_suffix).
-  - "E se eu rodar de novo DEPOIS que o treino ja terminou?" Comeca um NOVO CICLO
-    automaticamente a partir dos PESOS salvos (warm start) -- otimizador,
-    LR/WD schedule e early-stopping reiniciados do zero, epoch volta a
-    contar de 1. E o comportamento certo pro fluxo de bootstrapping.
-
-Todos os defaults abaixo (secao DEFAULT CONFIG) valem como "flags no
-cabecalho do arquivo": editar as constantes muda o comportamento padrao
-sem precisar passar nada na linha de comando; qualquer flag de linha de
-comando sobrescreve a constante correspondente. O uso normal e so
-`python3 train_nnue.py`, sem nenhuma flag -- os defaults (incluindo
---data, --out e --ckpt-dir, todos resolvidos relativos a este arquivo) ja
-sao bons o bastante pro dia a dia.
-
-Exemplos (uso normal, sem flags):
+  policy head: Linear(256, 209), direto na saida do SCReLU                -> wp, bp
+ 
+QAT (quantization-aware training): QA/QB (--qa/--qb, mesmos valores de
+nnue.hpp/quantize_nnue.py) definem a escala fixa; um WeightClipper (estilo
+nnue-pytorch do Stockfish) trava os pesos no range representavel em int8
+(cabecas) / int16 (acumulador) a cada passo do otimizador.
+ 
+Uso normal, sem flags nenhuma -- os defaults (data, out, ckpt-dir, LR,
+batch/chunk size "auto" etc., todos na secao DEFAULT CONFIG abaixo) ja
+cobrem o dia a dia:
     python3 train_nnue.py
-
-Exemplos (casos especiais):
+ 
+Casos especiais:
     python3 train_nnue.py --data a.bin,b.bin --epochs 80 \
         --weight-decay 2e-4 --wd-schedule cosine
-
     python3 train_nnue.py --fresh --init-from ../data/nnue/nnue_weights_legado.bin
+ 
+GPU vs CPU: um unico parametro, USE_GPU_DEFAULT (secao DEFAULT CONFIG).
+True = usa CUDA se disponivel, cai pra CPU sozinho se nao houver. False =
+forca CPU mesmo com GPU disponivel. --device so pra casos especiais
+(ex. "cuda:1" com varias GPUs).
+ 
+CHECKPOINT / RESUME -- fluxo em 4 cenarios (o script imprime qual deles se
+aplica logo no inicio de cada execucao):
+ 
+  1. TREINO DO ZERO -- sem --ckpt-dir com checkpoint previo e sem
+     --init-from: pesos aleatorios, epoch 1.
+ 
+  2. TREINO A PARTIR DE PESOS EXISTENTES (--init-from arquivo.bin) -- so os
+     PESOS sao carregados; otimizador/LR-schedule/early-stopping comecam do
+     zero. Ignorado se ja houver um checkpoint valido em --ckpt-dir.
+ 
+  3. RETOMANDO TREINO INTERROMPIDO -- --ckpt-dir tem um checkpoint de um
+     treino que nao terminou (Ctrl+C ou --epochs ainda nao atingido).
+     Restaura pesos, otimizador (momentos do AdamW), RNGs e historico
+     EXATAMENTE do ultimo epoch salvo -- continua como se nunca tivesse
+     parado. Se o epoch salvo foi interrompido no meio, ele e refeito do
+     inicio (so ele, nao o treino inteiro).
+ 
+  4. NOVO CICLO (bootstrap sobre self-play novo) -- --ckpt-dir tem um
+     checkpoint de um treino que JA TERMINOU (--epochs atingido ou early
+     stopping). So os PESOS sao reaproveitados (warm start); otimizador,
+     LR/WD schedule e early-stopping reiniciam do zero, epoch volta a
+     contar de 1. E o fluxo normal ao gerar uma nova geracao de self-play
+     com a rede anterior e re-treinar em cima dela. Como o otimizador
+     reinicia, o LR do treino do zero (1e-3) é agressivo demais e
+     arriscaria afastar pesos ja convergidos -- por isso este cenario usa
+     automaticamente um LR baixo de fine-tuning (--new-cycle-lr, default
+     NEW_CYCLE_LR_DEFAULT) em vez de LR_DEFAULT, a menos que --lr numerico
+     seja passado explicitamente.
+ 
+  Arquivos gravados em --ckpt-dir, com CICLO+EPOCH no nome (ver CICLO
+  abaixo) -- a cada epoch o arquivo do epoch anterior DESTE MESMO CICLO e
+  apagado (so a versao mais recente do ciclo ATUAL fica no disco), mas
+  arquivos de ciclos ANTERIORES (self-play de geracoes passadas) nunca sao
+  apagados automaticamente -- e por isso que o ciclo entra no nome:
+    - train_state_<ciclo>_ep<NNNN>.pt   estado completo p/ resume (pesos,
+                                         otimizador, RNGs, historico,
+                                         early-stopper, o proprio <ciclo>)
+    - ckpt_<ciclo>_ep<NNNN>.bin          pesos (formato nnue.hpp) do MELHOR
+                                         epoch do ciclo ate agora (val,
+                                         --monitor) -- nao existe mais
+                                         last.bin separado; se o epoch atual
+                                         nao melhorou, o arquivo e regravado
+                                         mesmo assim so pra atualizar o
+                                         numero do epoch/timestamp no nome,
+                                         com os MESMOS pesos de antes
+    - train_config_<ciclo>_ep<NNNN>.json  hiperparametros da rodada, legivel
+                                         por humano, mesmo epoch/ciclo do bin
+  <ciclo> = data-hora (AAAAMMDD-HHMMSS) do INICIO do ciclo de treino atual
+  (nao muda a cada epoch, so quando um ciclo novo comeca -- ver CICLO
+  abaixo). Ctrl+C grava esses mesmos 3 arquivos com o estado exato da
+  interrupcao antes de encerrar, seguindo a mesma regra de apagar so o
+  epoch anterior do ciclo atual.
+
+  Resume automatico: ao iniciar, o script procura em --ckpt-dir o arquivo
+  train_state_*_ep*.pt mais recente (maior <ciclo>, e a maior epoch dentro
+  dele) -- nao ha mais nome fixo. Isso cobre tanto retomar o ciclo atual
+  quanto, se --ckpt-dir acumulou sobras de ciclos antigos, sempre pegar a
+  mais nova.
+
+  CICLO -- quando um <ciclo> novo comeca (timestamp novo no nome dos
+  arquivos) vs. quando o MESMO <ciclo> continua (mesmo timestamp,
+  sobrescrevendo o epoch anterior):
+    - Resume de treino interrompido (cenario 3 abaixo): MESMO <ciclo> do
+      checkpoint retomado.
+    - Novo ciclo por bootstrap sobre self-play novo (cenario 4 abaixo):
+      <ciclo> NOVO -- o ultimo arquivo do ciclo anterior fica no disco
+      como registro historico daquela geracao (nao e apagado).
+    - Treino do zero ou --init-from (cenarios 1 e 2): <ciclo> novo.
+ 
+  A pasta final de export (--out, default data/nnue/) SO e atualizada
+  quando o treino termina por completo (limite de --epochs ou early
+  stopping) -- nunca durante o treino nem no Ctrl+C. Ao terminar, exporta
+  os pesos do MELHOR epoch (nao do ultimo, a menos que --no-restore-best)
+  e roda a quantizacao automatica pra int8/int16.
 """
 import argparse
 import copy
+import glob
 import json
 import os
+import re
 import signal
 import sys
 import time
@@ -128,166 +119,125 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-
+ 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from read_selfplay import SAMPLE_DTYPE, DIST_BUCKETS, load_multi_selfplay, expand_data_paths  # noqa: E402
 from quantize_nnue import quantize_file  # noqa: E402
-
+ 
 # ============================== DEFAULT CONFIG ==============================
-# Editar aqui muda o default sem precisar de flag; toda entrada tem uma
-# flag de linha de comando correspondente que sobrescreve o valor abaixo.
+# Editar aqui muda o default sem precisar de flag; toda entrada tem uma flag
+# de linha de comando correspondente que sobrescreve o valor abaixo.
+ 
+# --- dados de treino ---------------------------------------------------------
+# DATA_DEFAULT: usado so se DATA_SOURCES_DEFAULT (abaixo) estiver vazia.
 DATA_DEFAULT = [
     os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data", "")
 ]
 DATA_ROOT_DEFAULT = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data")
-
-# --- fontes de treino por pasta, com fracao (estilo mixtrain.py) -----------
-# Alternativa a DATA_DEFAULT/--data acima: uma LISTA de fontes, cada uma
-# {"path": <subpasta ou caminho>, "frac": <0.0-1.0>}.
-#   - "path" e resolvido nessa ordem: (1) como foi escrito -- absoluto, ou
-#     relativo ao cwd; (2) DATA_ROOT/selfplay/<path>; (3) DATA_ROOT/arena/
-#     <path>; (4) DATA_ROOT/<path> (raiz de data/). A primeira que existir
-#     "ganha" -- ver resolve_data_source_path().
-#   - "frac" e a fracao [0.0, 1.0] de POSICOES (nao arquivos/shards
-#     inteiros) sorteada aleatoriamente (sem reposicao, usando --seed --
-#     reprodutivel) daquela pasta. 1.0 usa tudo; 0.0 ignora a entrada.
-#   - Cada pasta so pode aparecer em UMA fonte (pastas nao podem se
-#     sobrepor -- erro explicito se um mesmo arquivo .bin cair em duas).
-# Se DATA_SOURCES_DEFAULT estiver vazia, o comportamento e o antigo:
-# DATA_DEFAULT/--data direto, sem amostragem por pasta (ver
-# load_training_population()).
-#
-# Motivacao pratica: manter uma fatia pequena de geracoes antigas de
-# self-play no treino evita que a rede "esqueca" padroes antigos e drifte
-# para um otimo local do gen mais recente.
-#
-# Exemplo (edite aqui -- pastas dentro de data/selfplay/):
-#   DATA_SOURCES_DEFAULT = [
-#       {"path": "gen7", "frac": 1.0},   # gen atual: usa tudo
-#       {"path": "gen6", "frac": 0.4},
-#       {"path": "gen5", "frac": 0.2},
-#       {"path": "gen4", "frac": 0.1},
-#       {"path": "gen3", "frac": 0.05},  # gens antigos: so uma pitada, contra o esquecimento
-#   ]
+ 
+# DATA_SOURCES_DEFAULT: lista de {"path": <pasta>, "frac": <0.0-1.0>} --
+# mistura VARIAS geracoes de self-play com pesos diferentes (estilo
+# mixtrain.py), em vez de treinar so em cima de DATA_DEFAULT/--data.
+#   - "path" resolvido em ordem: como escrito -> DATA_ROOT/selfplay/<path>
+#     -> DATA_ROOT/arena/<path> -> DATA_ROOT/<path>. A primeira que existir
+#     "ganha" (resolve_data_source_path()).
+#   - "frac": fracao de POSICOES (nao arquivos) sorteada aleatoriamente
+#     (reprodutivel via --seed) daquela pasta. 1.0 = usa tudo, 0.0 = ignora.
+#   - Pastas nao podem se sobrepor entre fontes (erro se um .bin cair em duas).
+# Motivacao: manter uma fatia pequena de geracoes antigas evita que a rede
+# "esqueca" padroes antigos e drifte para o otimo local do gen mais recente.
+# Vazia = comportamento antigo, direto de DATA_DEFAULT/--data sem amostragem.
 DATA_SOURCES_DEFAULT = [
-      {"path": "selfplay/gen1", "frac": 0.2},   
+      {"path": "selfplay/gen1", "frac": 0.2},
       {"path": "selfplay/gen2", "frac": 1.0},
       {"path": "arena", "frac": 0.2},
 ]
-
+ 
 OUT_DEFAULT = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data", "nnue", "nnue_weights.bin")
-
+ 
+# --- treino / otimizacao -----------------------------------------------------
 EPOCHS_DEFAULT = 60
-BATCH_SIZE_DEFAULT = "auto"          # inteiro, ou "auto" (calculado a partir de --vram-budget-gb)
+BATCH_SIZE_DEFAULT = "auto"           # inteiro, ou "auto" (via --vram-budget-gb)
 SEED_DEFAULT = 0
-VAL_SPLIT_DEFAULT = 0.1
-
-LR_DEFAULT = 1e-3
-LR_MIN_DEFAULT = 1e-5
+VAL_SPLIT_DEFAULT = 0.1               # fracao dos dados reservada p/ validacao
+ 
+LR_DEFAULT = 1e-3                     # LR inicial para treino do zero
+LR_MIN_DEFAULT = 1e-5                 # piso do LR no fim do schedule
 LR_SCHEDULE_DEFAULT = "cosine"        # none | step | exponential | cosine
 WARMUP_EPOCHS_DEFAULT = 2
-
-# LR default usado quando um NOVO CICLO e detectado automaticamente (ver
-# "new_cycle"/cycle_exhausted em train(): checkpoint anterior tinha
-# terminado um treino COMPLETO -- nao no meio de um epoch -- e estamos
-# retomando so os PESOS pra treinar de novo, tipicamente sobre um selfplay
-# novo gerado com a rede anterior). Nesse caso LR_DEFAULT (pensado pra
-# treino do zero) e alto demais: com otimizador/schedule reiniciados, o
-# warmup+cosine trataria 1e-3 como pico de novo e arriscaria afastar os
-# pesos ja convergidos do otimo local em vez de so refina-los. 5e-5 e um
-# ponto de partida razoavel para fine-tuning nesse cenario (mesma ordem de
-# grandeza do fim do cosine annealing de um treino normal); ajuste via
-# --new-cycle-lr se notar que esta convergindo devagar demais ou de menos.
-# So se aplica quando --lr fica em "auto" (nao sobrescreve um --lr
-# numerico explicito).
+ 
+# LR usado automaticamente no cenario "NOVO CICLO" (bootstrap sobre self-play
+# novo, otimizador reiniciado -- ver docstring do topo). LR_DEFAULT (pensado
+# p/ treino do zero) e alto demais aqui: afastaria pesos ja convergidos do
+# otimo local em vez de so refina-los. So entra em uso quando --lr fica em
+# "auto"; --lr numerico explicito sempre tem prioridade.
 NEW_CYCLE_LR_DEFAULT = 5e-5
-STEP_SIZE_DEFAULT = 10
+STEP_SIZE_DEFAULT = 10                # epochs por degrau em --lr-schedule=step
 STEP_GAMMA_DEFAULT = 0.5
 EXP_GAMMA_DEFAULT = 0.97
-
-# Weight decay desacoplado (AdamW real do torch, decoupled por construcao):
-# aplicado so as matrizes de peso (nunca aos bias), e "annealed" ao longo
-# do treino -- regulariza mais forte no inicio, afrouxa perto do fim para
-# nao atrapalhar o ajuste fino dos ultimos epochs (mesma postura do
-# nnue-pytorch do Stockfish, que tambem reduz regularizacao com o tempo).
+ 
+# Weight decay desacoplado (AdamW), so nas matrizes de peso (nunca em bias),
+# com annealing: mais forte no inicio, afrouxa perto do fim pra nao atrapalhar
+# o ajuste fino dos ultimos epochs (mesma postura do nnue-pytorch do Stockfish).
 WEIGHT_DECAY_DEFAULT = 1e-4
 WEIGHT_DECAY_MIN_DEFAULT = 0.0
 WD_SCHEDULE_DEFAULT = "cosine"        # none | constant | linear | cosine
-
+ 
 EARLY_STOP_DEFAULT = True
-PATIENCE_DEFAULT = 8
-MIN_DELTA_DEFAULT = 1e-4
+PATIENCE_DEFAULT = 8                  # epochs sem melhora antes de parar
+MIN_DELTA_DEFAULT = 1e-4              # melhora minima p/ contar como "melhorou"
 MONITOR_DEFAULT = "val_loss"          # val_loss | val_outcome | val_score | val_policy | val_policy_acc
-
-# Orcamentos de memoria usados para calcular batch-size/chunk-size "auto".
-# Os defaults abaixo foram escolhidos para uma maquina tipica de
-# desenvolvimento com 6GB de VRAM e 32GB de RAM (ver compute_auto_batch_size
-# / compute_chunk_size para a formula e as margens de seguranca).
+ 
+# --- orcamento de memoria (batch/chunk size "auto") --------------------------
+# Defaults calibrados para uma maquina de dev tipica: 6GB VRAM / 32GB RAM.
 VRAM_BUDGET_GB_DEFAULT = 6.0
 RAM_BUDGET_GB_DEFAULT = 32.0
-RAM_CHUNK_FRACTION_DEFAULT = 0.25     # fracao do orcamento de RAM usada como buffer de shuffle
-CHUNK_SIZE_DEFAULT = "auto"           # inteiro, ou "auto" (calculado a partir de --ram-budget-gb)
-
-# Tetos superiores de batch_size/chunk_size "auto". Antes eram constantes
-# fixas (16_384 / 5_000_000) dentro das proprias funcoes de calculo, bem
-# abaixo do que os orcamentos de VRAM/RAM acima realmente permitem para
-# esta rede (pico medido ~0.39 GB de VRAM contra um orcamento de 6.0 GB) --
-# ou seja, o "auto" na pratica nunca estava usando o orcamento informado,
-# so batendo nesses tetos. Agora sao configuraveis via --batch-size-max /
-# --chunk-size-max, e o "auto" volta a ser regido pelo orcamento de
-# verdade. Valores default ainda com folga de seguranca (nao no limite
-# teorico do orcamento) por causa de picos de memoria fora da formula
-# (fragmentacao do allocator CUDA, overhead do dataloader, etc).
+RAM_CHUNK_FRACTION_DEFAULT = 0.25     # fracao da RAM usada como buffer de shuffle
+CHUNK_SIZE_DEFAULT = "auto"           # inteiro, ou "auto" (via --ram-budget-gb)
+ 
+# Tetos de seguranca para batch_size/chunk_size "auto" -- limitam o valor
+# calculado a partir dos orcamentos acima, independente do quanto VRAM/RAM
+# permitiriam. Ajuste via --batch-size-max/--chunk-size-max se o orcamento
+# real permitir mais (ou se picos de memoria fora da formula --
+# fragmentacao do allocator CUDA, overhead do dataloader -- exigirem menos).
 BATCH_SIZE_MAX_DEFAULT = 131_072
 CHUNK_SIZE_MAX_DEFAULT = 20_000_000
-
-W_SCORE_DEFAULT = 0.3
-W_OUTCOME_DEFAULT = 1.0
-W_POLICY_DEFAULT = 1.0
-QA_DEFAULT = 255
-QB_DEFAULT = 64
-LOG_EVERY_DEFAULT = 1
-PLOT_EVERY_EPOCHS_DEFAULT = 5
-
+ 
+# --- pesos de loss / QAT / logging -------------------------------------------
+W_SCORE_DEFAULT = 0.3                 # peso da loss da cabeca auxiliar (MSE)
+W_OUTCOME_DEFAULT = 1.0               # peso da loss da cabeca de resultado (BCE)
+W_POLICY_DEFAULT = 1.0                # peso da loss de policy (CE)
+QA_DEFAULT = 255                      # escala QAT do acumulador (int16)
+QB_DEFAULT = 64                       # escala QAT das cabecas (int8)
+LOG_EVERY_DEFAULT = 1                 # a cada quantos epochs imprime o resumo
+PLOT_EVERY_EPOCHS_DEFAULT = 5         # a cada quantos epochs regrava o PNG
+ 
 # GPU vs CPU: o UNICO parametro que decide isso. True = usa CUDA se
-# `torch.cuda.is_available()` (cai pra CPU sozinho, sem erro, se nao
-# houver GPU visivel). False = forca CPU mesmo com GPU disponivel (util
-# pra depurar ou comparar). --device continua aceito na CLI pra casos
-# especiais (ex. "cuda:1"), mas normalmente nem se toca nisso.
+# disponivel (cai pra CPU sozinho, sem erro, se nao houver GPU). False =
+# forca CPU mesmo com GPU disponivel (util p/ depurar/comparar). --device
+# so pra casos especiais (ex. "cuda:1"); no dia a dia nem se toca nisso.
 USE_GPU_DEFAULT = True
 DEVICE_DEFAULT = "cuda" if (USE_GPU_DEFAULT and torch.cuda.is_available()) else "cpu"
-
-# --- checkpoint / resume (estilo Zchezz) ------------------------------------
-# ckpt-dir agora tem default proprio (nao mais None): resume automatico so
-# funciona se houver um diretorio consistente entre execucoes. Ver a secao
-# "CHECKPOINT / RESUME" no docstring do topo do arquivo para o fluxo completo.
+ 
+# --- checkpoint / resume ------------------------------------------------------
+# Ver a secao "CHECKPOINT / RESUME" no docstring do topo do arquivo para o
+# fluxo completo (4 cenarios) e os 4 arquivos gravados em --ckpt-dir.
 CKPT_DIR_DEFAULT = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data", "checkpoints")
-# --fresh ou nao, o valor era o mesmo), entao `resumed = None if args.fresh
-# else try_load_train_state(...)` nunca chamava try_load_train_state: o
-# resume automatico documentado acima ("Cada treino comeca do zero? Nao por
-# padrao.") na pratica NUNCA acontecia. False + --no-fresh (par de
-# --fresh, mesmo padrao de --early-stop/--no-early-stop abaixo) restaura o
-# comportamento pretendido.
 FRESH_DEFAULT = False   # True (ou --fresh) ignora qualquer checkpoint existente e comeca do zero
-
-# Estabilizacao do treino QAT (ideia do mixtrain.py). 0 ou negativo desliga.
-GRAD_CLIP_NORM_DEFAULT = 1.0
-
-# Quantos batches sao agrupados numa unica transferencia host->device. O
-# chunk (dimensionado por --ram-budget-gb) e lido do disco e convertido em
-# features numpy normalmente, mas em vez de mandar pra GPU um batch de cada
-# vez, agrupamos `gpu_chunk_multiplier` batches por transferencia -- os
-# batches de treino sao depois fatiados direto na VRAM, sem novo round-trip.
+ 
+GRAD_CLIP_NORM_DEFAULT = 1.0          # clip de norma do gradiente; 0/negativo desliga
+ 
+# Quantos batches sao agrupados por transferencia host->device: o chunk lido
+# do disco e enviado a GPU em blocos de `batch_size * multiplier` posicoes de
+# uma vez, e os batches de treino sao depois fatiados direto na VRAM.
 GPU_CHUNK_MULTIPLIER_DEFAULT = 8
-
-# Intervalo minimo (segundos) entre linhas de progresso dentro do epoch.
-PROGRESS_EVERY_SECS_DEFAULT = 5.0
-# A cada quantas atualizacoes de progresso (--progress-every-secs) uma linha
-# fica fixa no scrollback -- as outras so atualizam a linha viva via \r.
-# Com o default de 5s/atualizacao, 6 da uma linha fixa a cada ~30s.
+ 
+PROGRESS_EVERY_SECS_DEFAULT = 5.0     # intervalo minimo entre linhas de progresso no epoch
+# A cada quantas atualizacoes de progresso uma linha fica fixa no scrollback
+# (as outras so atualizam a linha viva via \r). Default 5s x 6 = 1 linha fixa/~30s.
 PROGRESS_PERMANENT_EVERY_DEFAULT = 6
 # =============================================================================
-
+ 
 N, WS = 9, 8
 # WALLS_LEFT_BUCKETS: feature nova de 2026-08 -- ver nota completa em
 # WALLS_LEFT_BUCKETS/NUM_FEATURES em nnue.hpp. Muros restantes de cada
@@ -303,26 +253,26 @@ NUM_FEATURES = N * N + N * N + WS * WS * 2 + 2 * DIST_BUCKETS + 2 * WALLS_LEFT_B
 HIDDEN = 256
 POLICY_OUT = N * N + WS * WS * 2                                # 209
 VALUE_SCALE = 200.0
-
+ 
 INT8_MAX = 127
 INT16_MAX = 32767
-
-
+ 
+ 
 # --- modelo: espelho exato de nnue.hpp --------------------------------------
 def screlu(x: torch.Tensor) -> torch.Tensor:
     return torch.clamp(x, 0.0, 1.0) ** 2
-
-
+ 
+ 
 def clipped_relu(x: torch.Tensor) -> torch.Tensor:
     return torch.clamp(x, 0.0, 1.0)
-
-
+ 
+ 
 class QuoridorNNUE(nn.Module):
     """Duas cabecas de valor independentes: value1_wl/value2_wl (resultado,
     WL) e value1_aux/value2_aux (imitacao da heuristica). Cada uma tem seu
     proprio bottleneck 256->32->1, sem nada compartilhado alem do
     acumulador `a`."""
-
+ 
     def __init__(self):
         super().__init__()
         self.fc1 = nn.Linear(NUM_FEATURES, HIDDEN)
@@ -331,7 +281,7 @@ class QuoridorNNUE(nn.Module):
         self.value1_aux = nn.Linear(HIDDEN, 32)
         self.value2_aux = nn.Linear(32, 1)
         self.policy = nn.Linear(HIDDEN, POLICY_OUT)
-
+ 
     def forward(self, x: torch.Tensor):
         acc = self.fc1(x)
         a = screlu(acc)
@@ -341,17 +291,17 @@ class QuoridorNNUE(nn.Module):
         value_aux = self.value2_aux(h_aux).squeeze(-1)
         policy_logits = self.policy(a)
         return value_wl, value_aux, policy_logits
-
-
+ 
+ 
 class WeightClipper:
     """QAT: aplicado a cada passo do otimizador. Trava cada matriz de pesos
     dentro do range representavel na escala fixa correspondente -- int16 a
     escala QA para o acumulador, int8 a escala QB para as cabecas."""
-
+ 
     def __init__(self, qa: float = QA_DEFAULT, qb: float = QB_DEFAULT):
         self.qa = qa
         self.qb = qb
-
+ 
     def __call__(self, model: "QuoridorNNUE"):
         w1_max = INT16_MAX / self.qa
         head_max = INT8_MAX / self.qb
@@ -361,8 +311,8 @@ class WeightClipper:
             for layer in (model.value1_wl, model.value2_wl,
                           model.value1_aux, model.value2_aux, model.policy):
                 layer.weight.clamp_(-head_max, head_max)
-
-
+ 
+ 
 # --- features -----------------------------------------------------------------
 def to_chunk_tensors(chunk: np.ndarray, device):
     """Converte um bloco de TrainingSample (array estruturado numpy) para
@@ -370,7 +320,7 @@ def to_chunk_tensors(chunk: np.ndarray, device):
     isso uma vez por bloco grande (em vez de uma vez por batch) e o que
     permite ao `iter_gpu_batches` amortizar o custo de transferencia
     host->device entre varios batches.
-
+ 
     NOTA (2026-08): own_pawn/opp_pawn/walls_h/walls_v em `chunk` já vêm
     ESPELHADOS pra perspectiva canônica do mover (mirroredPawnCell/
     mirrorWallBitboard em selfplay.hpp, no momento da gravação) -- não é
@@ -403,15 +353,15 @@ def to_chunk_tensors(chunk: np.ndarray, device):
     opp_wl_bucket = np.clip(chunk["walls_left_opp"].astype(np.int64), 0, WALLS_LEFT_BUCKETS - 1)
     x[np.arange(n), wl_base + own_wl_bucket] = 1.0
     x[np.arange(n), wl_base + WALLS_LEFT_BUCKETS + opp_wl_bucket] = 1.0
-
+ 
     return {
         "x": torch.from_numpy(x).to(device, non_blocking=True),
         "search_score": torch.from_numpy(chunk["search_score"].astype(np.float32)).to(device, non_blocking=True),
         "game_result": torch.from_numpy(chunk["game_result"].astype(np.float32)).to(device, non_blocking=True),
         "policy_target": torch.from_numpy(chunk["policy_target"].astype(np.int64)).to(device, non_blocking=True),
     }
-
-
+ 
+ 
 def iter_gpu_batches(chunk: np.ndarray, device, batch_size: int, gpu_chunk_size: int):
     """Percorre `chunk` em sub-blocos de ate `gpu_chunk_size` posicoes,
     transferindo cada sub-bloco para `device` uma unica vez (via
@@ -434,8 +384,8 @@ def iter_gpu_batches(chunk: np.ndarray, device, batch_size: int, gpu_chunk_size:
                 "game_result": t["game_result"][start:end],
                 "policy_target": t["policy_target"][start:end],
             }
-
-
+ 
+ 
 # --- orcamento de memoria: auto batch-size (VRAM) / chunk-size (RAM) -------
 def compute_auto_batch_size(vram_budget_gb, reserved_gb=1.0, min_bs=64, max_bs=BATCH_SIZE_MAX_DEFAULT):
     """Estimativa conservadora de quantas amostras cabem por batch dentro do
@@ -451,8 +401,8 @@ def compute_auto_batch_size(vram_budget_gb, reserved_gb=1.0, min_bs=64, max_bs=B
     usable = max(0.0, (vram_budget_gb - reserved_gb)) * (1024 ** 3)
     bs = int(usable // max(1, bytes_per_sample))
     return max(min_bs, min(max_bs, bs))
-
-
+ 
+ 
 def compute_chunk_size(n_total, ram_budget_gb, fraction=RAM_CHUNK_FRACTION_DEFAULT,
                         min_size=20_000, max_size=CHUNK_SIZE_MAX_DEFAULT):
     """Numero de posicoes lidas por vez do dataset (structs crus) para
@@ -464,14 +414,14 @@ def compute_chunk_size(n_total, ram_budget_gb, fraction=RAM_CHUNK_FRACTION_DEFAU
     size = int(budget_bytes // max(1, bytes_per_sample))
     size = max(min_size, min(max_size, size))
     return min(size, max(1, n_total))
-
-
+ 
+ 
 def resolve_int_or_auto(value, auto_fn):
     if isinstance(value, str) and value.strip().lower() == "auto":
         return auto_fn()
     return int(value)
-
-
+ 
+ 
 def format_duration(seconds: float) -> str:
     seconds = max(0.0, seconds)
     m, s = divmod(int(seconds), 60)
@@ -479,8 +429,8 @@ def format_duration(seconds: float) -> str:
     if h > 0:
         return f"{h:02d}h{m:02d}m"
     return f"{m:02d}m{s:02d}s"
-
-
+ 
+ 
 def print_device_info(device):
     if device.type == "cuda":
         idx = device.index if device.index is not None else 0
@@ -490,14 +440,14 @@ def print_device_info(device):
     else:
         print(f"device: {device}  (CPU -- nenhuma GPU CUDA em uso; "
               f"passe --device cuda se esperava usar uma)")
-
-
+ 
+ 
 def iter_chunks(n, chunk_size, rng):
     perm = rng.permutation(n)
     for start in range(0, n, chunk_size):
         yield perm[start:start + chunk_size]
-
-
+ 
+ 
 # --- schedules ----------------------------------------------------------------
 def lr_at_epoch(epoch, epochs, base_lr, min_lr, schedule,
                  warmup_epochs=0, step_size=10, step_gamma=0.5, exp_gamma=0.97):
@@ -516,8 +466,8 @@ def lr_at_epoch(epoch, epochs, base_lr, min_lr, schedule,
         cos = 0.5 * (1.0 + np.cos(np.pi * frac))
         return min_lr + (base_lr - min_lr) * cos
     raise ValueError(f"lr-schedule desconhecido: {schedule}")
-
-
+ 
+ 
 def wd_at_epoch(epoch, epochs, base_wd, min_wd, schedule):
     if schedule == "none":
         return 0.0
@@ -530,20 +480,20 @@ def wd_at_epoch(epoch, epochs, base_wd, min_wd, schedule):
         cos = 0.5 * (1.0 + np.cos(np.pi * frac))
         return min_wd + (base_wd - min_wd) * cos
     raise ValueError(f"wd-schedule desconhecido: {schedule}")
-
-
+ 
+ 
 def apply_lr_wd(opt, lr, wd):
     for group in opt.param_groups:
         group["lr"] = lr
         if group.get("_is_weight_group", False):
             group["weight_decay"] = wd
-
-
+ 
+ 
 # --- early stopping -------------------------------------------------------------
 class EarlyStopper:
     MINIMIZE = {"val_loss", "val_outcome", "val_score", "val_policy"}
     MAXIMIZE = {"val_policy_acc"}
-
+ 
     def __init__(self, monitor="val_loss", patience=8, min_delta=1e-4, enabled=True):
         if monitor not in self.MINIMIZE | self.MAXIMIZE:
             raise ValueError(f"monitor desconhecido: {monitor}")
@@ -556,14 +506,14 @@ class EarlyStopper:
         self.best_epoch = 0
         self.best_state = None
         self.num_bad_epochs = 0
-
+ 
     def _improved(self, value):
         if self.best is None:
             return True
         if self.mode == "min":
             return value < self.best - self.min_delta
         return value > self.best + self.min_delta
-
+ 
     def step(self, value, epoch, model):
         improved = self._improved(value)
         if improved:
@@ -575,10 +525,10 @@ class EarlyStopper:
             self.num_bad_epochs += 1
         should_stop = self.enabled and self.num_bad_epochs >= self.patience
         return improved, should_stop
-
-
+ 
+ 
 # --- checkpoint / resume (estado COMPLETO de treino, estilo Zchezz) ---------
-# Diferenca de best.bin/last.bin: aqueles sao so os PESOS, no layout binario
+# Diferenca de ckpt_<ciclo>_ep<N>.bin: esse e so os PESOS, no layout binario
 # que nnue.hpp le. train_state.pt carrega tambem otimizador, epoch, historico,
 # early-stopper e RNGs -- e o que permite retomar o treino como se ele nunca
 # tivesse parado, em vez de so reaproveitar os pesos como ponto de partida
@@ -591,54 +541,66 @@ def compute_fingerprint(args):
     resume -- os tensores nem teriam o shape certo."""
     return dict(num_features=NUM_FEATURES, hidden=HIDDEN, policy_out=POLICY_OUT,
                 qa=args.qa, qb=args.qb)
+ 
+ 
+# --- caminhos versionados (<ciclo>_ep<epoch>) em --ckpt-dir ------------------
+# Cada epoch grava um arquivo NOVO (nome muda: epoch sempre cresce dentro do
+# mesmo ciclo); o do epoch anterior DO MESMO CICLO e apagado logo depois que
+# o novo e gravado com sucesso (ver _prune_old_cycle_files). Arquivos de
+# ciclos anteriores (<ciclo> diferente) nunca sao tocados aqui.
+_CKPT_TIMESTAMP_FMT = "%Y%m%d-%H%M%S"
+_TRAIN_STATE_RE = re.compile(r"^train_state_(?P<cycle>\d{8}-\d{6})_ep(?P<epoch>\d{4})\.pt$")
 
 
-def _checkpoint_suffix(epoch):
-    """Sufixo `{timestamp}_ep{epoch:04d}` usado em TODOS os arquivos de um
-    mesmo save (train_state_<suffix>.pt, train_config_<suffix>.json,
-    last_<suffix>.bin, best_<suffix>.bin quando há um novo melhor) --
-    checkpoints não se sobrescrevem mais a cada epoch, ficam com histórico
-    completo, nomeados por data/horário/época (pedido explícito). Calculado
-    UMA VEZ por evento de save (no chamador, não dentro de cada função de
-    save individual) -- os arquivos de um mesmo save precisam compartilhar
-    o MESMO sufixo, senão fica impossível re-associar train_state/config/
-    bin do mesmo momento (ver find_latest_checkpoint_suffix abaixo)."""
-    return f"{time.strftime('%Y%m%d_%H%M%S')}_ep{epoch:04d}"
+def new_cycle_id():
+    """Timestamp (AAAAMMDD-HHMMSS) usado como <ciclo> ao comecar um treino
+    do zero, um --init-from, ou um NOVO CICLO (bootstrap sobre self-play
+    novo). Resume de treino interrompido reaproveita o <ciclo> salvo em vez
+    de chamar isto -- ver train()."""
+    return time.strftime(_CKPT_TIMESTAMP_FMT)
 
 
-def find_latest_checkpoint_suffix(ckpt_dir):
-    """Varre ckpt_dir por train_state_*_ep*.pt e devolve o sufixo do mais
-    recente -- maior época primeiro; empate (pode acontecer se um save de
-    emergência via Ctrl+C cair na mesma época de um save normal) resolvido
-    pelo timestamp mais recente. None se não houver checkpoint nenhum."""
-    import glob as _glob
-    import re as _re
+def _train_state_path(ckpt_dir, cycle_id, epoch):
+    return os.path.join(ckpt_dir, f"train_state_{cycle_id}_ep{epoch:04d}.pt")
+
+
+def _config_json_path(ckpt_dir, cycle_id, epoch):
+    return os.path.join(ckpt_dir, f"train_config_{cycle_id}_ep{epoch:04d}.json")
+
+
+def _ckpt_bin_path(ckpt_dir, cycle_id, epoch):
+    return os.path.join(ckpt_dir, f"ckpt_{cycle_id}_ep{epoch:04d}.bin")
+
+
+def _find_latest_train_state(ckpt_dir):
+    """Procura em ckpt_dir o train_state_<ciclo>_ep<NNNN>.pt mais recente
+    (maior <ciclo>, e dentro dele a maior epoch) -- substitui o antigo nome
+    fixo train_state.pt. Retorna o caminho, ou None se nao houver nenhum."""
     if not ckpt_dir or not os.path.isdir(ckpt_dir):
         return None
     candidates = []
-    for path in _glob.glob(os.path.join(ckpt_dir, "train_state_*_ep*.pt")):
-        m = _re.search(r"train_state_(\d{8}_\d{6}_ep\d+)\.pt$", os.path.basename(path))
+    for path in glob.glob(os.path.join(ckpt_dir, "train_state_*_ep*.pt")):
+        m = _TRAIN_STATE_RE.match(os.path.basename(path))
         if m:
-            candidates.append(m.group(1))
+            candidates.append((m.group("cycle"), int(m.group("epoch")), path))
     if not candidates:
         return None
-
-    def _sort_key(suffix):
-        ts, ep_part = suffix.rsplit("_ep", 1)
-        return (int(ep_part), ts)
-
-    candidates.sort(key=_sort_key)
-    return candidates[-1]
+    candidates.sort()  # strings AAAAMMDD-HHMMSS ordenam cronologicamente
+    return candidates[-1][2]
 
 
-def _train_state_path(ckpt_dir, suffix):
-    return os.path.join(ckpt_dir, f"train_state_{suffix}.pt")
-
-
-def _config_json_path(ckpt_dir, suffix):
-    return os.path.join(ckpt_dir, f"train_config_{suffix}.json")
-
-
+def _prune_old_cycle_files(old_paths, new_paths):
+    """Apaga os arquivos do epoch anterior (mesmo ciclo) depois que os novos
+    ja foram gravados com sucesso -- nunca ficamos sem checkpoint valido no
+    disco no meio da troca. old_paths/new_paths sao dicts {chave: caminho};
+    so apaga o que realmente mudou de nome (evita apagar o proprio arquivo
+    recem-gravado, ex. no 1o epoch de um ciclo onde old==None)."""
+    for key, old_path in old_paths.items():
+        new_path = new_paths.get(key)
+        if old_path and old_path != new_path and os.path.isfile(old_path):
+            os.remove(old_path)
+ 
+ 
 # Hiperparametros de OTIMIZACAO/loss/QAT que fazem sentido herdar de uma
 # rodada anterior via --resume-config. Deliberadamente NAO inclui caminhos
 # de I/O (--data, --val-data, --out, --ckpt-dir, --init-from, --resume-config,
@@ -654,19 +616,18 @@ _CONFIG_JSON_HYPERPARAM_KEYS = (
     "early_stop", "patience", "min_delta", "monitor",
     "w_score", "w_outcome", "w_policy", "qa", "qb", "grad_clip_norm",
 )
-
-
-def save_config_json(ckpt_dir, args, fingerprint, epoch, best_metric, weights_path, suffix):
-    """Grava train_config_<suffix>.json ao lado de train_state_<suffix>.pt:
-    um snapshot HUMANO-LEGIVEL (json.dumps, sem torch/numpy) dos
-    hiperparametros desta rodada + qual arquivo de pesos corresponde a
-    este checkpoint. Nao substitui train_state.pt para resume EXATO (nao
-    tem otimizador/RNG) -- e para (a) auditoria/registro de "com que
+ 
+ 
+def save_config_json(path, args, fingerprint, epoch, best_metric, weights_path):
+    """Grava train_config_<ciclo>_ep<NNNN>.json ao lado do train_state e do
+    ckpt.bin do mesmo epoch: snapshot HUMANO-LEGIVEL (json.dumps, sem
+    torch/numpy) dos hiperparametros desta rodada + qual arquivo de pesos
+    corresponde a este checkpoint. Nao substitui train_state.pt para resume
+    EXATO (nao tem otimizador/RNG) -- serve para (a) auditoria de "com que
     config este .bin foi treinado" e (b) --resume-config, que reaproveita
     esses hiperparametros (nao o estado do otimizador) para comecar um
-    ciclo novo de treino -- inclusive de uma epoca antiga especifica, nao
-    só a mais recente, já que cada uma tem seu próprio arquivo agora."""
-    os.makedirs(ckpt_dir, exist_ok=True)
+    ciclo novo de treino."""
+    os.makedirs(os.path.dirname(path), exist_ok=True)
     payload = {
         "fingerprint": fingerprint,
         "epoch": epoch,
@@ -675,17 +636,16 @@ def save_config_json(ckpt_dir, args, fingerprint, epoch, best_metric, weights_pa
         "saved_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
         "hyperparams": {k: getattr(args, k) for k in _CONFIG_JSON_HYPERPARAM_KEYS if hasattr(args, k)},
     }
-    path = _config_json_path(ckpt_dir, suffix)
     tmp_path = path + ".tmp"
     with open(tmp_path, "w", encoding="utf-8") as f:
         json.dump(payload, f, indent=2, ensure_ascii=False)
     os.replace(tmp_path, path)  # mesmo truque write-then-rename do train_state.pt
-
-
+ 
+ 
 def load_config_json(path):
-    """Le um train_config.json (de --resume-config OU do auto-detect em
-    --ckpt-dir). Retorna None silenciosamente se o arquivo nao existe;
-    lanca se existe mas esta corrompido/ilegivel (diferente do
+    """Le um train_config_<ciclo>_ep<NNNN>.json (de --resume-config OU do
+    auto-detect em --ckpt-dir). Retorna None silenciosamente se o arquivo
+    nao existe; lanca se existe mas esta corrompido/ilegivel (diferente do
     try_load_train_state, que so avisa em incompatibilidade de arquitetura
     -- aqui um JSON corrompido e sempre um erro do usuario apontando pro
     arquivo errado, vale falhar alto)."""
@@ -693,11 +653,12 @@ def load_config_json(path):
         return None
     with open(path, "r", encoding="utf-8") as f:
         return json.load(f)
-
-
-def save_train_state(ckpt_dir, model, opt, epoch, epoch_completed, history, stopper, rng, fingerprint, suffix):
-    os.makedirs(ckpt_dir, exist_ok=True)
+ 
+ 
+def save_train_state(path, model, opt, cycle_id, epoch, epoch_completed, history, stopper, rng, fingerprint):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
     payload = dict(
+        cycle_id=cycle_id,
         fingerprint=fingerprint,
         epoch=epoch,
         epoch_completed=epoch_completed,
@@ -712,24 +673,22 @@ def save_train_state(ckpt_dir, model, opt, epoch, epoch_completed, history, stop
         torch_rng_state=torch.get_rng_state(),
         torch_cuda_rng_state=torch.cuda.get_rng_state_all() if torch.cuda.is_available() else None,
     )
-    path = _train_state_path(ckpt_dir, suffix)
     tmp_path = path + ".tmp"
     torch.save(payload, tmp_path)
     os.replace(tmp_path, path)  # grava em arquivo temporario e renomeia -- evita
                                  # checkpoint corrompido se o processo morrer no meio da escrita
-
-
+ 
+ 
 def try_load_train_state(ckpt_dir, fingerprint):
-    """Localiza o checkpoint MAIS RECENTE em ckpt_dir (ver
-    find_latest_checkpoint_suffix) e retorna o payload salvo se a
-    arquitetura bater, senao None (silencioso se simplesmente nao existe
-    checkpoint ainda; avisa se existe mas e incompativel)."""
+    """Acha o train_state_<ciclo>_ep<NNNN>.pt mais recente em ckpt_dir (ver
+    _find_latest_train_state) e retorna o payload se a arquitetura bater,
+    senao None (silencioso se nao houver nenhum ainda; avisa se existe mas
+    e incompativel)."""
     if not ckpt_dir:
         return None
-    suffix = find_latest_checkpoint_suffix(ckpt_dir)
-    if suffix is None:
+    path = _find_latest_train_state(ckpt_dir)
+    if path is None:
         return None
-    path = _train_state_path(ckpt_dir, suffix)
     payload = torch.load(path, map_location="cpu", weights_only=False)
     saved_fp = payload.get("fingerprint", {})
     if saved_fp != fingerprint:
@@ -738,8 +697,8 @@ def try_load_train_state(ckpt_dir, fingerprint):
               f"do zero (apague os arquivos ou use um --ckpt-dir novo pra sumir com este aviso)")
         return None
     return payload
-
-
+ 
+ 
 class _RunState:
     """Referencia mutavel compartilhada com o handler de SIGINT -- guarda so
     o que o handler precisa pra salvar um checkpoint de emergencia a
@@ -752,72 +711,97 @@ class _RunState:
         self.stopper = None
         self.ckpt_dir = None
         self.fingerprint = None
+        self.cycle_id = None
         self.epoch = 0
         self.epoch_completed = False
         self.args = None  # p/ save_config_json (hiperparametros desta rodada)
+        self.device = None
+        self.last_paths = {}  # {"state":..., "bin":..., "config":...} do ultimo
+                               # checkpoint gravado NESTE ciclo -- usado pra apagar
+                               # o do epoch anterior depois que o novo e gravado
+
+
+def save_checkpoint_bundle(rs, epoch, epoch_completed):
+    """Grava train_state + ckpt.bin (pesos do MELHOR epoch ate agora,
+    --monitor) + train_config para (rs.cycle_id, epoch) e so entao apaga os
+    3 arquivos do epoch anterior DO MESMO CICLO (rs.last_paths) -- nunca
+    ficamos sem checkpoint valido no disco no meio da troca. Usado tanto no
+    fim de cada epoch (train()) quanto pelo handler de Ctrl+C
+    (_sigint_handler). Se o epoch atual nao melhorou --monitor, o .bin sai
+    com os MESMOS pesos de antes (stopper.best_state) -- so o nome muda,
+    pra refletir o epoch/timestamp mais recente ja tentado."""
+    new_paths = dict(
+        state=_train_state_path(rs.ckpt_dir, rs.cycle_id, epoch),
+        bin=_ckpt_bin_path(rs.ckpt_dir, rs.cycle_id, epoch),
+        config=_config_json_path(rs.ckpt_dir, rs.cycle_id, epoch),
+    )
+    save_train_state(new_paths["state"], rs.model, rs.opt, rs.cycle_id, epoch, epoch_completed,
+                      rs.history, rs.stopper, rs.rng, rs.fingerprint)
+    best_state = rs.stopper.best_state if rs.stopper.best_state is not None else rs.model.state_dict()
+    _export_state_dict(best_state, new_paths["bin"], rs.device)
+    if rs.args is not None:
+        save_config_json(new_paths["config"], rs.args, rs.fingerprint, epoch, rs.stopper.best, new_paths["bin"])
+    _prune_old_cycle_files(rs.last_paths, new_paths)
+    rs.last_paths = new_paths
+    return new_paths["bin"]
 
 
 _run_state = _RunState()
 _ckpt_saved_on_interrupt = False
-
-
+ 
+ 
 def _sigint_handler(signum, frame):
-    """Ctrl+C: salva train_state_<suffix>.pt e last_<suffix>.bin com os
-    pesos EXATOS do momento da interrupcao (nao espera o epoch terminar) e
-    so entao encerra. Ao rodar de novo, o epoch interrompido e refeito --
-    so ele se perde, nao o treino inteiro."""
+    """Ctrl+C: grava um novo checkpoint (train_state / ckpt.bin /
+    train_config, ver save_checkpoint_bundle) em --ckpt-dir com o estado
+    EXATO do momento da interrupcao (nao espera o epoch terminar) e so
+    entao encerra. Ao rodar de novo, o epoch interrompido e refeito do
+    inicio -- so ele se perde, nao o treino inteiro (ver RETOMANDO TREINO
+    INTERROMPIDO no docstring do topo)."""
     global _ckpt_saved_on_interrupt
-    print("\n\n[Ctrl+C] interrompido -- salvando checkpoint de resume e pesos atuais...")
+    print("\n\n[Ctrl+C] interrompido -- salvando checkpoint e saindo...")
     rs = _run_state
     if rs.model is not None and rs.ckpt_dir and not _ckpt_saved_on_interrupt:
         _ckpt_saved_on_interrupt = True
-        suffix = _checkpoint_suffix(rs.epoch)
-        save_train_state(rs.ckpt_dir, rs.model, rs.opt, rs.epoch, rs.epoch_completed,
-                          rs.history, rs.stopper, rs.rng, rs.fingerprint, suffix)
-        last_path = os.path.join(rs.ckpt_dir, f"last_{suffix}.bin")
-        export_weights(rs.model, last_path)
-        if rs.args is not None:
-            best_metric = rs.stopper.best if rs.stopper is not None else None
-            save_config_json(rs.ckpt_dir, rs.args, rs.fingerprint, rs.epoch, best_metric, last_path, suffix)
-            if rs.args.plot_dir and rs.history and len(rs.history.get("epoch", [])) > 0:
-                save_plots(rs.history, rs.args.plot_dir)
-                print(f"plots parciais salvos em {rs.args.plot_dir}")
+        bin_path = save_checkpoint_bundle(rs, rs.epoch, rs.epoch_completed)
+        if rs.args is not None and rs.args.plot_dir and rs.history and len(rs.history.get("epoch", [])) > 0:
+            save_plots(rs.history, rs.args.plot_dir)
+            print(f"plots parciais salvos em {rs.args.plot_dir}")
         status = "completo" if rs.epoch_completed else "parcial -- sera refeito ao retomar"
-        print(f"checkpoint salvo em {rs.ckpt_dir} (epoch {rs.epoch}, sufixo {suffix}, {status})")
+        print(f"checkpoint salvo em {rs.ckpt_dir} (epoch {rs.epoch}, {status}) -- {bin_path}")
     else:
-        print("nada para salvar ainda (interrompido antes do 1o checkpoint).")
+        print("nada para salvar ainda (interrompido antes do 1o epoch completar).")
     print("saindo.")
     sys.exit(130)
-
-
+ 
+ 
 # --- export no layout binario lido por nnue.hpp ------------------------------
 def export_weights(model: QuoridorNNUE, path: str):
     model.eval()
     with torch.no_grad():
         w1 = model.fc1.weight.detach().cpu().numpy().T.astype(np.float32)
         b1 = model.fc1.bias.detach().cpu().numpy().astype(np.float32)
-
+ 
         def head_arrays(value1: nn.Linear, value2: nn.Linear):
             wv1 = value1.weight.detach().cpu().numpy().T.astype(np.float32)
             bv1 = value1.bias.detach().cpu().numpy().astype(np.float32)
             wv2 = value2.weight.detach().cpu().numpy().reshape(-1).astype(np.float32)
             bv2 = value2.bias.detach().cpu().numpy().astype(np.float32)
             return wv1, bv1, wv2, bv2
-
+ 
         wv1_wl, bv1_wl, wv2_wl, bv2_wl = head_arrays(model.value1_wl, model.value2_wl)
         wv1_aux, bv1_aux, wv2_aux, bv2_aux = head_arrays(model.value1_aux, model.value2_aux)
         wp = model.policy.weight.detach().cpu().numpy().astype(np.float32)
         bp = model.policy.bias.detach().cpu().numpy().astype(np.float32)
-
+ 
     assert w1.shape == (NUM_FEATURES, HIDDEN)
     assert wv1_wl.shape == (HIDDEN, 32)
     assert wv1_aux.shape == (HIDDEN, 32)
     assert wp.shape == (POLICY_OUT, HIDDEN)
-
+ 
     dir_name = os.path.dirname(os.path.abspath(path))
     if dir_name:
         os.makedirs(dir_name, exist_ok=True)
-
+ 
     with open(path, "wb") as f:
         f.write(np.ascontiguousarray(w1).tobytes())
         f.write(np.ascontiguousarray(b1).tobytes())
@@ -831,14 +815,14 @@ def export_weights(model: QuoridorNNUE, path: str):
         f.write(np.ascontiguousarray(bv2_aux).tobytes())
         f.write(np.ascontiguousarray(wp).tobytes())
         f.write(np.ascontiguousarray(bp).tobytes())
-
-
+ 
+ 
 def _default_quant_path(out_path: str) -> str:
     if out_path.endswith(".bin"):
         return out_path[: -len(".bin")] + "_int8.bin"
     return out_path + "_int8.bin"
-
-
+ 
+ 
 # --- avaliacao em chunks (limitado por RAM/VRAM) -----------------------------
 @torch.no_grad()
 def run_eval(ds, indices, batch_size, chunk_size, gpu_chunk_size, model, device,
@@ -853,13 +837,13 @@ def run_eval(ds, indices, batch_size, chunk_size, gpu_chunk_size, model, device,
             score_t = t["search_score"] / VALUE_SCALE
             result_t = (t["game_result"] + 1.0) / 2.0
             policy_t = t["policy_target"]
-
+ 
             value_wl, value_aux, policy_logits = model(t["x"])
             loss_outcome = F.binary_cross_entropy_with_logits(value_wl, result_t)
             loss_score = F.mse_loss(value_aux / VALUE_SCALE, score_t)
             loss_policy = F.cross_entropy(policy_logits, policy_t)
             loss = w_outcome * loss_outcome + w_score * loss_score + w_policy * loss_policy
-
+ 
             nb = len(t["x"])
             total["loss"] += loss.item() * nb
             total["score"] += loss_score.item() * nb
@@ -870,19 +854,19 @@ def run_eval(ds, indices, batch_size, chunk_size, gpu_chunk_size, model, device,
         total[k] /= max(1, n_items)
     total["policy_acc"] = total["correct"] / max(1, n_items)
     return total
-
-
+ 
+ 
 # --- plots ----------------------------------------------------------------------
 def save_plots(history, plot_dir):
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
-
+ 
     os.makedirs(plot_dir, exist_ok=True)
     epochs = history["epoch"]
-
+ 
     fig, axes = plt.subplots(2, 3, figsize=(16, 9))
-
+ 
     def plot_pair(ax, key, title):
         ax.plot(epochs, history[f"train_{key}"], label="treino")
         ax.plot(epochs, history[f"val_{key}"], label="validacao")
@@ -890,13 +874,13 @@ def save_plots(history, plot_dir):
         ax.set_xlabel("epoch")
         ax.legend()
         ax.grid(alpha=0.3)
-
+ 
     plot_pair(axes[0, 0], "loss", "Loss total")
     plot_pair(axes[0, 1], "outcome", "Loss resultado (BCE)")
     plot_pair(axes[0, 2], "score", "Loss score aux (MSE)")
     plot_pair(axes[1, 0], "policy", "Loss politica (CE)")
     plot_pair(axes[1, 1], "policy_acc", "Acuracia da politica")
-
+ 
     ax = axes[1, 2]
     ax.plot(epochs, history["lr"], color="tab:orange", label="learning rate")
     ax.set_ylabel("learning rate")
@@ -909,14 +893,14 @@ def save_plots(history, plot_dir):
     lines2, labels2 = ax2.get_legend_handles_labels()
     ax.legend(lines1 + lines2, labels1 + labels2, loc="upper right")
     ax.grid(alpha=0.3)
-
+ 
     fig.tight_layout()
     out_path = os.path.join(plot_dir, "training_curves.png")
     fig.savefig(out_path, dpi=130)
     plt.close(fig)
     return out_path
-
-
+ 
+ 
 # --- fontes de treino (pastas com fracao, estilo mixtrain.py) ---------------
 def resolve_data_source_path(path: str, data_root: str) -> str:
     """Resolve o `path` de uma entrada de DATA_SOURCES/--data-sources (ver
@@ -936,14 +920,14 @@ def resolve_data_source_path(path: str, data_root: str) -> str:
             return c
     tried = "\n  - ".join(candidates)
     raise FileNotFoundError(f"[data-sources] '{path}' nao encontrado. Tentei:\n  - {tried}")
-
-
+ 
+ 
 def load_training_population(data_arg, sources_arg, data_root, seed):
     """Monta a populacao de treino a partir de --data (fluxo antigo, uma
     lista/glob/diretorio achatada, sem amostragem) OU --data-sources/
     DATA_SOURCES_DEFAULT (fluxo novo: lista de {"path", "frac"}, uma fracao
     [0,1] de POSICOES sorteada aleatoriamente por pasta).
-
+ 
     Retorna (train_paths, train_ds, base_idx):
       - train_paths / train_ds: iguais ao retorno de load_multi_selfplay,
         cobrindo TODOS os arquivos .bin de TODAS as fontes envolvidas.
@@ -957,7 +941,7 @@ def load_training_population(data_arg, sources_arg, data_root, seed):
     if not sources_arg:
         train_paths, train_ds = load_multi_selfplay(data_arg)
         return train_paths, train_ds, np.arange(len(train_ds))
-
+ 
     rng = np.random.default_rng(seed)
     all_paths, source_file_counts, kept_sources = [], [], []
     for entry in sources_arg:
@@ -976,7 +960,7 @@ def load_training_population(data_arg, sources_arg, data_root, seed):
         all_paths.extend(src_paths)
         source_file_counts.append(len(src_paths))
         kept_sources.append((raw_path, frac, resolved))
-
+ 
     if not all_paths:
         raise ValueError("[data-sources] todas as fontes tem frac=0 (ou a lista esta vazia) -- "
                           "nada para treinar")
@@ -984,10 +968,10 @@ def load_training_population(data_arg, sources_arg, data_root, seed):
         dupes = sorted({p for p in all_paths if all_paths.count(p) > 1})
         raise ValueError(f"[data-sources] pastas de fontes se sobrepoem -- arquivo(s) repetido(s) "
                           f"em mais de uma fonte: {dupes}")
-
+ 
     train_paths, train_ds = load_multi_selfplay(all_paths)
     file_lens = [n for _, n in train_ds.sizes()]
-
+ 
     selected_chunks = []
     idx_cursor = 0
     global_offset = 0
@@ -1006,17 +990,85 @@ def load_training_population(data_arg, sources_arg, data_root, seed):
         selected_chunks.append(sel)
         print(f"  - {raw_path:24s} ({resolved}): {nfiles} arquivo(s), {n_source:,} posicoes, "
               f"frac={frac:.2f} -> {len(sel):,} selecionadas")
-
+ 
     base_idx = np.concatenate(selected_chunks)
     print(f"total (todas as fontes, pos-amostragem): {len(base_idx):,} / {global_offset:,} posicoes "
           f"({100.0 * len(base_idx) / max(1, global_offset):.1f}%)")
     return train_paths, train_ds, base_idx
-
-
+ 
+ 
 # --- treino ------------------------------------------------------------------
+def _print_banner(lines):
+    width = max(70, max(len(l) for l in lines) + 4)
+    print("=" * width)
+    for l in lines:
+        print(l)
+    print("=" * width)
+ 
+ 
 def train(args):
     global _ckpt_saved_on_interrupt
     _ckpt_saved_on_interrupt = False
+ 
+    # --- MODO desta execucao (resume / novo ciclo / do zero / --init-from) --
+    # Decidido e anunciado ANTES de qualquer outra coisa (mesmo antes de
+    # carregar os dados), pra responder de cara "em que caso estamos" sem
+    # precisar ler o resto do log. Ver os 4 cenarios no docstring do topo.
+    ckpt_dir = args.ckpt_dir
+    if ckpt_dir:
+        os.makedirs(ckpt_dir, exist_ok=True)
+    fingerprint = compute_fingerprint(args)
+    resumed = None if args.fresh else try_load_train_state(ckpt_dir, fingerprint)
+    new_cycle = False
+    cycle_id = None
+    if resumed is not None:
+        resumed_path = _train_state_path(ckpt_dir, resumed["cycle_id"], resumed["epoch"])
+        prev_epoch = resumed["epoch"]
+        prev_completed = resumed["epoch_completed"]
+        prev_bad_epochs = resumed.get("stopper_num_bad_epochs", 0)
+        hit_ceiling = prev_epoch >= args.epochs
+        early_stopped = args.early_stop and prev_bad_epochs >= args.patience
+        cycle_exhausted = prev_completed and (hit_ceiling or early_stopped)
+        if cycle_exhausted:
+            new_cycle = True
+            cycle_id = new_cycle_id()
+            lr_auto = getattr(args, "lr_auto", False)
+            if lr_auto:
+                args.lr = args.new_cycle_lr
+            lr_note = (f"  LR: {args.lr:.1e} (--new-cycle-lr, nao o LR_DEFAULT="
+                       f"{LR_DEFAULT:.1e} de treino do zero)" if lr_auto else
+                       f"  LR: {args.lr:.1e} (--lr explicito, sobrepondo --new-cycle-lr)")
+            _print_banner([
+                f"MODO: NOVO CICLO (bootstrap sobre self-play novo)",
+                f"  ciclo anterior completo no epoch {prev_epoch} -- {resumed_path}",
+                f"  novo ciclo: {cycle_id} (arquivos do ciclo anterior ficam no disco)",
+                f"  reaproveitando so os PESOS; otimizador, LR/WD schedule e "
+                f"early-stopping reiniciam do zero (epoch volta a contar de 1)",
+                lr_note,
+            ])
+        else:
+            cycle_id = resumed["cycle_id"]
+            status = "completo" if prev_completed else "parcial -- sera refeito"
+            _print_banner([
+                f"MODO: RETOMANDO TREINO INTERROMPIDO",
+                f"  ultimo epoch salvo: {prev_epoch} ({status}) -- {resumed_path}",
+                f"  mesmo ciclo ({cycle_id}), otimizador, schedule e early-stopping de onde parou",
+            ])
+        if args.init_from:
+            print(f"  (--init-from ignorado: ha um checkpoint valido em {ckpt_dir})")
+    elif args.init_from:
+        cycle_id = new_cycle_id()
+        _print_banner([
+            f"MODO: TREINO A PARTIR DE PESOS EXISTENTES",
+            f"  pesos: {args.init_from}",
+            f"  ciclo novo: {cycle_id}",
+            f"  otimizador comeca do zero (p/ retomar COM otimizador/schedule, "
+            f"use o mesmo --ckpt-dir de uma rodada anterior em vez de --init-from)",
+        ])
+    else:
+        cycle_id = new_cycle_id()
+        _print_banner([f"MODO: TREINO DO ZERO -- pesos aleatorios, epoch 1  (ciclo {cycle_id})"])
+ 
     sources = args.data_sources if args.data_sources else DATA_SOURCES_DEFAULT
     train_paths, train_ds, base_idx = load_training_population(
         args.data, sources, DATA_ROOT_DEFAULT, args.seed)
@@ -1027,10 +1079,10 @@ def train(args):
         print(f"dados de treino: {len(train_paths)} arquivo(s), {len(train_ds):,} posicoes")
         for p, n in train_ds.sizes():
             print(f"  - {p}: {n:,} posicoes")
-
+ 
     rng = np.random.default_rng(args.seed)
     torch.manual_seed(args.seed)
-
+ 
     if args.val_data:
         val_paths, val_ds = load_multi_selfplay(args.val_data)
         print(f"dados de validacao (explicitos): {len(val_paths)} arquivo(s), {len(val_ds):,} posicoes")
@@ -1043,7 +1095,7 @@ def train(args):
         val_idx, train_idx = base_idx[perm[:n_val]], base_idx[perm[n_val:]]
         val_ds = train_ds
         print(f"split treino/validacao: {len(train_idx):,} / {len(val_idx):,} (val-split={args.val_split})")
-
+ 
     device = torch.device(args.device)
     print_device_info(device)
     batch_size = resolve_int_or_auto(
@@ -1060,57 +1112,18 @@ def train(args):
         print(f"gradient clipping: max_norm={args.grad_clip_norm}")
     total_chunks_per_epoch = max(1, -(-len(train_idx) // chunk_size))
     print(f"chunks por epoch (RAM): ~{total_chunks_per_epoch}")
-
-    ckpt_dir = args.ckpt_dir
-    if ckpt_dir:
-        os.makedirs(ckpt_dir, exist_ok=True)
-    fingerprint = compute_fingerprint(args)
-    resumed = None if args.fresh else try_load_train_state(ckpt_dir, fingerprint)
-
+ 
     model = QuoridorNNUE().to(device)
-    new_cycle = False
     if resumed is not None:
         model.load_state_dict(resumed["model_state"])
-        prev_epoch = resumed["epoch"]
-        prev_completed = resumed["epoch_completed"]
-        prev_bad_epochs = resumed.get("stopper_num_bad_epochs", 0)
-        hit_ceiling = prev_epoch >= args.epochs
-        early_stopped = args.early_stop and prev_bad_epochs >= args.patience
-        cycle_exhausted = prev_completed and (hit_ceiling or early_stopped)
-        if cycle_exhausted:
-            new_cycle = True
-            print(f"pesos carregados de {_train_state_path(ckpt_dir, find_latest_checkpoint_suffix(ckpt_dir))} "
-                  f"(ciclo anterior ja tinha terminado no epoch {prev_epoch}) -- "
-                  f"iniciando um NOVO CICLO de treino a partir desses pesos "
-                  f"(otimizador, LR/WD schedule e early-stopping reiniciados; "
-                  f"e o comportamento certo pra continuar apos gerar mais self-play). "
-                  f"Use --fresh pra tambem descartar os pesos e comecar aleatorio.")
-            if getattr(args, "lr_auto", False):
-                print(f"[lr] novo ciclo detectado -- usando LR baixo de bootstrap "
-                      f"--new-cycle-lr={args.new_cycle_lr} (em vez do default de treino do "
-                      f"zero, LR_DEFAULT={LR_DEFAULT}) pra nao afastar demais os pesos ja "
-                      f"convergidos do otimo local; passe --lr explicito pra sobrescrever")
-                args.lr = args.new_cycle_lr
-        else:
-            status = "completo" if prev_completed else "parcial (sera refeito)"
-            print(f"RETOMANDO treino a partir de {_train_state_path(ckpt_dir, find_latest_checkpoint_suffix(ckpt_dir))} "
-                  f"(ultimo epoch salvo: {prev_epoch}, {status}) -- mesmo otimizador, "
-                  f"schedule e early-stopping de onde parou")
-        if args.init_from:
-            print(f"  (--init-from ignorado: ha um checkpoint valido em {ckpt_dir})")
     elif args.init_from:
         raw = _load_raw_weights(args.init_from)
         _load_into_model(model, raw)
-        print(f"pesos iniciais carregados de {args.init_from} (continuando treino, "
-              f"otimizador comeca do zero -- para retomar COM otimizador/schedule, "
-              f"use o mesmo --ckpt-dir de uma rodada anterior em vez de --init-from)")
-    else:
-        print("pesos iniciais aleatorios (treino do zero)")
-
+ 
     clipper = WeightClipper(qa=args.qa, qb=args.qb)
     clipper(model)
     print(f"QAT: QA={args.qa} QB={args.qb} (pesos travados a cada passo)")
-
+ 
     bias_params, weight_params = [], []
     for name, param in model.named_parameters():
         (bias_params if name.endswith(".bias") else weight_params).append(param)
@@ -1118,16 +1131,16 @@ def train(args):
         {"params": weight_params, "weight_decay": args.weight_decay, "_is_weight_group": True},
         {"params": bias_params, "weight_decay": 0.0, "_is_weight_group": False},
     ], lr=args.lr)
-
+ 
     stopper = EarlyStopper(monitor=args.monitor, patience=args.patience,
                             min_delta=args.min_delta, enabled=args.early_stop)
-
+ 
     history = {k: [] for k in (
         "epoch", "train_loss", "val_loss", "train_outcome", "val_outcome",
         "train_score", "val_score", "train_policy", "val_policy",
         "train_policy_acc", "val_policy_acc", "lr", "wd",
     )}
-
+ 
     start_epoch = 1
     if resumed is not None and not new_cycle:
         opt.load_state_dict(resumed["opt_state"])
@@ -1143,7 +1156,7 @@ def train(args):
         start_epoch = resumed["epoch"] + 1 if resumed["epoch_completed"] else resumed["epoch"]
     # new_cycle=True: fica tudo com o default (start_epoch=1, otimizador novo,
     # history/stopper zerados) -- so os PESOS do model vieram do checkpoint.
-
+ 
     # handler de Ctrl+C: salva um checkpoint de emergencia com o estado atual
     # (mesmo no meio de um epoch) antes de encerrar.
     _run_state.model = model
@@ -1153,13 +1166,27 @@ def train(args):
     _run_state.stopper = stopper
     _run_state.ckpt_dir = ckpt_dir
     _run_state.fingerprint = fingerprint
+    _run_state.cycle_id = cycle_id
     _run_state.args = args
+    _run_state.device = device
+    if resumed is not None and not new_cycle:
+        # retomando o MESMO ciclo: os arquivos ja em disco (epoch anterior)
+        # devem ser apagados quando o proximo epoch for salvo, entao ja
+        # entram como "last_paths" -- se new_cycle=True, fica {} de proposito
+        # (nao mexemos nos arquivos do ciclo anterior).
+        _run_state.last_paths = dict(
+            state=_train_state_path(ckpt_dir, cycle_id, resumed["epoch"]),
+            bin=_ckpt_bin_path(ckpt_dir, cycle_id, resumed["epoch"]),
+            config=_config_json_path(ckpt_dir, cycle_id, resumed["epoch"]),
+        )
+    else:
+        _run_state.last_paths = {}
     signal.signal(signal.SIGINT, _sigint_handler)
-
+ 
     t0 = time.time()
     stopped_early = False
     last_epoch = start_epoch - 1
-
+ 
     for epoch in range(start_epoch, args.epochs + 1):
         last_epoch = epoch
         _run_state.epoch = epoch
@@ -1168,10 +1195,10 @@ def train(args):
                           args.warmup_epochs, args.step_size, args.step_gamma, args.exp_gamma)
         wd = wd_at_epoch(epoch, args.epochs, args.weight_decay, args.weight_decay_min, args.wd_schedule)
         apply_lr_wd(opt, lr, wd)
-
+ 
         if device.type == "cuda":
             torch.cuda.reset_peak_memory_stats(device)
-
+ 
         model.train()
         tr_total = dict(loss=0.0, score=0.0, outcome=0.0, policy=0.0, correct=0)
         n_train_items = len(train_idx)
@@ -1181,31 +1208,31 @@ def train(args):
         chunk_num = 0
         progress_print_count = 0
         last_progress_was_inline = False
-
+ 
         for chunk_idx in iter_chunks(n_train_items, chunk_size, rng):
             chunk_num += 1
             global_idx = train_idx[chunk_idx]
             chunk = train_ds[global_idx]
             chunk = chunk[rng.permutation(len(chunk))]  # embaralha uma vez por chunk
-
+ 
             for t in iter_gpu_batches(chunk, device, batch_size, gpu_chunk_size):
                 score_t = t["search_score"] / VALUE_SCALE
                 result_t = (t["game_result"] + 1.0) / 2.0
                 policy_t = t["policy_target"]
-
+ 
                 value_wl, value_aux, policy_logits = model(t["x"])
                 loss_outcome = F.binary_cross_entropy_with_logits(value_wl, result_t)
                 loss_score = F.mse_loss(value_aux / VALUE_SCALE, score_t)
                 loss_policy = F.cross_entropy(policy_logits, policy_t)
                 loss = args.w_outcome * loss_outcome + args.w_score * loss_score + args.w_policy * loss_policy
-
+ 
                 opt.zero_grad(set_to_none=True)
                 loss.backward()
                 if args.grad_clip_norm and args.grad_clip_norm > 0:
                     torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=args.grad_clip_norm)
                 opt.step()
                 clipper(model)
-
+ 
                 nb = len(t["x"])
                 tr_total["loss"] += loss.item() * nb
                 tr_total["score"] += loss_score.item() * nb
@@ -1213,7 +1240,7 @@ def train(args):
                 tr_total["policy"] += loss_policy.item() * nb
                 tr_total["correct"] += (policy_logits.argmax(dim=-1) == policy_t).sum().item()
                 positions_done += nb
-
+ 
                 now = time.time()
                 if args.progress_every_secs > 0 and now - last_progress_print >= args.progress_every_secs:
                     last_progress_print = now
@@ -1239,17 +1266,17 @@ def train(args):
                     else:
                         print(line + " " * 8, end="\r", flush=True)
                         last_progress_was_inline = True
-
+ 
         for k in ("loss", "score", "outcome", "policy"):
             tr_total[k] /= max(1, n_train_items)
         tr_total["policy_acc"] = tr_total["correct"] / max(1, n_train_items)
-
+ 
         if last_progress_was_inline:
             print()  # fecha a linha viva (\r) antes de qualquer print permanente do epoch
-
+ 
         va = run_eval(val_ds, val_idx, batch_size, chunk_size, gpu_chunk_size, model, device,
                       args.w_score, args.w_outcome, args.w_policy)
-
+ 
         history["epoch"].append(epoch)
         history["train_loss"].append(tr_total["loss"])
         history["val_loss"].append(va["loss"])
@@ -1263,28 +1290,23 @@ def train(args):
         history["val_policy_acc"].append(va["policy_acc"])
         history["lr"].append(lr)
         history["wd"].append(wd)
-
+ 
         monitored = {"val_loss": va["loss"], "val_outcome": va["outcome"],
                      "val_score": va["score"], "val_policy": va["policy"],
                      "val_policy_acc": va["policy_acc"]}[args.monitor]
         improved, should_stop = stopper.step(monitored, epoch, model)
-
-        # checkpoint de resume: gravado a CADA epoch (nao so quando melhora),
-        # e' o que permite retomar depois de fechar o processo normalmente.
-        # UM sufixo por epoch, reaproveitado nos 3 arquivos (+ best.bin
-        # quando ha melhora) -- precisa ser o MESMO em todos pra poderem
-        # ser re-associados depois (ver find_latest_checkpoint_suffix).
-        suffix = _checkpoint_suffix(epoch)
-        if ckpt_dir and improved:
-            _export_state_dict(stopper.best_state, os.path.join(ckpt_dir, f"best_{suffix}.bin"), device)
-
+ 
+        # checkpoint de resume: gravado a CADA epoch (nao so quando melhora) --
+        # e o que permite retomar depois de fechar o processo normalmente.
+        # ckpt_<ciclo>_ep<NNNN>.bin sempre leva os pesos do MELHOR epoch ate
+        # agora (stopper.best_state), mesmo quando o epoch atual nao
+        # melhorou -- so o nome (epoch/ciclo) muda a cada chamada; o arquivo
+        # do epoch anterior do mesmo ciclo e apagado logo em seguida (ver
+        # save_checkpoint_bundle).
         _run_state.epoch_completed = True
         if ckpt_dir:
-            save_train_state(ckpt_dir, model, opt, epoch, True, history, stopper, rng, fingerprint, suffix)
-            last_path = os.path.join(ckpt_dir, f"last_{suffix}.bin")
-            export_weights(model, last_path)
-            save_config_json(ckpt_dir, args, fingerprint, epoch, stopper.best, last_path, suffix)
-
+            bin_path = save_checkpoint_bundle(_run_state, epoch, True)
+ 
         epoch_duration = time.time() - epoch_start_time
         avg_epoch_time = (time.time() - t0) / epoch
         eta_run = format_duration(avg_epoch_time * (args.epochs - epoch))
@@ -1292,7 +1314,7 @@ def train(args):
         if device.type == "cuda":
             peak_gb = torch.cuda.max_memory_allocated(device) / (1024 ** 3)
             vram_note = f"  vram={peak_gb:.2f}GB"
-
+ 
         if epoch % args.log_every == 0 or epoch == args.epochs or improved or should_stop:
             star = " *" if improved else ""
             print(f"epoch {epoch:3d}/{args.epochs}  lr={lr:.2e}  wd={wd:.2e}  "
@@ -1302,16 +1324,16 @@ def train(args):
                   f"(score={tr_total['score']:.4f} outcome={tr_total['outcome']:.4f} policy={tr_total['policy']:.4f})")
             print(f"  valid   loss={va['loss']:.4f}  acc={va['policy_acc']:.3f}  "
                   f"(score={va['score']:.4f} outcome={va['outcome']:.4f} policy={va['policy']:.4f})")
-
+ 
         if args.plot_dir and (epoch % args.plot_every_epochs == 0 or epoch == args.epochs or should_stop):
             save_plots(history, args.plot_dir)
-
+ 
         if should_stop:
             print(f"\nearly stopping: sem melhora em '{args.monitor}' por {stopper.patience} epochs "
                   f"(melhor epoch={stopper.best_epoch}, {args.monitor}={stopper.best:.4f})")
             stopped_early = True
             break
-
+ 
     if args.early_stop and not args.no_restore_best and stopper.best_state is not None:
         print(f"\nrestaurando pesos do melhor epoch ({stopper.best_epoch}, "
               f"{args.monitor}={stopper.best:.4f}) para export final")
@@ -1319,56 +1341,57 @@ def train(args):
     elif stopper.best_state is not None:
         print(f"\nmelhor epoch registrado: {stopper.best_epoch} ({args.monitor}={stopper.best:.4f}); "
               f"export final usa os pesos do ultimo epoch (--no-restore-best)")
-
+ 
     export_weights(model, args.out)
     print(f"pesos exportados para {args.out}")
-
-    if ckpt_dir:
-        export_weights(model, os.path.join(ckpt_dir, "last.bin"))
-
+    # nota: o ckpt_<ciclo>_ep<N>.bin em --ckpt-dir NAO e reescrito aqui -- ja
+    # reflete os pesos do melhor epoch (gravado dentro do loop, a cada
+    # epoch); export_weights(model, args.out) acima grava so em --out, o
+    # arquivo final pedido pelo usuario, nunca em --ckpt-dir.
+ 
     if not args.no_quantize:
         quant_path = args.quant_out or _default_quant_path(args.out)
         print(f"quantizando int8/int16 -> {quant_path} (QA={args.qa} QB={args.qb})")
         quantize_file(args.out, quant_path, qa=args.qa, qb=args.qb)
         print(f"pesos quantizados gravados em {quant_path}")
-
+ 
     if args.plot_dir:
         plot_path = save_plots(history, args.plot_dir)
         print(f"plots de convergencia salvos em {plot_path}")
-
+ 
     print(f"\nresumo: {last_epoch} epoch(s) executados"
           f"{' (parada antecipada)' if stopped_early else ''}, "
           f"melhor {args.monitor}={stopper.best:.4f} no epoch {stopper.best_epoch}, "
           f"tempo total {time.time() - t0:.0f}s")
     return model, history
-
-
+ 
+ 
 def _export_state_dict(state_dict, path, device):
     model = QuoridorNNUE().to(device)
     model.load_state_dict(state_dict)
     export_weights(model, path)
-
-
+ 
+ 
 def _load_raw_weights(path):
     with open(path, "rb") as f:
         w1 = np.fromfile(f, dtype="<f4", count=NUM_FEATURES * HIDDEN).reshape(NUM_FEATURES, HIDDEN)
         b1 = np.fromfile(f, dtype="<f4", count=HIDDEN)
-
+ 
         def read_head():
             wv1 = np.fromfile(f, dtype="<f4", count=HIDDEN * 32).reshape(HIDDEN, 32)
             bv1 = np.fromfile(f, dtype="<f4", count=32)
             wv2 = np.fromfile(f, dtype="<f4", count=32)
             bv2 = np.fromfile(f, dtype="<f4", count=1)
             return wv1, bv1, wv2, bv2
-
+ 
         wv1_wl, bv1_wl, wv2_wl, bv2_wl = read_head()
         wv1_aux, bv1_aux, wv2_aux, bv2_aux = read_head()
         wp = np.fromfile(f, dtype="<f4", count=POLICY_OUT * HIDDEN).reshape(POLICY_OUT, HIDDEN)
         bp = np.fromfile(f, dtype="<f4", count=POLICY_OUT)
     return dict(w1=w1, b1=b1, wv1_wl=wv1_wl, bv1_wl=bv1_wl, wv2_wl=wv2_wl, bv2_wl=bv2_wl,
                 wv1_aux=wv1_aux, bv1_aux=bv1_aux, wv2_aux=wv2_aux, bv2_aux=bv2_aux, wp=wp, bp=bp)
-
-
+ 
+ 
 def _load_into_model(model: QuoridorNNUE, raw: dict):
     with torch.no_grad():
         model.fc1.weight.copy_(torch.from_numpy(raw["w1"].T.copy()))
@@ -1383,12 +1406,12 @@ def _load_into_model(model: QuoridorNNUE, raw: dict):
         model.value2_aux.bias.copy_(torch.from_numpy(raw["bv2_aux"]))
         model.policy.weight.copy_(torch.from_numpy(raw["wp"]))
         model.policy.bias.copy_(torch.from_numpy(raw["bp"]))
-
-
+ 
+ 
 def parse_args(argv=None):
     p = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-
+ 
     g_data = p.add_argument_group("dados")
     g_data.add_argument("--data", action="append", default=None,
                          help="arquivo(s) .bin de self-play; aceita lista separada por virgula, "
@@ -1411,7 +1434,7 @@ def parse_args(argv=None):
                          help="pesos .bin existentes p/ inicializar (so PESOS; ignorado se houver "
                               "um checkpoint de resume valido em --ckpt-dir -- ver --fresh)")
     g_data.add_argument("--seed", type=int, default=SEED_DEFAULT)
-
+ 
     g_opt = p.add_argument_group("otimizacao")
     g_opt.add_argument("--epochs", type=int, default=EPOCHS_DEFAULT)
     g_opt.add_argument("--batch-size", default=BATCH_SIZE_DEFAULT,
@@ -1443,7 +1466,7 @@ def parse_args(argv=None):
     g_opt.add_argument("--device", default=DEVICE_DEFAULT,
                         help="caso especial (ex. 'cuda:1'); normalmente mude USE_GPU_DEFAULT no "
                              f"topo do arquivo em vez desta flag (default resolvido: {DEVICE_DEFAULT})")
-
+ 
     g_wd = p.add_argument_group("weight decay (annealing)")
     g_wd.add_argument("--weight-decay", type=float, default=WEIGHT_DECAY_DEFAULT,
                        help="weight decay desacoplado inicial (AdamW), so em pesos (nunca em bias)")
@@ -1451,7 +1474,7 @@ def parse_args(argv=None):
                        help="valor para o qual o weight decay converge ao final do treino")
     g_wd.add_argument("--wd-schedule", choices=["none", "constant", "linear", "cosine"],
                        default=WD_SCHEDULE_DEFAULT)
-
+ 
     g_es = p.add_argument_group("early stopping")
     g_es.add_argument("--early-stop", dest="early_stop", action="store_true", default=EARLY_STOP_DEFAULT)
     g_es.add_argument("--no-early-stop", dest="early_stop", action="store_false")
@@ -1462,20 +1485,19 @@ def parse_args(argv=None):
                        default=MONITOR_DEFAULT)
     g_es.add_argument("--no-restore-best", action="store_true",
                        help="exporta os pesos do ultimo epoch em vez dos do melhor epoch")
-
+ 
     g_ckpt = p.add_argument_group("checkpoint / resume")
     g_ckpt.add_argument("--ckpt-dir", default=CKPT_DIR_DEFAULT,
-                         help=f"diretorio de checkpoints. Cada epoch grava um trio "
-                              f"train_state_<data>_<hora>_ep<N>.pt / train_config_..._ep<N>.json / "
-                              f"last_..._ep<N>.bin (+ best_..._ep<N>.bin quando ha melhora) -- "
-                              f"nao sobrescreve os anteriores, fica com o historico completo. "
-                              f"Resume automatico usa o de maior epoca (ver "
-                              f"find_latest_checkpoint_suffix); passe vazio/None via codigo pra "
-                              f"desligar checkpointing (default {CKPT_DIR_DEFAULT})")
+                         help=f"diretorio de checkpoints. A cada epoch grava "
+                              f"train_state_<ciclo>_ep<N>.pt / ckpt_<ciclo>_ep<N>.bin / "
+                              f"train_config_<ciclo>_ep<N>.json e apaga os do epoch anterior "
+                              f"DO MESMO CICLO -- arquivos de ciclos anteriores ficam no disco. "
+                              f"Resume automatico acha o train_state_*_ep*.pt mais recente "
+                              f"sozinho; passe vazio/None via codigo pra desligar checkpointing "
+                              f"(default {CKPT_DIR_DEFAULT})")
     g_ckpt.add_argument("--fresh", dest="fresh", action="store_true", default=FRESH_DEFAULT,
-                         help="ignora qualquer checkpoint de resume existente (o trio train_state/"
-                              "train_config/last mais recente) em --ckpt-dir e comeca do zero (ou "
-                              "de --init-from, se passado)")
+                         help="ignora qualquer checkpoint de resume existente em --ckpt-dir e "
+                              "comeca do zero (ou de --init-from, se passado)")
     g_ckpt.add_argument("--no-fresh", dest="fresh", action="store_false",
                          help="forca resume automatico (default -- so precisa desta flag se "
                               "FRESH_DEFAULT tiver sido mudado pra True no topo do arquivo)")
@@ -1489,7 +1511,7 @@ def parse_args(argv=None):
                               "epoch/historico, so pesos + config -- serve para comecar um ciclo "
                               "novo (ex. bootstrap em cima de self-play novo) com os mesmos "
                               "hiperparametros de um treino anterior, sem redigitar cada flag.")
-
+ 
     g_mem = p.add_argument_group("orcamento de memoria (VRAM/RAM)")
     g_mem.add_argument("--vram-budget-gb", type=float, default=VRAM_BUDGET_GB_DEFAULT,
                         help=f"orcamento de VRAM usado para calcular --batch-size=auto "
@@ -1507,7 +1529,7 @@ def parse_args(argv=None):
     g_mem.add_argument("--chunk-size-max", type=int, default=CHUNK_SIZE_MAX_DEFAULT,
                         help=f"teto de seguranca para --chunk-size=auto, independente do quanto "
                              f"--ram-budget-gb permitiria (default {CHUNK_SIZE_MAX_DEFAULT})")
-
+ 
     g_loss = p.add_argument_group("pesos de loss / QAT")
     g_loss.add_argument("--w-score", type=float, default=W_SCORE_DEFAULT)
     g_loss.add_argument("--w-outcome", type=float, default=W_OUTCOME_DEFAULT)
@@ -1517,7 +1539,7 @@ def parse_args(argv=None):
     g_loss.add_argument("--grad-clip-norm", type=float, default=GRAD_CLIP_NORM_DEFAULT,
                          help=f"clip de norma do gradiente antes de cada optimizer.step; "
                               f"0 ou negativo desliga (default {GRAD_CLIP_NORM_DEFAULT})")
-
+ 
     g_perf = p.add_argument_group("performance / console")
     g_perf.add_argument("--gpu-chunk-multiplier", type=int, default=GPU_CHUNK_MULTIPLIER_DEFAULT,
                          help="quantos batches sao agrupados por transferencia host->device "
@@ -1529,7 +1551,7 @@ def parse_args(argv=None):
                          help="a cada quantas atualizacoes de progresso uma linha fica fixa no "
                               "scrollback (as demais so atualizam a linha viva via \\r), estilo "
                               f"mixtrain.py (default {PROGRESS_PERMANENT_EVERY_DEFAULT})")
-
+ 
     g_out = p.add_argument_group("saida")
     g_out.add_argument("--out", default=OUT_DEFAULT, help="caminho de saida dos pesos treinados (.bin)")
     g_out.add_argument("--no-quantize", action="store_true")
@@ -1542,7 +1564,7 @@ def parse_args(argv=None):
                         help="a cada quantos epochs o PNG de --plot-dir e regravado "
                              f"(default {PLOT_EVERY_EPOCHS_DEFAULT})")
     g_out.add_argument("--log-every", type=int, default=LOG_EVERY_DEFAULT)
-
+ 
     # --resume-config (ou auto-detect de <ckpt-dir>/train_config.json quando
     # --fresh nao foi passado): faz uma pre-leitura so de
     # --ckpt-dir/--fresh/--resume-config/--init-from para decidir se ha um
@@ -1553,9 +1575,10 @@ def parse_args(argv=None):
     pre_args, _ = p.parse_known_args(argv)
     cfg_path = pre_args.resume_config
     if cfg_path is None and not pre_args.fresh and pre_args.ckpt_dir:
-        latest_suffix = find_latest_checkpoint_suffix(pre_args.ckpt_dir)
-        if latest_suffix is not None:
-            auto_path = _config_json_path(pre_args.ckpt_dir, latest_suffix)
+        latest_state_path = _find_latest_train_state(pre_args.ckpt_dir)
+        if latest_state_path is not None:
+            m = _TRAIN_STATE_RE.match(os.path.basename(latest_state_path))
+            auto_path = _config_json_path(pre_args.ckpt_dir, m.group("cycle"), int(m.group("epoch")))
             if os.path.isfile(auto_path):
                 cfg_path = auto_path
     hp_lr = None  # valor de lr herdado do JSON, se houver -- usado por --lr auto abaixo
@@ -1583,11 +1606,11 @@ def parse_args(argv=None):
             if pre_args.init_from is None and cfg.get("weights_path"):
                 p.set_defaults(init_from=cfg["weights_path"])
                 print(f"[config] --init-from herdado do JSON: {cfg['weights_path']}")
-
+ 
     args = p.parse_args(argv)
     if not args.data:
         args.data = DATA_DEFAULT
-
+ 
     # Resolve --lr auto (ver help do argumento acima). Resolvido aqui (não
     # deixado pra set_defaults sozinho) pra cobrir também o caso de alguém
     # digitar "--lr auto" explicitamente mesmo quando havia um hp_lr
@@ -1611,15 +1634,15 @@ def parse_args(argv=None):
         # (do zero ou resume no meio de um epoch).
     else:
         args.lr = float(args.lr)
-
+ 
     if args.data_sources:
         try:
             args.data_sources = json.loads(args.data_sources)
         except json.JSONDecodeError as e:
             p.error(f"--data-sources: JSON invalido ({e})")
-
+ 
     return args
-
-
+ 
+ 
 if __name__ == "__main__":
     train(parse_args())
