@@ -44,8 +44,11 @@ QAT funcionando, não deveria disparar nunca; se disparar, é sinal de que
 o arquivo de pesos não passou pelo clipper (ex. treino antigo, ou --qa/
 --qb passados aqui divergentes dos usados no treino).
 
-Uso:
-    python3 quantize_nnue.py ../data/nnue/nnue_weights.bin ../data/nnue/nnue_weights_int8.bin
+Uso normal (sem argumentos -- usa defaults data/nnue/nnue_weights.bin -> data/nnue/nnue_weights_int8.bin):
+    python3 quantize_nnue.py
+
+Uso com argumentos customizados (para quantizar qualquer checkpoint .bin especifico):
+    python3 quantize_nnue.py data/checkpoints/best_20260808_..._ep0010.bin data/nnue/nnue_weights_int8.bin
 """
 import os
 import sys

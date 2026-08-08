@@ -76,9 +76,34 @@ struct TrainingSample {
     // aqui (isso só acontece no lado do bucket, em nnue.hpp/nnue.py).
     uint8_t  ownDist;       // shortestPathLen do peão do mover até a meta dele (escalar -- não precisa de espelho)
     uint8_t  oppDist;       // shortestPathLen do peão do oponente até a meta dele (escalar -- não precisa de espelho)
+    // Campos novos (2026-08, mesma leva de mudança de formato do espelho
+    // de perspectiva -- ver nota no topo do struct):
+    uint8_t  mover;         // 0 ou 1 -- identidade FÍSICA de quem tinha o lance (não confundir com
+                             // "own/opp": own/opp são sempre relativos ao mover; `mover` é o único
+                             // campo que diz qual jogador REAL isso era, útil pra reconstruir o
+                             // tabuleiro de verdade fora do referencial espelhado (debug/visualização/
+                             // qualquer ferramenta externa) ou pra desfazer o espelho do policyTarget
+                             // se um dia o policy head for consumido na busca (ver nota em
+                             // mirrorMoveForPerspective, nnue.hpp).
+    // CAT (Corridor Attention Table, cat.hpp) -- calor de corredor somado
+    // sobre as 81 casas, por lado, na topologia de muro DESTA posição
+    // (antes do lance ser jogado). NÃO é feature de entrada da NNUE ainda
+    // -- gravado só como candidato pra uma rodada futura de features (ver
+    // plano-additional.md): é um resumo compacto de "quanto do tabuleiro
+    // está corredor-crítico" pra cada lado, complementar a ownDist/oppDist
+    // (que só dizem a distância final, não quantas casas estão perto da
+    // rota ótima). Calculado com computeCorridorHeat(wallsH, wallsV,
+    // pawn[player], player) -- mesma função que orderWallMoves já usa pra
+    // ordenar candidatos de muro na busca, chamada de novo aqui (custo
+    // ~2 BFS, mesma ordem de grandeza de ownDist/oppDist, não persiste
+    // entre a chamada da busca e a da gravação). int16_t comporta
+    // folgadamente o máximo teórico (CAT_CORRIDOR_CM=200 * 81 casas =
+    // 16200, bem abaixo de 32767) sem overflow nem precisar de clamp.
+    int16_t  ownCatTotal;   // soma do calor de corredor do mover (perspectiva própria, já natural -- sem espelho a fazer: é escalar)
+    int16_t  oppCatTotal;   // soma do calor de corredor do oponente
 };
 #pragma pack(pop)
-static_assert(sizeof(TrainingSample) == 27,
+static_assert(sizeof(TrainingSample) == 32,
     "TrainingSample precisa ficar packed/sem padding -- o layout é lido direto por numpy no treino");
 
 struct SelfPlayConfig {
@@ -249,6 +274,15 @@ inline std::vector<TrainingSample> playOneGame(Negamax& engine0, Negamax& engine
         rec.policyTarget = moveToPolicyIndex(mirrorMoveForPerspective(chosen, mover));
         rec.ownDist = (uint8_t)std::min(255, shortestPathLen(s.wallsH, s.wallsV, s.pawn[mover], mover));
         rec.oppDist = (uint8_t)std::min(255, shortestPathLen(s.wallsH, s.wallsV, s.pawn[opp], opp));
+        rec.mover = (uint8_t)mover;
+        {
+            CorridorHeat ownHeat = computeCorridorHeat(s.wallsH, s.wallsV, s.pawn[mover], mover);
+            CorridorHeat oppHeat = computeCorridorHeat(s.wallsH, s.wallsV, s.pawn[opp], opp);
+            int ownSum = 0, oppSum = 0;
+            for (int i = 0; i < N * N; i++) { ownSum += ownHeat.heat[i]; oppSum += oppHeat.heat[i]; }
+            rec.ownCatTotal = (int16_t)ownSum;
+            rec.oppCatTotal = (int16_t)oppSum;
+        }
         samples.push_back(rec);
 
         reptbl.push(s.hash);

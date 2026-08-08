@@ -424,7 +424,7 @@ def main():
                     total_bytes = outfile.tell()
                     
         shutil.rmtree(temp_bin_dir, ignore_errors=True)
-        total_samples = total_bytes // 27  # sizeof(TrainingSample) == 27
+        total_samples = total_bytes // 32  # sizeof(TrainingSample) == 32
         print(f"\n[+] DATASET SALVO COM SUCESSO:")
         print(f"    Arquivo  : {final_bin_path}")
         print(f"    Amostras : {total_samples:,} posicoes ({total_bytes / (1024*1024):.2f} MB)")

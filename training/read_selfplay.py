@@ -2,14 +2,20 @@
 read_selfplay.py -- leitura do dataset binario de self-play gerado por
 `selfplay` (harness C++, ver selfplay.hpp).
 
-O arquivo e um array cru de structs `TrainingSample` (packed, 32 bytes por
-posicao). `load_selfplay` abre um unico arquivo via memmap (zero-copy).
+Dois formatos suportados (deteccao automatica por `load_selfplay`):
+  - 32 bytes/posicao (SAMPLE_DTYPE, formato atual 2026-08): inclui `mover`,
+    `own_cat_total`, `opp_cat_total` e own_pawn/opp_pawn/walls_*/policy_target
+    JA ESPELHADOS para a perspectiva canonica do mover.
+  - 27 bytes/posicao (SAMPLE_DTYPE_LEGACY, formato anterior): sem os 5 bytes
+    extras acima; os campos comuns tem os mesmos offsets. `load_selfplay`
+    detecta automaticamente e faz upcast para SAMPLE_DTYPE (os 3 campos novos
+    ficam com valor 0), permitindo que o resto do pipeline use sempre
+    SAMPLE_DTYPE independentemente do formato no disco.
+
 `load_multi_selfplay`/`MultiFileSelfPlay` fazem o mesmo para varios
 arquivos ao mesmo tempo SEM concatenar em RAM: cada shard continua
-memory-mapped e so e lido do disco quando um indice/slice especifico e
-efetivamente acessado. Isso e o que permite treinar (train_nnue.py /
-train_nnue_numpy.py) em chunks limitados por um orcamento de RAM/VRAM em
-vez de materializar o dataset inteiro de uma vez.
+carregado (ou upcast) uma unica vez e so e lido do disco quando um
+indice/slice especifico e efetivamente acessado.
 
 Uso:
     python3 read_selfplay.py data/selfplay_001.bin [data/selfplay_002.bin ...]
@@ -27,11 +33,28 @@ import numpy as np
 # gravados por selfplay.hpp JÁ ESPELHADOS pra perspectiva canônica do
 # mover (mirroredPawnCell/mirrorWallBitboard, nnue.hpp) -- não são mais
 # coordenada crua do tabuleiro. Datasets .bin gravados ANTES desta
-# mudança tem 27 bytes/amostra (sem mover/own_cat_total/opp_cat_total, e
-# as 4 colunas acima em coordenada CRUA, sem espelho) -- NÃO são
-# compatíveis com este dtype (tamanho errado, np.fromfile falha alto em
-# vez de desalinhar silenciosamente, mas ainda assim: não misturar .bin
-# antigos e novos no mesmo treino).
+# mudança tem 27 bytes/amostra (SAMPLE_DTYPE_LEGACY abaixo), sem os 3 campos
+# novos (mover/own_cat_total/opp_cat_total) e com as 4 colunas acima em
+# coordenada CRUA (sem espelho). load_selfplay detecta o formato automaticamente
+# e faz upcast para SAMPLE_DTYPE; o restante do pipeline sempre usa SAMPLE_DTYPE.
+
+# --- formato legado (27 bytes/amostra, gerado antes de 2026-08) --------------
+SAMPLE_DTYPE_LEGACY = np.dtype([
+    ("own_pawn",       "<u1"),   # 0..80, coordenada crua (SEM espelho)
+    ("opp_pawn",       "<u1"),   # 0..80, coordenada crua (SEM espelho)
+    ("walls_h",        "<u8"),   # bitboard, coordenada crua (SEM espelho)
+    ("walls_v",        "<u8"),   # bitboard, coordenada crua (SEM espelho)
+    ("walls_left_own", "<i1"),
+    ("walls_left_opp", "<i1"),
+    ("search_score",   "<i2"),
+    ("game_result",    "<i1"),
+    ("policy_target",  "<u2"),   # 0..208, coordenada crua (SEM espelho)
+    ("own_dist",       "<u1"),
+    ("opp_dist",       "<u1"),
+])
+assert SAMPLE_DTYPE_LEGACY.itemsize == 27
+
+# --- formato atual (32 bytes/amostra, 2026-08+) ------------------------------
 SAMPLE_DTYPE = np.dtype([
     ("own_pawn",       "<u1"),   # 0..80, já espelhado
     ("opp_pawn",       "<u1"),   # 0..80, já espelhado
@@ -55,6 +78,22 @@ SAMPLE_DTYPE = np.dtype([
 ])
 assert SAMPLE_DTYPE.itemsize == 32
 
+# Campos comuns entre SAMPLE_DTYPE_LEGACY e SAMPLE_DTYPE (mesmos offsets).
+_LEGACY_COMMON_FIELDS = [n for n, _ in SAMPLE_DTYPE_LEGACY.descr]
+
+
+def _upcast_legacy(arr27: np.ndarray) -> np.ndarray:
+    """Converte um array no formato legado (27 bytes) para SAMPLE_DTYPE (32
+    bytes). Os campos comuns sao copiados; os 3 campos novos (mover,
+    own_cat_total, opp_cat_total) ficam zerados. A copia e inevitavel
+    (tamanhos diferentes), mas ocorre uma unica vez por arquivo em
+    load_selfplay, antes do memmap/lazy-read -- o restante do pipeline e
+    identico para os dois formatos."""
+    out = np.zeros(len(arr27), dtype=SAMPLE_DTYPE)
+    for field in _LEGACY_COMMON_FIELDS:
+        out[field] = arr27[field]
+    return out
+
 # Bucket one-hot da distancia BFS -- mesma constante/semantica de
 # DIST_BUCKETS em nnue.hpp: 0..19 exato, 20 = "20 ou mais".
 DIST_BUCKETS = 21
@@ -71,11 +110,92 @@ def dist_bucket(dist: np.ndarray) -> np.ndarray:
     return np.minimum(dist.astype(np.int64), DIST_BUCKETS - 1)
 
 
-def load_selfplay(path: str) -> np.ndarray:
-    """Carrega um arquivo como array estruturado numpy (zero-copy via mmap)."""
+def _detect_format_by_size(size: int):
+    """Devolve (dtype, itemsize, ambig) para um arquivo de `size` bytes.
+    `ambig=True` quando o tamanho e divisivel por ambos 27 e 32 (multiplo
+    de mmc(27,32)=864) e a leitura do conteudo e necessaria para desempatar."""
+    ok27 = size % 27 == 0
+    ok32 = size % 32 == 0
+    if ok27 and ok32:
+        return None, None, True   # ambiguo: precisa inspecionar conteudo
+    if ok27:
+        return SAMPLE_DTYPE_LEGACY, 27, False
+    if ok32:
+        return SAMPLE_DTYPE, 32, False
+    # Tamanho nao divisivel por nenhum: usa 32 como fallback (o caller ja
+    # filtrou arquivos vazios/muito pequenos em expand_data_paths)
+    return SAMPLE_DTYPE, 32, False
+
+
+def _sniff_format(path: str, size: int) -> tuple:
+    """Para arquivos divisiveis por ambos 27 e 32 (ambiguos), amostra os
+    primeiros min(N, 100) registros em cada interpretacao e escolhe o formato
+    cujos campos ficam dentro do range valido (own_pawn 0..80, policy 0..208).
+    Se ambas passam ou ambas falham, prefere 27 (legado) como conservador --
+    jamais descarta amostras validas silenciosamente."""
+    n_probe = min(size // 32, 100)  # 32 >= 27, entao cabe em ambos
+    if n_probe == 0:
+        return SAMPLE_DTYPE_LEGACY, 27  # arquivo pequeno demais pra amostrar
+
+    probe32 = np.memmap(path, dtype=SAMPLE_DTYPE,        mode="r", shape=(size // 32,))[:n_probe]
+    probe27 = np.memmap(path, dtype=SAMPLE_DTYPE_LEGACY, mode="r", shape=(size // 27,))[:n_probe]
+
+    ok32 = (int(probe32["policy_target"].max()) <= 208 and int(probe32["own_pawn"].max()) <= 80)
+    ok27 = (int(probe27["policy_target"].max()) <= 208 and int(probe27["own_pawn"].max()) <= 80)
+
+    if ok32 and not ok27:
+        return SAMPLE_DTYPE, 32
+    # Nos demais casos (so 27 ok, nenhum ok, ou ambos ok) usa legado --
+    # e a escolha conservadora: se o arquivo for realmente novo e esse
+    # caminho nunca deveria acontecer (mmc=864 e raro E arquivo novo=32-byte).
+    return SAMPLE_DTYPE_LEGACY, 27
+
+
+def load_selfplay(path: str, quiet: bool = False) -> np.ndarray:
+    """Carrega um arquivo como array estruturado numpy. Detecta automaticamente
+    o formato (27 ou 32 bytes/amostra) e sempre devolve SAMPLE_DTYPE (32
+    bytes): arquivos legados sao upcast em memoria (copia unica por arquivo;
+    os 3 campos novos ficam zerados). Arquivos no formato atual sao
+    memory-mapped (zero-copy).
+
+    Deteccao de formato:
+      - Se o tamanho e divisivel so por 27: formato legado.
+      - Se o tamanho e divisivel so por 32: formato atual.
+      - Se divisivel por ambos (multiplo de 864): amostra o conteudo para
+        decidir (own_pawn/policy_target devem ser <= 80/208).
+
+    `quiet=True` suprime o aviso de formato legado (use quando o chamador
+    emitir um aviso consolidado, como MultiFileSelfPlay)."""
     size = os.path.getsize(path)
-    num_samples = size // SAMPLE_DTYPE.itemsize
-    return np.memmap(path, dtype=SAMPLE_DTYPE, mode="r", shape=(num_samples,))
+    dtype, itemsize, ambig = _detect_format_by_size(size)
+    if ambig:
+        dtype, itemsize = _sniff_format(path, size)
+    num_samples = size // itemsize
+    if num_samples == 0:
+        return np.empty(0, dtype=SAMPLE_DTYPE)
+    raw = np.memmap(path, dtype=dtype, mode="r", shape=(num_samples,))
+    if itemsize == 27:
+        if not quiet:
+            sys.stderr.write(
+                f"[read_selfplay] aviso: formato legado (27 bytes) em {os.path.basename(path)} "
+                f"-- upcast para 32 bytes (mover/cat zerados). "
+                f"Regere o dataset para usar o formato atual.\n"
+            )
+        return _upcast_legacy(raw)
+    return raw
+
+
+def _is_legacy_file(path: str) -> bool:
+    """Retorna True se o arquivo e formato legado (27 bytes/amostra)."""
+    size = os.path.getsize(path)
+    if size == 0:
+        return False
+    _, itemsize, ambig = _detect_format_by_size(size)
+    if ambig:
+        _, itemsize = _sniff_format(path, size)
+    return itemsize == 27
+
+
 
 
 def expand_data_paths(spec) -> list:
@@ -113,6 +233,9 @@ def expand_data_paths(spec) -> list:
                 matches = [token]  # caminho literal; erro explicito adiante se nao existir
         for m in matches:
             if m not in out:
+                if os.path.exists(m) and os.path.getsize(m) < SAMPLE_DTYPE.itemsize:
+                    sys.stderr.write(f"[read_selfplay] aviso: ignorando arquivo de selfplay vazio/incompleto: {m}\n")
+                    continue
                 out.append(m)
     return out
 
@@ -133,10 +256,21 @@ class MultiFileSelfPlay:
         self.paths = list(paths)
         if not self.paths:
             raise ValueError("MultiFileSelfPlay: lista de caminhos vazia")
-        self._maps = [load_selfplay(p) for p in self.paths]
+        # Carrega todos os shards suprimindo o aviso por arquivo; emite um
+        # unico aviso consolidado ao final se houver arquivos legados.
+        self._maps = [load_selfplay(p, quiet=True) for p in self.paths]
+        n_legacy = sum(1 for p in self.paths if _is_legacy_file(p))
+        if n_legacy > 0:
+            sys.stderr.write(
+                f"[read_selfplay] aviso: {n_legacy} de {len(self.paths)} arquivo(s) "
+                f"no formato legado (27 bytes/amostra, coordenadas sem espelho de "
+                f"perspectiva) -- upcast automatico para 32 bytes aplicado. "
+                f"Regere o dataset com selfplay.exe para garantir perspectiva correta.\n"
+            )
         self._lens = [len(m) for m in self._maps]
         self._offsets = np.concatenate([[0], np.cumsum(self._lens)])
         self.dtype = SAMPLE_DTYPE
+
 
     def __len__(self):
         return int(self._offsets[-1])

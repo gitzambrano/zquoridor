@@ -57,46 +57,41 @@ so cobre os dois casos. --device continua aceito pra casos especiais
 (ex. "cuda:1" numa maquina com varias GPUs), mas o normal e nem tocar
 nisso.
 
-CHECKPOINT / RESUME (estilo Zchezz) -- responde as duvidas de sempre:
+CHECKPOINT / RESUME & EXPORT / QUANTIZAÇÃO -- responde às dúvidas de fluxo:
+  - "Quando a pasta data/nnue/ é atualizada com os arquivos finais?"
+    A pasta final `data/nnue/` (com `nnue_weights.bin` e `nnue_weights_int8.bin`)
+    SÓ É ATUALIZADA QUANDO O TREINO TERMINA COMPLETO (seja por atingir o limite
+    de --epochs ou por acionamento do early stopping).
+    Ao terminar, o script seleciona automaticamente os pesos do MELHOR epoch
+    (menor val_loss, salvo via early-stopping; pode ser desativado via
+    --no-restore-best), exporta para `data/nnue/nnue_weights.bin` e roda a
+    quantização automática para `data/nnue/nnue_weights_int8.bin`.
+  - "O que acontece ao interromper com Ctrl+C (SIGINT)?"
+    Se você der Ctrl+C no meio do treino (ex: no epoch 10), o handler de
+    emergência grava um checkpoint na pasta `data/checkpoints/` contendo:
+      * `train_state_<suffix>.pt` (pesos + momentos do AdamW + sementes RNG + histórico)
+      * `last_<suffix>.bin` (pesos float32 do instante do Ctrl+C)
+      * `train_config_<suffix>.json` (hiperparâmetros da rodada)
+    NENHUM arquivo em `data/nnue/` é alterado no Ctrl+C para não corromper o
+    último modelo estável validado.
+  - "Como funciona o resume ao rodar de novo?"
+    Ao executar `python3 train_nnue.py` novamente:
+      1. Ele detecta automaticamente o `train_state_*_ep*.pt` de maior época em `data/checkpoints/`.
+      2. Se o epoch foi interrompido no meio (`epoch_completed = False`), ele recomeça o epoch 10
+         do zero (para manter o shuffle alinhado), mas restaurando os pesos, momentos do AdamW
+         e sementes RNG do momento da gravação.
+      3. O Learning Rate (LR) e Weight Decay continuam do ponto exato da curva de schedule
+         correspondente àquela época. Se você passar `--lr` novo na CLI, o schedule é recalculado
+         a partir do novo valor a cada época.
   - "Cada treino comeca do zero?" Nao por padrao. A CADA epoch (nao so
-    quando ha melhora) o estado COMPLETO de treino -- pesos, estado do
-    otimizador (momentos do AdamW), epoch atual, historico de metricas,
-    estado do early-stopper e os RNGs (numpy + torch + cuda) -- e gravado
-    em `<ckpt-dir>/train_state_<data>_<hora>_ep<N>.pt` (NAO sobrescreve o
+    quando ha melhora) o estado COMPLETO de treino e gravado em
+    `<ckpt-dir>/train_state_<data>_<hora>_ep<N>.pt` (NAO sobrescreve o
     epoch anterior -- fica com o historico completo, nomeado por
-    data/horario/epoca; ver find_latest_checkpoint_suffix). Isso e
-    diferente de best_..._ep<N>.bin/last_..._ep<N>.bin (que sao so os
-    PESOS, no layout binario que nnue.hpp le): train_state_*.pt e o que
-    permite retomar um treino como se ele nunca tivesse parado (mesmo
-    optimizer momentum, mesmo ponto do LR/WD schedule, mesmo historico
-    pros plots).
-  - "Como ele parte de um checkpoint?" Automaticamente. Ao rodar de novo
-    com o mesmo --ckpt-dir (o default ja aponta pra data/checkpoints), o
-    script acha o train_state_*.pt de MAIOR epoca, confere se a "impressao
-    digital" da arquitetura bate (NUM_FEATURES/HIDDEN/POLICY_OUT/QA/QB --
-    se mudou a arquitetura ou a escala QAT, o checkpoint antigo e
-    incompativel e e ignorado com aviso) e, se bater, carrega tudo e
-    continua exatamente do epoch seguinte. --init-from soh entra em jogo
-    quando NAO ha checkpoint de resume valido (ele so inicializa PESOS, o
-    otimizador comeca zerado). --fresh ignora qualquer checkpoint e forca
-    treino do zero mesmo que exista um. --resume-config aponta pra um
-    train_config_*.json ESPECIFICO (nao precisa ser o mais recente -- da
-    pra voltar pra uma epoca antiga de proposito) e reaproveita so os
-    hiperparametros + os pesos que ele referencia, sem o otimizador.
-  - "E se parar no meio?" Ctrl+C (SIGINT) e capturado: o handler salva o
-    trio train_state/train_config/last daquele epoch IMEDIATAMENTE com os
-    pesos do exato momento da interrupcao (nao espera terminar o epoch) e
-    so entao encerra. Ao rodar de novo, esse epoch (que estava incompleto)
-    e refeito do zero -- so o epoch em andamento se perde, nao o treino
-    inteiro.
-  - "E se eu rodar de novo DEPOIS que o treino ja terminou (bateu o teto de
-    --epochs, ou parou por early stopping)?" Comeca um NOVO CICLO
+    data/horario/epoca; ver find_latest_checkpoint_suffix).
+  - "E se eu rodar de novo DEPOIS que o treino ja terminou?" Comeca um NOVO CICLO
     automaticamente a partir dos PESOS salvos (warm start) -- otimizador,
     LR/WD schedule e early-stopping reiniciados do zero, epoch volta a
-    contar de 1. E o comportamento certo pro fluxo de bootstrapping (gera
-    mais self-play com run_selfplay.py, retreina em cima da rede anterior,
-    repete). Se quisesse continuar exatamente o MESMO ciclo (schedule
-    contínuo), bastaria ter passado um --epochs maior desde o inicio.
+    contar de 1. E o comportamento certo pro fluxo de bootstrapping.
 
 Todos os defaults abaixo (secao DEFAULT CONFIG) valem como "flags no
 cabecalho do arquivo": editar as constantes muda o comportamento padrao
@@ -195,8 +190,6 @@ DEVICE_DEFAULT = "cuda" if (USE_GPU_DEFAULT and torch.cuda.is_available()) else 
 # funciona se houver um diretorio consistente entre execucoes. Ver a secao
 # "CHECKPOINT / RESUME" no docstring do topo do arquivo para o fluxo completo.
 CKPT_DIR_DEFAULT = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data", "checkpoints")
-# CORRECAO: estava True, e --fresh usava action="store_true" SEM um
-# "--no-fresh" para desligar -- ou seja, args.fresh era sempre True (passando
 # --fresh ou nao, o valor era o mesmo), entao `resumed = None if args.fresh
 # else try_load_train_state(...)` nunca chamava try_load_train_state: o
 # resume automatico documentado acima ("Cada treino comeca do zero? Nao por
