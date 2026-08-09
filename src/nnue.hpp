@@ -1005,4 +1005,20 @@ inline int nnueEvalInt(const AccPair& ap, int side) {
     return (int)std::lround(logit * (float)NNUE_EVAL_SCALE);
 }
 
+// Lê o logit de política (saída crua de forwardPolicyQuant, já calculada
+// UMA VEZ por nó por search.hpp -- ver setPolicyOrderingEnabled) para um
+// lance candidato `m`, do ponto de vista de `side` (quem vai jogar `m`).
+// ATENÇÃO: `policyOut` está na perspectiva CANÔNICA de treino
+// (TrainingSample::policyTarget = moveToPolicyIndex(mirrorMoveForPerspective(
+// chosen, mover)), selfplay.hpp) -- não na coordenada crua do tabuleiro.
+// Por isso `m` precisa ser espelhado via mirrorMoveForPerspective(m, side)
+// ANTES de indexar `policyOut`; indexar com moveToPolicyIndex(m) direto
+// (coordenada crua) leria o logit de um lance DIFERENTE (espelhado) sempre
+// que side==1, silenciosamente -- mesma armadilha documentada em
+// mirrorMoveForPerspective acima.
+inline float policyLogitForMove(const std::array<float, POLICY_OUT>& policyOut, const Move& m, int side) {
+    Move canon = mirrorMoveForPerspective(m, side);
+    return policyOut[moveToPolicyIndex(canon)];
+}
+
 } // namespace qr

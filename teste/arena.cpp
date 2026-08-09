@@ -33,6 +33,7 @@
 #include <string>
 #include <cstdint>
 #include <algorithm>
+#include <utility>
 
 #ifndef ENGINE1_SEARCH_HPP
 #error "compile com -DENGINE1_SEARCH_HPP=\"\\\"/caminho/absoluto/search.hpp\\\"\""
@@ -142,8 +143,62 @@ auto trySetEvalModeNnue(Eng& eng, int) -> decltype(eng.setEvalMode(Eng::EvalMode
 template <typename Eng>
 void trySetEvalModeNnue(Eng&, ...) {}
 
+// Mesmo truque SFINAE do trySetEvalModeNnue acima -- setPolicyOrderingEnabled
+// e um metodo NOVO (prompt_policy_ordering.md), entao um ref antigo de
+// qr_e1/qr_e2 (git ref anterior a esta mudanca) nao tem esse metodo. O
+// overload "..." (nao-template, prioridade mais baixa na resolucao de
+// overload) e escolhido automaticamente quando o metodo nao existe --
+// vira um no-op silencioso, SEM erro de compilacao, exatamente como ja
+// acontece hoje pra engines antigas sem NNUE nenhum. Ou seja: pode deixar
+// g_e1UsePolicyOrdering/g_e2UsePolicyOrdering = true apontando pra um ref
+// antigo sem a flag que o arena continua compilando e rodando normal --
+// só não terá efeito nenhum naquele engine (equivalente a nunca ter ligado).
+template <typename Eng>
+auto trySetPolicyOrdering(Eng& eng, bool enabled, int) -> decltype(eng.setPolicyOrderingEnabled(enabled), void()) {
+    eng.setPolicyOrderingEnabled(enabled);
+}
+template <typename Eng>
+void trySetPolicyOrdering(Eng&, bool, ...) {}
+
+// Mesmo padrao para o piso de profundidade (setPolicyOrderingMinDepth,
+// search.hpp) -- CORRECAO DE PERFORMANCE: sem este piso, o forward pass
+// de politica (~5.8x mais caro que o eval de folha) rodava em todo no
+// interno, derrubando nos/s em ~3x (medido em producao via run_arena.py).
+// O piso restringe isso aos poucos nos de cima da arvore. Ref antigo sem
+// o metodo -> no-op silencioso, mesma logica SFINAE de cima.
+template <typename Eng>
+auto trySetPolicyOrderingMinDepth(Eng& eng, int d, int) -> decltype(eng.setPolicyOrderingMinDepth(d), void()) {
+    eng.setPolicyOrderingMinDepth(d);
+}
+template <typename Eng>
+void trySetPolicyOrderingMinDepth(Eng&, int, ...) {}
+
+// Detector SFINAE puramente informativo (nao afeta comportamento -- so
+// evita logar "ligada" quando o ref daquela engine nem tem o metodo).
+template <typename Eng>
+constexpr auto hasPolicyOrdering(int) -> decltype(std::declval<Eng&>().setPolicyOrderingEnabled(true), bool()) {
+    return true;
+}
+template <typename Eng>
+constexpr bool hasPolicyOrdering(...) { return false; }
+
 static bool g_e1UseNnue = false;
 static bool g_e2UseNnue = false;
+// Liga/desliga a ordenacao assistida por politica (prompt_policy_ordering.md)
+// em cada engine -- só tem efeito quando a engine correspondente estiver
+// em NNUE (g_eXUseNnue==true); em heuristica é inofensivo (nao é sequer
+// chamado, ver playArenaGame abaixo). Mude aqui OU use as flags de linha
+// de comando --e1-policy-order/--e2-policy-order/--policy-order (ver main()).
+constexpr bool E1_POLICY_ORDERING_DEFAULT = false;
+constexpr bool E2_POLICY_ORDERING_DEFAULT = false;
+static bool g_e1UsePolicyOrdering = E1_POLICY_ORDERING_DEFAULT;
+static bool g_e2UsePolicyOrdering = E2_POLICY_ORDERING_DEFAULT;
+// Piso de profundidade -- mesmo default de search.hpp (3), sobreponivel
+// via --policy-order-min-depth/--e1-.../--e2-... na linha de comando.
+constexpr int E1_POLICY_ORDER_MIN_DEPTH_DEFAULT = 3;
+constexpr int E2_POLICY_ORDER_MIN_DEPTH_DEFAULT = 3;
+static int g_e1PolicyOrderMinDepth = E1_POLICY_ORDER_MIN_DEPTH_DEFAULT;
+static int g_e2PolicyOrderMinDepth = E2_POLICY_ORDER_MIN_DEPTH_DEFAULT;
 
 // Um jogo completo. engine1PlayerIdx define quem (0=brancas,1=pretas) é
 // o engine do ref1 nesta partida. Estado é mantido em paralelo nos dois
@@ -156,6 +211,17 @@ int playArenaGame(int engine1PlayerIdx, int timeMs, int randomPlies, std::mt1993
     qr_e2::Negamax eng2;
     if (g_e1UseNnue) trySetEvalModeNnue(eng1, 0);
     if (g_e2UseNnue) trySetEvalModeNnue(eng2, 0);
+    // Só faz sentido (e só tem efeito real dentro de Negamax, ver
+    // policyOrderingEnabled em search.hpp) quando a engine correspondente
+    // está em NNUE -- gate aqui evita uma chamada supérflua em heurística.
+    if (g_e1UseNnue && g_e1UsePolicyOrdering) {
+        trySetPolicyOrdering(eng1, true, 0);
+        trySetPolicyOrderingMinDepth(eng1, g_e1PolicyOrderMinDepth, 0);
+    }
+    if (g_e2UseNnue && g_e2UsePolicyOrdering) {
+        trySetPolicyOrdering(eng2, true, 0);
+        trySetPolicyOrderingMinDepth(eng2, g_e2PolicyOrderMinDepth, 0);
+    }
     eng1.clearTT();
     eng2.clearTT();
 
@@ -275,6 +341,8 @@ int main(int argc, char* argv[]) {
     bool e1Explicit = false, e2Explicit = false;
     bool forceHeuristic = false;
     bool e1ForceHeuristic = E1_FORCE_HEURISTIC_DEFAULT, e2ForceHeuristic = E2_FORCE_HEURISTIC_DEFAULT;
+    bool e1PolicyOrder = E1_POLICY_ORDERING_DEFAULT, e2PolicyOrder = E2_POLICY_ORDERING_DEFAULT;
+    int e1PolicyMinDepth = E1_POLICY_ORDER_MIN_DEPTH_DEFAULT, e2PolicyMinDepth = E2_POLICY_ORDER_MIN_DEPTH_DEFAULT;
 
     for (int i = 1; i < argc; i++) {
         if (std::strcmp(argv[i], "--games") == 0 && i + 1 < argc) totalGames = std::atoi(argv[++i]);
@@ -290,8 +358,23 @@ int main(int argc, char* argv[]) {
         else if (std::strcmp(argv[i], "--e2-heuristic") == 0) e2ForceHeuristic = true;
         else if (std::strcmp(argv[i], "--e1-nnue-default") == 0) e1ForceHeuristic = false;
         else if (std::strcmp(argv[i], "--e2-nnue-default") == 0) e2ForceHeuristic = false;
+        else if (std::strcmp(argv[i], "--policy-order") == 0) { e1PolicyOrder = true; e2PolicyOrder = true; }
+        else if (std::strcmp(argv[i], "--e1-policy-order") == 0) e1PolicyOrder = true;
+        else if (std::strcmp(argv[i], "--e2-policy-order") == 0) e2PolicyOrder = true;
+        else if (std::strcmp(argv[i], "--e1-no-policy-order") == 0) e1PolicyOrder = false;
+        else if (std::strcmp(argv[i], "--e2-no-policy-order") == 0) e2PolicyOrder = false;
+        else if (std::strcmp(argv[i], "--policy-order-min-depth") == 0 && i + 1 < argc) {
+            int d = std::atoi(argv[++i]); e1PolicyMinDepth = d; e2PolicyMinDepth = d;
+        }
+        else if (std::strcmp(argv[i], "--e1-policy-order-min-depth") == 0 && i + 1 < argc) e1PolicyMinDepth = std::atoi(argv[++i]);
+        else if (std::strcmp(argv[i], "--e2-policy-order-min-depth") == 0 && i + 1 < argc) e2PolicyMinDepth = std::atoi(argv[++i]);
         else if (std::strcmp(argv[i], "--no-invert") == 0) invertColors = false;
     }
+
+    g_e1UsePolicyOrdering = e1PolicyOrder;
+    g_e2UsePolicyOrdering = e2PolicyOrder;
+    g_e1PolicyOrderMinDepth = e1PolicyMinDepth;
+    g_e2PolicyOrderMinDepth = e2PolicyMinDepth;
 
     // NNUE é o default das duas engines. Se --e1-nnue/--e2-nnue não foram
     // passados explicitamente, tenta o caminho default de cada ref (via
@@ -336,6 +419,31 @@ int main(int argc, char* argv[]) {
         }
     } else if (forceHeuristic || e2ForceHeuristic) {
         std::fprintf(stderr, "[arena] Engine 2: heuristica (via --heuristic/--e2-heuristic, ou E2_FORCE_HEURISTIC_DEFAULT no topo do arquivo)\n");
+    }
+
+    // Log informativo do estado da ordenacao por politica -- so tem efeito
+    // de verdade quando g_eXUseNnue==true (o gate real esta em
+    // playArenaGame). Se a flag foi pedida (--eX-policy-order ou
+    // EX_POLICY_ORDERING_DEFAULT) mas o ref daquela engine nao tem o
+    // metodo (compilado contra um search.hpp anterior a esta mudanca),
+    // avisa que foi ignorada em vez de fingir que ligou.
+    if (g_e1UsePolicyOrdering) {
+        if (!g_e1UseNnue) {
+            std::fprintf(stderr, "[arena] aviso: --e1-policy-order pedido mas Engine 1 nao esta em NNUE -- ignorado\n");
+        } else if (!hasPolicyOrdering<qr_e1::Negamax>(0)) {
+            std::fprintf(stderr, "[arena] aviso: --e1-policy-order pedido mas o ref da Engine 1 nao tem setPolicyOrderingEnabled (versao antiga) -- ignorado\n");
+        } else {
+            std::fprintf(stderr, "[arena] Engine 1: ordenacao por politica LIGADA (min-depth=%d)\n", g_e1PolicyOrderMinDepth);
+        }
+    }
+    if (g_e2UsePolicyOrdering) {
+        if (!g_e2UseNnue) {
+            std::fprintf(stderr, "[arena] aviso: --e2-policy-order pedido mas Engine 2 nao esta em NNUE -- ignorado\n");
+        } else if (!hasPolicyOrdering<qr_e2::Negamax>(0)) {
+            std::fprintf(stderr, "[arena] aviso: --e2-policy-order pedido mas o ref da Engine 2 nao tem setPolicyOrderingEnabled (versao antiga) -- ignorado\n");
+        } else {
+            std::fprintf(stderr, "[arena] Engine 2: ordenacao por politica LIGADA (min-depth=%d)\n", g_e2PolicyOrderMinDepth);
+        }
     }
 
 

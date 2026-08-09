@@ -97,6 +97,19 @@ FORCE_HEURISTIC = False
 # usar o caminho default do binário.
 NNUE_WEIGHTS_PATH = None  # ex: "data/nnue/nnue_weights_experimental.bin"
 
+# POLICY_ORDERING: liga Negamax::setPolicyOrderingEnabled
+# (prompt_policy_ordering.md) -- soma o logit da cabeça de política da
+# NNUE como termo extra na ordenação de lances. Só tem efeito quando NNUE
+# está de fato ativo (FORCE_HEURISTIC=False e pesos carregam com
+# sucesso); com heurística é ignorado sem erro. Default False (comporta-
+# mento/reprodutibilidade dos shards já gerados preservada). Equivale a
+# --policy-order na linha de comando.
+POLICY_ORDERING = False
+# Piso de profundidade (search.hpp: Negamax::setPolicyOrderingMinDepth) --
+# forwardPolicyQuant custa ~5.8x mais que o eval de folha; sem este piso
+# ele roda em todo no interno e derruba nos/s ~3x (medido em producao).
+POLICY_ORDER_MIN_DEPTH = 3
+
 # =============================================================================
 # INTERNALS -- normalmente não é necessário editar abaixo desta linha
 # =============================================================================
@@ -176,6 +189,12 @@ def parse_args():
     p.add_argument("--nnue", dest="force_heuristic", action="store_false",
                     help="sobrepoe FORCE_HEURISTIC=True do arquivo, forcando NNUE default sem editar/recompilar")
     p.add_argument("--nnue-weights", default=NNUE_WEIGHTS_PATH, help="caminho alternativo de pesos NNUE (padrao: o default do binario)")
+    p.add_argument("--policy-order", dest="policy_order", action="store_true", default=POLICY_ORDERING,
+                    help=f"liga a ordenacao de lances assistida pela cabeca de politica da NNUE (padrao: {POLICY_ORDERING}); sem efeito com --heuristic")
+    p.add_argument("--no-policy-order", dest="policy_order", action="store_false",
+                    help="sobrepoe POLICY_ORDERING=True do arquivo, desligando sem editar/recompilar")
+    p.add_argument("--policy-order-min-depth", type=int, default=POLICY_ORDER_MIN_DEPTH,
+                    help=f"piso de profundidade da ordenacao por politica (padrao: {POLICY_ORDER_MIN_DEPTH}); sem efeito se --policy-order/POLICY_ORDERING estiver desligado")
     return p.parse_args()
 
 
@@ -233,6 +252,8 @@ def main():
         # Converte para caminho absoluto relativo à raiz do projeto
         nnue_abs = os.path.join(root, args.nnue_weights)
         cmd += ["--nnue-weights", nnue_abs.replace("\\", "/")]
+    if args.policy_order:
+        cmd += ["--policy-order", "--policy-order-min-depth", str(args.policy_order_min_depth)]
 
     print("=" * 60)
     print(f"[run_selfplay] Iniciando geração de dados")
@@ -243,6 +264,7 @@ def main():
     print(f"                fase2=[lances {args.opening_plies+1}..{args.opening_plies2}] eps={args.epsilon_opening2} (lance aleatório)")
     print(f"                midgame eps={args.epsilon_midgame} (2º/3º melhor lance)")
     print(f"  Avaliação   : {'heurística (evalSimple) -- forçada' if args.force_heuristic else 'NNUE (default do binário), com fallback automático para heurística se os pesos não existirem'}")
+    print(f"  Ordenação politica NNUE: {'LIGADA (--policy-order, min-depth=' + str(args.policy_order_min_depth) + ')' if args.policy_order else 'desligada (default)'}{'  [sem efeito -- heuristica forcada]' if args.policy_order and args.force_heuristic else ''}")
     print(f"  Threads     : {args.threads or 'auto'}")
     print(f"  TT          : {'separada por cor' if args.separate_tt else 'compartilhada entre as 2 cores (default)'}")
     print(f"  Shard início: {start_shard:03d}")

@@ -23,16 +23,16 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 #     GIT_REF2 = "HEAD~3"      -> 3 commits atrás
 #     GIT_REF2 = "minha-branch"-> Outra branch
 GIT_REF1 = None               # None = versão local não comitada (ou passe string de ref git)
-GIT_REF2 = "main"             # Ref Git base para o confronto (ex: 'main', 'v1.0', 'HEAD')
+GIT_REF2 = None             # Ref Git base para o confronto (ex: 'main', 'v1.0', 'HEAD')
 
 INVERT_COLORS = True          # Se True, joga cada abertura 2x invertendo as cores (par). Se False, joga apenas 1x por abertura.
 CREATE_BIN = True            # Se True, salva os dados das partidas em data/arena/ no formato .bin de treino
 GAMES = 1000                   # Quantidade total de jogos
 REPORT_GAMES = 50             # Atualiza e imprime o relatório parcial a cada N jogos concluídos (default 50)
-TIME_MS = 100                 # Tempo de pensamento por lance em milissegundos
+TIME_MS = 80                 # Tempo de pensamento por lance em milissegundos
 THREADS = 14                  # Número de núcleos / processos em paralelo (default 14)
 RANDOM_OPENING_PLIES = 4      # Quantidade de lances aleatórios na abertura
-SEED = 267                     # Semente aleatória
+SEED = 353                     # Semente aleatória
 COMPILER = "g++"              # Compilador C++
 CXX_FLAGS = "-O3 -std=c++17"  # Flags de compilação
 
@@ -47,6 +47,21 @@ CXX_FLAGS = "-O3 -std=c++17"  # Flags de compilação
 # comando sobrepõem isto por execução, sem precisar editar o arquivo.
 E1_HEURISTIC = False
 E2_HEURISTIC = False
+# --- Ordenacao assistida por politica NNUE (prompt_policy_ordering.md) ---
+# Liga Negamax::setPolicyOrderingEnabled em cada engine -- só tem efeito
+# quando aquela engine está de fato em NNUE (heurística ignora sem erro,
+# ver arena.cpp). Mesmo padrão separado por engine que E1_HEURISTIC/
+# E2_HEURISTIC acima: edite aqui para configurar sem flag nenhuma, ou use
+# --policy-order/--e1-policy-order/--e2-policy-order na linha de comando
+# para sobrepor por execução.
+E1_POLICY_ORDER = True
+E2_POLICY_ORDER = False
+# Piso de profundidade (search.hpp: Negamax::setPolicyOrderingMinDepth) --
+# forwardPolicyQuant custa ~5.8x mais que o eval de folha; sem este piso
+# ele roda em todo no interno e derruba nos/s ~3x (medido em producao).
+# Mesmo default (3) de search.hpp/selfplay/arena.cpp.
+E1_POLICY_ORDER_MIN_DEPTH = 3
+E2_POLICY_ORDER_MIN_DEPTH = 3
 # ==============================================================================
 
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
@@ -199,7 +214,7 @@ def cleanup_worktree(temp_dir):
 
 import multiprocessing
 
-def worker_process(exe_path, worker_games, time_ms, random_plies, seed, report_games, bin_path, invert_colors, progress_queue, e1_nnue="", e2_nnue="", heuristic=False, e1_heuristic=False, e2_heuristic=False):
+def worker_process(exe_path, worker_games, time_ms, random_plies, seed, report_games, bin_path, invert_colors, progress_queue, e1_nnue="", e2_nnue="", heuristic=False, e1_heuristic=False, e2_heuristic=False, policy_order=False, e1_policy_order=False, e2_policy_order=False, e1_policy_min_depth=3, e2_policy_min_depth=3):
     cmd = [
         exe_path,
         "--games", str(worker_games),
@@ -223,6 +238,12 @@ def worker_process(exe_path, worker_games, time_ms, random_plies, seed, report_g
         cmd.append("--e1-heuristic")
     if e2_heuristic:
         cmd.append("--e2-heuristic")
+    if policy_order:
+        cmd.append("--policy-order")
+    if e1_policy_order:
+        cmd.extend(["--e1-policy-order", "--e1-policy-order-min-depth", str(e1_policy_min_depth)])
+    if e2_policy_order:
+        cmd.extend(["--e2-policy-order", "--e2-policy-order-min-depth", str(e2_policy_min_depth)])
 
     # cwd=PROJECT_ROOT: arena.exe agora tenta carregar o caminho default de
     # pesos NNUE (data/nnue/nnue_weights_int8.bin, RELATIVO) quando
@@ -278,8 +299,26 @@ def main():
     parser.add_argument("--e1-nnue-default", dest="e1_heuristic", action="store_false", help="Sobrepoe E1_HEURISTIC=True do arquivo, forcando NNUE default no Engine 1 sem editar/recompilar")
     parser.add_argument("--e2-heuristic", dest="e2_heuristic", action="store_true", default=E2_HEURISTIC, help=f"Forca heuristica so no Engine 2 (padrao: {E2_HEURISTIC})")
     parser.add_argument("--e2-nnue-default", dest="e2_heuristic", action="store_false", help="Sobrepoe E2_HEURISTIC=True do arquivo, forcando NNUE default no Engine 2 sem editar/recompilar")
+    parser.add_argument("--policy-order", action="store_true", default=False, help="Liga a ordenacao por politica NNUE nas duas engines (sem efeito se a engine estiver em heuristica)")
+    parser.add_argument("--e1-policy-order", dest="e1_policy_order", action="store_true", default=E1_POLICY_ORDER, help=f"Liga a ordenacao por politica NNUE so no Engine 1 (padrao: {E1_POLICY_ORDER})")
+    parser.add_argument("--e1-no-policy-order", dest="e1_policy_order", action="store_false", help="Sobrepoe E1_POLICY_ORDER=True do arquivo, desligando no Engine 1 sem editar/recompilar")
+    parser.add_argument("--e2-policy-order", dest="e2_policy_order", action="store_true", default=E2_POLICY_ORDER, help=f"Liga a ordenacao por politica NNUE so no Engine 2 (padrao: {E2_POLICY_ORDER})")
+    parser.add_argument("--e2-no-policy-order", dest="e2_policy_order", action="store_false", help="Sobrepoe E2_POLICY_ORDER=True do arquivo, desligando no Engine 2 sem editar/recompilar")
+    parser.add_argument("--policy-order-min-depth", type=int, default=None, help="Piso de profundidade da ordenacao por politica nas duas engines (padrao: 3 -- ver E1_POLICY_ORDER_MIN_DEPTH/E2_POLICY_ORDER_MIN_DEPTH)")
+    parser.add_argument("--e1-policy-order-min-depth", type=int, default=E1_POLICY_ORDER_MIN_DEPTH, help=f"Piso de profundidade so no Engine 1 (padrao: {E1_POLICY_ORDER_MIN_DEPTH})")
+    parser.add_argument("--e2-policy-order-min-depth", type=int, default=E2_POLICY_ORDER_MIN_DEPTH, help=f"Piso de profundidade so no Engine 2 (padrao: {E2_POLICY_ORDER_MIN_DEPTH})")
     
     args = parser.parse_args()
+    # --policy-order liga as duas engines, igual --heuristic; --e1-.../--e2-...
+    # continuam disponiveis pra ligar so uma de cada vez (mesmo padrao que
+    # --heuristic vs --e1-heuristic/--e2-heuristic acima).
+    if args.policy_order:
+        args.e1_policy_order = True
+        args.e2_policy_order = True
+    # --policy-order-min-depth (sem prefixo e1/e2) sobrepoe as duas de uma vez.
+    if args.policy_order_min_depth is not None:
+        args.e1_policy_order_min_depth = args.policy_order_min_depth
+        args.e2_policy_order_min_depth = args.policy_order_min_depth
     
     ref1_name = args.ref1 if args.ref1 else "LOCAL"
     ref2_name = args.ref2 if args.ref2 else "LOCAL"
@@ -294,6 +333,7 @@ def main():
     print(f"  Engine 2 : {ref2_label}")
     print(f"  Config   : {args.games} jogos | {args.threads} threads | {args.time}ms/lance | Relatorio a cada {args.report_games} jogos")
     print(f"  Salvar .bin: {args.create_bin}")
+    print(f"  Politica NNUE na ordenacao: Engine 1 {'LIGADA (min-depth=' + str(args.e1_policy_order_min_depth) + ')' if args.e1_policy_order else 'desligada'} | Engine 2 {'LIGADA (min-depth=' + str(args.e2_policy_order_min_depth) + ')' if args.e2_policy_order else 'desligada'}")
     print("=" * 65 + "\n")
     
     dir1, cleanup1 = prepare_engine_source(args.ref1)
@@ -336,7 +376,7 @@ def main():
     for worker_games, worker_seed, worker_bin in tasks:
         p = multiprocessing.Process(
             target=worker_process,
-            args=(cand_exe, worker_games, args.time, args.random_plies, worker_seed, worker_report, worker_bin, args.invert_colors, queue, args.e1_nnue, args.e2_nnue, args.heuristic, args.e1_heuristic, args.e2_heuristic)
+            args=(cand_exe, worker_games, args.time, args.random_plies, worker_seed, worker_report, worker_bin, args.invert_colors, queue, args.e1_nnue, args.e2_nnue, args.heuristic, args.e1_heuristic, args.e2_heuristic, False, args.e1_policy_order, args.e2_policy_order, args.e1_policy_order_min_depth, args.e2_policy_order_min_depth)
         )
         p.start()
         processes.append(p)

@@ -2,7 +2,9 @@
 
 Zquoridor is a 2-player Quoridor engine (9×9, 10 walls each; the 4-player variant is out of scope). Negamax + alpha-beta search, with an NNUE that is trained on the engine's own self-play games. Sister project of the chess engine **Zchezz**, whose conventions this repo deliberately mirrors.
 
-`readme.md` (620 lines) and `plano-additional.md` (1162 lines) are the design documents, both in Portuguese. `plano-additional.md` is organized by numbered "Prioridades" that the code comments reference directly (e.g. "Prioridade 4" = endgame race solver) — when touching search or eval, read the relevant Prioridade section first; several of them document approaches that were **tried and rejected** and should not be re-attempted.
+`readme.md` is a concise, feature-level reference for an external reader: install/build/run and what the project can do, in prose. It deliberately doesn't name individual functions/classes or explain rationale/history.
+
+`status.md` holds everything readme.md leaves out: a module/function reference (file-by-file, code symbol names), design decisions and rationale ("why is it built this way"), important findings (benchmarks, bugs found and fixed, regressions), uncalibrated values, and open items/future plans. Update it, not the readme, when you touch any of those.
 
 **Language: comments, commit messages, and docs are in English.**
 
@@ -71,7 +73,7 @@ Web GUI (`gui_web/`): compiled `zquoridor.js`/`.wasm` are gitignored, but the bu
 
 **`rules.hpp`** — `State` (two pawn cells, two 64-bit wall bitboards H/V, side to move, Zobrist hash), move generation, and `evalSimple`. Wall legality (both players must keep a path to goal) is the expensive part: a cheap geometric pre-filter rejects most candidates before the real check, which uses the rollback union-find in `dsu.hpp`. Four BFS variants share one engine: `hasPathToGoal`, `shortestPathLen`, `shortestPathTouchSlots`, `pathRobustness`.
 
-**`search.hpp`** — negamax/alpha-beta, transposition table, killers + history, LMR+PVS, RFP+LMP, wall quiescence, 3-fold repetition with `CONTEMPT = -30`. Nearly every heuristic has a runtime toggle (`setLmrPvsEnabled`, `setRfpEnabled`, `setLmpEnabled`, `setQuiescenceEnabled`) so a benchmark or bisect can isolate it without recompiling — preserve that pattern when adding heuristics.
+**`search.hpp`** — negamax/alpha-beta, transposition table, killers + history, LMR+PVS, RFP+LMP, wall quiescence, 3-fold repetition with `CONTEMPT = -30`, policy-assisted move ordering (NNUE policy head as an extra ordering term, gated by remaining depth — see `status.md` for why the depth gate exists). Nearly every heuristic has a runtime toggle (`setLmrPvsEnabled`, `setRfpEnabled`, `setLmpEnabled`, `setQuiescenceEnabled`, `setPolicyOrderingEnabled`, `setPolicyOrderingMinDepth`) so a benchmark or bisect can isolate it without recompiling — preserve that pattern when adding heuristics.
 
 **`cat.hpp`** — Corridor Attention Table: per-cell "heat" computed once per node (2 BFS, not per wall candidate) measuring deviation from the opponent's optimal path. Drives wall ordering.
 
@@ -79,16 +81,17 @@ Web GUI (`gui_web/`): compiled `zquoridor.js`/`.wasm` are gitignored, but the bu
 
 **`endgame_race.hpp`** — when `wallsLeft[0]==0 && wallsLeft[1]==0` the wall topology is frozen and the game is an exact pawn race, solved instead of searched: a cheap disjoint-*region* gate plus exact retrograde DP over 81×81×2 states, cached per topology with a real-time budget (~3% of the move budget) so a cache miss storm can never make nodes/s worse than baseline. **Read the long header comment at the top of the file and Sections 4d/4e of `plano-additional.md` before changing anything here** — it documents four rounds of corrections, including a move-*choice* bug (not a value bug) at the real game root that lost most games while reporting correct evaluations.
 
-**`nnue.hpp`** — 332 → 256 accumulator (SCReLU) → three independent heads: WL/outcome `256→32→1` (what search consumes), auxiliary `256→32→1` imitating `evalSimple` (training scaffold, to be removed once self-play comes from the net itself), policy `256→209` (move ordering). Everything is perspective-relative (`buildAccumulator(state, perspective)`); the net never knows "who is white". Features: 81+81 pawn, 64+64 wall, 21+21 one-hot BFS-distance buckets. The accumulator is always updated incrementally — no move triggers a full rebuild.
+**`nnue.hpp`** — 354 → 256 accumulator (SCReLU) → three independent heads: WL/outcome `256→32→1` (what search consumes), auxiliary `256→32→1` imitating `evalSimple` (training scaffold, to be removed once self-play comes from the net itself), policy `256→209` (move ordering). Everything is perspective-relative (`buildAccumulator(state, perspective)`); the net never knows "who is white". Features: 81+81 pawn, 64+64 wall, 21+21 one-hot BFS-distance buckets, 11+11 one-hot remaining-walls buckets. The accumulator is always updated incrementally — no move triggers a full rebuild.
 
 **Quantization is QAT**, not post-hoc: `QA=255`/`QB=64` are fixed *before* training and weights are clamped each optimizer step. **These constants appear in three places — `src/nnue.hpp`, `training/train_nnue.py` (`--qa`/`--qb`), and `training/quantize_nnue.py` — and must be changed together**, or `nnue_verify` parity breaks.
 
 **Self-play binary format is the dataset.** `selfplay.exe` writes the exact struct the trainer reads; there is no preprocessing step. `TrainingSample` is 27 bytes, asserted in `training/read_selfplay.py` (`SAMPLE_DTYPE.itemsize == 27`) — changing the C++ struct requires updating that dtype in lockstep.
 
-**Eval mode**: `Negamax::setEvalMode(EvalMode::Heuristic | EvalMode::NNUE)` selects `evalSimpleW` vs. the quantized net. NNUE mode requires weights loaded and maintains `nnueAccStack` incrementally across the search stack; heuristic mode leaves `accForSearch` null. Selfplay, arena, bench, and the WASM shell all expose this switch. Note `readme.md` Section 3/Phase B still says the NNUE is not plugged into search — that is now stale; the wiring exists.
+**Eval mode**: `Negamax::setEvalMode(EvalMode::Heuristic | EvalMode::NNUE)` selects `evalSimpleW` vs. the quantized net. NNUE mode requires weights loaded and maintains `nnueAccStack` incrementally across the search stack; heuristic mode leaves `accForSearch` null. Selfplay, arena, bench, and the WASM shell all expose this switch.
 
 ## Conventions worth keeping
 
 - New search heuristics get: a runtime toggle, a correctness test in `teste/` comparing against a reference search with the heuristic off, and a benchmark measuring nodes-to-equal-depth. Heuristic tests assert *agreement thresholds* (e.g. ≥85% score agreement, ≥90% on decisive positions, never an illegal move), not zero divergence — unlike `test_search_staging.cpp`, which must match its reference exactly.
-- Eval-weight changes are meant to go through `teste/tune_spsa.cpp` (SPSA over the `evalSimple` weights; checkpoints to `spsa_checkpoint.txt`, run from repo root). Several thresholds (`QS_CRITICAL_*`, `RFP_MARGIN_*`, `LMP_COUNT_*`, `robustnessWeight`) are still uncalibrated placeholders inherited from another engine.
+- Eval-weight changes are meant to go through `teste/tune_spsa.cpp` (SPSA over the `evalSimple` weights; checkpoints to `spsa_checkpoint.txt`, run from repo root). Several thresholds (`QS_CRITICAL_*`, `RFP_MARGIN_*`, `LMP_COUNT_*`, `robustnessWeight`) are still uncalibrated placeholders inherited from another engine — tracked in `status.md`.
 - Real strength claims come from `run_arena.py` games, not from nodes/s.
+- When you fix a bug, find a regression, make an architectural call, or leave something uncalibrated/unfinished, log it in `status.md` (with a dated changelog entry if it's a concrete change) rather than in a code comment alone or nowhere.

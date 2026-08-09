@@ -149,6 +149,20 @@ struct SelfPlayConfig {
     // versões pré-NNUE, ou fallback manual caso a NNUE se comporte mal.
     // Equivale a --heuristic no selfplay_main.
     bool forceHeuristic = false;
+    // Liga a ordenacao assistida por politica (prompt_policy_ordering.md,
+    // Negamax::setPolicyOrderingEnabled) em toda engine que usar NNUE
+    // (useNNUE==true) -- só tem efeito quando NNUE está de fato ativo (ver
+    // runSelfPlay); em heurística é ignorado sem aviso, já que a flag não
+    // existe pra fazer sentido lá. Equivale a --policy-order no
+    // selfplay_main. Default false (produção/reprodutibilidade dos
+    // shards existentes preservada).
+    bool policyOrderingEnabled = false;
+    // Piso de profundidade (search.hpp: Negamax::setPolicyOrderingMinDepth)
+    // -- mesmo mecanismo/motivo do arena.cpp: forwardPolicyQuant é ~5.8x
+    // mais caro que o eval de folha; sem piso ele roda em todo nó interno
+    // e derruba nós/s ~3x (medido em produção). Default 3, sobreponivel
+    // via --policy-order-min-depth.
+    int policyOrderingMinDepth = 3;
 };
 
 struct SelfPlayStats {
@@ -371,6 +385,21 @@ inline void runSelfPlay(const SelfPlayConfig& cfg, const std::string& outputPath
         if (useNNUE) {
             engine0.setEvalMode(Negamax::EvalMode::NNUE);
             if (!cfg.sharedTT) engine1.setEvalMode(Negamax::EvalMode::NNUE);
+            // Ordenacao assistida por politica (prompt_policy_ordering.md)
+            // -- so faz sentido junto de NNUE (precisa do AccPair mantido
+            // na pilha de busca pra tirar o forward pass, ver
+            // policyOrderingEnabled em search.hpp), por isso fica dentro
+            // do `if (useNNUE)`. Default cfg.policyOrderingEnabled=false
+            // preserva o comportamento/reprodutibilidade dos shards já
+            // gerados antes desta mudanca.
+            if (cfg.policyOrderingEnabled) {
+                engine0.setPolicyOrderingEnabled(true);
+                engine0.setPolicyOrderingMinDepth(cfg.policyOrderingMinDepth);
+                if (!cfg.sharedTT) {
+                    engine1.setPolicyOrderingEnabled(true);
+                    engine1.setPolicyOrderingMinDepth(cfg.policyOrderingMinDepth);
+                }
+            }
         }
 
         std::mt19937_64 rng(cfg.seed + 1000003ull * (unsigned)threadIdx);

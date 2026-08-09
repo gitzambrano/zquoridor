@@ -89,6 +89,22 @@ constexpr double LMR_DIVISOR = 2.25;
 constexpr int CAT_HOT_CM = 150;   // heat >= isto -> pula LMR (lance "tático")
 constexpr int CAT_COLD_CM = 30;   // heat < isto -> +1 de redução extra ("frio")
 
+// Ordenação por política NNUE (prompt_policy_ordering.md) -- soma o logit
+// cru da cabeça de política (forwardPolicyQuant, nnue.hpp) como termo
+// extra no score de orderPawnMoves/orderWallMoves, atrás de
+// setPolicyOrderingEnabled (default desligada, ver método). O logit cru
+// vive numa escala pequena (tipicamente [-5,5], mesma ordem de grandeza
+// dos logits da cabeça WL antes de NNUE_EVAL_SCALE) -- POLICY_ORDER_SCALE
+// escala isso pra ficar comparável a history/CAT (que somam na casa de
+// centenas a milhões por causa de depth*depth e killer bonus). Escolhido
+// para ficar na mesma ordem de grandeza dos incrementos de history em
+// profundidade típica (depth^2 com depth~8 => ~64 por cutoff único, vários
+// cutoffs acumulam facilmente na casa de centenas/milhares) sem dominar
+// nem ser irrelevante frente a killer bonus (1'400'000+); valor inicial,
+// não tunado -- quem ligar a flag deve validar empiricamente (ver
+// benchNegamaxNNUE/run_arena.py) se compensa e se este peso é razoável.
+constexpr long long POLICY_ORDER_SCALE = 400;
+
 // reduction = clamp( round( ln(depth) * ln(move_index) / 2.25 ), 0, depth/2 )
 // -- ver Prioridade 3 do plano pra derivação/justificativa da fórmula.
 inline int lmrReduction(int depth, int moveIndex) {
@@ -179,6 +195,37 @@ public:
     enum class EvalMode { Heuristic, NNUE };
     void setEvalMode(EvalMode m) { evalMode = m; }
     EvalMode getEvalMode() const { return evalMode; }
+
+    // Ordenação de lances assistida pela cabeça de política da NNUE
+    // (prompt_policy_ordering.md) -- soma forwardPolicyQuant(curAcc->acc[side])
+    // como termo extra em orderPawnMoves/orderWallMoves. Mesmo estilo de
+    // toggle que setQuiescenceEnabled/setLmrPvsEnabled acima: permite A/B
+    // em benchmark sem recompilar. Default DESLIGADA -- requisito
+    // não-negociável do prompt: com a flag off, nenhum forwardPolicyQuant é
+    // chamado em lugar nenhum e orderPawnMoves/orderWallMoves executam
+    // exatamente o código anterior a esta mudança (custo zero mensurável).
+    // Só tem efeito quando evalMode==NNUE E curAcc != nullptr (modo
+    // Heurístico não mantém AccPair nenhum pra tirar o forward pass) --
+    // ligar isto em modo Heurístico é inofensivo, só não faz nada.
+    void setPolicyOrderingEnabled(bool enabled) { policyOrderingEnabled = enabled; }
+    bool isPolicyOrderingEnabled() const { return policyOrderingEnabled; }
+
+    // Piso de profundidade (depth restante, não ply): forwardPolicyQuant
+    // (~53500 MACs) custa ~5.8x mais que o eval de folha
+    // (forwardValueWLQuant, ~9200 MACs) e, sem este piso, era chamado em
+    // TODO nó interno -- que numa árvore alfa-beta são dominados por nós
+    // rasos perto do horizonte (ordem de grandeza mais numerosos que os
+    // nós de topo). Isso derrubava nós/s em ~3x na prática (medido pelo
+    // usuário via run_arena.py). O piso restringe o forward pass extra
+    // aos POUCOS nós de cima da árvore -- onde um corte alpha-beta corta
+    // a subárvore inteira embaixo (maior ROI por chamada), em vez de
+    // pagar o custo em nós que já iam podar rápido de qualquer forma.
+    // Default 3 é um chute inicial (não tunado) -- ajuste com
+    // setPolicyOrderingMinDepth() e valide nós/s + Elo via
+    // benchNegamaxNNUE/run_arena.py; 0 volta ao comportamento "todo nó"
+    // de antes (não recomendado, é o que causou a queda medida).
+    void setPolicyOrderingMinDepth(int d) { policyOrderingMinDepth = d; }
+    int getPolicyOrderingMinDepth() const { return policyOrderingMinDepth; }
 
     // Limpa toda a tabela de transposição. Deve ser chamado entre partidas
     // no self-play: scores de repetição (path-dependent) ficam gravados na
@@ -384,6 +431,8 @@ private:
     bool quiescenceEnabled = true;
     bool lmrPvsEnabled = true;
     EvalMode evalMode = EvalMode::Heuristic;
+    bool policyOrderingEnabled = false;
+    int policyOrderingMinDepth = 3;
     // Pilha de pares de acumuladores NNUE -- um AccPair por ply da busca,
     // indexado por aritmética de ponteiro a partir da raiz (curAcc+1 = filho).
     // Dimensionado para rootDepth até MAX_PLY + quiescência até QS_MAX_EXTRA_PLIES
@@ -442,13 +491,23 @@ private:
     // o próprio staging já garante peão antes de muro). Só killer + history
     // decidem a ordem dentro do bloco de peão (no máximo 5 candidatos, o
     // impacto de ordenação fina aqui é pequeno de qualquer forma).
-    void orderPawnMoves(MoveList& moves, int ply, int side) {
+    // `policy` (opcional, default nullptr, prompt_policy_ordering.md):
+    // se não-nulo, aponta pro array de 209 logits crus já computado UMA
+    // VEZ por nó (forwardPolicyQuant sobre curAcc->acc[side], ver negamax)
+    // -- soma policyLogitForMove(*policy, m, side)*POLICY_ORDER_SCALE como
+    // termo extra. nullptr (caso comum, flag desligada ou modo
+    // Heurístico) preserva o código/custo exatos de antes desta mudança.
+    void orderPawnMoves(MoveList& moves, int ply, int side,
+                         const std::array<float, POLICY_OUT>* policy = nullptr) {
         bool ply0 = ply >= 0 && ply < MAX_PLY;
         size_t n = moves.size();
         std::pair<long long, Move> buf[ORDER_BUF_CAP];
         for (size_t i = 0; i < n; i++) {
             const Move& m = moves[i];
             long long sc = history[side][moveToPolicyIndex(m)];
+            if (policy) {
+                sc += (long long)std::lround(policyLogitForMove(*policy, m, side) * (float)POLICY_ORDER_SCALE);
+            }
             if (ply0) {
                 if (killerValid[ply][0] && m == killers[ply][0]) sc += 1'500'000;
                 else if (killerValid[ply][1] && m == killers[ply][1]) sc += 1'400'000;
@@ -481,8 +540,10 @@ private:
     // (negamax, Estágio 3) já paga essa BFS dentro de legalWallMoves logo
     // antes desta chamada, para o pré-filtro; reaproveitar aqui evita
     // pagá-la de novo para a MESMA topologia/jogador.
+    // `policy`: mesmo parâmetro/contrato de orderPawnMoves acima.
     void orderWallMoves(MoveList& moves, int ply, int side, const State& s,
-                         const CorridorHeat& oppHeat, const PlayerPathCache* oppCache = nullptr) {
+                         const CorridorHeat& oppHeat, const PlayerPathCache* oppCache = nullptr,
+                         const std::array<float, POLICY_OUT>* policy = nullptr) {
         bool ply0 = ply >= 0 && ply < MAX_PLY;
         bool wallByBFS = ply <= WALL_BFS_ORDER_MAX_PLY;
         int opp = 1 - side;
@@ -523,6 +584,9 @@ private:
             }
             sc += wallEdgeHeat(oppHeat, m.a, m.b, m.c) * CAT_SCORE_SCALE;
             sc += history[side][moveToPolicyIndex(m)];
+            if (policy) {
+                sc += (long long)std::lround(policyLogitForMove(*policy, m, side) * (float)POLICY_ORDER_SCALE);
+            }
             if (ply0) {
                 if (killerValid[ply][0] && m == killers[ply][0]) sc += 1'500'000;
                 else if (killerValid[ply][1] && m == killers[ply][1]) sc += 1'400'000;
@@ -798,6 +862,29 @@ private:
 
         int side = s.turn;
 
+        // Ordenação assistida por política (prompt_policy_ordering.md):
+        // no máximo UM forward pass de política por nó (não por
+        // candidato), e só nos nós com depth restante >= policyOrderingMinDepth
+        // (ver comentário do setter acima -- forwardPolicyQuant é ~5.8x
+        // mais caro que o eval de folha e, sem este piso, dominava o
+        // custo total por rodar em todo nó interno). Gated também por
+        // policyOrderingEnabled && curAcc, mesmo guarda que nnueEvalInt já
+        // usa pra saber se há AccPair mantido pra esta busca (modo
+        // Heurístico nunca entra aqui). curAcc->acc[side]
+        // é a perspectiva de quem vai jogar agora -- garantidamente já
+        // resolvida (eager) pela invariante de AccPair documentada em
+        // nnue.hpp, então nenhuma chamada extra a resolvePending é
+        // necessária aqui (mesma premissa que o `nnueEvalInt(*curAcc, s.turn)`
+        // de depth==0 acima já depende). policyArr fica fora do `if` (RAII
+        // de pilha, sem custo quando não inicializado/usado) -- policyPtr
+        // só aponta pra ela quando de fato computada.
+        std::array<float, POLICY_OUT> policyArr;
+        const std::array<float, POLICY_OUT>* policyPtr = nullptr;
+        if (policyOrderingEnabled && curAcc && depth >= policyOrderingMinDepth) {
+            forwardPolicyQuant(curAcc->acc[side], policyArr);
+            policyPtr = &policyArr;
+        }
+
         // --- Geração estagiada de lances (Fase 4.2.3 do plano) ---------
         // Estágio 1: lance da TT, testado antes de gerar qualquer muro --
         // se ele já causar corte, o Estágio 3 (o caro, com pré-filtro +
@@ -812,7 +899,7 @@ private:
         // checagens, então nunca é jogado.
         MoveList pawnMoves;
         pawnStepMoves(s, side, pawnMoves);
-        orderPawnMoves(pawnMoves, ply, side);
+        orderPawnMoves(pawnMoves, ply, side, policyPtr);
 
         bool ttTried = false;
         if (hasTTMove && ttMoveVal.isWall) {
@@ -966,7 +1053,7 @@ private:
                 oppHeat = computeCorridorHeat(s.wallsH, s.wallsV, s.pawn[opp], opp);
                 haveOppHeat = true;
                 const PlayerPathCache& oppCache = (opp == 0) ? cache0 : cache1;
-                orderWallMoves(wallMoves, ply, side, s, oppHeat, &oppCache);
+                orderWallMoves(wallMoves, ply, side, s, oppHeat, &oppCache, policyPtr);
             }
             for (size_t i = 0; i < wallMoves.size() && !cutoff; i++) {
                 const Move& m = wallMoves[i];
