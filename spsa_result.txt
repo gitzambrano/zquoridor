@@ -1,3 +1,0 @@
-contempt -29.972621
-policyOrderScale 400.125000
-catScoreScale 2.263522

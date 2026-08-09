@@ -52,12 +52,12 @@ import sys
 #   policyOrderingMinDepth fixo naquele candidato -- tuna os 3 parametros
 #   continuos PARA CADA minDepth em paralelo, em vez de tunar uma vez com
 #   minDepth fixo e so depois varrer minDepth discretamente.
-MODE = "spsa"
+MODE = "sweep-mindepth"
 
 # --- SPSA (modos "spsa" e "hybrid") ---
 ITERATIONS       = 100       # iteracoes totais de SPSA (era 40 -- mais estatistica)
-GAMES_PER_ITER    = 4         # partidas antiteticas por iteracao (media reduz ruido do gradiente)
-THREADS           = 4         # paraleliza as GAMES_PER_ITER partidas de 1 iteracao
+GAMES_PER_ITER    = 40         # partidas antiteticas por iteracao (media reduz ruido do gradiente)
+THREADS           = 10         # paraleliza as GAMES_PER_ITER partidas de 1 iteracao
                                # (modo "hybrid": paraleliza DENTRO de cada candidato --
                                # os candidatos sempre rodam concorrentes entre si, 1
                                # thread do SO cada, alem disso; cuidado com
@@ -75,7 +75,7 @@ RESULT           = "spsa_result.txt"       # resultado final (thetaAvg)
 # usa o default hardcoded em search.hpp (-30 / 400 / 2).
 TUNE_CONTEMPT       = True
 CONTEMPT_INIT       = None
-CONTEMPT_BOUNDS     = (-150.0, 0.0)
+CONTEMPT_BOUNDS     = (-150.0, 20.0)
 
 TUNE_POLICY_SCALE   = True
 POLICY_SCALE_INIT   = None
