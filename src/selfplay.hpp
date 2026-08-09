@@ -154,9 +154,12 @@ struct SelfPlayConfig {
     // (useNNUE==true) -- só tem efeito quando NNUE está de fato ativo (ver
     // runSelfPlay); em heurística é ignorado sem aviso, já que a flag não
     // existe pra fazer sentido lá. Equivale a --policy-order no
-    // selfplay_main. Default false (produção/reprodutibilidade dos
-    // shards existentes preservada).
-    bool policyOrderingEnabled = false;
+    // selfplay_main. Default true desde 2026-08 (era false) -- mesmo
+    // default de search.hpp/arena.cpp/wasm agora: NNUE default -> policy
+    // head default, mesmo sem nenhum parametro passado. Shards gerados
+    // antes dessa mudanca NAO sao reprodutiveis bit-a-bit com o default
+    // atual; passe --no-policy-order pra voltar ao comportamento antigo.
+    bool policyOrderingEnabled = true;
     // Piso de profundidade (search.hpp: Negamax::setPolicyOrderingMinDepth)
     // -- mesmo mecanismo/motivo do arena.cpp: forwardPolicyQuant é ~5.8x
     // mais caro que o eval de folha; sem piso ele roda em todo nó interno
@@ -389,9 +392,10 @@ inline void runSelfPlay(const SelfPlayConfig& cfg, const std::string& outputPath
             // -- so faz sentido junto de NNUE (precisa do AccPair mantido
             // na pilha de busca pra tirar o forward pass, ver
             // policyOrderingEnabled em search.hpp), por isso fica dentro
-            // do `if (useNNUE)`. Default cfg.policyOrderingEnabled=false
-            // preserva o comportamento/reprodutibilidade dos shards já
-            // gerados antes desta mudanca.
+            // do `if (useNNUE)`. Default cfg.policyOrderingEnabled=true
+            // (2026-08): liga por default sempre que NNUE esta ativo;
+            // use --no-policy-order pra reproduzir shards gerados antes
+            // dessa mudanca.
             if (cfg.policyOrderingEnabled) {
                 engine0.setPolicyOrderingEnabled(true);
                 engine0.setPolicyOrderingMinDepth(cfg.policyOrderingMinDepth);

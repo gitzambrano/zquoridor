@@ -39,7 +39,7 @@ Windows: equivalent `build/*.bat` scripts (MinGW-w64 `g++` on `PATH`). ARM/Termu
 | `build_bench.sh` / `.bat`     | performance benchmarks                                       |
 | `build_selfplay.sh` / `.bat`  | self-play data generator                                     |
 | `build_arena.sh` / `.bat`     | strength-testing arena                                       |
-| `build_tune_spsa.sh` / `.bat` | SPSA weight tuner                                            |
+| `build_tune_spsa.sh` / `.bat` | SPSA parameter tuner (contempt / policy-order scale / CAT scale, plus a discrete policyOrderingMinDepth sweep) |
 | `build_wasm.sh` / `.bat`      | WebAssembly build (needs`emsdk` activated)                 |
 | `build_all.sh` / `.bat`       | all of the above except WASM (add`wasm` arg to include it) |
 
@@ -84,10 +84,11 @@ cd gui_web && python3 -m http.server 8000   # open http://localhost:8000/index.h
 | `--epsilon-midgame F`                | 0.02                                | chance of playing 2nd/3rd-best move mid/endgame, for data variety |
 | `--chunk-games N`                    | 2000                                | games per output shard                                            |
 | `--nnue-weights PATH`                | `data/nnue/nnue_weights_int8.bin` | weights file                                                      |
-| `--policy-order`                     | off                                 | use the NNUE policy head for move ordering                        |
+| `--policy-order`                     | **on**                              | use the NNUE policy head for move ordering (default since 2026-08) |
+| `--no-policy-order`                  | —                                    | disable it                                                         |
 | `--policy-order-min-depth N`         | 3                                   | min remaining depth at which policy-assisted ordering applies     |
 
-Full list: `bin/selfplay --help`. `training/run_selfplay.py` wraps the same binary (config block at the top of the script, or CLI flags).
+Full list: `bin/selfplay --help`. `training/run_selfplay.py` wraps the same binary (config block at the top of the script, or CLI flags). The policy-assisted ordering default above (on) is shared by `selfplay`, `arena`, `tune_spsa`, and the WASM build — it's a class-level default in `search.hpp`, so any new tool built on `Negamax` gets it too unless it opts out.
 
 ---
 
@@ -128,11 +129,21 @@ All test files and the WebAssembly shell include the engine headers directly (`-
 | `bench_lmr_pvs.cpp`                              | nodes-to-depth and head-to-head games with/without LMR+PVS+RFP+LMP               |
 | `bench_wall_touch_bonus.cpp`                     | nodes-to-depth with/without CAT-based wall ordering                              |
 | `bench_race_regression.cpp`                      | endgame-race solver performance regression                                       |
-| `tune_spsa.cpp`                                  | SPSA weight tuner                                                                |
+| `tune_spsa.cpp`                                  | SPSA parameter tuner (`--mode spsa\|sweep-mindepth\|hybrid`) + `plot_spsa.py` for convergence plots |
 
 ## Arena (strength testing)
 
 `teste/arena.cpp`, usually run via `teste/run_arena.py`, plays two engine builds head-to-head and reports an Elo estimate with a confidence interval. Each side is configured independently — weight file, policy-assisted ordering on/off — useful for comparing engine versions or configurations.
+
+## SPSA tuning
+
+`teste/tune_spsa.cpp`, usually run via `teste/run_spsa.py`, tunes `contempt`/`policyOrderScale`/`catScoreScale` against each other via self-play. Three modes:
+
+- `--mode spsa` (default): classic SPSA (Spall 1998) over the continuous parameters above. Each iteration averages `--games-per-iter` antithetic match-ups (default 4) to keep the gradient estimate from drowning in noise; `--threads N` parallelizes those games.
+- `--mode sweep-mindepth`: round-robin tournament over discrete `policyOrderingMinDepth` candidates (continuous params held fixed) — SPSA doesn't suit a small-range integer well.
+- `--mode hybrid`: one OS thread per `policyOrderingMinDepth` candidate, each running a full independent continuous SPSA with that depth fixed — tunes the continuous parameters *for every candidate depth* in parallel instead of tuning once and sweeping depth afterward.
+
+Every run logs a per-iteration CSV (`--history`, default `spsa_history.csv`); plot it with `python3 teste/plot_spsa.py` (`--glob` to overlay all `_depth{D}` files from a hybrid run).
 
 ## Web GUI
 

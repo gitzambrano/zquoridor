@@ -141,10 +141,12 @@ EMSCRIPTEN_KEEPALIVE int qr_last_move_eval() { return g_lastEngineScore; }
 // que o move ordering puramente heurístico/CAT, então o engine "de
 // produção" (este binário WASM, o único chooseMove() fora de benchmark/
 // selfplay) passa a jogar com ela ativa sempre que NNUE está carregado.
-// min-depth fica no default da classe (3, ver comentário em search.hpp);
-// selfplay.hpp e teste/arena.cpp mantêm seus próprios defaults
-// desligados de propósito (reprodutibilidade de shards / A-B controlado),
-// essa mudança não afeta nenhum dos dois.
+// min-depth fica no default da classe (3, ver comentário em search.hpp).
+// Chamada explícita aqui hoje é redundante com o default de search.hpp
+// (2026-08: policyOrderingEnabled passou a nascer true na classe, e
+// selfplay.hpp/teste/arena.cpp seguiram o mesmo default) -- mantida
+// mesmo assim, por clareza e para não depender silenciosamente do
+// default da classe caso ele mude de novo no futuro.
 EMSCRIPTEN_KEEPALIVE
 int qr_load_nnue_weights(const char* path) {
     if (!qr::loadWeightsQuant(path)) return 0;

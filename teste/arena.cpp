@@ -187,10 +187,14 @@ static bool g_e2UseNnue = false;
 // Liga/desliga a ordenacao assistida por politica (prompt_policy_ordering.md)
 // em cada engine -- só tem efeito quando a engine correspondente estiver
 // em NNUE (g_eXUseNnue==true); em heuristica é inofensivo (nao é sequer
-// chamado, ver playArenaGame abaixo). Mude aqui OU use as flags de linha
-// de comando --e1-policy-order/--e2-policy-order/--policy-order (ver main()).
-constexpr bool E1_POLICY_ORDERING_DEFAULT = false;
-constexpr bool E2_POLICY_ORDERING_DEFAULT = false;
+// chamado, ver playArenaGame abaixo). Default LIGADA desde 2026-08 (era
+// desligada) -- mesmo default de search.hpp/selfplay/wasm agora: "NNUE
+// default -> policy head default", mesmo sem nenhum parametro passado.
+// Mude aqui OU use as flags de linha de comando --e1-policy-order/
+// --e2-policy-order/--policy-order/--e1-no-policy-order/--e2-no-policy-order
+// (ver main()).
+constexpr bool E1_POLICY_ORDERING_DEFAULT = true;
+constexpr bool E2_POLICY_ORDERING_DEFAULT = true;
 static bool g_e1UsePolicyOrdering = E1_POLICY_ORDERING_DEFAULT;
 static bool g_e2UsePolicyOrdering = E2_POLICY_ORDERING_DEFAULT;
 // Piso de profundidade -- mesmo default de search.hpp (3), sobreponivel

@@ -163,7 +163,7 @@ SEED_DEFAULT = 0
 VAL_SPLIT_DEFAULT = 0.1               # fracao dos dados reservada p/ validacao
  
 LR_DEFAULT = 1e-3                     # LR inicial para treino do zero
-LR_MIN_DEFAULT = 5e-6                 # piso do LR no fim do schedule
+LR_MIN_DEFAULT = 6e-6                 # piso do LR no fim do schedule
 LR_SCHEDULE_DEFAULT = "cosine"        # none | step | exponential | cosine
 WARMUP_EPOCHS_DEFAULT = 2
  
@@ -611,7 +611,14 @@ def _prune_old_cycle_files(old_paths, new_paths):
 # cegamente de um JSON antigo tende a surpreender mais do que ajudar (ex.
 # reaproveitar um --out de outra maquina).
 _CONFIG_JSON_HYPERPARAM_KEYS = (
-    "epochs", "batch_size", "seed", "val_split",
+    # "epochs" DELIBERADAMENTE fora daqui: e orcamento DESTA sessao (quantas
+    # epocas VOCE quer rodar agora), nao uma "receita de treino" como
+    # lr/qa/qb -- herdar silenciosamente o teto do ciclo anterior faz
+    # --epochs maior que o antigo ser ignorado sem aviso se o usuario
+    # esquecer de repetir a flag. O teto do ciclo ANTERIOR (pra decidir se
+    # ele foi concluido) vem de target_epochs em train_state.pt, nao daqui
+    # -- ver hit_ceiling em train().
+    "batch_size", "seed", "val_split",
     "lr", "lr_min", "lr_schedule", "warmup_epochs", "step_size", "step_gamma", "exp_gamma",
     "weight_decay", "weight_decay_min", "wd_schedule",
     "early_stop", "patience", "min_delta", "monitor",
@@ -656,13 +663,22 @@ def load_config_json(path):
         return json.load(f)
  
  
-def save_train_state(path, model, opt, cycle_id, epoch, epoch_completed, history, stopper, rng, fingerprint):
+def save_train_state(path, model, opt, cycle_id, epoch, epoch_completed, history, stopper, rng, fingerprint,
+                      target_epochs=None):
     os.makedirs(os.path.dirname(path), exist_ok=True)
     payload = dict(
         cycle_id=cycle_id,
         fingerprint=fingerprint,
         epoch=epoch,
         epoch_completed=epoch_completed,
+        # teto de --epochs QUE ESTE CICLO ESTAVA VISANDO (nao o --epochs da
+        # chamada que vai RETOMAR este checkpoint no futuro). Gravado aqui
+        # pra decidir "cycle_exhausted" em train() sem depender do --epochs
+        # da proxima chamada -- ver comentario em hit_ceiling. None em
+        # checkpoints antigos (gravados antes deste campo existir); nesse
+        # caso train() cai de volta pro comportamento antigo (compara com
+        # args.epochs da chamada atual).
+        target_epochs=target_epochs,
         model_state=model.state_dict(),
         opt_state=opt.state_dict(),
         history=history,
@@ -724,20 +740,26 @@ class _RunState:
 
 def save_checkpoint_bundle(rs, epoch, epoch_completed):
     """Grava train_state + ckpt.bin (pesos do MELHOR epoch ate agora,
-    --monitor) + train_config para (rs.cycle_id, epoch) e so entao apaga os
-    3 arquivos do epoch anterior DO MESMO CICLO (rs.last_paths) -- nunca
-    ficamos sem checkpoint valido no disco no meio da troca. Usado tanto no
-    fim de cada epoch (train()) quanto pelo handler de Ctrl+C
-    (_sigint_handler). Se o epoch atual nao melhorou --monitor, o .bin sai
-    com os MESMOS pesos de antes (stopper.best_state) -- so o nome muda,
-    pra refletir o epoch/timestamp mais recente ja tentado."""
+    --monitor) + train_config para (rs.cycle_id, epoch), e so entao apaga
+    os 3 arquivos do epoch anterior DO MESMO CICLO (rs.last_paths) --
+    nunca ficamos sem checkpoint valido no disco no meio da troca.
+
+    So chamada com epoch COMPLETO: o fim normal de cada epoch (train())
+    sempre passa epoch_completed=True; o handler de Ctrl+C (_sigint_handler)
+    so chama isto na rara janela em que o epoch ja terminou mas o proximo
+    ainda nao comecou -- uma interrupcao no MEIO de um epoch nao chama
+    esta funcao (o epoch em andamento e descartado e refeito do zero,
+    sem gravar nada, ver _sigint_handler). epoch_completed continua sendo
+    parametro/gravado em train_state.pt por clareza/futuro-proofing, mas
+    hoje sempre chega True aqui."""
     new_paths = dict(
         state=_train_state_path(rs.ckpt_dir, rs.cycle_id, epoch),
         bin=_ckpt_bin_path(rs.ckpt_dir, rs.cycle_id, epoch),
         config=_config_json_path(rs.ckpt_dir, rs.cycle_id, epoch),
     )
     save_train_state(new_paths["state"], rs.model, rs.opt, rs.cycle_id, epoch, epoch_completed,
-                      rs.history, rs.stopper, rs.rng, rs.fingerprint)
+                      rs.history, rs.stopper, rs.rng, rs.fingerprint,
+                      target_epochs=rs.args.epochs if rs.args is not None else None)
     best_state = rs.stopper.best_state if rs.stopper.best_state is not None else rs.model.state_dict()
     _export_state_dict(best_state, new_paths["bin"], rs.device)
     if rs.args is not None:
@@ -752,25 +774,30 @@ _ckpt_saved_on_interrupt = False
  
  
 def _sigint_handler(signum, frame):
-    """Ctrl+C: grava um novo checkpoint (train_state / ckpt.bin /
-    train_config, ver save_checkpoint_bundle) em --ckpt-dir com o estado
-    EXATO do momento da interrupcao (nao espera o epoch terminar) e so
-    entao encerra. Ao rodar de novo, o epoch interrompido e refeito do
-    inicio -- so ele se perde, nao o treino inteiro (ver RETOMANDO TREINO
-    INTERROMPIDO no docstring do topo)."""
+    """Ctrl+C: se o epoch atual JA terminou (raro -- janela bem pequena
+    entre o fim do epoch e o proximo checkpoint periodico), grava esse
+    checkpoint completo normalmente. Caso contrario (interrupcao no MEIO
+    do epoch, o caso comum), nao salva nada -- o epoch em andamento e
+    descartado inteiro e sera refeito do zero na proxima vez, a partir do
+    ultimo checkpoint COMPLETO ja em disco (que fica intacto, nunca
+    tocado aqui). Salvar um checkpoint parcial no meio do epoch (pesos e
+    otimizador so parcialmente atualizados por alguns batches) so pra
+    reaproveitar aquele pedacinho de progresso nao compensa a
+    complexidade/risco -- e mais simples e mais seguro sempre redoing o
+    epoch inteiro."""
     global _ckpt_saved_on_interrupt
-    print("\n\n[Ctrl+C] interrompido -- salvando checkpoint e saindo...")
+    print("\n\n[Ctrl+C] interrompido...")
     rs = _run_state
-    if rs.model is not None and rs.ckpt_dir and not _ckpt_saved_on_interrupt:
+    if rs.model is not None and rs.ckpt_dir and rs.epoch_completed and not _ckpt_saved_on_interrupt:
         _ckpt_saved_on_interrupt = True
         bin_path = save_checkpoint_bundle(rs, rs.epoch, rs.epoch_completed)
         if rs.args is not None and rs.args.plot_dir and rs.history and len(rs.history.get("epoch", [])) > 0:
             save_plots(rs.history, rs.args.plot_dir)
-            print(f"plots parciais salvos em {rs.args.plot_dir}")
-        status = "completo" if rs.epoch_completed else "parcial -- sera refeito ao retomar"
-        print(f"checkpoint salvo em {rs.ckpt_dir} (epoch {rs.epoch}, {status}) -- {bin_path}")
+            print(f"plots salvos em {rs.args.plot_dir}")
+        print(f"checkpoint salvo em {rs.ckpt_dir} (epoch {rs.epoch}, completo) -- {bin_path}")
     else:
-        print("nada para salvar ainda (interrompido antes do 1o epoch completar).")
+        print(f"epoch {rs.epoch if rs.model is not None else '?'} em andamento descartado -- "
+              f"ultimo checkpoint completo em disco fica intacto; esse epoch e refeito do zero ao retomar.")
     print("saindo.")
     sys.exit(130)
  
@@ -1027,7 +1054,16 @@ def train(args):
         prev_epoch = resumed["epoch"]
         prev_completed = resumed["epoch_completed"]
         prev_bad_epochs = resumed.get("stopper_num_bad_epochs", 0)
-        hit_ceiling = prev_epoch >= args.epochs
+        # teto que o ciclo ANTERIOR de fato visava. Usa o valor gravado no
+        # proprio train_state (target_epochs) -- NAO o args.epochs desta
+        # chamada -- senao pedir mais epocas pro ciclo novo (ex. --epochs 120
+        # depois de um ciclo que rodou ate 60) faz hit_ceiling dar False e o
+        # codigo confunde "novo ciclo sobre selfplay novo" com "retomando
+        # treino interrompido no meio", herdando otimizador/LR schedule do
+        # ciclo antigo e rodando so as epocas 61..120 em vez de reiniciar.
+        # Fallback pra args.epochs em checkpoints antigos sem esse campo.
+        prev_target_epochs = resumed.get("target_epochs") or args.epochs
+        hit_ceiling = prev_epoch >= prev_target_epochs
         early_stopped = args.early_stop and prev_bad_epochs >= args.patience
         cycle_exhausted = prev_completed and (hit_ceiling or early_stopped)
         if cycle_exhausted:

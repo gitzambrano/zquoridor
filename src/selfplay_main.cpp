@@ -51,11 +51,14 @@ static void printUsage(const char* prog) {
         "                      cai automaticamente para evalSimple (heuristico).\n"
         "  --heuristic         forca avaliacao heuristica (evalSimple), mesmo\n"
         "                      que pesos NNUE existam -- debug/historico/fallback.\n"
-        "  --policy-order      liga a ordenacao de lances assistida pela cabeca\n"
-        "                      de politica da NNUE (Negamax::setPolicyOrderingEnabled,\n"
+        "  --policy-order      liga (redundante -- ja e o default, ver --no-policy-order)\n"
+        "                      a ordenacao de lances assistida pela cabeca de politica\n"
+        "                      da NNUE (Negamax::setPolicyOrderingEnabled,\n"
         "                      prompt_policy_ordering.md). Só tem efeito quando NNUE\n"
         "                      está ativo (ignorado silenciosamente com --heuristic).\n"
-        "                      Default: desligado.\n"
+        "                      Default: ligado.\n"
+        "  --no-policy-order   desliga a ordenacao por politica (volta ao comportamento\n"
+        "                      anterior a 2026-08 / reproduz shards gerados antes disso).\n"
         "  --policy-order-min-depth N  so aplica a ordenacao por politica em nos\n"
         "                      com depth restante >= N (default 3). forwardPolicyQuant\n"
         "                      custa ~5.8x mais que o eval de folha; sem este piso\n"
@@ -103,6 +106,7 @@ int main(int argc, char** argv) {
                                             cfg.nnueWeightsExplicit   = true; }
         else if (a == "--heuristic")       cfg.forceHeuristic        = true;
         else if (a == "--policy-order")    cfg.policyOrderingEnabled = true;
+        else if (a == "--no-policy-order") cfg.policyOrderingEnabled = false;
         else if (a == "--policy-order-min-depth") cfg.policyOrderingMinDepth = std::atoi(next("--policy-order-min-depth").c_str());
         else if (a == "--opening-plies")   cfg.openingRandomPlies    = std::atoi(next("--opening-plies").c_str());
         else if (a == "--epsilon")         cfg.epsilon               = std::atof(next("--epsilon").c_str());
@@ -149,7 +153,7 @@ int main(int argc, char** argv) {
                                       "), com fallback automatico para heuristica se o arquivo nao existir").c_str());
     std::printf("ordenacao por politica NNUE: %s\n",
                 cfg.forceHeuristic ? "n/a (heuristica forcada)"
-                                   : (cfg.policyOrderingEnabled ? ("LIGADA (--policy-order, min-depth=" + std::to_string(cfg.policyOrderingMinDepth) + ")").c_str() : "desligada (default)"));
+                                   : (cfg.policyOrderingEnabled ? ("LIGADA (default, min-depth=" + std::to_string(cfg.policyOrderingMinDepth) + ")").c_str() : "desligada (--no-policy-order)"));
     std::printf("abertura: fase1=[0..%d) eps=%.2f | fase2=[%d..%d) eps=%.2f | midgame eps=%.3f\n",
                 cfg.openingRandomPlies, cfg.epsilon,
                 cfg.openingRandomPlies, cfg.openingRandomPlies2, cfg.epsilon2,

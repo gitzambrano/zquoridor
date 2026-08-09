@@ -20,6 +20,16 @@ abaixo. Só tuna parâmetros que afetam avaliação/ordenação em modo NNUE
 (contempt, policyOrderScale, catScoreScale) -- NÃO tuna os pesos da
 heurística evalSimple (EvalWeights), que ficaram fora de escopo desta
 rodada.
+
+2026-08: SPSA reforçado ("varia muito pouco, roda rápido demais") --
+GAMES_PER_ITER (várias partidas antitéticas por iteração, média reduz o
+ruído do gradiente) + THREADS (paraleliza essas partidas) + ITERATIONS
+default subiu de 40 para 100. Novo MODE="hybrid": 1 thread do SO por
+candidato de MINDEPTH_CANDIDATES, cada uma rodando um SPSA contínuo
+completo com esse minDepth fixo -- ver tune_spsa.cpp para o design
+completo. Depois de rodar, plote a convergência com:
+    python3 teste/plot_spsa.py                       # MODE="spsa"
+    python3 teste/plot_spsa.py --history spsa_history.csv --glob   # MODE="hybrid"
 """
 
 import argparse
@@ -37,13 +47,27 @@ import sys
 # "sweep-mindepth": mini-torneio round-robin sobre valores discretos de
 #   policyOrderingMinDepth (não se presta a SPSA contínuo -- ver
 #   tune_spsa.cpp para a justificativa completa).
+# "hybrid": 1 thread do SO por candidato de MINDEPTH_CANDIDATES, cada uma
+#   rodando um SPSA contínuo completo (mesmo algoritmo de "spsa") com
+#   policyOrderingMinDepth fixo naquele candidato -- tuna os 3 parametros
+#   continuos PARA CADA minDepth em paralelo, em vez de tunar uma vez com
+#   minDepth fixo e so depois varrer minDepth discretamente.
 MODE = "spsa"
 
-# --- SPSA (modo "spsa") ---
-ITERATIONS       = 40        # iteracoes totais de SPSA
+# --- SPSA (modos "spsa" e "hybrid") ---
+ITERATIONS       = 100       # iteracoes totais de SPSA (era 40 -- mais estatistica)
+GAMES_PER_ITER    = 4         # partidas antiteticas por iteracao (media reduz ruido do gradiente)
+THREADS           = 4         # paraleliza as GAMES_PER_ITER partidas de 1 iteracao
+                               # (modo "hybrid": paraleliza DENTRO de cada candidato --
+                               # os candidatos sempre rodam concorrentes entre si, 1
+                               # thread do SO cada, alem disso; cuidado com
+                               # oversubscription: THREADS * len(MINDEPTH_CANDIDATES)
+                               # nao deveria passar muito do numero de nucleos)
 SEED             = 20260719
 TIME_BUDGET_SEC  = None      # None = sem limite; ex: 3600.0 para 1h
 CHECKPOINT       = "spsa_checkpoint.txt"   # relativo a PROJECT_ROOT
+HISTORY          = "spsa_history.csv"      # historico por iteracao p/ teste/plot_spsa.py
+RESULT           = "spsa_result.txt"       # resultado final (thetaAvg)
 
 # Parametros continuos tunados e seus bounds ABSOLUTOS (nao relativos ao
 # valor inicial -- contempt pode ser negativo, entao "0.1x/4x do inicial"
@@ -61,12 +85,14 @@ TUNE_CAT_SCALE      = True
 CAT_SCALE_INIT       = None
 CAT_SCALE_BOUNDS     = (0.0, 20.0)
 
-# --- Sweep de policyOrderingMinDepth (modo "sweep-mindepth") ---
+# --- Sweep de policyOrderingMinDepth (modo "sweep-mindepth") e candidatos
+# do modo "hybrid" ---
 # Discreto e de faixa pequena -- ver tune_spsa.cpp: nao entra no SPSA
-# continuo, roda como mini-torneio round-robin separado (mesma engine com
-# os 3 parametros continuos acima fixos no valor de INIT/default).
+# continuo diretamente ("sweep-mindepth" roda um mini-torneio round-robin
+# com os 3 continuos fixos; "hybrid" tuna os 3 continuos com SPSA separado
+# por candidato, em paralelo).
 MINDEPTH_CANDIDATES = [1, 2, 3, 4, 5]
-MINDEPTH_GAMES       = 50     # partidas antiteticas por par de candidatos
+MINDEPTH_GAMES       = 50     # partidas antiteticas por par de candidatos (so modo "sweep-mindepth")
 
 # --- Config da partida de auto-jogo (rapida de proposito -- SPSA precisa
 # de MUITAS partidas, nao de partidas profundas) ---
@@ -84,7 +110,7 @@ OPENING_RANDOM_PLIES   = 4
 USE_NNUE               = True
 NNUE_WEIGHTS_PATH       = None   # None = default do binario (data/nnue/nnue_weights_int8.bin)
 POLICY_ORDERING         = True
-POLICY_ORDER_MIN_DEPTH  = 3       # usado quando MODE="spsa"; ignorado em "sweep-mindepth"
+POLICY_ORDER_MIN_DEPTH  = 3       # usado quando MODE="spsa"; ignorado em "sweep-mindepth"/"hybrid"
 
 # =============================================================================
 # INTERNALS -- normalmente nao e necessario editar abaixo desta linha
@@ -139,11 +165,17 @@ def parse_args():
     precisar editar/recompilar nada. Mesmo padrao de run_selfplay.py e
     run_arena.py."""
     p = argparse.ArgumentParser(description="Orquestrador do tuner SPSA (config no topo do arquivo ou via flags)")
-    p.add_argument("--mode", choices=["spsa", "sweep-mindepth"], default=MODE)
+    p.add_argument("--mode", choices=["spsa", "sweep-mindepth", "hybrid"], default=MODE)
     p.add_argument("--iterations", type=int, default=ITERATIONS)
+    p.add_argument("--games-per-iter", type=int, default=GAMES_PER_ITER,
+                    help="partidas antiteticas por iteracao SPSA -- media reduz o ruido do gradiente")
+    p.add_argument("--threads", type=int, default=THREADS,
+                    help="paraleliza as partidas de uma iteracao (spsa/hybrid) ou de um par (sweep-mindepth)")
     p.add_argument("--seed", type=int, default=SEED)
     p.add_argument("--time-budget-sec", type=float, default=TIME_BUDGET_SEC)
     p.add_argument("--checkpoint", default=CHECKPOINT)
+    p.add_argument("--history", default=HISTORY)
+    p.add_argument("--result", default=RESULT)
 
     p.add_argument("--tune-contempt", dest="tune_contempt", action="store_true", default=TUNE_CONTEMPT)
     p.add_argument("--no-tune-contempt", dest="tune_contempt", action="store_false")
@@ -161,8 +193,9 @@ def parse_args():
     p.add_argument("--cat-scale-bounds", nargs=2, type=float, default=list(CAT_SCALE_BOUNDS))
 
     p.add_argument("--mindepth-candidates", default=",".join(str(x) for x in MINDEPTH_CANDIDATES),
-                    help=f"lista separada por virgula (padrao: {MINDEPTH_CANDIDATES})")
-    p.add_argument("--mindepth-games", type=int, default=MINDEPTH_GAMES)
+                    help=f"lista separada por virgula (padrao: {MINDEPTH_CANDIDATES}); usado em sweep-mindepth e hybrid")
+    p.add_argument("--mindepth-games", type=int, default=MINDEPTH_GAMES,
+                    help="so modo sweep-mindepth")
 
     p.add_argument("--depth", type=int, default=SEARCH_DEPTH)
     p.add_argument("--time-ms", type=int, default=TIME_MS)
@@ -198,8 +231,12 @@ def main():
         exe,
         "--mode",             args.mode,
         "--iterations",       str(args.iterations),
+        "--games-per-iter",   str(args.games_per_iter),
+        "--threads",          str(args.threads),
         "--seed",             str(args.seed),
         "--checkpoint",       os.path.join(root, args.checkpoint).replace("\\", "/"),
+        "--history",          os.path.join(root, args.history).replace("\\", "/"),
+        "--result",           os.path.join(root, args.result).replace("\\", "/"),
         "--depth",            str(args.depth),
         "--time-ms",          str(args.time_ms),
         "--max-plies",        str(args.max_plies),
@@ -214,12 +251,15 @@ def main():
         nnue_abs = os.path.join(root, args.nnue_weights)
         cmd += ["--nnue-weights", nnue_abs.replace("\\", "/")]
 
+    # 2026-08: tune_spsa agora nasce com policy ordering LIGADA por default
+    # (--policy-order e redundante, mas mandamos --no-policy-order explicito
+    # quando o usuario quer desligar).
     if args.policy_order:
         cmd += ["--policy-order-min-depth", str(args.policy_order_min_depth)]
     else:
         cmd += ["--no-policy-order"]
 
-    if args.mode == "spsa":
+    if args.mode in ("spsa", "hybrid"):
         if not args.tune_contempt:
             cmd += ["--no-tune-contempt"]
         if args.contempt_init is not None:
@@ -237,26 +277,30 @@ def main():
         if args.cat_scale_init is not None:
             cmd += ["--cat-scale", str(args.cat_scale_init)]
         cmd += ["--cat-scale-bounds", f"{args.cat_scale_bounds[0]},{args.cat_scale_bounds[1]}"]
-    else:  # sweep-mindepth
+
+    if args.mode in ("sweep-mindepth", "hybrid"):
         cmd += ["--mindepth-candidates", args.mindepth_candidates]
+    if args.mode == "sweep-mindepth":
         cmd += ["--mindepth-games", str(args.mindepth_games)]
 
     print("=" * 70)
     print("[run_spsa] Iniciando tuner SPSA")
     print(f"  Executavel   : {exe}")
     print(f"  Modo         : {args.mode}")
-    if args.mode == "spsa":
-        print(f"  Iteracoes    : {args.iterations}")
+    if args.mode in ("spsa", "hybrid"):
+        print(f"  Iteracoes    : {args.iterations}  |  partidas/iteracao: {args.games_per_iter}  |  threads: {args.threads}")
         tuned = []
         if args.tune_contempt: tuned.append("contempt")
         if args.tune_policy_scale: tuned.append("policyOrderScale")
         if args.tune_cat_scale: tuned.append("catScoreScale")
         print(f"  Parametros   : {', '.join(tuned) if tuned else '(nenhum -- nada a fazer)'}")
-    else:
-        print(f"  Candidatos minDepth: {args.mindepth_candidates} ({args.mindepth_games} partidas/par)")
+    if args.mode == "hybrid":
+        print(f"  Candidatos minDepth (1 thread cada, SPSA completo por candidato): {args.mindepth_candidates}")
+    if args.mode == "sweep-mindepth":
+        print(f"  Candidatos minDepth: {args.mindepth_candidates} ({args.mindepth_games} partidas/par, threads: {args.threads})")
     print(f"  Busca        : depth<={args.depth}, {args.time_ms} ms/lance, max {args.max_plies} plies")
     print(f"  Avaliacao    : {'NNUE (default) + policy ordering' if args.use_nnue and args.policy_order else 'NNUE (default), policy ordering desligada' if args.use_nnue else 'heuristica (evalSimple) -- forcada'}")
-    print(f"  Checkpoint   : {args.checkpoint}")
+    print(f"  Checkpoint   : {args.checkpoint}  |  Historico: {args.history} (plote com teste/plot_spsa.py)  |  Resultado: {args.result}")
     print("=" * 70)
     print()
 

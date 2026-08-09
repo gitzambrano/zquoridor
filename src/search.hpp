@@ -92,7 +92,9 @@ constexpr int CAT_COLD_CM = 30;   // heat < isto -> +1 de redução extra ("frio
 // Ordenação por política NNUE (prompt_policy_ordering.md) -- soma o logit
 // cru da cabeça de política (forwardPolicyQuant, nnue.hpp) como termo
 // extra no score de orderPawnMoves/orderWallMoves, atrás de
-// setPolicyOrderingEnabled (default desligada, ver método). O logit cru
+// setPolicyOrderingEnabled (default LIGADA, ver método -- 2026-08: virou o
+// default em todo lugar que usa NNUE, mesmo sem nenhum parametro passado;
+// era desligada por default ate essa mudanca). O logit cru
 // vive numa escala pequena (tipicamente [-5,5], mesma ordem de grandeza
 // dos logits da cabeça WL antes de NNUE_EVAL_SCALE) -- POLICY_ORDER_SCALE
 // escala isso pra ficar comparável a history/CAT (que somam na casa de
@@ -200,10 +202,12 @@ public:
     // (prompt_policy_ordering.md) -- soma forwardPolicyQuant(curAcc->acc[side])
     // como termo extra em orderPawnMoves/orderWallMoves. Mesmo estilo de
     // toggle que setQuiescenceEnabled/setLmrPvsEnabled acima: permite A/B
-    // em benchmark sem recompilar. Default DESLIGADA -- requisito
-    // não-negociável do prompt: com a flag off, nenhum forwardPolicyQuant é
-    // chamado em lugar nenhum e orderPawnMoves/orderWallMoves executam
-    // exatamente o código anterior a esta mudança (custo zero mensurável).
+    // em benchmark sem recompilar. Default LIGADA desde 2026-08 (era
+    // desligada até então) -- decisão explícita: sempre que evalMode==NNUE,
+    // a cabeça de política entra por default, mesmo sem nenhum parâmetro
+    // passado, em arena/selfplay/tune_spsa/main.cpp/wasm. Passe
+    // setPolicyOrderingEnabled(false) (ou --e1-no-policy-order/
+    // --no-policy-order/--heuristic, dependendo do binário) para desligar.
     // Só tem efeito quando evalMode==NNUE E curAcc != nullptr (modo
     // Heurístico não mantém AccPair nenhum pra tirar o forward pass) --
     // ligar isto em modo Heurístico é inofensivo, só não faz nada.
@@ -461,7 +465,7 @@ private:
     bool quiescenceEnabled = true;
     bool lmrPvsEnabled = true;
     EvalMode evalMode = EvalMode::Heuristic;
-    bool policyOrderingEnabled = false;
+    bool policyOrderingEnabled = true;
     int policyOrderingMinDepth = 3;
     // Membros tunáveis por SPSA -- ver setContempt/setPolicyOrderScale/
     // setCatScoreScale (públicos, acima). Default = valor antigo hardcoded

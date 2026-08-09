@@ -101,10 +101,13 @@ NNUE_WEIGHTS_PATH = None  # ex: "data/nnue/nnue_weights_experimental.bin"
 # (prompt_policy_ordering.md) -- soma o logit da cabeça de política da
 # NNUE como termo extra na ordenação de lances. Só tem efeito quando NNUE
 # está de fato ativo (FORCE_HEURISTIC=False e pesos carregam com
-# sucesso); com heurística é ignorado sem erro. Default False (comporta-
-# mento/reprodutibilidade dos shards já gerados preservada). Equivale a
-# --policy-order na linha de comando.
-POLICY_ORDERING = False
+# sucesso); com heurística é ignorado sem erro. Default True desde 2026-08
+# (era False) -- mesmo default de search.hpp/selfplay.hpp/arena.cpp/wasm
+# agora. Shards gerados antes dessa mudança NÃO são reprodutíveis bit-a-
+# bit com o default atual; use --no-policy-order pra voltar ao
+# comportamento antigo. Equivale a --policy-order/--no-policy-order na
+# linha de comando.
+POLICY_ORDERING = True
 # Piso de profundidade (search.hpp: Negamax::setPolicyOrderingMinDepth) --
 # forwardPolicyQuant custa ~5.8x mais que o eval de folha; sem este piso
 # ele roda em todo no interno e derruba nos/s ~3x (medido em producao).
@@ -252,8 +255,13 @@ def main():
         # Converte para caminho absoluto relativo à raiz do projeto
         nnue_abs = os.path.join(root, args.nnue_weights)
         cmd += ["--nnue-weights", nnue_abs.replace("\\", "/")]
+    # 2026-08: selfplay_main agora nasce com policy ordering LIGADA por
+    # default -- manda o "--no-policy-order" explicito quando o usuario
+    # quer desligar, ou o default do binario (ligado) prevalece.
     if args.policy_order:
         cmd += ["--policy-order", "--policy-order-min-depth", str(args.policy_order_min_depth)]
+    else:
+        cmd += ["--no-policy-order"]
 
     print("=" * 60)
     print(f"[run_selfplay] Iniciando geração de dados")
@@ -264,7 +272,7 @@ def main():
     print(f"                fase2=[lances {args.opening_plies+1}..{args.opening_plies2}] eps={args.epsilon_opening2} (lance aleatório)")
     print(f"                midgame eps={args.epsilon_midgame} (2º/3º melhor lance)")
     print(f"  Avaliação   : {'heurística (evalSimple) -- forçada' if args.force_heuristic else 'NNUE (default do binário), com fallback automático para heurística se os pesos não existirem'}")
-    print(f"  Ordenação politica NNUE: {'LIGADA (--policy-order, min-depth=' + str(args.policy_order_min_depth) + ')' if args.policy_order else 'desligada (default)'}{'  [sem efeito -- heuristica forcada]' if args.policy_order and args.force_heuristic else ''}")
+    print(f"  Ordenação politica NNUE: {'LIGADA (default, min-depth=' + str(args.policy_order_min_depth) + ')' if args.policy_order else 'desligada (--no-policy-order)'}{'  [sem efeito -- heuristica forcada]' if args.policy_order and args.force_heuristic else ''}")
     print(f"  Threads     : {args.threads or 'auto'}")
     print(f"  TT          : {'separada por cor' if args.separate_tt else 'compartilhada entre as 2 cores (default)'}")
     print(f"  Shard início: {start_shard:03d}")

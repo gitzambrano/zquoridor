@@ -52,8 +52,10 @@ E2_HEURISTIC = False
 # quando aquela engine está de fato em NNUE (heurística ignora sem erro,
 # ver arena.cpp). Mesmo padrão separado por engine que E1_HEURISTIC/
 # E2_HEURISTIC acima: edite aqui para configurar sem flag nenhuma, ou use
-# --policy-order/--e1-policy-order/--e2-policy-order na linha de comando
-# para sobrepor por execução.
+# --policy-order/--e1-policy-order/--e2-policy-order/--e1-no-policy-order/
+# --e2-no-policy-order na linha de comando para sobrepor por execução.
+# Default True nas duas desde 2026-08 (mesmo default de arena.cpp/
+# selfplay/search.hpp agora: NNUE default -> policy head default).
 E1_POLICY_ORDER = True
 E2_POLICY_ORDER = True
 # Piso de profundidade (search.hpp: Negamax::setPolicyOrderingMinDepth) --
@@ -62,6 +64,17 @@ E2_POLICY_ORDER = True
 # Mesmo default (3) de search.hpp/selfplay/arena.cpp.
 E1_POLICY_ORDER_MIN_DEPTH = 3
 E2_POLICY_ORDER_MIN_DEPTH = 3
+# --- Pasta de pesos NNUE por engine (resolve o bug de main vs local
+# carregando o MESMO arquivo, ver defaultNnueWeightsPath em nnue.hpp) ---
+# "default"/None/"" -> tenta <pasta_do_ref>/data/nnue/nnue_weights_int8.bin
+# (os pesos DAQUELE ref/worktree, ex. o que esta comitado no main) e cai
+# para PROJECT_ROOT/data/nnue/nnue_weights_int8.bin so se o ref nao tiver
+# pesos proprios. Qualquer outro valor e tratado como pasta explicita
+# (procura nnue_weights_int8.bin dentro dela, ou aceita caminho de arquivo
+# .bin direto). --e1-nnue/--e2-nnue (arquivo exato) continuam tendo
+# prioridade sobre isto quando passados.
+E1_WEIGHTS_DIR = "default"
+E2_WEIGHTS_DIR = "default"
 # ==============================================================================
 
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
@@ -212,6 +225,42 @@ def cleanup_worktree(temp_dir):
         if os.path.exists(temp_dir):
             shutil.rmtree(temp_dir, ignore_errors=True)
 
+_NNUE_FILENAME = "nnue_weights_int8.bin"
+
+def resolve_weights_path(weights_dir, engine_source_dir, engine_label):
+    """Resolve o .bin de pesos NNUE de UM engine, respeitando qual ref/
+    worktree ele veio -- corrige o bug em que Engine 1 (local) e Engine 2
+    (--ref2, ex. 'main') acabavam carregando o MESMO arquivo default
+    (data/nnue/nnue_weights_int8.bin resolvido contra o cwd do processo,
+    nao contra a arvore de codigo de cada engine -- ver defaultNnueWeightsPath
+    em src/nnue.hpp). weights_dir None/""/"default" (case-insensitive):
+    tenta primeiro os pesos PROPRIOS daquele ref (engine_source_dir/data/
+    nnue/nnue_weights_int8.bin -- ex. o .bin comitado no main); se nao
+    existir, cai para o default global do projeto (PROJECT_ROOT/data/nnue/
+    nnue_weights_int8.bin); se nenhum dos dois existir, devolve "" (arena.exe
+    faz seu proprio fallback pra heuristica, com aviso). Qualquer outro
+    valor de weights_dir e tratado como pasta explicita (ou arquivo .bin
+    direto, se ja terminar em .bin)."""
+    if weights_dir is None or weights_dir.strip() == "" or weights_dir.strip().lower() == "default":
+        own_path = os.path.join(engine_source_dir, "data", "nnue", _NNUE_FILENAME)
+        if os.path.isfile(own_path):
+            print(f"[*] {engine_label}: pesos NNUE do proprio ref -> {own_path}")
+            return own_path
+        fallback_path = os.path.join(PROJECT_ROOT, "data", "nnue", _NNUE_FILENAME)
+        if os.path.isfile(fallback_path):
+            print(f"[*] {engine_label}: sem pesos proprios no ref, usando default global -> {fallback_path}")
+            return fallback_path
+        print(f"[!] {engine_label}: nenhum .bin encontrado (nem no ref, nem no default global) -- "
+              f"cai para heuristica dentro do arena.exe")
+        return ""
+    explicit = weights_dir.strip()
+    resolved = explicit if explicit.endswith(".bin") else os.path.join(explicit, _NNUE_FILENAME)
+    if not os.path.isfile(resolved):
+        print(f"[!] {engine_label}: pasta/arquivo de pesos informado nao existe -> {resolved}")
+    else:
+        print(f"[*] {engine_label}: pesos NNUE de pasta explicita -> {resolved}")
+    return resolved
+
 import multiprocessing
 
 def worker_process(exe_path, worker_games, time_ms, random_plies, seed, report_games, bin_path, invert_colors, progress_queue, e1_nnue="", e2_nnue="", heuristic=False, e1_heuristic=False, e2_heuristic=False, policy_order=False, e1_policy_order=False, e2_policy_order=False, e1_policy_min_depth=3, e2_policy_min_depth=3):
@@ -240,10 +289,18 @@ def worker_process(exe_path, worker_games, time_ms, random_plies, seed, report_g
         cmd.append("--e2-heuristic")
     if policy_order:
         cmd.append("--policy-order")
+    # 2026-08: arena.exe agora nasce com policy ordering LIGADA por default
+    # em cada engine (E1/E2_POLICY_ORDERING_DEFAULT=true) -- precisamos
+    # mandar o "--eX-no-policy-order" explicito quando eX_policy_order for
+    # False, ou o default do binario (ligado) prevalece silenciosamente.
     if e1_policy_order:
         cmd.extend(["--e1-policy-order", "--e1-policy-order-min-depth", str(e1_policy_min_depth)])
+    else:
+        cmd.append("--e1-no-policy-order")
     if e2_policy_order:
         cmd.extend(["--e2-policy-order", "--e2-policy-order-min-depth", str(e2_policy_min_depth)])
+    else:
+        cmd.append("--e2-no-policy-order")
 
     # cwd=PROJECT_ROOT: arena.exe agora tenta carregar o caminho default de
     # pesos NNUE (data/nnue/nnue_weights_int8.bin, RELATIVO) quando
@@ -267,12 +324,18 @@ def worker_process(exe_path, worker_games, time_ms, random_plies, seed, report_g
                 progress_queue.put(("RESULT", data))
             except Exception:
                 pass
-        elif line.startswith("[arena]"):
+        elif line.startswith("[arena]") or line.startswith("[nnue]"):
             # Confirmação de carregamento/fallback de NNUE (ou heurística
             # forçada) do binário -- com NNUE virando o default, é
             # importante o usuário conseguir ver se cada engine realmente
             # carregou os pesos ou caiu para heurístico, em vez desses
             # avisos ficarem mudos dentro do subprocess.
+            # [nnue] (nnue.hpp) inclui: alem do "[arena]" (decisao de alto
+            # nivel, NNUE vs heuristica), a razao especifica de uma falha
+            # de load (tamanho de arquivo errado p/ NUM_FEATURES atual,
+            # arquivo ausente, etc.) -- antes essas linhas nao batiam em
+            # nenhum elif e eram lidas do pipe e descartadas sem aviso,
+            # escondendo a causa raiz de qualquer fallback pra heuristica.
             progress_queue.put(("LOG", line))
             
     proc.wait()
@@ -294,6 +357,15 @@ def main():
     parser.add_argument("--invert-colors", dest="invert_colors", action="store_true", default=True, help="Inverte as cores jogando a mesma abertura 2x")
     parser.add_argument("--e1-nnue", default="", help="Caminho para pesos NNUE quantizados (.qbin) do Engine 1 (default: data/nnue/nnue_weights_int8.bin, se existir)")
     parser.add_argument("--e2-nnue", default="", help="Caminho para pesos NNUE quantizados (.qbin) do Engine 2 (default: data/nnue/nnue_weights_int8.bin, se existir)")
+    parser.add_argument("--e1-weights-dir", default=E1_WEIGHTS_DIR,
+                         help=f"Pasta de pesos NNUE do Engine 1. 'default'/None: usa os pesos do PROPRIO --ref1 "
+                              f"(worktree/data/nnue/nnue_weights_int8.bin), com fallback pro default global do "
+                              f"projeto se o ref nao tiver pesos proprios. Ignorado se --e1-nnue for passado "
+                              f"(padrao: {E1_WEIGHTS_DIR!r})")
+    parser.add_argument("--e2-weights-dir", default=E2_WEIGHTS_DIR,
+                         help=f"Pasta de pesos NNUE do Engine 2 (mesma logica de --e1-weights-dir, aplicada a "
+                              f"--ref2 -- ex. pega o .bin comitado no 'main' em vez do .bin local). Ignorado se "
+                              f"--e2-nnue for passado (padrao: {E2_WEIGHTS_DIR!r})")
     parser.add_argument("--heuristic", action="store_true", default=False, help="Forca avaliacao heuristica (evalSimple) nas duas engines, ignorando NNUE -- debug/historico/fallback")
     parser.add_argument("--e1-heuristic", dest="e1_heuristic", action="store_true", default=E1_HEURISTIC, help=f"Forca heuristica so no Engine 1 (padrao: {E1_HEURISTIC})")
     parser.add_argument("--e1-nnue-default", dest="e1_heuristic", action="store_false", help="Sobrepoe E1_HEURISTIC=True do arquivo, forcando NNUE default no Engine 1 sem editar/recompilar")
@@ -338,7 +410,46 @@ def main():
     
     dir1, cleanup1 = prepare_engine_source(args.ref1)
     dir2, cleanup2 = prepare_engine_source(args.ref2)
-    
+
+    # Resolve os pesos NNUE de cada engine ANTES do build (so pra log; o
+    # caminho e passado em runtime via --e1-nnue/--e2-nnue mesmo, nao afeta
+    # a compilacao). --e1-nnue/--e2-nnue explicitos sempre vencem --e1/e2-
+    # weights-dir -- mesma precedencia que ja existia entre eles e o
+    # default do arena.exe.
+    if not args.e1_nnue:
+        args.e1_nnue = resolve_weights_path(args.e1_weights_dir, dir1, "Engine 1")
+    if not args.e2_nnue:
+        args.e2_nnue = resolve_weights_path(args.e2_weights_dir, dir2, "Engine 2")
+
+    # BUG CORRIGIDO (2026-08): quando o path resolvido acima vem de um
+    # worktree git temporario (ex. --ref2 "main"), ele apontava direto pra
+    # dentro de <temp>/data/nnue/nnue_weights_int8.bin. Esse arquivo so e
+    # lido em RUNTIME pelo arena.exe (fopen), nao e embutido na compilacao
+    # -- mas o worktree era removido (cleanup_worktree, no finally logo
+    # abaixo) IMEDIATAMENTE apos compile_arena(), ou seja, MUITO antes dos
+    # worker_process/arena.exe sequer comecarem a rodar as partidas. O
+    # resultado: --e2-nnue apontava pra um arquivo que ja nao existia mais
+    # no disco, fopen() falhava, e o engine do ref2 caia silenciosamente
+    # pra heuristica (o engine local/--ref1=None nunca sofria disso, pois
+    # seu path aponta pro PROJECT_ROOT permanente, nao um worktree
+    # descartavel). Fix: copiar os .bin resolvidos para um diretorio
+    # temporario PROPRIO cuja vida dura ate o fim do arena inteiro (limpo
+    # so no final de main(), depois de todas as partidas), e reapontar
+    # args.e1_nnue/args.e2_nnue pra essas copias antes de derrubar os
+    # worktrees.
+    weights_cache_dir = tempfile.mkdtemp(prefix="zquoridor_arena_weights_")
+
+    def _persist_weights(path, engine_label, filename):
+        if not path or not os.path.isfile(path):
+            return path
+        dest = os.path.join(weights_cache_dir, filename)
+        shutil.copy2(path, dest)
+        print(f"[*] {engine_label}: pesos copiados para local persistente (sobrevive ao cleanup do worktree) -> {dest}")
+        return dest
+
+    args.e1_nnue = _persist_weights(args.e1_nnue, "Engine 1", "e1_nnue_weights_int8.bin")
+    args.e2_nnue = _persist_weights(args.e2_nnue, "Engine 2", "e2_nnue_weights_int8.bin")
+
     cand_exe = os.path.join(BIN_DIR, "arena.exe")
     
     try:
@@ -439,6 +550,8 @@ def main():
             
     for p in processes:
         p.join()
+
+    shutil.rmtree(weights_cache_dir, ignore_errors=True)
 
     # Salva dataset final concatenado em data/arena/ com numeração sequencial 000, 001...
     if args.create_bin and temp_bin_dir:
