@@ -40,8 +40,16 @@ void qr_new_game() {
     // Reap roveit a o modo de avaliação configurado (NNUE ou heurístico)
     // entre partidas -- não reseta o evalMode ao recriar a engine.
     Negamax::EvalMode prevMode = g_engine.getEvalMode();
+    // Idem pra ordenação assistida por política -- reaproveitada entre
+    // partidas junto com o evalMode acima (ver qr_load_nnue_weights: liga
+    // por default quando NNUE é carregado; sem isso, Negamax() zerava de
+    // volta pro default da classe (desligada) a cada partida nova).
+    bool prevPolicyOrdering = g_engine.isPolicyOrderingEnabled();
+    int prevPolicyOrderingMinDepth = g_engine.getPolicyOrderingMinDepth();
     g_engine = Negamax();  // zera a TT: partida nova não deve herdar lixo da anterior
     g_engine.setEvalMode(prevMode);
+    g_engine.setPolicyOrderingEnabled(prevPolicyOrdering);
+    g_engine.setPolicyOrderingMinDepth(prevPolicyOrderingMinDepth);
     g_reptbl.clear();
     g_reptbl.push(g_state.hash);
     regenMoves();
@@ -127,10 +135,21 @@ EMSCRIPTEN_KEEPALIVE int qr_last_move_eval() { return g_lastEngineScore; }
 // Retorna 1 em sucesso, 0 se o arquivo não pôde ser aberto ou está corrompido.
 // Para REVERTER ao heurístico: chame qr_set_eval_heuristic() ou simplesmente
 // não chame esta função -- o engine nasce em modo heurístico por default.
+//
+// Também liga a ordenação assistida por política (Negamax::setPolicyOrderingEnabled,
+// search.hpp) por default aqui -- medido mais forte em teste (run_arena.py)
+// que o move ordering puramente heurístico/CAT, então o engine "de
+// produção" (este binário WASM, o único chooseMove() fora de benchmark/
+// selfplay) passa a jogar com ela ativa sempre que NNUE está carregado.
+// min-depth fica no default da classe (3, ver comentário em search.hpp);
+// selfplay.hpp e teste/arena.cpp mantêm seus próprios defaults
+// desligados de propósito (reprodutibilidade de shards / A-B controlado),
+// essa mudança não afeta nenhum dos dois.
 EMSCRIPTEN_KEEPALIVE
 int qr_load_nnue_weights(const char* path) {
     if (!qr::loadWeightsQuant(path)) return 0;
     g_engine.setEvalMode(qr::Negamax::EvalMode::NNUE);
+    g_engine.setPolicyOrderingEnabled(true);
     return 1;
 }
 
