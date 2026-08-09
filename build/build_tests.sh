@@ -36,8 +36,11 @@ g++ "${FLAGS[@]}" -pthread -I"$SRC" -o "$BIN/nnue_verify" "$TESTE/nnue_verify.cp
 echo "[7/8] nnue_incremental_check  (acumulador incremental vs rebuild do zero)"
 g++ "${FLAGS[@]}" -pthread -I"$SRC" -o "$BIN/nnue_incremental_check" "$TESTE/nnue_incremental_check.cpp"
 
-echo "[8/8] nnue_sign_check  (sanidade de sinal/perspectiva do NNUE vs evalSimple)"
+echo "[8/9] nnue_sign_check  (sanidade de sinal/perspectiva do NNUE vs evalSimple)"
 g++ "${FLAGS[@]}" -pthread -I"$SRC" -o "$BIN/nnue_sign_check" "$TESTE/nnue_sign_check.cpp"
+
+echo "[9/9] lazy_acc_parity  (Item 3: update preguicoso por perspectiva vs rebuild do zero)"
+g++ "${FLAGS[@]}" -pthread -I"$SRC" -o "$BIN/lazy_acc_parity" "$TESTE/lazy_acc_parity.cpp"
 
 echo
 echo "OK -- binários em $BIN"
@@ -48,3 +51,5 @@ echo "  nnue_incremental_check <pesos_int8.bin>: compara acumulador incremental 
 echo "    rebuild do zero em 30 partidas aleatorias -- deve dar 0 divergencias."
 echo "  nnue_sign_check <pesos_int8.bin>: imprime eval NNUE vs evalSimple em 4"
 echo "    posicoes de referencia (checagem manual de sinal/perspectiva)."
+echo "  lazy_acc_parity <pesos_int8.bin>: compara AccPair (makeChildAccPair,"
+echo "    Item 3) vs rebuild do zero em 80 partidas aleatorias -- deve dar 0 mismatches."

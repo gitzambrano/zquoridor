@@ -914,9 +914,86 @@ constexpr int NNUE_EVAL_SCALE = 200;
 // acc[1] = perspectiva do jogador 1 (own=1, opp=0).
 // Mantidos por search.hpp como pilha de pares (um por ply da busca),
 // atualizados incrementalmente via updateAccumulatorForMoveQuant.
+//
+// Item 3 (update preguiçoso por perspectiva): a cada lance, search.hpp só
+// PRECISA imediatamente da perspectiva de quem vai jogar no filho (é essa
+// que nnueEvalInt lê se o filho for folha). A perspectiva de quem acabou
+// de jogar (o "mover") não é lida no filho -- só volta a ser lida um ply
+// depois, SE a busca chegar lá (nem sempre chega: cutoff de alpha-beta
+// pode podar o resto da subárvore antes disso). pending[p] marca que
+// acc[p] ainda não recebeu o update do último lance -- os dados pra
+// aplicar esse update quando for preciso (pendBefore/pendMove/
+// pendViewerIsMover) ficam guardados aqui. Só existe UM nível de posterga
+// por perspectiva: toda vez que uma perspectiva pending é usada como base
+// pra construir OUTRO AccPair (makeChildAccPair) ou lida (nnueEvalInt),
+// ela é resolvida primeiro (ver resolvePending) -- nunca se acumulam dois
+// lances pendentes na mesma perspectiva ao mesmo tempo.
+//
+// INVARIANTE mantida por makeChildAccPair/buildAccPairRoot (não é
+// responsabilidade de quem chama garantir isso à mão): em qualquer AccPair
+// que search.hpp esteja usando como `curAcc` de um nó com `side = s.turn`,
+// acc[side] NUNCA está pending -- foi resolvida na criação do próprio nó
+// (é a perspectiva "eager" de quem vai jogar ali). Só acc[1-side] (a de
+// quem jogou o lance que levou a este nó) pode estar pending.
 struct AccPair {
     AccumulatorQuant acc[2];
+    bool pending[2] = {false, false};
+    State pendBefore[2]{};
+    Move pendMove[2]{Move::pawn(0), Move::pawn(0)};
+    bool pendViewerIsMover[2] = {false, false};
 };
+
+// Resolve (se necessário) o update adiado da perspectiva `persp`. Idempotente
+// -- chamar de novo com pending[persp] já false não faz nada. Deve ser
+// chamada antes de: (1) ler acc[persp] para eval, (2) copiar acc[persp]
+// como base de outro AccPair.
+inline void resolvePending(AccPair& ap, int persp, PlayerPathCacheTable* xtable = nullptr) {
+    if (!ap.pending[persp]) return;
+    updateAccumulatorForMoveQuant(ap.acc[persp], ap.pendViewerIsMover[persp],
+                                   ap.pendBefore[persp], ap.pendMove[persp], xtable);
+    ap.pending[persp] = false;
+}
+
+// Constrói `child` a partir de `parent`, aplicando o lance `m` (jogado em
+// `before`, com before.turn == mover do lance). Implementa o Item 3: só a
+// perspectiva de quem vai jogar em `child` (1-mover) é atualizada agora; a
+// do `mover` fica pending. `parent` pode ser mutado (resolvePending da sua
+// própria perspectiva 1-mover, se estava pending -- precisa estar resolvida
+// pra servir de base correta à cópia feita aqui).
+inline void makeChildAccPair(AccPair& parent, AccPair& child, const State& before, const Move& m,
+                              PlayerPathCacheTable* xtable = nullptr) {
+    int mover = before.turn, opp = 1 - mover;
+    // Perspectiva de quem joga em `child` -- precisa estar pronta já.
+    resolvePending(parent, opp, xtable);
+    child.acc[opp] = parent.acc[opp];
+    child.pending[opp] = false;
+    updateAccumulatorForMoveQuant(child.acc[opp], /*viewerIsMover=*/false, before, m, xtable);
+    // Perspectiva de quem jogou -- adia. parent.acc[mover] já está
+    // garantidamente resolvida (invariante da struct: é a perspectiva de
+    // s.turn no nó de `parent`, sempre eager).
+    child.acc[mover] = parent.acc[mover];
+    child.pending[mover] = true;
+    child.pendBefore[mover] = before;
+    child.pendMove[mover] = m;
+    child.pendViewerIsMover[mover] = true;
+}
+
+// Constrói um AccPair "frio" (recompute do zero nas duas perspectivas,
+// sem nada pending) -- uso: raiz de cada busca/iteração de iterative
+// deepening. CORREÇÃO: antes desta função, os 5 call-sites que
+// reconstroem a raiz escreviam direto em nnueAccStack[0].acc[0]/acc[1] sem
+// zerar pending[] -- como nnueAccStack é reaproveitado entre buscas, flags
+// pending de uma busca anterior (junto com pendBefore/pendMove igualmente
+// obsoletos) podiam sobrar no slot raiz e causar uma resolução espúria com
+// dados de outra posição.
+inline AccPair buildAccPairRoot(const State& s, PlayerPathCacheTable* xtable = nullptr) {
+    AccPair ap;
+    ap.acc[0] = buildAccumulatorQuant(s, 0, xtable);
+    ap.acc[1] = buildAccumulatorQuant(s, 1, xtable);
+    ap.pending[0] = false;
+    ap.pending[1] = false;
+    return ap;
+}
 
 // Avaliação NNUE do ponto de vista de `side` (quem vai jogar), em
 // unidades inteiras (escala NNUE_EVAL_SCALE) -- compatível com o valor de
