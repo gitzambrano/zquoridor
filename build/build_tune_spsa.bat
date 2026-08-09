@@ -1,8 +1,10 @@
 @echo off
-REM build_tune_spsa.bat -- tuner SPSA dos 6 pesos de evalSimple
-REM (teste/tune_spsa.cpp). Ainda nao rodado ate o fim nesta entrega:
-REM robustnessWeight em rules.hpp continua no valor placeholder (0.80) --
-REM ver Secao 5 (Fase A) do readme. Mesmos flags de performance de
+REM build_tune_spsa.bat -- tuner SPSA dos parametros de busca/ordenacao
+REM que interagem com a NNUE (contempt, policyOrderScale, catScoreScale)
+REM mais o sweep discreto de policyOrderingMinDepth (teste/tune_spsa.cpp).
+REM NAO tuna mais os pesos de evalSimple (EvalWeights). Normalmente nao e
+REM necessario rodar este script diretamente: use teste/run_spsa.py, que
+REM compila sozinho quando o .cpp muda. Mesmos flags de performance de
 REM build_bench.bat (joga partidas reais em loop).
 setlocal
 
@@ -25,8 +27,10 @@ if errorlevel 1 goto :erro
 
 echo.
 echo OK -- %BIN%\tune_spsa.exe
-echo Uso: bin\tune_spsa.exe ^<iteracoes^> [seed] [orcamento_segundos]
-echo   default: 40 iteracoes, seed 20260719, sem limite de tempo.
+echo Uso recomendado: python3 teste\run_spsa.py (config no topo do arquivo)
+echo Uso direto: bin\tune_spsa.exe --help
+echo   default: modo spsa, 40 iteracoes, seed 20260719, sem limite de tempo,
+echo   NNUE + policy ordering ligados (data\nnue\nnue_weights_int8.bin).
 echo   Salva checkpoint em spsa_checkpoint.txt (retoma sozinho se existir) e
 echo   o resultado final em spsa_result.txt. Rodar a partir da raiz do repo.
 exit /b 0

@@ -227,6 +227,36 @@ public:
     void setPolicyOrderingMinDepth(int d) { policyOrderingMinDepth = d; }
     int getPolicyOrderingMinDepth() const { return policyOrderingMinDepth; }
 
+    // Parâmetros tunáveis por SPSA (teste/tune_spsa.cpp) -- Fase 4.2.10+.
+    // Viraram membros de instância (antes eram `constexpr`/`static constexpr`
+    // globais) pelo mesmo motivo do construtor explícito Negamax(EvalWeights):
+    // o tuner roda 2 engines com valores DIFERENTES no mesmo processo, então
+    // cada instância precisa da sua própria cópia em vez de uma constante
+    // compartilhada. Default idêntico ao valor antigo hardcoded -- nenhum
+    // call-site que não chame o setter muda de comportamento.
+    //
+    // contempt: default = constante namespace CONTEMPT (-30) logo acima
+    // desta classe -- mantida separada (não removida) porque
+    // teste/test_search_staging.cpp referencia qr::CONTEMPT diretamente
+    // como a referência CONGELADA usada no cálculo de mate/empate daquele
+    // teste; alterar o membro da instância via setContempt() não afeta
+    // esse valor de referência.
+    void setContempt(int c) { contempt = c; }
+    int getContempt() const { return contempt; }
+
+    // policyOrderScale: escala do logit cru da cabeça de política somado
+    // em orderPawnMoves/orderWallMoves (ver comentário grande de
+    // POLICY_ORDER_SCALE acima). Default = essa mesma constante.
+    void setPolicyOrderScale(long long s) { policyOrderScale = s; }
+    long long getPolicyOrderScale() const { return policyOrderScale; }
+
+    // catScoreScale: peso relativo do calor CAT (cat.hpp) vs. o termo de
+    // política no score de ordenação de muro (orderWallMoves) -- os dois
+    // somam no mesmo score, então este é o parâmetro que decide o
+    // trade-off policy-vs-CAT. Default = valor antigo (2).
+    void setCatScoreScale(long long s) { catScoreScale = s; }
+    long long getCatScoreScale() const { return catScoreScale; }
+
     // Limpa toda a tabela de transposição. Deve ser chamado entre partidas
     // no self-play: scores de repetição (path-dependent) ficam gravados na
     // TT e contaminam buscas futuras onde a mesma posição é atingida sem
@@ -305,7 +335,7 @@ public:
                 } else {
                     RaceOutcome ro = resolveEmptyHandedEndgame(ns.wallsH, ns.wallsV, ns.pawn[0], ns.pawn[1], ns.turn);
                     if (ro.winner == -1) {
-                        childScore = CONTEMPT;
+                        childScore = contempt;
                     } else {
                         int raw = RACE_SCORE_BASE - ro.dtm;
                         childScore = (ro.winner == ns.turn) ? raw : -raw;
@@ -408,10 +438,10 @@ private:
     // shortestPathTouchSlots. wallEdgeHeat() (cat.hpp) devolve no máximo
     // ~CAT_CORRIDOR_CM + CAT_CORRIDOR_CM/4 + CAT_BOTTLENECK_BONUS_CM (uma
     // casa de gargalo em delta==0 tocada junto de outra quase tão quente)
-    // -- CAT_SCORE_SCALE leva isso pra uma faixa comparável à do antigo
-    // WALL_TOUCH_BONUS (600), mantendo a mesma ordem de grandeza relativa
-    // a killer (1.4-1.5M) e history (depth^2 por corte) já calibrados.
-    static constexpr long long CAT_SCORE_SCALE = 2;
+    // -- catScoreScale (membro de instância, ver setter público acima)
+    // leva isso pra uma faixa comparável à do antigo WALL_TOUCH_BONUS
+    // (600), mantendo a mesma ordem de grandeza relativa a killer
+    // (1.4-1.5M) e history (depth^2 por corte) já calibrados.
 
     std::vector<TTEntry> tt;
     EvalWeights weights;
@@ -433,6 +463,13 @@ private:
     EvalMode evalMode = EvalMode::Heuristic;
     bool policyOrderingEnabled = false;
     int policyOrderingMinDepth = 3;
+    // Membros tunáveis por SPSA -- ver setContempt/setPolicyOrderScale/
+    // setCatScoreScale (públicos, acima). Default = valor antigo hardcoded
+    // das constantes CONTEMPT/POLICY_ORDER_SCALE (namespace, ainda
+    // existem) e 2 (era CAT_SCORE_SCALE, static constexpr da classe).
+    int contempt = CONTEMPT;
+    long long policyOrderScale = POLICY_ORDER_SCALE;
+    long long catScoreScale = 2;
     // Pilha de pares de acumuladores NNUE -- um AccPair por ply da busca,
     // indexado por aritmética de ponteiro a partir da raiz (curAcc+1 = filho).
     // Dimensionado para rootDepth até MAX_PLY + quiescência até QS_MAX_EXTRA_PLIES
@@ -506,7 +543,7 @@ private:
             const Move& m = moves[i];
             long long sc = history[side][moveToPolicyIndex(m)];
             if (policy) {
-                sc += (long long)std::lround(policyLogitForMove(*policy, m, side) * (float)POLICY_ORDER_SCALE);
+                sc += (long long)std::lround(policyLogitForMove(*policy, m, side) * (float)policyOrderScale);
             }
             if (ply0) {
                 if (killerValid[ply][0] && m == killers[ply][0]) sc += 1'500'000;
@@ -582,10 +619,10 @@ private:
                 int after = cachedShortestPathLen(afterCache);
                 sc = (long long)(after - before) * 1000;
             }
-            sc += wallEdgeHeat(oppHeat, m.a, m.b, m.c) * CAT_SCORE_SCALE;
+            sc += wallEdgeHeat(oppHeat, m.a, m.b, m.c) * catScoreScale;
             sc += history[side][moveToPolicyIndex(m)];
             if (policy) {
-                sc += (long long)std::lround(policyLogitForMove(*policy, m, side) * (float)POLICY_ORDER_SCALE);
+                sc += (long long)std::lround(policyLogitForMove(*policy, m, side) * (float)policyOrderScale);
             }
             if (ply0) {
                 if (killerValid[ply][0] && m == killers[ply][0]) sc += 1'500'000;
@@ -617,7 +654,7 @@ private:
         // Ver comentário equivalente em negamax() -- mesmo critério de
         // 2 vs 3 ocorrências e mesma âncora de sinal na paridade do ply
         // em relação à raiz (rootParity), não em s.turn.
-        if (reptbl.isRepetitionDraw(s.hash)) return rootParity ? CONTEMPT : -CONTEMPT;
+        if (reptbl.isRepetitionDraw(s.hash)) return rootParity ? contempt : -contempt;
 
         // Stand-pat: modo NNUE usa o acumulador já pronto (O(HIDDEN×32) ops);
         // modo heurístico usa evalSimpleW que também preenche sideCache/oppCache
@@ -726,7 +763,7 @@ private:
         // "Analysis Contempt" ao lado que tem o lance NA RAIZ, não ao
         // lado do nó terminal (ver UCI option "Analysis Contempt": "By
         // default, contempt is set to prefer the side to move [na raiz]").
-        if (reptbl.isRepetitionDraw(s.hash)) return (ply % 2 == 0) ? CONTEMPT : -CONTEMPT;
+        if (reptbl.isRepetitionDraw(s.hash)) return (ply % 2 == 0) ? contempt : -contempt;
 
         // Final "mãos vazias" (endgame_race.hpp, plano-additional.md
         // Prioridade 4): quando os dois ficam sem muros, a topologia
@@ -777,7 +814,7 @@ private:
                 g_raceExactUsedUs += std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now() - __raceT0).count();
                 raceResolved = true;
                 if (ro.winner == -1) {
-                    raceScore = CONTEMPT;  // empate -- perseguição infinita/repetição (bug corrigido: era -CONTEMPT, recompensava o empate)
+                    raceScore = contempt;  // empate -- perseguição infinita/repetição (bug corrigido: era -CONTEMPT, recompensava o empate)
                 } else {
                     int raw = RACE_SCORE_BASE - ro.dtm;
                     raceScore = (ro.winner == s.turn) ? raw : -raw;
