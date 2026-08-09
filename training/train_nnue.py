@@ -148,21 +148,22 @@ DATA_ROOT_DEFAULT = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath
 # "esqueca" padroes antigos e drifte para o otimo local do gen mais recente.
 # Vazia = comportamento antigo, direto de DATA_DEFAULT/--data sem amostragem.
 DATA_SOURCES_DEFAULT = [
-      {"path": "selfplay/gen1", "frac": 0.2},
-      {"path": "selfplay/gen2", "frac": 1.0},
-      {"path": "arena", "frac": 0.2},
+      {"path": "selfplay/gen1", "frac": 0.3},
+      {"path": "selfplay/gen2", "frac": 0.5},
+      {"path": "selfplay/gen3", "frac": 1.0},
+      {"path": "arena", "frac": 0.4},
 ]
  
 OUT_DEFAULT = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data", "nnue", "nnue_weights.bin")
  
 # --- treino / otimizacao -----------------------------------------------------
-EPOCHS_DEFAULT = 60
+EPOCHS_DEFAULT = 120
 BATCH_SIZE_DEFAULT = "auto"           # inteiro, ou "auto" (via --vram-budget-gb)
 SEED_DEFAULT = 0
 VAL_SPLIT_DEFAULT = 0.1               # fracao dos dados reservada p/ validacao
  
 LR_DEFAULT = 1e-3                     # LR inicial para treino do zero
-LR_MIN_DEFAULT = 1e-5                 # piso do LR no fim do schedule
+LR_MIN_DEFAULT = 5e-6                 # piso do LR no fim do schedule
 LR_SCHEDULE_DEFAULT = "cosine"        # none | step | exponential | cosine
 WARMUP_EPOCHS_DEFAULT = 2
  

@@ -23,7 +23,7 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 #     GIT_REF2 = "HEAD~3"      -> 3 commits atrás
 #     GIT_REF2 = "minha-branch"-> Outra branch
 GIT_REF1 = None               # None = versão local não comitada (ou passe string de ref git)
-GIT_REF2 = None             # Ref Git base para o confronto (ex: 'main', 'v1.0', 'HEAD')
+GIT_REF2 = "main"             # Ref Git base para o confronto (ex: 'main', 'v1.0', 'HEAD')
 
 INVERT_COLORS = True          # Se True, joga cada abertura 2x invertendo as cores (par). Se False, joga apenas 1x por abertura.
 CREATE_BIN = True            # Se True, salva os dados das partidas em data/arena/ no formato .bin de treino
@@ -55,7 +55,7 @@ E2_HEURISTIC = False
 # --policy-order/--e1-policy-order/--e2-policy-order na linha de comando
 # para sobrepor por execução.
 E1_POLICY_ORDER = True
-E2_POLICY_ORDER = False
+E2_POLICY_ORDER = True
 # Piso de profundidade (search.hpp: Negamax::setPolicyOrderingMinDepth) --
 # forwardPolicyQuant custa ~5.8x mais que o eval de folha; sem este piso
 # ele roda em todo no interno e derruba nos/s ~3x (medido em producao).
