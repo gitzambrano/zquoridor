@@ -68,10 +68,29 @@ function wallNotation(orientation, r, c) {
     return colLetter(c) + (N - 1 - r) + (orientation === 0 ? "h" : "v");
 }
 
+// Converte o score cru do motor (perspectiva das brancas, unidades
+// evalSimple/NNUE_EVAL_SCALE~200 -- ver qr_last_move_eval()/comentario
+// acima) num percentual 0-100% pra exibicao: 0% = vitoria certa das
+// pretas, 100% = vitoria certa das brancas, 50% = equilibrado. Sigmoid
+// com o mesmo fator de escala (200) que nnue.hpp usa pra converter o
+// logit cru da cabeca WL em unidades comparaveis a evalSimple
+// (NNUE_EVAL_SCALE) -- aqui fazemos o caminho inverso (score -> logit
+// -> probabilidade), o que da o percentual exato quando a NNUE esta
+// ativa e uma aproximacao razoavel em modo heuristico (evalSimple nao
+// e um logit de verdade, mas vive na mesma ordem de grandeza). Extremos
+// (mate/vitoria certa, scores enormes) saturam perto de 0%/100%
+// naturalmente, sem tratamento especial. Documentado em detalhe (com
+// tabela) em CLAUDE.md/status.md -- ver secao "Avaliacao exibida ao
+// usuario".
+const EVAL_DISPLAY_SCALE = 200;
+function evalToWhitePercent(v) {
+    const pct = 100 / (1 + Math.exp(-v / EVAL_DISPLAY_SCALE));
+    return Math.max(0, Math.min(100, Math.round(pct)));
+}
+
 function formatEval(v) {
     if (v === null || v === undefined) return "";
-    const sign = v > 0 ? "+" : "";
-    return sign + v;
+    return evalToWhitePercent(v) + "%";
 }
 
 // --- geometria: converte coordenadas de exibição <-> coordenadas do motor.

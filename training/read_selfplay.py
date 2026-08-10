@@ -37,6 +37,22 @@ import numpy as np
 # novos (mover/own_cat_total/opp_cat_total) e com as 4 colunas acima em
 # coordenada CRUA (sem espelho). load_selfplay detecta o formato automaticamente
 # e faz upcast para SAMPLE_DTYPE; o restante do pipeline sempre usa SAMPLE_DTYPE.
+#
+# ATENÇÃO 2 (mudança 2026-08, mesma leva): o campo antigo `search_score`
+# (int16, avaliação HEURÍSTICA evalSimple no momento do lance) foi
+# substituído por `nnue_eval` (uint16, avaliação da PRÓPRIA NNUE, escala
+# fixa 0..65535 == probabilidade 0.0..1.0 de vitória das BRANCAS --
+# perspectiva ABSOLUTA de cor, não do mover; ver nota completa em
+# TrainingSample::evalNNUE em selfplay.hpp e a tabela em status.md/
+# CLAUDE.md "Avaliação: o que cada estágio usa"). Mesmo offset/tamanho (2
+# bytes) do campo antigo -- arquivos .bin gravados ANTES desta mudança
+# continuam lidos sem erro, só que o conteúdo desse campo ainda é a
+# heurística antiga, não uma probabilidade. train_nnue.py NÃO tenta
+# detectar automaticamente qual é qual: cada fonte em DATA_SOURCES_DEFAULT
+# tem seu próprio `k` (peso do resultado real vs. desta avaliação
+# gravada); fontes antigas devem usar k=1.0, o que zera completamente a
+# contribuição deste campo, seja lá o que ele contiver.
+EV_SCALE = 65535.0
 
 # --- formato legado (27 bytes/amostra, gerado antes de 2026-08) --------------
 SAMPLE_DTYPE_LEGACY = np.dtype([
@@ -46,7 +62,9 @@ SAMPLE_DTYPE_LEGACY = np.dtype([
     ("walls_v",        "<u8"),   # bitboard, coordenada crua (SEM espelho)
     ("walls_left_own", "<i1"),
     ("walls_left_opp", "<i1"),
-    ("search_score",   "<i2"),
+    ("nnue_eval",      "<i2"),   # NOME NOVO, CONTEÚDO ANTIGO: neste formato pré-histórico
+                                  # (anterior à própria NNUE existir) é sempre o heurístico
+                                  # evalSimple, nunca uma avaliação de rede -- use k=1.0.
     ("game_result",    "<i1"),
     ("policy_target",  "<u2"),   # 0..208, coordenada crua (SEM espelho)
     ("own_dist",       "<u1"),
@@ -62,7 +80,8 @@ SAMPLE_DTYPE = np.dtype([
     ("walls_v",        "<u8"),   # bitboard 64 bits, já espelhado
     ("walls_left_own", "<i1"),
     ("walls_left_opp", "<i1"),
-    ("search_score",   "<i2"),   # evalSimple no momento do lance
+    ("nnue_eval",      "<u2"),   # avaliação da própria NNUE, 0..65535 == 0.0..1.0 (perspectiva
+                                  # BRANCAS) -- ver ATENÇÃO 2 acima. Substitui o antigo search_score.
     ("game_result",    "<i1"),   # +1 vitoria do mover / -1 derrota
     ("policy_target",  "<u2"),   # 0..208: indice do lance jogado, já espelhado
     ("own_dist",       "<u1"),   # distancia BFS (shortestPathLen) ate a meta
@@ -71,14 +90,19 @@ SAMPLE_DTYPE = np.dtype([
     ("mover",          "<u1"),   # 0/1 -- identidade FÍSICA de quem jogou (não confundir com
                                   # own/opp, que são sempre relativos ao mover). Não é feature de
                                   # entrada da NNUE -- serve pra reconstruir o tabuleiro real fora
-                                  # do referencial espelhado (debug/visualização/ferramentas externas).
+                                  # do referencial espelhado (debug/visualização/ferramentas externas)
+                                  # E pra reprojetar nnue_eval (perspectiva brancas) pra perspectiva
+                                  # do mover na hora de misturar com game_result (ver train_nnue.py).
     ("own_cat_total",  "<i2"),   # soma do calor de corredor (cat.hpp) do mover sobre as 81 casas --
     ("opp_cat_total",  "<i2"),   # candidato a feature futura, NÃO usado em to_dense_features/
                                   # to_chunk_tensors ainda (ver plano-additional.md).
 ])
 assert SAMPLE_DTYPE.itemsize == 32
 
-# Campos comuns entre SAMPLE_DTYPE_LEGACY e SAMPLE_DTYPE (mesmos offsets).
+# Campos comuns entre SAMPLE_DTYPE_LEGACY e SAMPLE_DTYPE (mesmos nomes, mesmos
+# offsets -- inclui "nnue_eval", que em ambos os dtypes ocupa os mesmos 2
+# bytes; só muda o que esse campo SIGNIFICA entre um formato e outro, não
+# onde ele mora).
 _LEGACY_COMMON_FIELDS = [n for n, _ in SAMPLE_DTYPE_LEGACY.descr]
 
 
@@ -366,8 +390,9 @@ if __name__ == "__main__":
     print(f"bytes/posicao: {SAMPLE_DTYPE.itemsize} (total: {len(data) * SAMPLE_DTYPE.itemsize:,} bytes)")
     print(f"distribuicao de game_result: +1={np.sum(data['game_result'] == 1)}  "
           f"0={np.sum(data['game_result'] == 0)}  -1={np.sum(data['game_result'] == -1)}")
-    print(f"search_score: min={data['search_score'].min()} max={data['search_score'].max()} "
-          f"media={data['search_score'].astype(np.float64).mean():.2f}")
+    ev_prob = data["nnue_eval"].astype(np.float64) / EV_SCALE
+    print(f"nnue_eval (prob. vitoria brancas): min={ev_prob.min():.4f} max={ev_prob.max():.4f} "
+          f"media={ev_prob.mean():.4f}")
     print(f"policy_target: min={data['policy_target'].min()} max={data['policy_target'].max()} "
           f"(esperado 0..208)")
     print(f"own_dist: min={data['own_dist'].min()} max={data['own_dist'].max()} "

@@ -90,7 +90,7 @@ struct TrainingSample {
     uint64_t wallsV;
     int8_t   wallsLeftOwn;
     int8_t   wallsLeftOpp;
-    int16_t  searchScore;
+    uint16_t evalNNUE;      // avaliação da própria NNUE (0..EV_SCALE, perspectiva brancas) -- ver nota completa em selfplay.hpp
     int8_t   gameResult;
     uint16_t policyTarget;
     uint8_t  ownDist;
@@ -106,8 +106,31 @@ static inline qr_e2::Move toE2(const qr_e1::Move& m) {
     qr_e2::Move r; r.isWall = m.isWall; r.a = m.a; r.b = m.b; r.c = m.c; return r;
 }
 
-// Helpers SFINAE para tentar chamar setEvalMode / loadWeightsQuant se existirem no namespace qr_e1 / qr_e2
-// (permite compilar arena entre a versao atual e refs Git antigas que nao tinham NNUE).
+// Mesma escala fixa de selfplay.hpp (TrainingSample::evalNNUE / EV_SCALE) --
+// duplicada aqui porque arena.cpp mantém sua própria cópia independente da
+// struct TrainingSample (ver comentário logo abaixo), sem incluir
+// selfplay.hpp. Se um dos dois valores mudar, o outro precisa acompanhar.
+static constexpr uint16_t ARENA_EV_SCALE = 65535;
+
+// Helpers SFINAE para tentar calcular a avaliação da própria NNUE (cabeça
+// WL) se qr_eN tiver os símbolos necessários (buildAccumulatorQuant,
+// nnueWinProbQuant) -- refs Git antigos sem NNUE, ou execuções em que os
+// pesos não carregaram, caem no overload "..." e devolvem 0.5 (neutro),
+// igual ao que a NNUE zerada devolveria de qualquer forma. `mover` é a
+// perspectiva do lado que jogou nesta posição (rec.moverTurn); devolve a
+// probabilidade de vitória do MOVER (não das brancas -- a conversão pra
+// perspectiva absoluta de cor acontece no site de chamada, igual
+// selfplay.hpp).
+template <typename Dummy = void>
+auto tryNnueWinProbE1(const qr_e1::State& s, int mover, int)
+    -> decltype(qr_e1::nnueWinProbQuant(qr_e1::buildAccumulatorQuant(s, mover))) {
+    return qr_e1::nnueWinProbQuant(qr_e1::buildAccumulatorQuant(s, mover));
+}
+inline float tryNnueWinProbE1(const qr_e1::State&, int, ...) { return 0.5f; }
+
+// Helpers SFINAE para tentar chamar setEvalMode / loadWeightsQuant se existirem
+// no namespace qr_e1 / qr_e2 (permite compilar arena entre a versao atual e
+// refs Git antigas que nao tinham NNUE).
 template <typename Dummy = void>
 auto tryLoadWeightsE1(const std::string& path, int) -> decltype(qr_e1::loadWeightsQuant(path)) {
     return qr_e1::loadWeightsQuant(path);
@@ -311,7 +334,12 @@ int playArenaGame(int engine1PlayerIdx, int timeMs, int randomPlies, std::mt1993
             ts.wallsV = qr_e1::mirrorWallBitboard(rec.state.wallsV, mover);
             ts.wallsLeftOwn = rec.state.wallsLeft[mover];
             ts.wallsLeftOpp = rec.state.wallsLeft[opp];
-            ts.searchScore = (int16_t)rec.searchScore;
+            {
+                float probMoverWins = tryNnueWinProbE1(rec.state, mover, 0);
+                float evalWhite = (mover == 0) ? probMoverWins : (1.0f - probMoverWins);
+                evalWhite = std::max(0.0f, std::min(1.0f, evalWhite));
+                ts.evalNNUE = (uint16_t)std::lround(evalWhite * (float)ARENA_EV_SCALE);
+            }
             ts.gameResult = (mover == winnerPlayer) ? (int8_t)1 : (int8_t)-1;
             ts.policyTarget = qr_e1::moveToPolicyIndex(qr_e1::mirrorMoveForPerspective(rec.move, mover));
             ts.ownDist = (uint8_t)std::min(255, qr_e1::shortestPathLen(rec.state.wallsH, rec.state.wallsV, rec.state.pawn[mover], mover));

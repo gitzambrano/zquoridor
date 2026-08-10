@@ -38,32 +38,30 @@ int main(int argc, char** argv) {
     for (int perspective = 0; perspective < 2; perspective++) {
         Accumulator acc = buildAccumulator(s, perspective);
         float valueWL = forwardValueWL(acc);
-        float valueAux = forwardValueAux(acc);
         std::array<float, POLICY_OUT> policy;
         forwardPolicy(acc, policy);
 
         int bestIdx = 0;
         for (int i = 1; i < POLICY_OUT; i++) if (policy[i] > policy[bestIdx]) bestIdx = i;
 
-        std::printf("perspectiva=%d  value_wl=%.6f  value_aux=%.6f  argmax_policy=%d  policy[argmax]=%.6f  (float32)\n",
-                    perspective, valueWL, valueAux, bestIdx, policy[bestIdx]);
+        std::printf("perspectiva=%d  value_wl=%.6f  argmax_policy=%d  policy[argmax]=%.6f  (float32)\n",
+                    perspective, valueWL, bestIdx, policy[bestIdx]);
         std::printf("  policy[0..4] = %.6f %.6f %.6f %.6f %.6f\n",
                     policy[0], policy[1], policy[2], policy[3], policy[4]);
 
         if (haveQuant) {
             AccumulatorQuant accQ = buildAccumulatorQuant(s, perspective);
             float valueWLQ = forwardValueWLQuant(accQ);
-            float valueAuxQ = forwardValueAuxQuant(accQ);
             std::array<float, POLICY_OUT> policyQ;
             forwardPolicyQuant(accQ, policyQ);
 
             int bestIdxQ = 0;
             for (int i = 1; i < POLICY_OUT; i++) if (policyQ[i] > policyQ[bestIdxQ]) bestIdxQ = i;
 
-            std::printf("perspectiva=%d  value_wl=%.6f  value_aux=%.6f  argmax_policy=%d  policy[argmax]=%.6f  (int8, "
-                        "erro_wl=%.6f, erro_aux=%.6f, argmax_bate=%s)\n",
-                        perspective, valueWLQ, valueAuxQ, bestIdxQ, policyQ[bestIdxQ],
-                        valueWL - valueWLQ, valueAux - valueAuxQ, bestIdx == bestIdxQ ? "sim" : "NAO");
+            std::printf("perspectiva=%d  value_wl=%.6f  argmax_policy=%d  policy[argmax]=%.6f  (int8, "
+                        "erro_wl=%.6f, argmax_bate=%s)\n",
+                        perspective, valueWLQ, bestIdxQ, policyQ[bestIdxQ],
+                        valueWL - valueWLQ, bestIdx == bestIdxQ ? "sim" : "NAO");
             std::printf("  policy[0..4] = %.6f %.6f %.6f %.6f %.6f\n",
                         policyQ[0], policyQ[1], policyQ[2], policyQ[3], policyQ[4]);
         }

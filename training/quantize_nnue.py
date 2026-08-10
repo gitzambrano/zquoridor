@@ -4,9 +4,8 @@ espelhando exatamente `NNUEWeightsQuant::loadFromFile` em nnue.hpp.
 
 Lê um arquivo de pesos float32 no layout de `NNUEWeights::loadFromFile`
 (o que `train_nnue.py`/`export_weights` grava: w1, b1, wv1_wl, bv1_wl,
-wv2_wl, bv2_wl, wv1_aux, bv1_aux, wv2_aux, bv2_aux, wp, bp -- duas cabeças
-de valor, ver nota "MUDANÇA DESTA SESSÃO" abaixo) e escreve um segundo
-arquivo com:
+wv2_wl, bv2_wl, wp, bp -- UMA única cabeça de valor, ver nota "CABEÇA
+AUXILIAR REMOVIDA" abaixo) e escreve um segundo arquivo com:
 
     cabeçalho: QA (int32), QB (int32)
     w1      (354x256, int16, escala QA)
@@ -15,28 +14,29 @@ arquivo com:
     bv1_wl  (32,      int32, escala QA*QB)
     wv2_wl  (32,      int8,  escala QB)
     bv2_wl  (1,       int32, escala QA*QB*QB)
-    wv1_aux (256x32,  int8,  escala QB)
-    bv1_aux (32,      int32, escala QA*QB)
-    wv2_aux (32,      int8,  escala QB)
-    bv2_aux (1,       int32, escala QA*QB*QB)
     wp      (209x256, int8,  escala QB)
     bp      (209,     int32, escala QA*QB)
 
-MUDANÇA DESTA SESSÃO -- quantization-aware training (QAT): antes, QA era
-fixo em 255 mas QB era DINÂMICO, calculado depois do treino a partir do
-maior peso em valor absoluto entre as camadas de cabeça (só arredondando
-no final, sem nada durante o treino garantindo que os pesos coubessem no
-range). Agora QA **e** QB são constantes FIXAS decididas antes do treino
-(`QA_DEFAULT`/`QB_DEFAULT` abaixo, as MESMAS usadas em `nnue.hpp` e em
-`train_nnue.py`/`train_nnue_numpy.py`), e o treino aplica um
-WeightClipper a cada passo do otimizador que trava os pesos dentro do
-range representável nessas escalas -- este script deixou de "decidir" a
-escala e passou a só arredondar pesos que, por construção, já deveriam
-caber. `compute_qb_posthoc` (renomeada, mantida só para depuração/pesos
-legados sem clipper) ainda existe caso se precise quantizar um arquivo
-antigo sem QAT; o caminho `quantize_file` default usa as constantes
-fixas. O formato do cabeçalho do .bin NÃO mudou (ainda QA/QB int32 no
-início) -- só o valor de QB deixou de variar por arquivo.
+CABEÇA AUXILIAR REMOVIDA (2026-08): existia uma segunda cabeça de valor
+(wv1_aux/bv1_aux/wv2_aux/bv2_aux), imitação MSE da heurística evalSimple,
+scaffolding pra treino enquanto o self-play não vinha da própria NNUE.
+Virou peso morto quando TrainingSample passou a gravar a avaliação da
+própria NNUE (evalNNUE) em vez do score heurístico -- ver a tabela em
+status.md/CLAUDE.md ("Avaliação: o que cada estágio usa"). `load_float_
+weights` abaixo aceita os DOIS tamanhos de arquivo (com e sem o bloco da
+cabeça auxiliar), detectando por tamanho em bytes -- um .bin float32
+exportado antes desta mudança continua sendo quantizável aqui sem editar
+nada, o bloco aux é lido e descartado silenciosamente (com aviso).
+
+QUANTIZATION-AWARE TRAINING (QAT): QA e QB são constantes FIXAS decididas
+antes do treino (`QA_DEFAULT`/`QB_DEFAULT` abaixo, as MESMAS usadas em
+`nnue.hpp` e em `train_nnue.py`), e o treino aplica um WeightClipper a
+cada passo do otimizador que trava os pesos dentro do range representável
+nessas escalas -- este script não "decide" a escala, só arredonda pesos
+que, por construção, já deveriam caber. `compute_qb_posthoc` (mantida só
+para depuração/pesos legados sem clipper) ainda existe caso se precise
+quantizar um arquivo antigo sem QAT; o caminho `quantize_file` default usa
+as constantes fixas.
 
 O aviso de saturação abaixo (`quantize_int8_saturating`/
 `quantize_int16_saturating`) continua ativo como rede de segurança: com
@@ -91,27 +91,28 @@ DST_DEFAULT = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__fil
 INT8_MAX = 127
 INT16_MAX = 32767
 
-_HEAD_FIELDS = ("wv1_wl", "bv1_wl", "wv2_wl", "bv2_wl",
-                "wv1_aux", "bv1_aux", "wv2_aux", "bv2_aux")
+_HEAD_FIELDS = ("wv1_wl", "bv1_wl", "wv2_wl", "bv2_wl")
 
 
 def load_float_weights(path):
-    import os
-    expected = (NUM_FEATURES * HIDDEN + HIDDEN
-                + 2 * (HIDDEN * 32 + 32 + 32 + 1)
-                + POLICY_OUT * HIDDEN + POLICY_OUT)
-    expected_bytes = expected * 4  # float32
+    head_floats = HIDDEN * 32 + 32 + 32 + 1  # wv1 + bv1 + wv2 + bv2 de UMA cabeça 256->32->1
+    base = NUM_FEATURES * HIDDEN + HIDDEN + head_floats
+    tail = POLICY_OUT * HIDDEN + POLICY_OUT
+    expected_new = base + tail                # sem cabeça auxiliar (2026-08+)
+    expected_old = base + head_floats + tail   # com cabeça auxiliar (formato antigo)
+    expected_new_bytes = expected_new * 4
+    expected_old_bytes = expected_old * 4
     actual_bytes = os.path.getsize(path)
-    if actual_bytes != expected_bytes:
+    if actual_bytes not in (expected_new_bytes, expected_old_bytes):
         raise ValueError(
-            f"'{path}' tem {actual_bytes} bytes, esperado {expected_bytes} "
-            f"({expected} floats) para NUM_FEATURES={NUM_FEATURES} -- "
-            f"verifique se o arquivo foi gerado com a MESMA arquitetura "
-            f"(NUM_FEATURES) deste script; ver nota sobre a constante "
-            f"NUM_FEATURES estar duplicada em três lugares, no topo do "
-            f"arquivo. NÃO era checado antes (só comparava a contagem de "
-            f"floats lida contra a mesma constante usada pra ler -- "
-            f"tautológico, nunca pegava esse tipo de desalinhamento).")
+            f"'{path}' tem {actual_bytes} bytes -- não bate nem com o formato atual "
+            f"({expected_new_bytes} bytes / {expected_new} floats, sem cabeça auxiliar) nem com "
+            f"o formato antigo ({expected_old_bytes} bytes / {expected_old} floats, com cabeça "
+            f"auxiliar) para NUM_FEATURES={NUM_FEATURES} -- verifique se o arquivo foi gerado "
+            f"com a MESMA arquitetura (NUM_FEATURES) deste script; ver nota sobre a constante "
+            f"NUM_FEATURES estar duplicada em três lugares, no topo do arquivo.")
+    is_old_format = (actual_bytes == expected_old_bytes)
+
     with open(path, "rb") as f:
         w1 = np.fromfile(f, dtype="<f4", count=NUM_FEATURES * HIDDEN).reshape(NUM_FEATURES, HIDDEN)
         b1 = np.fromfile(f, dtype="<f4", count=HIDDEN)
@@ -124,31 +125,28 @@ def load_float_weights(path):
             return wv1, bv1, wv2, bv2
 
         wv1_wl, bv1_wl, wv2_wl, bv2_wl = read_head()
-        wv1_aux, bv1_aux, wv2_aux, bv2_aux = read_head()
+        if is_old_format:
+            read_head()  # cabeça auxiliar antiga -- lê pra avançar o cursor, descarta
+            print(f"'{path}' está no formato antigo (com cabeça auxiliar) -- "
+                  f"cabeça auxiliar ignorada, só w1/b1/cabeça WL/policy são quantizados.")
         wp = np.fromfile(f, dtype="<f4", count=POLICY_OUT * HIDDEN).reshape(POLICY_OUT, HIDDEN)
         bp = np.fromfile(f, dtype="<f4", count=POLICY_OUT)
-    got = (w1.size + b1.size
-           + wv1_wl.size + bv1_wl.size + wv2_wl.size + 1
-           + wv1_aux.size + bv1_aux.size + wv2_aux.size + 1
-           + wp.size + bp.size)
-    if got != expected:
-        raise ValueError(f"arquivo de pesos truncado/incompleto (ou no layout antigo de cabeça "
-                          f"única -- ver nota de MUDANÇA DESTA SESSÃO no topo do arquivo): "
-                          f"esperado {expected} floats, leu {got}")
+    got = w1.size + b1.size + wv1_wl.size + bv1_wl.size + wv2_wl.size + 1 + wp.size + bp.size
+    if got != expected_new:
+        raise ValueError(f"arquivo de pesos truncado/incompleto: esperado {expected_new} floats "
+                          f"(sem contar o bloco aux antigo, se houver), leu {got}")
     return dict(w1=w1, b1=b1,
                 wv1_wl=wv1_wl, bv1_wl=bv1_wl, wv2_wl=wv2_wl, bv2_wl=bv2_wl,
-                wv1_aux=wv1_aux, bv1_aux=bv1_aux, wv2_aux=wv2_aux, bv2_aux=bv2_aux,
                 wp=wp, bp=bp)
 
 
 def compute_qb_posthoc(W, margin=0.98):
     """QB dinâmico pós-hoc (comportamento ANTIGO de compute_qb, mantido só
     para depuração de pesos legados sem WeightClipper): floor(127 /
-    max_abs) entre as cinco matrizes de cabeça (wv1_wl, wv2_wl, wv1_aux,
-    wv2_aux, wp) juntas. O caminho normal (QAT) não chama esta função --
-    usa QB_DEFAULT fixo, o mesmo aplicado pelo clipper durante o treino.
-    """
-    max_abs = max(np.abs(W[k]).max() for k in ("wv1_wl", "wv2_wl", "wv1_aux", "wv2_aux", "wp"))
+    max_abs) entre as matrizes de cabeça (wv1_wl, wv2_wl, wp) juntas. O
+    caminho normal (QAT) não chama esta função -- usa QB_DEFAULT fixo, o
+    mesmo aplicado pelo clipper durante o treino."""
+    max_abs = max(np.abs(W[k]).max() for k in ("wv1_wl", "wv2_wl", "wp"))
     if max_abs < 1e-8:
         return 1  # pesos degenerados (ex. rede não treinada) -- evita divisão por zero
     qb = int(np.floor((INT8_MAX / max_abs) * margin))
@@ -185,8 +183,8 @@ def quantize(W, qa=QA_DEFAULT, qb=QB_DEFAULT):
     (compute_qb_posthoc) -- só para pesos legados sem clipper."""
     if qb is None:
         qb = compute_qb_posthoc(W)
-    max_abs_heads = max(np.abs(W[k]).max() for k in ("wv1_wl", "wv2_wl", "wv1_aux", "wv2_aux", "wp"))
-    print(f"QA={qa}  QB={qb}  (max_abs entre wv1_wl/wv2_wl/wv1_aux/wv2_aux/wp = {max_abs_heads:.4f})")
+    max_abs_heads = max(np.abs(W[k]).max() for k in ("wv1_wl", "wv2_wl", "wp"))
+    print(f"QA={qa}  QB={qb}  (max_abs entre wv1_wl/wv2_wl/wp = {max_abs_heads:.4f})")
 
     w1_q = quantize_int16_saturating(W["w1"], qa, "w1")
     b1_q = quantize_int16_saturating(W["b1"], qa, "b1")
@@ -199,19 +197,16 @@ def quantize(W, qa=QA_DEFAULT, qb=QB_DEFAULT):
         return wv1_q, bv1_q, wv2_q, bv2_q
 
     wv1_wl_q, bv1_wl_q, wv2_wl_q, bv2_wl_q = quantize_head("wl")
-    wv1_aux_q, bv1_aux_q, wv2_aux_q, bv2_aux_q = quantize_head("aux")
 
     wp_q = quantize_int8_saturating(W["wp"], qb, "wp")
     bp_q = np.round(W["bp"] * qa * qb).astype(np.int32)
 
     return dict(QA=qa, QB=qb, w1=w1_q, b1=b1_q,
                 wv1_wl=wv1_wl_q, bv1_wl=bv1_wl_q, wv2_wl=wv2_wl_q, bv2_wl=bv2_wl_q,
-                wv1_aux=wv1_aux_q, bv1_aux=bv1_aux_q, wv2_aux=wv2_aux_q, bv2_aux=bv2_aux_q,
                 wp=wp_q, bp=bp_q)
 
 
 def write_quantized(Q, path):
-    import os
     dir_name = os.path.dirname(os.path.abspath(path))
     if dir_name:
         os.makedirs(dir_name, exist_ok=True)
@@ -220,11 +215,10 @@ def write_quantized(Q, path):
         f.write(np.array([Q["QB"]], dtype="<i4").tobytes())
         f.write(np.ascontiguousarray(Q["w1"]).astype("<i2").tobytes())
         f.write(np.ascontiguousarray(Q["b1"]).astype("<i2").tobytes())
-        for prefix in ("wl", "aux"):
-            f.write(np.ascontiguousarray(Q[f"wv1_{prefix}"]).astype("<i1").tobytes())
-            f.write(np.ascontiguousarray(Q[f"bv1_{prefix}"]).astype("<i4").tobytes())
-            f.write(np.ascontiguousarray(Q[f"wv2_{prefix}"]).astype("<i1").tobytes())
-            f.write(np.array([Q[f"bv2_{prefix}"]], dtype="<i4").tobytes())
+        f.write(np.ascontiguousarray(Q["wv1_wl"]).astype("<i1").tobytes())
+        f.write(np.ascontiguousarray(Q["bv1_wl"]).astype("<i4").tobytes())
+        f.write(np.ascontiguousarray(Q["wv2_wl"]).astype("<i1").tobytes())
+        f.write(np.array([Q["bv2_wl"]], dtype="<i4").tobytes())
         f.write(np.ascontiguousarray(Q["wp"]).astype("<i1").tobytes())
         f.write(np.ascontiguousarray(Q["bp"]).astype("<i4").tobytes())
 

@@ -151,27 +151,18 @@ constexpr int WALLS_LEFT_FEAT_BASE = DIST_FEAT_BASE + 2 * DIST_BUCKETS;  // 332
 inline int featOwnWallsLeft(int bucket) { return WALLS_LEFT_FEAT_BASE + bucket; }
 inline int featOppWallsLeft(int bucket) { return WALLS_LEFT_FEAT_BASE + WALLS_LEFT_BUCKETS + bucket; }
 
-// Duas cabeças de "valor" (mudança desta sessão, ver plano_quoridor.md):
-// antes havia uma única saída escalar alimentando duas losses ao mesmo
-// tempo (MSE contra a heurística E BCE contra o resultado — daí o
-// "value" acabar preso perto de zero, ver comentário histórico em
-// train_nnue.py). Agora são duas cabeças INDEPENDENTES, cada uma com seu
-// próprio bottleneck 256->32->1, sem nada compartilhado entre elas além
-// do acumulador (a):
-//   - resultado (WL, sem empate): único logit, só BCE-with-logits contra
-//     o resultado real da partida. É esta que deve dominar quando o
-//     self-play passar a vir da própria NNUE (hoje ainda usa evalSimple).
-//   - auxiliar de imitação da heurística: regressão MSE contra
-//     search_score/VALUE_SCALE. Peso configurável via --w-score,
-//     pensada para ir a 0 (ou a cabeça inteira ser removida) numa sessão
-//     futura, quando o self-play deixar de depender do evalSimple.
-// Duas cabeças independentes (em vez de uma cabeça com uma bifurcação só
-// no último Linear) foi a escolha deliberada aqui: quando a cabeça
-// auxiliar for removida numa sessão futura, basta apagar wv1_aux/bv1_aux/
-// wv2_aux/bv2_aux (e o bloco correspondente no loop de treino) sem tocar
-// em nada da cabeça de resultado. Custo: dobra o tamanho da "parte de
-// valor" da rede (~8,4 mil parâmetros a mais) — desprezível frente aos
-// ~85 mil de w1 (332*256).
+// Cabeça de "valor" (mudança 2026-08: cabeça AUXILIAR removida): existia
+// uma cabeça auxiliar HIDDEN->32->1 que fazia regressão MSE contra
+// evalSimple/VALUE_SCALE, pensada só como scaffolding de treino enquanto
+// o self-play não vinha da própria NNUE. Ela nunca era chamada pela busca
+// (só forwardValueWL era) e virou peso morto assim que
+// training/train_nnue.py passou a gravar a própria avaliação da NNUE nos
+// .bin de self-play em vez do score heurístico (ver TrainingSample::
+// evalNNUE em selfplay.hpp) -- esse valor, junto do gameResult real, é o
+// que agora alimenta o alvo de treino da cabeça WL (WL_mod = WL*k +
+// EV*(1-k), k por fonte de dado, ver DATA_SOURCES_DEFAULT em
+// train_nnue.py). Ver a tabela em status.md ("Avaliação: o que cada
+// estágio usa") para o mapa completo de quem consome o quê.
 struct NNUEWeights {
     // camada 1 (acumulador): pesos por feature esparsa -> HIDDEN
     std::vector<std::array<float, HIDDEN>> w1;   // [NUM_FEATURES][HIDDEN]
@@ -181,11 +172,6 @@ struct NNUEWeights {
     std::array<float, 32> bv1_wl{};
     std::array<float, 32> wv2_wl{};
     float bv2_wl = 0.f;
-    // cabeça AUXILIAR (imitação da heurística evalSimple): HIDDEN -> 32 -> 1
-    std::array<std::array<float, 32>, HIDDEN> wv1_aux;
-    std::array<float, 32> bv1_aux{};
-    std::array<float, 32> wv2_aux{};
-    float bv2_aux = 0.f;
     // cabeça de política: HIDDEN -> POLICY_OUT
     std::vector<std::array<float, HIDDEN>> wp;   // [POLICY_OUT][HIDDEN] (transposto p/ dot direto)
     std::vector<float> bp;                        // [POLICY_OUT]
@@ -200,22 +186,22 @@ struct NNUEWeights {
         for (auto& v : b1) v = 0.f;
         for (auto& row : wv1_wl) for (auto& v : row) v = d1(rng);
         for (auto& v : wv2_wl) v = d1(rng);
-        for (auto& row : wv1_aux) for (auto& v : row) v = d1(rng);
-        for (auto& v : wv2_aux) v = d1(rng);
         wp.assign(POLICY_OUT, {});
         for (auto& row : wp) for (auto& v : row) v = d1(rng);
         bp.assign(POLICY_OUT, 0.f);
     }
 
-    // Carrega pesos treinados (Fase 5, training/train_nnue.py) de um arquivo
+    // Carrega pesos treinados (training/train_nnue.py) de um arquivo
     // binário cru de floats, na MESMA ordem em que os campos aparecem nesta
-    // struct: w1 (332x256, ver NUM_FEATURES -- 290 originais + 42 de bucket
-    // de distância BFS), b1 (256), wv1_wl (256x32), bv1_wl (32), wv2_wl (32),
-    // bv2_wl (1), wv1_aux (256x32), bv1_aux (32), wv2_aux (32), bv2_aux (1),
-    // wp (209x256), bp (209). Cada bloco é lido linha a linha (mesma ordem
-    // de laço usada no export Python), sem cabeçalho. LAYOUT MUDOU nesta
-    // sessão (cabeça de valor única -> duas cabeças) -- pesos exportados
-    // antes da mudança não são compatíveis, precisam ser re-treinados.
+    // struct: w1 (NUM_FEATURES x256), b1 (256), wv1_wl (256x32), bv1_wl (32),
+    // wv2_wl (32), bv2_wl (1), wp (209x256), bp (209). Cada bloco é lido
+    // linha a linha (mesma ordem de laço usada no export Python), sem
+    // cabeçalho. LAYOUT MUDOU 2026-08 (cabeça auxiliar removida) -- pesos
+    // exportados antes dessa mudança (com o bloco wv1_aux/bv1_aux/wv2_aux/
+    // bv2_aux no meio do arquivo) não são compatíveis aqui; isso só afeta
+    // este loadFromFile (usado por ferramentas C++ tipo nnue_verify) --
+    // train_nnue.py's --init-from lida com o formato antigo sozinho (ver
+    // nota em _load_raw_weights lá).
     bool loadFromFile(const std::string& path) {
         FILE* f = std::fopen(path.c_str(), "rb");
         if (!f) return false;
@@ -227,10 +213,6 @@ struct NNUEWeights {
         ok = ok && std::fread(bv1_wl.data(), sizeof(float), 32, f) == 32;
         ok = ok && std::fread(wv2_wl.data(), sizeof(float), 32, f) == 32;
         ok = ok && std::fread(&bv2_wl, sizeof(float), 1, f) == 1;
-        for (auto& row : wv1_aux) ok = ok && std::fread(row.data(), sizeof(float), 32, f) == 32;
-        ok = ok && std::fread(bv1_aux.data(), sizeof(float), 32, f) == 32;
-        ok = ok && std::fread(wv2_aux.data(), sizeof(float), 32, f) == 32;
-        ok = ok && std::fread(&bv2_aux, sizeof(float), 1, f) == 1;
         wp.assign(POLICY_OUT, {});
         for (auto& row : wp) ok = ok && std::fread(row.data(), sizeof(float), HIDDEN, f) == (size_t)HIDDEN;
         bp.assign(POLICY_OUT, 0.f);
@@ -251,10 +233,6 @@ struct NNUEWeights {
         std::fwrite(bv1_wl.data(), sizeof(float), 32, f);
         std::fwrite(wv2_wl.data(), sizeof(float), 32, f);
         std::fwrite(&bv2_wl, sizeof(float), 1, f);
-        for (auto& row : wv1_aux) std::fwrite(row.data(), sizeof(float), 32, f);
-        std::fwrite(bv1_aux.data(), sizeof(float), 32, f);
-        std::fwrite(wv2_aux.data(), sizeof(float), 32, f);
-        std::fwrite(&bv2_aux, sizeof(float), 1, f);
         for (auto& row : wp) std::fwrite(row.data(), sizeof(float), HIDDEN, f);
         std::fwrite(bp.data(), sizeof(float), POLICY_OUT, f);
         std::fclose(f);
@@ -358,20 +336,18 @@ inline float clippedRelu(float x) {
     return x < 0.f ? 0.f : (x > 1.f ? 1.f : x);
 }
 
-// CORREÇÃO (pós-treino, Fase 5, ainda válida pras duas cabeças atuais): a
-// versão original desta função não tinha nenhuma não-linearidade entre as
-// duas camadas lineares do value head (256->32 e 32->1) -- o bias bv1 era
-// somado só depois de já multiplicar por wv2, sem ativação no meio. Como a
-// composição de duas transformações lineares é ela mesma linear, o
-// "bottleneck" de 32 neurônios não tinha efeito nenhum. Corrigido
-// adicionando clippedRelu(h+bv1) antes do produto final com wv2.
+// CORREÇÃO (pós-treino, Fase 5): a versão original desta função não tinha
+// nenhuma não-linearidade entre as duas camadas lineares do value head
+// (256->32 e 32->1) -- o bias bv1 era somado só depois de já multiplicar
+// por wv2, sem ativação no meio. Como a composição de duas transformações
+// lineares é ela mesma linear, o "bottleneck" de 32 neurônios não tinha
+// efeito nenhum. Corrigido adicionando clippedRelu(h+bv1) antes do
+// produto final com wv2.
 //
-// Duas cabeças (mudança desta sessão): a saída única "value" virou duas
-// funções separadas, cada uma com seu próprio bottleneck 256->32->1 (ver
-// comentário em NNUEWeights acima). forwardValueWL é a que a busca vai
-// usar quando a Fase 6 ligar a NNUE (logit de resultado, sem empate);
-// forwardValueAux existe só para treino/validação de paridade (imitação
-// da heurística evalSimple) e não é chamada pelo motor de busca.
+// forwardValueWL é a única cabeça de valor da rede (a cabeça auxiliar de
+// imitação de evalSimple foi removida 2026-08 -- ver nota em NNUEWeights
+// acima); é o logit de resultado (WL, sem empate) que a busca consome via
+// nnueEvalInt.
 inline float forwardValueWL(const Accumulator& acc) {
     std::array<float, 32> h{};
     auto& W = weights();
@@ -383,21 +359,6 @@ inline float forwardValueWL(const Accumulator& acc) {
     for (int j = 0; j < 32; j++) {
         float hj = clippedRelu(h[j] + W.bv1_wl[j]);
         out += hj * W.wv2_wl[j];
-    }
-    return out;
-}
-
-inline float forwardValueAux(const Accumulator& acc) {
-    std::array<float, 32> h{};
-    auto& W = weights();
-    for (int i = 0; i < HIDDEN; i++) {
-        float a = screlu(acc.v[i]);
-        for (int j = 0; j < 32; j++) h[j] += a * W.wv1_aux[i][j];
-    }
-    float out = W.bv2_aux;
-    for (int j = 0; j < 32; j++) {
-        float hj = clippedRelu(h[j] + W.bv1_aux[j]);
-        out += hj * W.wv2_aux[j];
     }
     return out;
 }
@@ -537,13 +498,12 @@ inline void updateAccumulatorForMove(Accumulator& acc, bool viewerIsMover, const
 // guardado em uint8. Isso é exatamente QA * screlu(acc_f32) a menos do
 // arredondamento da divisão inteira.
 //
-// Camadas de cabeça (value1/value2 de CADA cabeça -- wl e aux -- mais
-// policy 256->209): pesos e bias quantizados com uma ÚNICA escala QB fixa,
-// compartilhada pelas cinco matrizes (wv1_wl, wv2_wl, wv1_aux, wv2_aux,
-// wp). bv1/bv2/bp são quantizados em int32 com a escala combinada correta
-// (QA*QB para bv1_wl/bv1_aux/bp, que somam diretamente ao produto
-// ativação-uint8 x peso-int8; QA*QB*QB para bv2_wl/bv2_aux, que somam ao
-// produto hj(escala QA*QB) x wv2(escala QB)).
+// Camadas de cabeça (value1/value2 da cabeça WL, mais policy 256->209):
+// pesos e bias quantizados com uma ÚNICA escala QB fixa, compartilhada
+// pelas três matrizes (wv1_wl, wv2_wl, wp). bv1/bv2/bp são quantizados em
+// int32 com a escala combinada correta (QA*QB para bv1_wl/bp, que somam
+// diretamente ao produto ativação-uint8 x peso-int8; QA*QB*QB para
+// bv2_wl, que soma ao produto hj(escala QA*QB) x wv2(escala QB)).
 constexpr int32_t QA_DEFAULT = 255;
 // QB fixo (QAT): escolhido para caber com folga o range de pesos que o
 // WeightClipper impõe durante o treino (|w| <= 127/QB_DEFAULT ~= 1.98).
@@ -570,17 +530,12 @@ struct NNUEWeightsQuant {
     std::vector<std::array<int16_t, HIDDEN>> w1;  // [NUM_FEATURES][HIDDEN], escala QA
     std::array<int16_t, HIDDEN> b1{};              // escala QA
 
-    // cabeça de RESULTADO (WL)
+    // cabeça de RESULTADO (WL) -- única cabeça de valor (cabeça auxiliar
+    // de imitação de evalSimple removida 2026-08, ver nota em NNUEWeights)
     std::array<std::array<int8_t, 32>, HIDDEN> wv1_wl{}; // escala QB
     std::array<int32_t, 32> bv1_wl{};                      // escala QA*QB
     std::array<int8_t, 32> wv2_wl{};                       // escala QB
     int32_t bv2_wl = 0;                                    // escala QA*QB*QB
-
-    // cabeça AUXILIAR (imitação da heurística)
-    std::array<std::array<int8_t, 32>, HIDDEN> wv1_aux{}; // escala QB
-    std::array<int32_t, 32> bv1_aux{};                      // escala QA*QB
-    std::array<int8_t, 32> wv2_aux{};                       // escala QB
-    int32_t bv2_aux = 0;                                    // escala QA*QB*QB
 
     std::vector<std::array<int8_t, HIDDEN>> wp;   // [POLICY_OUT][HIDDEN], escala QB
     std::vector<int32_t> bp;                       // escala QA*QB
@@ -632,10 +587,10 @@ struct NNUEWeightsQuant {
             (long)sizeof(int32_t) * 2                                  // QA, QB
             + (long)NUM_FEATURES * HIDDEN * sizeof(int16_t)            // w1
             + (long)HIDDEN * sizeof(int16_t)                           // b1
-            + 2 * ((long)HIDDEN * 32 * sizeof(int8_t)                  // wv1_wl/wv1_aux
-                   + 32 * sizeof(int32_t)                              // bv1_wl/bv1_aux
-                   + 32 * sizeof(int8_t)                               // wv2_wl/wv2_aux
-                   + sizeof(int32_t))                                  // bv2_wl/bv2_aux
+            + (long)HIDDEN * 32 * sizeof(int8_t)                       // wv1_wl
+            + 32 * sizeof(int32_t)                                     // bv1_wl
+            + 32 * sizeof(int8_t)                                      // wv2_wl
+            + sizeof(int32_t)                                          // bv2_wl
             + (long)POLICY_OUT * HIDDEN * sizeof(int8_t)               // wp
             + (long)POLICY_OUT * sizeof(int32_t);                      // bp
         if (actualBytes != expectedBytes) {
@@ -661,11 +616,6 @@ struct NNUEWeightsQuant {
         ok = ok && std::fread(bv1_wl.data(), sizeof(int32_t), 32, f) == 32;
         ok = ok && std::fread(wv2_wl.data(), sizeof(int8_t), 32, f) == 32;
         ok = ok && std::fread(&bv2_wl, sizeof(int32_t), 1, f) == 1;
-
-        for (auto& row : wv1_aux) ok = ok && std::fread(row.data(), sizeof(int8_t), 32, f) == 32;
-        ok = ok && std::fread(bv1_aux.data(), sizeof(int32_t), 32, f) == 32;
-        ok = ok && std::fread(wv2_aux.data(), sizeof(int8_t), 32, f) == 32;
-        ok = ok && std::fread(&bv2_aux, sizeof(int32_t), 1, f) == 1;
 
         wp.assign(POLICY_OUT, {});
         for (auto& row : wp) ok = ok && std::fread(row.data(), sizeof(int8_t), HIDDEN, f) == (size_t)HIDDEN;
@@ -867,16 +817,23 @@ inline float forwardValueHeadQuant(const AccumulatorQuant& acc,
     return (float)((double)out / (double)denom);
 }
 
-// forwardValueWL é a que a busca vai usar (Fase 6); forwardValueAuxQuant
-// existe só para treino/validação, espelhando forwardValueAux (float).
+// forwardValueWLQuant é a única cabeça de valor quantizada -- a busca a
+// consome via nnueEvalInt (a cabeça auxiliar de imitação de evalSimple foi
+// removida 2026-08, ver nota em NNUEWeights).
 inline float forwardValueWLQuant(const AccumulatorQuant& acc) {
     auto& W = weightsQuant();
     return forwardValueHeadQuant(acc, W.wv1_wl, W.bv1_wl, W.wv2_wl, W.bv2_wl);
 }
 
-inline float forwardValueAuxQuant(const AccumulatorQuant& acc) {
-    auto& W = weightsQuant();
-    return forwardValueHeadQuant(acc, W.wv1_aux, W.bv1_aux, W.wv2_aux, W.bv2_aux);
+// Probabilidade (sigmoid do logit WL) de que `side` (perspectiva passada a
+// buildAccumulatorQuant) vença a partir desta posição -- usada por
+// selfplay.hpp/arena.cpp para gravar TrainingSample::evalNNUE (a própria
+// avaliação da NNUE, não mais o score heurístico) nos .bin de self-play.
+// Não é chamada pela busca (que usa nnueEvalInt, em unidades inteiras
+// comparáveis a evalSimple, não em probabilidade).
+inline float nnueWinProbQuant(const AccumulatorQuant& acc) {
+    float logit = forwardValueWLQuant(acc);
+    return 1.0f / (1.0f + std::exp(-logit));
 }
 
 inline void forwardPolicyQuant(const AccumulatorQuant& acc, std::array<float, POLICY_OUT>& out) {

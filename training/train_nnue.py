@@ -2,20 +2,28 @@
 train_nnue.py -- treino da NNUE do zquoridor (PyTorch), a partir dos dados
 de self-play gerados pelo harness C++. Espelho exato da arquitetura em
 nnue.hpp:
- 
+
   acumulador: Linear(354, 256)                    -> w1, b1
   SCReLU (clip(x,0,1)^2) na saida do acumulador
-  cabeca RESULTADO (WL, sem empate):
+  cabeca RESULTADO (WL, sem empate, UNICA cabeca de valor -- a cabeca
+  AUXILIAR de imitacao da heuristica evalSimple existiu ate 2026-08 e foi
+  removida, ver nota em QuoridorNNUE mais abaixo):
       Linear(256, 32) -> ClippedReLU -> Linear(32, 1)   -> wv1_wl,bv1_wl,wv2_wl,bv2_wl
-  cabeca AUXILIAR (imita a heuristica evalSimple):
-      Linear(256, 32) -> ClippedReLU -> Linear(32, 1)   -> wv1_aux,bv1_aux,wv2_aux,bv2_aux
   policy head: Linear(256, 209), direto na saida do SCReLU                -> wp, bp
- 
+
+O alvo de treino da cabeca WL (2026-08+) e um BLEND por posicao entre o
+resultado REAL do jogo e a avaliacao que a propria NNUE (de quando o
+self-play rodou) deu aquela posicao, gravada em TrainingSample::evalNNUE
+(ver read_selfplay.py/selfplay.hpp):
+    wl_target = k * game_result_prob + (1 - k) * ev_prob
+"k" e configuravel POR FONTE em DATA_SOURCES_DEFAULT/--data-sources (ver
+nota la); k=1.0 ignora evalNNUE por completo (comportamento antigo, e o
+que qualquer fonte de dado anterior a esta mudanca de formato deve usar).
+
 QAT (quantization-aware training): QA/QB (--qa/--qb, mesmos valores de
 nnue.hpp/quantize_nnue.py) definem a escala fixa; um WeightClipper (estilo
 nnue-pytorch do Stockfish) trava os pesos no range representavel em int8
 (cabecas) / int16 (acumulador) a cada passo do otimizador.
- 
 Uso normal, sem flags nenhuma -- os defaults (data, out, ckpt-dir, LR,
 batch/chunk size "auto" etc., todos na secao DEFAULT CONFIG abaixo) ja
 cobrem o dia a dia:
@@ -121,7 +129,7 @@ import torch.nn as nn
 import torch.nn.functional as F
  
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from read_selfplay import SAMPLE_DTYPE, DIST_BUCKETS, load_multi_selfplay, expand_data_paths  # noqa: E402
+from read_selfplay import SAMPLE_DTYPE, DIST_BUCKETS, EV_SCALE, load_multi_selfplay, expand_data_paths  # noqa: E402
 from quantize_nnue import quantize_file  # noqa: E402
  
 # ============================== DEFAULT CONFIG ==============================
@@ -143,27 +151,46 @@ DATA_ROOT_DEFAULT = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath
 #     "ganha" (resolve_data_source_path()).
 #   - "frac": fracao de POSICOES (nao arquivos) sorteada aleatoriamente
 #     (reprodutivel via --seed) daquela pasta. 1.0 = usa tudo, 0.0 = ignora.
+#   - "k" (2026-08, opcional, default 1.0): peso do resultado REAL do jogo
+#     vs. a avaliacao da propria NNUE gravada no .bin (TrainingSample::
+#     evalNNUE, ver read_selfplay.py/selfplay.hpp) na hora de montar o alvo
+#     de treino da cabeca WL, POR POSICAO:
+#         wl_target = k * game_result_prob + (1 - k) * ev_prob
+#     (ambos convertidos pra perspectiva do MOVER antes de misturar -- ver
+#     to_chunk_tensors). k=1.0 (default) = comportamento antigo, ignora
+#     ev_prob por completo -- e o que qualquer .bin gravado ANTES desta
+#     mudanca de formato precisa usar (o campo nesse offset la e uma
+#     heuristica antiga, nao uma avaliacao de rede; k=1.0 zera a
+#     contribuicao dele sem precisar detectar o formato). k<1.0 e
+#     "bootstrapping": deixa a propria NNUE (de quando o self-play rodou)
+#     opinar sobre posicoes especificas de uma partida, em vez de so
+#     herdar o resultado final igualmente pra toda posicao da partida --
+#     tende a convergir mais rapido, mas em excesso pode fazer a rede
+#     nova so reforcar os vieses da rede que gerou os dados. Ajuste por
+#     tentativa; nao ha default "certo" alem de k=1.0 pra dado antigo.
 #   - Pastas nao podem se sobrepor entre fontes (erro se um .bin cair em duas).
 # Motivacao: manter uma fatia pequena de geracoes antigas evita que a rede
 # "esqueca" padroes antigos e drifte para o otimo local do gen mais recente.
 # Vazia = comportamento antigo, direto de DATA_DEFAULT/--data sem amostragem.
 DATA_SOURCES_DEFAULT = [
-      {"path": "selfplay/gen1", "frac": 0.3},
-      {"path": "selfplay/gen2", "frac": 0.5},
-      {"path": "selfplay/gen3", "frac": 1.0},
-      {"path": "arena", "frac": 0.4},
+      {"path": "selfplay/gen1", "frac": 0.1, "k": 1.0},
+      {"path": "selfplay/gen2", "frac": 0.2, "k": 1.0},
+      {"path": "selfplay/gen3", "frac": 1.0, "k": 1.0},
+      {"path": "selfplay/gen4", "frac": 1.0, "k": 0.7},
+      {"path": "arena/gen1",    "frac": 0.3, "k": 1.0},
+      {"path": "arena/gen2",    "frac": 0.2, "k": 1.0},
 ]
  
 OUT_DEFAULT = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data", "nnue", "nnue_weights.bin")
  
 # --- treino / otimizacao -----------------------------------------------------
-EPOCHS_DEFAULT = 120
+EPOCHS_DEFAULT = 10
 BATCH_SIZE_DEFAULT = "auto"           # inteiro, ou "auto" (via --vram-budget-gb)
 SEED_DEFAULT = 0
 VAL_SPLIT_DEFAULT = 0.1               # fracao dos dados reservada p/ validacao
  
 LR_DEFAULT = 1e-3                     # LR inicial para treino do zero
-LR_MIN_DEFAULT = 6e-6                 # piso do LR no fim do schedule
+LR_MIN_DEFAULT = 1e-6                 # piso do LR no fim do schedule
 LR_SCHEDULE_DEFAULT = "cosine"        # none | step | exponential | cosine
 WARMUP_EPOCHS_DEFAULT = 2
  
@@ -172,7 +199,7 @@ WARMUP_EPOCHS_DEFAULT = 2
 # p/ treino do zero) e alto demais aqui: afastaria pesos ja convergidos do
 # otimo local em vez de so refina-los. So entra em uso quando --lr fica em
 # "auto"; --lr numerico explicito sempre tem prioridade.
-NEW_CYCLE_LR_DEFAULT = 5e-5
+NEW_CYCLE_LR_DEFAULT = 5e-6
 STEP_SIZE_DEFAULT = 10                # epochs por degrau em --lr-schedule=step
 STEP_GAMMA_DEFAULT = 0.5
 EXP_GAMMA_DEFAULT = 0.97
@@ -187,7 +214,7 @@ WD_SCHEDULE_DEFAULT = "cosine"        # none | constant | linear | cosine
 EARLY_STOP_DEFAULT = True
 PATIENCE_DEFAULT = 8                  # epochs sem melhora antes de parar
 MIN_DELTA_DEFAULT = 1e-4              # melhora minima p/ contar como "melhorou"
-MONITOR_DEFAULT = "val_loss"          # val_loss | val_outcome | val_score | val_policy | val_policy_acc
+MONITOR_DEFAULT = "val_loss"          # val_loss | val_outcome | val_policy | val_policy_acc
  
 # --- orcamento de memoria (batch/chunk size "auto") --------------------------
 # Defaults calibrados para uma maquina de dev tipica: 6GB VRAM / 32GB RAM.
@@ -205,7 +232,6 @@ BATCH_SIZE_MAX_DEFAULT = 131_072
 CHUNK_SIZE_MAX_DEFAULT = 20_000_000
  
 # --- pesos de loss / QAT / logging -------------------------------------------
-W_SCORE_DEFAULT = 0.3                 # peso da loss da cabeca auxiliar (MSE)
 W_OUTCOME_DEFAULT = 1.0               # peso da loss da cabeca de resultado (BCE)
 W_POLICY_DEFAULT = 1.0                # peso da loss de policy (CE)
 QA_DEFAULT = 255                      # escala QAT do acumulador (int16)
@@ -253,7 +279,10 @@ WALLS_LEFT_BUCKETS = WALLS_PER_PLAYER + 1  # 11
 NUM_FEATURES = N * N + N * N + WS * WS * 2 + 2 * DIST_BUCKETS + 2 * WALLS_LEFT_BUCKETS  # 354
 HIDDEN = 256
 POLICY_OUT = N * N + WS * WS * 2                                # 209
-VALUE_SCALE = 200.0
+# VALUE_SCALE (200.0) removida 2026-08: so era usada pra normalizar a loss
+# MSE da cabeca auxiliar (search_score/VALUE_SCALE), que nao existe mais --
+# ver QuoridorNNUE. O merge WL/EV atual (wl_target em to_chunk_tensors) ja
+# trabalha direto em probabilidade [0,1], sem precisar de escala nenhuma.
  
 INT8_MAX = 127
 INT16_MAX = 32767
@@ -269,59 +298,66 @@ def clipped_relu(x: torch.Tensor) -> torch.Tensor:
  
  
 class QuoridorNNUE(nn.Module):
-    """Duas cabecas de valor independentes: value1_wl/value2_wl (resultado,
-    WL) e value1_aux/value2_aux (imitacao da heuristica). Cada uma tem seu
-    proprio bottleneck 256->32->1, sem nada compartilhado alem do
-    acumulador `a`."""
- 
+    """Cabeca de valor unica (WL, resultado sem empate): value1_wl/value2_wl,
+    bottleneck 256->32->1. A cabeca AUXILIAR de imitacao da heuristica
+    (value1_aux/value2_aux) existiu ate 2026-08 e foi removida: era so
+    scaffolding pra treinar enquanto o self-play nao vinha da propria NNUE
+    -- desde que TrainingSample passou a gravar a avaliacao da propria rede
+    (evalNNUE, ver read_selfplay.py/selfplay.hpp) em vez do score
+    heuristico, ela virou peso morto (nunca foi consumida pela busca em
+    nnue.hpp). Ver a tabela em status.md/CLAUDE.md ("Avaliacao: o que cada
+    estagio usa") pro mapa completo."""
+
     def __init__(self):
         super().__init__()
         self.fc1 = nn.Linear(NUM_FEATURES, HIDDEN)
         self.value1_wl = nn.Linear(HIDDEN, 32)
         self.value2_wl = nn.Linear(32, 1)
-        self.value1_aux = nn.Linear(HIDDEN, 32)
-        self.value2_aux = nn.Linear(32, 1)
         self.policy = nn.Linear(HIDDEN, POLICY_OUT)
- 
+
     def forward(self, x: torch.Tensor):
         acc = self.fc1(x)
         a = screlu(acc)
         h_wl = clipped_relu(self.value1_wl(a))
         value_wl = self.value2_wl(h_wl).squeeze(-1)
-        h_aux = clipped_relu(self.value1_aux(a))
-        value_aux = self.value2_aux(h_aux).squeeze(-1)
         policy_logits = self.policy(a)
-        return value_wl, value_aux, policy_logits
- 
- 
+        return value_wl, policy_logits
+
+
 class WeightClipper:
     """QAT: aplicado a cada passo do otimizador. Trava cada matriz de pesos
     dentro do range representavel na escala fixa correspondente -- int16 a
     escala QA para o acumulador, int8 a escala QB para as cabecas."""
- 
+
     def __init__(self, qa: float = QA_DEFAULT, qb: float = QB_DEFAULT):
         self.qa = qa
         self.qb = qb
- 
+
     def __call__(self, model: "QuoridorNNUE"):
         w1_max = INT16_MAX / self.qa
         head_max = INT8_MAX / self.qb
         with torch.no_grad():
             model.fc1.weight.clamp_(-w1_max, w1_max)
             model.fc1.bias.clamp_(-w1_max, w1_max)
-            for layer in (model.value1_wl, model.value2_wl,
-                          model.value1_aux, model.value2_aux, model.policy):
+            for layer in (model.value1_wl, model.value2_wl, model.policy):
                 layer.weight.clamp_(-head_max, head_max)
- 
+
+
  
 # --- features -----------------------------------------------------------------
-def to_chunk_tensors(chunk: np.ndarray, device):
+def to_chunk_tensors(chunk: np.ndarray, k_chunk: np.ndarray, device):
     """Converte um bloco de TrainingSample (array estruturado numpy) para
     tensores densos e transfere tudo para `device` de uma vez so. Chamar
     isso uma vez por bloco grande (em vez de uma vez por batch) e o que
     permite ao `iter_gpu_batches` amortizar o custo de transferencia
     host->device entre varios batches.
- 
+
+    `k_chunk`: array float32 do MESMO tamanho/ORDEM de `chunk` (ja fatiado/
+    permutado em paralelo pelo chamador -- ver k_by_source em
+    load_training_population) com o "k" da fonte de cada posicao. Usado
+    aqui pra montar wl_target = k*game_result_prob + (1-k)*ev_prob (ver
+    nota no topo do arquivo e em DATA_SOURCES_DEFAULT).
+
     NOTA (2026-08): own_pawn/opp_pawn/walls_h/walls_v em `chunk` já vêm
     ESPELHADOS pra perspectiva canônica do mover (mirroredPawnCell/
     mirrorWallBitboard em selfplay.hpp, no momento da gravação) -- não é
@@ -354,39 +390,51 @@ def to_chunk_tensors(chunk: np.ndarray, device):
     opp_wl_bucket = np.clip(chunk["walls_left_opp"].astype(np.int64), 0, WALLS_LEFT_BUCKETS - 1)
     x[np.arange(n), wl_base + own_wl_bucket] = 1.0
     x[np.arange(n), wl_base + WALLS_LEFT_BUCKETS + opp_wl_bucket] = 1.0
- 
+
+    # wl_target: blend por posicao entre o resultado REAL do jogo (na
+    # perspectiva do MOVER, igual sempre foi) e a avaliacao da propria NNUE
+    # gravada no .bin (nnue_eval, perspectiva ABSOLUTA das brancas --
+    # reprojetada pra perspectiva do mover via `mover` antes de misturar).
+    # k=1 (fontes antigas) reduz isso a wl_target = result_prob_mover, ou
+    # seja, o comportamento de sempre.
+    result_prob_mover = (chunk["game_result"].astype(np.float32) + 1.0) / 2.0
+    ev_white = chunk["nnue_eval"].astype(np.float32) / np.float32(EV_SCALE)
+    mover = chunk["mover"].astype(np.float32)
+    ev_mover = np.where(mover == 0.0, ev_white, 1.0 - ev_white).astype(np.float32)
+    k = k_chunk.astype(np.float32)
+    wl_target = k * result_prob_mover + (1.0 - k) * ev_mover
+
     return {
         "x": torch.from_numpy(x).to(device, non_blocking=True),
-        "search_score": torch.from_numpy(chunk["search_score"].astype(np.float32)).to(device, non_blocking=True),
-        "game_result": torch.from_numpy(chunk["game_result"].astype(np.float32)).to(device, non_blocking=True),
+        "wl_target": torch.from_numpy(wl_target).to(device, non_blocking=True),
         "policy_target": torch.from_numpy(chunk["policy_target"].astype(np.int64)).to(device, non_blocking=True),
     }
- 
- 
-def iter_gpu_batches(chunk: np.ndarray, device, batch_size: int, gpu_chunk_size: int):
-    """Percorre `chunk` em sub-blocos de ate `gpu_chunk_size` posicoes,
-    transferindo cada sub-bloco para `device` uma unica vez (via
-    `to_chunk_tensors`), e dentro dele fatia os batches de treino/avaliacao
-    (`batch_size`) diretamente na VRAM -- sem nenhum novo round-trip
-    host->device por batch. Em CPU o efeito e neutro (o "device" ja e a
-    propria RAM), mas em GPU isso reduz o numero de transferencias por um
-    fator de ~gpu_chunk_size/batch_size."""
+
+
+def iter_gpu_batches(chunk: np.ndarray, k_chunk: np.ndarray, device, batch_size: int, gpu_chunk_size: int):
+    """Percorre `chunk` (e `k_chunk`, MESMA ordem/tamanho) em sub-blocos de
+    ate `gpu_chunk_size` posicoes, transferindo cada sub-bloco para
+    `device` uma unica vez (via `to_chunk_tensors`), e dentro dele fatia os
+    batches de treino/avaliacao (`batch_size`) diretamente na VRAM -- sem
+    nenhum novo round-trip host->device por batch. Em CPU o efeito e
+    neutro (o "device" ja e a propria RAM), mas em GPU isso reduz o numero
+    de transferencias por um fator de ~gpu_chunk_size/batch_size."""
     n = len(chunk)
     gpu_chunk_size = max(batch_size, gpu_chunk_size)
     for gstart in range(0, n, gpu_chunk_size):
         sub = chunk[gstart:gstart + gpu_chunk_size]
-        t = to_chunk_tensors(sub, device)
+        k_sub = k_chunk[gstart:gstart + gpu_chunk_size]
+        t = to_chunk_tensors(sub, k_sub, device)
         n_sub = len(sub)
         for start in range(0, n_sub, batch_size):
             end = min(start + batch_size, n_sub)
             yield {
                 "x": t["x"][start:end],
-                "search_score": t["search_score"][start:end],
-                "game_result": t["game_result"][start:end],
+                "wl_target": t["wl_target"][start:end],
                 "policy_target": t["policy_target"][start:end],
             }
- 
- 
+
+
 # --- orcamento de memoria: auto batch-size (VRAM) / chunk-size (RAM) -------
 def compute_auto_batch_size(vram_budget_gb, reserved_gb=1.0, min_bs=64, max_bs=BATCH_SIZE_MAX_DEFAULT):
     """Estimativa conservadora de quantas amostras cabem por batch dentro do
@@ -492,7 +540,7 @@ def apply_lr_wd(opt, lr, wd):
  
 # --- early stopping -------------------------------------------------------------
 class EarlyStopper:
-    MINIMIZE = {"val_loss", "val_outcome", "val_score", "val_policy"}
+    MINIMIZE = {"val_loss", "val_outcome", "val_policy"}
     MAXIMIZE = {"val_policy_acc"}
  
     def __init__(self, monitor="val_loss", patience=8, min_delta=1e-4, enabled=True):
@@ -622,7 +670,7 @@ _CONFIG_JSON_HYPERPARAM_KEYS = (
     "lr", "lr_min", "lr_schedule", "warmup_epochs", "step_size", "step_gamma", "exp_gamma",
     "weight_decay", "weight_decay_min", "wd_schedule",
     "early_stop", "patience", "min_delta", "monitor",
-    "w_score", "w_outcome", "w_policy", "qa", "qb", "grad_clip_norm",
+    "w_outcome", "w_policy", "qa", "qb", "grad_clip_norm",
 )
  
  
@@ -808,28 +856,29 @@ def export_weights(model: QuoridorNNUE, path: str):
     with torch.no_grad():
         w1 = model.fc1.weight.detach().cpu().numpy().T.astype(np.float32)
         b1 = model.fc1.bias.detach().cpu().numpy().astype(np.float32)
- 
+
         def head_arrays(value1: nn.Linear, value2: nn.Linear):
             wv1 = value1.weight.detach().cpu().numpy().T.astype(np.float32)
             bv1 = value1.bias.detach().cpu().numpy().astype(np.float32)
             wv2 = value2.weight.detach().cpu().numpy().reshape(-1).astype(np.float32)
             bv2 = value2.bias.detach().cpu().numpy().astype(np.float32)
             return wv1, bv1, wv2, bv2
- 
+
         wv1_wl, bv1_wl, wv2_wl, bv2_wl = head_arrays(model.value1_wl, model.value2_wl)
-        wv1_aux, bv1_aux, wv2_aux, bv2_aux = head_arrays(model.value1_aux, model.value2_aux)
         wp = model.policy.weight.detach().cpu().numpy().astype(np.float32)
         bp = model.policy.bias.detach().cpu().numpy().astype(np.float32)
- 
+
     assert w1.shape == (NUM_FEATURES, HIDDEN)
     assert wv1_wl.shape == (HIDDEN, 32)
-    assert wv1_aux.shape == (HIDDEN, 32)
     assert wp.shape == (POLICY_OUT, HIDDEN)
- 
+
     dir_name = os.path.dirname(os.path.abspath(path))
     if dir_name:
         os.makedirs(dir_name, exist_ok=True)
- 
+
+    # Layout tem que casar EXATAMENTE com NNUEWeights::loadFromFile em
+    # nnue.hpp (sem cabeca auxiliar, 2026-08+): w1, b1, wv1_wl, bv1_wl,
+    # wv2_wl, bv2_wl, wp, bp -- nesta ordem, sem cabecalho.
     with open(path, "wb") as f:
         f.write(np.ascontiguousarray(w1).tobytes())
         f.write(np.ascontiguousarray(b1).tobytes())
@@ -837,13 +886,9 @@ def export_weights(model: QuoridorNNUE, path: str):
         f.write(np.ascontiguousarray(bv1_wl).tobytes())
         f.write(np.ascontiguousarray(wv2_wl).tobytes())
         f.write(np.ascontiguousarray(bv2_wl).tobytes())
-        f.write(np.ascontiguousarray(wv1_aux).tobytes())
-        f.write(np.ascontiguousarray(bv1_aux).tobytes())
-        f.write(np.ascontiguousarray(wv2_aux).tobytes())
-        f.write(np.ascontiguousarray(bv2_aux).tobytes())
         f.write(np.ascontiguousarray(wp).tobytes())
         f.write(np.ascontiguousarray(bp).tobytes())
- 
+
  
 def _default_quant_path(out_path: str) -> str:
     if out_path.endswith(".bin"):
@@ -853,36 +898,33 @@ def _default_quant_path(out_path: str) -> str:
  
 # --- avaliacao em chunks (limitado por RAM/VRAM) -----------------------------
 @torch.no_grad()
-def run_eval(ds, indices, batch_size, chunk_size, gpu_chunk_size, model, device,
-             w_score, w_outcome, w_policy):
+def run_eval(ds, indices, k_by_source, batch_size, chunk_size, gpu_chunk_size, model, device,
+             w_outcome, w_policy):
     model.eval()
-    total = dict(loss=0.0, score=0.0, outcome=0.0, policy=0.0, correct=0)
+    total = dict(loss=0.0, outcome=0.0, policy=0.0, correct=0)
     n_items = len(indices)
     for start in range(0, n_items, chunk_size):
         chunk_idx = indices[start:start + chunk_size]
         chunk = ds[chunk_idx]
-        for t in iter_gpu_batches(chunk, device, batch_size, gpu_chunk_size):
-            score_t = t["search_score"] / VALUE_SCALE
-            result_t = (t["game_result"] + 1.0) / 2.0
+        k_chunk = k_by_source[chunk_idx]
+        for t in iter_gpu_batches(chunk, k_chunk, device, batch_size, gpu_chunk_size):
             policy_t = t["policy_target"]
- 
-            value_wl, value_aux, policy_logits = model(t["x"])
-            loss_outcome = F.binary_cross_entropy_with_logits(value_wl, result_t)
-            loss_score = F.mse_loss(value_aux / VALUE_SCALE, score_t)
+
+            value_wl, policy_logits = model(t["x"])
+            loss_outcome = F.binary_cross_entropy_with_logits(value_wl, t["wl_target"])
             loss_policy = F.cross_entropy(policy_logits, policy_t)
-            loss = w_outcome * loss_outcome + w_score * loss_score + w_policy * loss_policy
- 
+            loss = w_outcome * loss_outcome + w_policy * loss_policy
+
             nb = len(t["x"])
             total["loss"] += loss.item() * nb
-            total["score"] += loss_score.item() * nb
             total["outcome"] += loss_outcome.item() * nb
             total["policy"] += loss_policy.item() * nb
             total["correct"] += (policy_logits.argmax(dim=-1) == policy_t).sum().item()
-    for k in ("loss", "score", "outcome", "policy"):
-        total[k] /= max(1, n_items)
+    for key in ("loss", "outcome", "policy"):
+        total[key] /= max(1, n_items)
     total["policy_acc"] = total["correct"] / max(1, n_items)
     return total
- 
+
  
 # --- plots ----------------------------------------------------------------------
 def save_plots(history, plot_dir):
@@ -904,11 +946,11 @@ def save_plots(history, plot_dir):
         ax.grid(alpha=0.3)
  
     plot_pair(axes[0, 0], "loss", "Loss total")
-    plot_pair(axes[0, 1], "outcome", "Loss resultado (BCE)")
-    plot_pair(axes[0, 2], "score", "Loss score aux (MSE)")
-    plot_pair(axes[1, 0], "policy", "Loss politica (CE)")
-    plot_pair(axes[1, 1], "policy_acc", "Acuracia da politica")
- 
+    plot_pair(axes[0, 1], "outcome", "Loss resultado (BCE, wl_target)")
+    plot_pair(axes[0, 2], "policy", "Loss politica (CE)")
+    plot_pair(axes[1, 0], "policy_acc", "Acuracia da politica")
+    axes[1, 1].axis("off")  # slot vago desde a remocao da cabeca auxiliar (2026-08)
+
     ax = axes[1, 2]
     ax.plot(epochs, history["lr"], color="tab:orange", label="learning rate")
     ax.set_ylabel("learning rate")
@@ -953,10 +995,12 @@ def resolve_data_source_path(path: str, data_root: str) -> str:
 def load_training_population(data_arg, sources_arg, data_root, seed):
     """Monta a populacao de treino a partir de --data (fluxo antigo, uma
     lista/glob/diretorio achatada, sem amostragem) OU --data-sources/
-    DATA_SOURCES_DEFAULT (fluxo novo: lista de {"path", "frac"}, uma fracao
-    [0,1] de POSICOES sorteada aleatoriamente por pasta).
- 
-    Retorna (train_paths, train_ds, base_idx):
+    DATA_SOURCES_DEFAULT (fluxo novo: lista de {"path", "frac", "k"}, uma
+    fracao [0,1] de POSICOES sorteada aleatoriamente por pasta, e um peso
+    "k" por fonte para o blend WL/EV -- ver comentario em
+    DATA_SOURCES_DEFAULT).
+
+    Retorna (train_paths, train_ds, base_idx, k_by_source):
       - train_paths / train_ds: iguais ao retorno de load_multi_selfplay,
         cobrindo TODOS os arquivos .bin de TODAS as fontes envolvidas.
       - base_idx: array de indices GLOBAIS (posicoes dentro de train_ds) ja
@@ -965,16 +1009,25 @@ def load_training_population(data_arg, sources_arg, data_root, seed):
         base_idx, nao do total bruto). Sem --data-sources, base_idx e
         simplesmente arange(len(train_ds)) (comportamento antigo,
         inalterado).
+      - k_by_source: array float32 de tamanho len(train_ds) (MESMO
+        indexador que train_ds/base_idx, nao so das posicoes selecionadas)
+        com o "k" da fonte de cada posicao -- 1.0 em tudo quando nao ha
+        --data-sources (comportamento antigo: ignora evalNNUE). Indexavel
+        diretamente por qualquer global_idx tirado de base_idx.
     """
     if not sources_arg:
         train_paths, train_ds = load_multi_selfplay(data_arg)
-        return train_paths, train_ds, np.arange(len(train_ds))
- 
+        return train_paths, train_ds, np.arange(len(train_ds)), np.ones(len(train_ds), dtype=np.float32)
+
     rng = np.random.default_rng(seed)
     all_paths, source_file_counts, kept_sources = [], [], []
     for entry in sources_arg:
         raw_path = entry["path"]
         frac = float(entry.get("frac", 1.0))
+        k = float(entry.get("k", 1.0))
+        if not (0.0 <= k <= 1.0):
+            raise ValueError(f"[data-sources] k invalido ({k}) para '{raw_path}' -- "
+                              f"precisa estar em [0.0, 1.0] (1.0 = ignora evalNNUE, so resultado real)")
         if frac <= 0.0:
             print(f"[data-sources] ignorado (frac=0): {raw_path}")
             continue
@@ -987,8 +1040,8 @@ def load_training_population(data_arg, sources_arg, data_root, seed):
             raise ValueError(f"[data-sources] nenhum .bin encontrado em '{resolved}' (fonte '{raw_path}')")
         all_paths.extend(src_paths)
         source_file_counts.append(len(src_paths))
-        kept_sources.append((raw_path, frac, resolved))
- 
+        kept_sources.append((raw_path, frac, k, resolved))
+
     if not all_paths:
         raise ValueError("[data-sources] todas as fontes tem frac=0 (ou a lista esta vazia) -- "
                           "nada para treinar")
@@ -996,19 +1049,21 @@ def load_training_population(data_arg, sources_arg, data_root, seed):
         dupes = sorted({p for p in all_paths if all_paths.count(p) > 1})
         raise ValueError(f"[data-sources] pastas de fontes se sobrepoem -- arquivo(s) repetido(s) "
                           f"em mais de uma fonte: {dupes}")
- 
+
     train_paths, train_ds = load_multi_selfplay(all_paths)
     file_lens = [n for _, n in train_ds.sizes()]
- 
+    k_by_source = np.ones(len(train_ds), dtype=np.float32)
+
     selected_chunks = []
     idx_cursor = 0
     global_offset = 0
     print(f"fontes de treino ({len(kept_sources)} pasta(s), sorteio aleatorio por posicao, seed={seed}):")
-    for (raw_path, frac, resolved), nfiles in zip(kept_sources, source_file_counts):
+    for (raw_path, frac, k, resolved), nfiles in zip(kept_sources, source_file_counts):
         n_source = sum(file_lens[idx_cursor:idx_cursor + nfiles])
         start = global_offset
         idx_cursor += nfiles
         global_offset += n_source
+        k_by_source[start:start + n_source] = k
         if frac >= 1.0:
             sel = np.arange(start, start + n_source)
         else:
@@ -1017,12 +1072,12 @@ def load_training_population(data_arg, sources_arg, data_root, seed):
             sel = start + np.sort(local)
         selected_chunks.append(sel)
         print(f"  - {raw_path:24s} ({resolved}): {nfiles} arquivo(s), {n_source:,} posicoes, "
-              f"frac={frac:.2f} -> {len(sel):,} selecionadas")
- 
+              f"frac={frac:.2f} k={k:.2f} -> {len(sel):,} selecionadas")
+
     base_idx = np.concatenate(selected_chunks)
     print(f"total (todas as fontes, pos-amostragem): {len(base_idx):,} / {global_offset:,} posicoes "
           f"({100.0 * len(base_idx) / max(1, global_offset):.1f}%)")
-    return train_paths, train_ds, base_idx
+    return train_paths, train_ds, base_idx, k_by_source
  
  
 # --- treino ------------------------------------------------------------------
@@ -1107,7 +1162,7 @@ def train(args):
         _print_banner([f"MODO: TREINO DO ZERO -- pesos aleatorios, epoch 1  (ciclo {cycle_id})"])
  
     sources = args.data_sources if args.data_sources else DATA_SOURCES_DEFAULT
-    train_paths, train_ds, base_idx = load_training_population(
+    train_paths, train_ds, base_idx, k_by_source = load_training_population(
         args.data, sources, DATA_ROOT_DEFAULT, args.seed)
     if sources:
         print(f"dados de treino: {len(train_paths)} arquivo(s), {len(train_ds):,} posicoes no total "
@@ -1116,22 +1171,30 @@ def train(args):
         print(f"dados de treino: {len(train_paths)} arquivo(s), {len(train_ds):,} posicoes")
         for p, n in train_ds.sizes():
             print(f"  - {p}: {n:,} posicoes")
- 
+
     rng = np.random.default_rng(args.seed)
     torch.manual_seed(args.seed)
- 
+
     if args.val_data:
         val_paths, val_ds = load_multi_selfplay(args.val_data)
         print(f"dados de validacao (explicitos): {len(val_paths)} arquivo(s), {len(val_ds):,} posicoes")
         train_idx = base_idx
         val_idx = np.arange(len(val_ds))
+        # --val-data e um diretorio explicito, fora de --data-sources/
+        # DATA_SOURCES_DEFAULT -- nao tem "k" associado. k=1.0 (ignora
+        # evalNNUE, so resultado real) e o mais correto pra metrica de
+        # validacao: mede a rede contra o que realmente aconteceu na
+        # partida, nao contra a opiniao de uma NNUE anterior.
+        val_k_by_source = np.ones(len(val_ds), dtype=np.float32)
     else:
         n_total = len(base_idx)
         n_val = max(1, int(n_total * args.val_split))
         perm = rng.permutation(n_total)
         val_idx, train_idx = base_idx[perm[:n_val]], base_idx[perm[n_val:]]
         val_ds = train_ds
+        val_k_by_source = k_by_source
         print(f"split treino/validacao: {len(train_idx):,} / {len(val_idx):,} (val-split={args.val_split})")
+
  
     device = torch.device(args.device)
     print_device_info(device)
@@ -1152,7 +1215,18 @@ def train(args):
  
     model = QuoridorNNUE().to(device)
     if resumed is not None:
-        model.load_state_dict(resumed["model_state"])
+        # strict=False: um train_state.pt de ANTES de 2026-08 (fingerprint
+        # compativel, mas com chaves value1_aux.*/value2_aux.* que a
+        # arquitetura atual nao tem mais) nao pode ser retomado em modo
+        # estrito. Avisa e ignora essas chaves -- ver mesma logica em
+        # _export_state_dict.
+        missing, unexpected = model.load_state_dict(resumed["model_state"], strict=False)
+        if unexpected:
+            print(f"[resume] aviso: {len(unexpected)} chave(s) do checkpoint ignoradas "
+                  f"(formato antigo, provavelmente cabeca auxiliar removida): {sorted(unexpected)}")
+        if missing:
+            raise RuntimeError(f"[resume] checkpoint incompativel: faltam chaves que o modelo "
+                                f"atual precisa: {sorted(missing)}")
     elif args.init_from:
         raw = _load_raw_weights(args.init_from)
         _load_into_model(model, raw)
@@ -1174,7 +1248,7 @@ def train(args):
  
     history = {k: [] for k in (
         "epoch", "train_loss", "val_loss", "train_outcome", "val_outcome",
-        "train_score", "val_score", "train_policy", "val_policy",
+        "train_policy", "val_policy",
         "train_policy_acc", "val_policy_acc", "lr", "wd",
     )}
  
@@ -1237,7 +1311,7 @@ def train(args):
             torch.cuda.reset_peak_memory_stats(device)
  
         model.train()
-        tr_total = dict(loss=0.0, score=0.0, outcome=0.0, policy=0.0, correct=0)
+        tr_total = dict(loss=0.0, outcome=0.0, policy=0.0, correct=0)
         n_train_items = len(train_idx)
         epoch_start_time = time.time()
         last_progress_print = epoch_start_time
@@ -1245,38 +1319,41 @@ def train(args):
         chunk_num = 0
         progress_print_count = 0
         last_progress_was_inline = False
- 
+
         for chunk_idx in iter_chunks(n_train_items, chunk_size, rng):
             chunk_num += 1
             global_idx = train_idx[chunk_idx]
             chunk = train_ds[global_idx]
-            chunk = chunk[rng.permutation(len(chunk))]  # embaralha uma vez por chunk
- 
-            for t in iter_gpu_batches(chunk, device, batch_size, gpu_chunk_size):
-                score_t = t["search_score"] / VALUE_SCALE
-                result_t = (t["game_result"] + 1.0) / 2.0
+            k_chunk = k_by_source[global_idx]
+            perm = rng.permutation(len(chunk))  # embaralha uma vez por chunk
+            chunk = chunk[perm]
+            k_chunk = k_chunk[perm]
+
+            for t in iter_gpu_batches(chunk, k_chunk, device, batch_size, gpu_chunk_size):
                 policy_t = t["policy_target"]
- 
-                value_wl, value_aux, policy_logits = model(t["x"])
-                loss_outcome = F.binary_cross_entropy_with_logits(value_wl, result_t)
-                loss_score = F.mse_loss(value_aux / VALUE_SCALE, score_t)
+
+                value_wl, policy_logits = model(t["x"])
+                loss_outcome = F.binary_cross_entropy_with_logits(value_wl, t["wl_target"])
                 loss_policy = F.cross_entropy(policy_logits, policy_t)
-                loss = args.w_outcome * loss_outcome + args.w_score * loss_score + args.w_policy * loss_policy
- 
+                loss = args.w_outcome * loss_outcome + args.w_policy * loss_policy
+
                 opt.zero_grad(set_to_none=True)
                 loss.backward()
                 if args.grad_clip_norm and args.grad_clip_norm > 0:
                     torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=args.grad_clip_norm)
                 opt.step()
                 clipper(model)
- 
+
                 nb = len(t["x"])
                 tr_total["loss"] += loss.item() * nb
-                tr_total["score"] += loss_score.item() * nb
                 tr_total["outcome"] += loss_outcome.item() * nb
                 tr_total["policy"] += loss_policy.item() * nb
                 tr_total["correct"] += (policy_logits.argmax(dim=-1) == policy_t).sum().item()
                 positions_done += nb
+
+                now = time.time()
+                if args.progress_every_secs > 0 and now - last_progress_print >= args.progress_every_secs:
+                    last_progress_print = now
  
                 now = time.time()
                 if args.progress_every_secs > 0 and now - last_progress_print >= args.progress_every_secs:
@@ -1304,33 +1381,32 @@ def train(args):
                         print(line + " " * 8, end="\r", flush=True)
                         last_progress_was_inline = True
  
-        for k in ("loss", "score", "outcome", "policy"):
+        for k in ("loss", "outcome", "policy"):
             tr_total[k] /= max(1, n_train_items)
         tr_total["policy_acc"] = tr_total["correct"] / max(1, n_train_items)
- 
+
         if last_progress_was_inline:
             print()  # fecha a linha viva (\r) antes de qualquer print permanente do epoch
- 
-        va = run_eval(val_ds, val_idx, batch_size, chunk_size, gpu_chunk_size, model, device,
-                      args.w_score, args.w_outcome, args.w_policy)
- 
+
+        va = run_eval(val_ds, val_idx, val_k_by_source, batch_size, chunk_size, gpu_chunk_size, model, device,
+                      args.w_outcome, args.w_policy)
+
         history["epoch"].append(epoch)
         history["train_loss"].append(tr_total["loss"])
         history["val_loss"].append(va["loss"])
         history["train_outcome"].append(tr_total["outcome"])
         history["val_outcome"].append(va["outcome"])
-        history["train_score"].append(tr_total["score"])
-        history["val_score"].append(va["score"])
         history["train_policy"].append(tr_total["policy"])
         history["val_policy"].append(va["policy"])
         history["train_policy_acc"].append(tr_total["policy_acc"])
         history["val_policy_acc"].append(va["policy_acc"])
         history["lr"].append(lr)
         history["wd"].append(wd)
- 
+
         monitored = {"val_loss": va["loss"], "val_outcome": va["outcome"],
-                     "val_score": va["score"], "val_policy": va["policy"],
+                     "val_policy": va["policy"],
                      "val_policy_acc": va["policy_acc"]}[args.monitor]
+
         improved, should_stop = stopper.step(monitored, epoch, model)
  
         # checkpoint de resume: gravado a CADA epoch (nao so quando melhora) --
@@ -1358,9 +1434,9 @@ def train(args):
                   f"time={format_duration(epoch_duration)}  total={format_duration(time.time() - t0)}  "
                   f"ETA={eta_run}{vram_note}{star}")
             print(f"  treino  loss={tr_total['loss']:.4f}  acc={tr_total['policy_acc']:.3f}  "
-                  f"(score={tr_total['score']:.4f} outcome={tr_total['outcome']:.4f} policy={tr_total['policy']:.4f})")
+                  f"(outcome={tr_total['outcome']:.4f} policy={tr_total['policy']:.4f})")
             print(f"  valid   loss={va['loss']:.4f}  acc={va['policy_acc']:.3f}  "
-                  f"(score={va['score']:.4f} outcome={va['outcome']:.4f} policy={va['policy']:.4f})")
+                  f"(outcome={va['outcome']:.4f} policy={va['policy']:.4f})")
  
         if args.plot_dir and (epoch % args.plot_every_epochs == 0 or epoch == args.epochs or should_stop):
             save_plots(history, args.plot_dir)
@@ -1405,30 +1481,72 @@ def train(args):
  
 def _export_state_dict(state_dict, path, device):
     model = QuoridorNNUE().to(device)
-    model.load_state_dict(state_dict)
+    # strict=False: um state_dict de ANTES de 2026-08 (com chaves
+    # value1_aux.*/value2_aux.*, cabeca auxiliar ja removida de
+    # QuoridorNNUE) nao pode ser carregado em modo estrito -- torch reclama
+    # de "unexpected key(s)". Avisamos e seguimos, descartando essas
+    # chaves; todas as chaves que o modelo NOVO precisa (fc1/value*_wl/
+    # policy) continuam batendo normalmente.
+    missing, unexpected = model.load_state_dict(state_dict, strict=False)
+    if unexpected:
+        print(f"[export] aviso: {len(unexpected)} chave(s) do checkpoint ignoradas "
+              f"(formato antigo, provavelmente cabeca auxiliar removida): {sorted(unexpected)}")
+    if missing:
+        raise RuntimeError(f"[export] checkpoint incompativel: faltam chaves que o modelo atual "
+                            f"precisa: {sorted(missing)}")
     export_weights(model, path)
- 
- 
+
+
 def _load_raw_weights(path):
+    """Le um .bin de pesos crus (float32, layout de NNUEWeights::loadFromFile
+    em nnue.hpp) para uso com --init-from. Aceita dois formatos, detectados
+    pelo TAMANHO do arquivo:
+      - atual (2026-08+, sem cabeca auxiliar): w1,b1,wv1_wl,bv1_wl,wv2_wl,
+        bv2_wl,wp,bp.
+      - antigo (com cabeca auxiliar, pre-2026-08): mesma coisa + um bloco
+        extra wv1_aux,bv1_aux,wv2_aux,bv2_aux logo apos a cabeca WL.
+    No formato antigo, o bloco aux e lido (pra manter o cursor do arquivo
+    no lugar certo) e DESCARTADO -- a cabeca auxiliar nao existe mais no
+    modelo, entao nao ha onde copiar esses pesos, e isso e o esperado (nao
+    um erro): --init-from com um .bin desse tipo deve funcionar sem
+    intervencao, so ignorando silenciosamente (com aviso) os pesos que a
+    arquitetura atual nao usa mais."""
+    head_floats = HIDDEN * 32 + 32 + 32 + 1  # wv1 + bv1 + wv2 + bv2 de UMA cabeca 256->32->1
+    base_floats = NUM_FEATURES * HIDDEN + HIDDEN + head_floats
+    tail_floats = POLICY_OUT * HIDDEN + POLICY_OUT
+    expected_new = (base_floats + tail_floats) * 4
+    expected_old = (base_floats + head_floats + tail_floats) * 4  # + bloco da cabeca aux
+
+    file_size = os.path.getsize(path)
+    if file_size not in (expected_new, expected_old):
+        raise ValueError(
+            f"[init-from] '{path}' tem tamanho inesperado ({file_size} bytes) -- nao bate nem "
+            f"com o formato atual ({expected_new} bytes, sem cabeca auxiliar) nem com o formato "
+            f"antigo ({expected_old} bytes, com cabeca auxiliar). Verifique se o arquivo nao esta "
+            f"truncado/corrompido ou se veio de uma versao de nnue.hpp com outra arquitetura.")
+    is_old_format = (file_size == expected_old)
+
     with open(path, "rb") as f:
         w1 = np.fromfile(f, dtype="<f4", count=NUM_FEATURES * HIDDEN).reshape(NUM_FEATURES, HIDDEN)
         b1 = np.fromfile(f, dtype="<f4", count=HIDDEN)
- 
+
         def read_head():
             wv1 = np.fromfile(f, dtype="<f4", count=HIDDEN * 32).reshape(HIDDEN, 32)
             bv1 = np.fromfile(f, dtype="<f4", count=32)
             wv2 = np.fromfile(f, dtype="<f4", count=32)
             bv2 = np.fromfile(f, dtype="<f4", count=1)
             return wv1, bv1, wv2, bv2
- 
+
         wv1_wl, bv1_wl, wv2_wl, bv2_wl = read_head()
-        wv1_aux, bv1_aux, wv2_aux, bv2_aux = read_head()
+        if is_old_format:
+            read_head()  # cabeca auxiliar antiga -- le pra avancar o cursor, descarta o resultado
+            print(f"[init-from] '{path}' esta no formato antigo (com cabeca auxiliar) -- "
+                  f"cabeca auxiliar ignorada, so os pesos de w1/b1/cabeca WL/policy sao usados.")
         wp = np.fromfile(f, dtype="<f4", count=POLICY_OUT * HIDDEN).reshape(POLICY_OUT, HIDDEN)
         bp = np.fromfile(f, dtype="<f4", count=POLICY_OUT)
-    return dict(w1=w1, b1=b1, wv1_wl=wv1_wl, bv1_wl=bv1_wl, wv2_wl=wv2_wl, bv2_wl=bv2_wl,
-                wv1_aux=wv1_aux, bv1_aux=bv1_aux, wv2_aux=wv2_aux, bv2_aux=bv2_aux, wp=wp, bp=bp)
- 
- 
+    return dict(w1=w1, b1=b1, wv1_wl=wv1_wl, bv1_wl=bv1_wl, wv2_wl=wv2_wl, bv2_wl=bv2_wl, wp=wp, bp=bp)
+
+
 def _load_into_model(model: QuoridorNNUE, raw: dict):
     with torch.no_grad():
         model.fc1.weight.copy_(torch.from_numpy(raw["w1"].T.copy()))
@@ -1437,13 +1555,10 @@ def _load_into_model(model: QuoridorNNUE, raw: dict):
         model.value1_wl.bias.copy_(torch.from_numpy(raw["bv1_wl"]))
         model.value2_wl.weight.copy_(torch.from_numpy(raw["wv2_wl"].reshape(1, -1)))
         model.value2_wl.bias.copy_(torch.from_numpy(raw["bv2_wl"]))
-        model.value1_aux.weight.copy_(torch.from_numpy(raw["wv1_aux"].T.copy()))
-        model.value1_aux.bias.copy_(torch.from_numpy(raw["bv1_aux"]))
-        model.value2_aux.weight.copy_(torch.from_numpy(raw["wv2_aux"].reshape(1, -1)))
-        model.value2_aux.bias.copy_(torch.from_numpy(raw["bv2_aux"]))
         model.policy.weight.copy_(torch.from_numpy(raw["wp"]))
         model.policy.bias.copy_(torch.from_numpy(raw["bp"]))
- 
+
+
  
 def parse_args(argv=None):
     p = argparse.ArgumentParser(
@@ -1517,7 +1632,7 @@ def parse_args(argv=None):
     g_es.add_argument("--no-early-stop", dest="early_stop", action="store_false")
     g_es.add_argument("--patience", type=int, default=PATIENCE_DEFAULT)
     g_es.add_argument("--min-delta", type=float, default=MIN_DELTA_DEFAULT)
-    g_es.add_argument("--monitor", choices=["val_loss", "val_outcome", "val_score",
+    g_es.add_argument("--monitor", choices=["val_loss", "val_outcome",
                                              "val_policy", "val_policy_acc"],
                        default=MONITOR_DEFAULT)
     g_es.add_argument("--no-restore-best", action="store_true",
@@ -1568,7 +1683,6 @@ def parse_args(argv=None):
                              f"--ram-budget-gb permitiria (default {CHUNK_SIZE_MAX_DEFAULT})")
  
     g_loss = p.add_argument_group("pesos de loss / QAT")
-    g_loss.add_argument("--w-score", type=float, default=W_SCORE_DEFAULT)
     g_loss.add_argument("--w-outcome", type=float, default=W_OUTCOME_DEFAULT)
     g_loss.add_argument("--w-policy", type=float, default=W_POLICY_DEFAULT)
     g_loss.add_argument("--qa", type=int, default=QA_DEFAULT)
@@ -1635,7 +1749,13 @@ def parse_args(argv=None):
                 # float herdado, e isso quebra a deteccao de
                 # args.lr_auto logo abaixo -- o override de
                 # --new-cycle-lr no cycle_exhausted nunca dispara.
-                hp_for_defaults = {k: v for k, v in hp.items() if k != "lr"}
+                # "lr_min" tambem fica de fora: e relativo ao lr do ciclo
+                # anterior (ex. lr_min=1e-5 com lr=5e-5). Num NOVO CICLO
+                # com new_cycle_lr=1e-5, herdar lr_min=1e-5 faz
+                # base_lr == lr_min e o schedule cosine fica constante em
+                # 1e-5 para sempre. LR_MIN_DEFAULT (5e-6) e o valor correto
+                # quando nao passado explicitamente.
+                hp_for_defaults = {k: v for k, v in hp.items() if k not in ("lr", "lr_min")}
                 if hp_for_defaults:
                     p.set_defaults(**hp_for_defaults)
                 print(f"[config] hiperparametros herdados de {cfg_path} (epoch {cfg.get('epoch')}, "

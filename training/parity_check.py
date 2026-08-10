@@ -7,9 +7,19 @@ exatamente as fórmulas de nnue.hpp a partir do arquivo de pesos
 exportado. Se bater com a saída de `./nnue_verify data/nnue/nnue_weights.bin`,
 o pipeline export -> load -> forward em C++ está numericamente correto.
 
-MUDANÇA DESTA SESSÃO: `value` virou duas cabeças independentes
-(value_wl/value_aux, ver nnue.hpp e train_nnue.py) -- este script computa
-e imprime as duas.
+CABEÇA AUXILIAR REMOVIDA (2026-08): `value` já foi duas cabeças
+independentes (value_wl/value_aux); a auxiliar (imitação MSE da
+heurística evalSimple) foi removida de nnue.hpp/train_nnue.py por virar
+peso morto -- ver a tabela em status.md/CLAUDE.md ("Avaliação: o que cada
+estágio usa"). Este script computa e imprime só value_wl agora.
+
+ATENÇÃO (pré-existente, não corrigido nesta mudança): NUM_FEATURES abaixo
+está em 332 (sem WALLS_LEFT_BUCKETS), desatualizado em relação aos 354 de
+nnue.hpp/train_nnue.py desde que os buckets de muros restantes foram
+adicionados como feature -- ver a mesma nota em quantize_nnue.py, que TEM
+a checagem de tamanho de arquivo que pegaria esse desalinhamento; este
+script não tem essa checagem. Fora do escopo desta mudança (não mexe com
+cabeça auxiliar nem avaliação salva no .bin); ver status.md.
 
 Também recomputa, de forma totalmente independente do C++, o forward
 QUANTIZADO (int8/int16, mesmas fórmulas de NNUEWeightsQuant em nnue.hpp)
@@ -111,12 +121,10 @@ def load_weights(path):
             return wv1, bv1, wv2, bv2
 
         wv1_wl, bv1_wl, wv2_wl, bv2_wl = read_head()
-        wv1_aux, bv1_aux, wv2_aux, bv2_aux = read_head()
         wp = np.fromfile(f, dtype="<f4", count=POLICY_OUT * HIDDEN).reshape(POLICY_OUT, HIDDEN)
         bp = np.fromfile(f, dtype="<f4", count=POLICY_OUT)
     return dict(w1=w1, b1=b1,
                 wv1_wl=wv1_wl, bv1_wl=bv1_wl, wv2_wl=wv2_wl, bv2_wl=bv2_wl,
-                wv1_aux=wv1_aux, bv1_aux=bv1_aux, wv2_aux=wv2_aux, bv2_aux=bv2_aux,
                 wp=wp, bp=bp)
 
 
@@ -135,12 +143,10 @@ def load_weights_quant(path):
             return wv1, bv1, wv2, bv2
 
         wv1_wl, bv1_wl, wv2_wl, bv2_wl = read_head_quant()
-        wv1_aux, bv1_aux, wv2_aux, bv2_aux = read_head_quant()
         wp = np.fromfile(f, dtype="<i1", count=POLICY_OUT * HIDDEN).reshape(POLICY_OUT, HIDDEN).astype(np.int64)
         bp = np.fromfile(f, dtype="<i4", count=POLICY_OUT).astype(np.int64)
     return dict(QA=qa, QB=qb, w1=w1, b1=b1,
                 wv1_wl=wv1_wl, bv1_wl=bv1_wl, wv2_wl=wv2_wl, bv2_wl=bv2_wl,
-                wv1_aux=wv1_aux, bv1_aux=bv1_aux, wv2_aux=wv2_aux, bv2_aux=bv2_aux,
                 wp=wp, bp=bp)
 
 
@@ -204,9 +210,8 @@ def build_active_features(own_pawn, opp_pawn, walls_h_bits, walls_v_bits, own_pl
 
 
 def forward_head(a, weights, prefix):
-    """Núcleo compartilhado das duas cabeças de valor (float32): só muda
-    qual conjunto wv1_*/bv1_*/wv2_*/bv2_* é usado -- mesma lógica de
-    forwardValueWL/forwardValueAux em nnue.hpp."""
+    """Cabeça de valor (float32, só WL desde a remoção da cabeça auxiliar
+    em 2026-08) -- mesma lógica de forwardValueWL em nnue.hpp."""
     h = a @ weights[f"wv1_{prefix}"]
     hj = clipped_relu(h + weights[f"bv1_{prefix}"])
     return weights[f"bv2_{prefix}"] + float(hj @ weights[f"wv2_{prefix}"])
@@ -216,14 +221,14 @@ def forward(weights, x):
     acc = x @ weights["w1"] + weights["b1"]           # (256,)
     a = screlu(acc)
     value_wl = forward_head(a, weights, "wl")
-    value_aux = forward_head(a, weights, "aux")
     policy = a @ weights["wp"].T + weights["bp"]         # (209,)
-    return value_wl, value_aux, policy
+    return value_wl, policy
 
 
 def forward_head_quant(a, W, prefix, QA, QB):
-    """Núcleo compartilhado das duas cabeças quantizadas -- mesma lógica de
-    forwardValueHeadQuant em nnue.hpp."""
+    """Cabeça de valor quantizada (só WL desde a remoção da cabeça
+    auxiliar em 2026-08) -- mesma lógica de forwardValueWLQuant em
+    nnue.hpp."""
     h = a @ W[f"wv1_{prefix}"].astype(np.int64)          # (32,), escala QA*QB
     h_total = h + W[f"bv1_{prefix}"]
     QAQB = QA * QB
@@ -244,12 +249,11 @@ def forward_quant(W, active_feats):
     a = (c.astype(np.int64) ** 2) // QA   # divisor e dividendo não-negativos: // == trunc aqui
 
     value_wl = forward_head_quant(a, W, "wl", QA, QB)
-    value_aux = forward_head_quant(a, W, "aux", QA, QB)
 
     QAQB = QA * QB
     policy_raw = a @ W["wp"].astype(np.int64).T + W["bp"]  # (209,), escala QA*QB
     policy = final_descale(policy_raw, QAQB)
-    return value_wl, value_aux, policy
+    return value_wl, policy
 
 
 if __name__ == "__main__":
@@ -267,18 +271,18 @@ if __name__ == "__main__":
 
     for perspective, (own, opp) in enumerate([(pawn0, pawn1), (pawn1, pawn0)]):
         x = build_feature_vector(own, opp, walls_h, walls_v, own_player=perspective)
-        value_wl, value_aux, policy = forward(W, x)
+        value_wl, policy = forward(W, x)
         best = int(np.argmax(policy))
-        print(f"perspectiva={perspective}  value_wl={value_wl:.6f}  value_aux={value_aux:.6f}  "
+        print(f"perspectiva={perspective}  value_wl={value_wl:.6f}  "
               f"argmax_policy={best}  policy[argmax]={policy[best]:.6f}  (float32)")
         print(f"  policy[0..4] = {' '.join(f'{v:.6f}' for v in policy[:5])}")
 
         if Wq is not None:
             feats = build_active_features(own, opp, walls_h, walls_v, own_player=perspective)
-            value_wl_q, value_aux_q, policy_q = forward_quant(Wq, feats)
+            value_wl_q, policy_q = forward_quant(Wq, feats)
             best_q = int(np.argmax(policy_q))
-            print(f"perspectiva={perspective}  value_wl={value_wl_q:.6f}  value_aux={value_aux_q:.6f}  "
+            print(f"perspectiva={perspective}  value_wl={value_wl_q:.6f}  "
                   f"argmax_policy={best_q}  policy[argmax]={policy_q[best_q]:.6f}  (int8, "
-                  f"erro_wl={value_wl - value_wl_q:.6f}, erro_aux={value_aux - value_aux_q:.6f}, "
+                  f"erro_wl={value_wl - value_wl_q:.6f}, "
                   f"argmax_bate={'sim' if best == best_q else 'NAO'})")
             print(f"  policy[0..4] = {' '.join(f'{v:.6f}' for v in policy_q[:5])}")

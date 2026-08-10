@@ -42,6 +42,12 @@ namespace qr {
 
 // --- formato do registro de treino -------------------------------------
 #pragma pack(push, 1)
+// EV_SCALE: escala fixa de TrainingSample::evalNNUE -- ver nota completa
+// no campo. Mesmo valor usado em selfplay.hpp/arena.cpp (gravação) e
+// esperado por training/train_nnue.py (leitura); 65535 (uint16_t máximo)
+// dá resolução de ~0,0000153 na probabilidade, bem além do que a NNUE
+// consegue distinguir de verdade -- a escala em si não é sensível.
+constexpr uint16_t EV_SCALE = 65535;
 struct TrainingSample {
     // ATENÇÃO (mudança 2026-08, arquitetura de walls-restantes + correção
     // de perspectiva em nnue.hpp): ownPawn/oppPawn/wallsH/wallsV/
@@ -59,7 +65,27 @@ struct TrainingSample {
     uint64_t wallsV;        // bitboard de muros verticais, já espelhado
     int8_t   wallsLeftOwn;  // muros restantes do mover (escalar -- não precisa de espelho)
     int8_t   wallsLeftOpp;  // muros restantes do adversário (escalar -- não precisa de espelho)
-    int16_t  searchScore;   // evalSimple(posição, mover) no momento do lance -- alvo auxiliar p/ bootstrapping
+    // Avaliação da própria NNUE (2026-08, substitui o antigo searchScore
+    // heurístico -- ver nota "Avaliação: o que cada estágio usa" em
+    // status.md/CLAUDE.md). uint16_t em [0, EV_SCALE], escala fixa de
+    // EV_SCALE = 65535: 0 = vitória certa das PRETAS, EV_SCALE = vitória
+    // certa das BRANCAS -- perspectiva ABSOLUTA de cor (não do mover, ao
+    // contrário de gameResult abaixo), pra poder ser lida sem precisar de
+    // `mover` sempre que só se quer "o placar do ponto de vista de quem
+    // joga de brancas". train_nnue.py reconverte pra perspectiva do mover
+    // (usando o campo `mover` abaixo) na hora de misturar com o resultado
+    // real do jogo (WL_mod = WL*k + EV*(1-k), ver DATA_SOURCES_DEFAULT).
+    // Calculado com a NNUE quantizada carregada nesta execução de
+    // selfplay (buildAccumulatorQuant + forwardValueWLQuant, sigmoid do
+    // logit -- ver nnueWinProbQuant em nnue.hpp); se NNUE não está
+    // carregada (pesos zerados), o forward degrada sozinho pra logit 0 ->
+    // sigmoid 0.5 -> EV_SCALE/2 (neutro), sem caso especial nenhum aqui.
+    // .bin antigos (gravados antes desta mudança) têm um int16_t heurístico
+    // neste mesmo offset/tamanho -- continuam lidos sem erro (mesmos 2
+    // bytes), mas o valor não tem esse significado; treine com k=1.0 pra
+    // essa fonte em DATA_SOURCES_DEFAULT, o que zera o termo EV e ignora
+    // esse conteúdo por completo, seja lá o que ele signifique.
+    uint16_t evalNNUE;
     int8_t   gameResult;    // +1 se o mover desta amostra venceu a partida, -1 se perdeu
     uint16_t policyTarget;  // índice do lance jogado (0..208), já espelhado -- ver mirrorMoveForPerspective
     // Distância BFS (shortestPathLen, rules.hpp) até a linha de chegada,
@@ -212,7 +238,19 @@ inline std::vector<TrainingSample> playOneGame(Negamax& engine0, Negamax& engine
 
         auto moves = legalMoves(s);
         Move chosen;
-        int searchScore = evalSimple(s, s.turn);  // sempre calculado: é barato e vira o alvo auxiliar
+        // Avaliação da própria NNUE nesta posição, ANTES do lance, na
+        // perspectiva ABSOLUTA das brancas (ver nota completa em
+        // TrainingSample::evalNNUE acima) -- sempre calculada (barato: um
+        // forward da cabeça WL, mesmo custo de nnueEvalInt) e independente
+        // do lance escolhido abaixo (aleatório, raso ou busca completa),
+        // ao contrário do antigo searchScore que só existia pra virar alvo
+        // auxiliar de treino.
+        double evalWhiteProb;
+        {
+            AccumulatorQuant accMover = buildAccumulatorQuant(s, s.turn);
+            double probMoverWins = (double)nnueWinProbQuant(accMover);
+            evalWhiteProb = (s.turn == 0) ? probMoverWins : (1.0 - probMoverWins);
+        }
         bool randomMove = false;
         double epsNow;
         if (ply < cfg.openingRandomPlies) {
@@ -286,7 +324,7 @@ inline std::vector<TrainingSample> playOneGame(Negamax& engine0, Negamax& engine
         rec.wallsV = mirrorWallBitboard(s.wallsV, mover);
         rec.wallsLeftOwn = s.wallsLeft[mover];
         rec.wallsLeftOpp = s.wallsLeft[opp];
-        rec.searchScore = (int16_t)std::max(-30000, std::min(30000, searchScore));
+        rec.evalNNUE = (uint16_t)std::lround(std::max(0.0, std::min(1.0, evalWhiteProb)) * (double)EV_SCALE);
         rec.gameResult = 0;  // preenchido abaixo, depois que a partida terminar
         rec.policyTarget = moveToPolicyIndex(mirrorMoveForPerspective(chosen, mover));
         rec.ownDist = (uint8_t)std::min(255, shortestPathLen(s.wallsH, s.wallsV, s.pawn[mover], mover));

@@ -81,13 +81,27 @@ Web GUI (`gui_web/`): compiled `zquoridor.js`/`.wasm` are gitignored, but the bu
 
 **`endgame_race.hpp`** — when `wallsLeft[0]==0 && wallsLeft[1]==0` the wall topology is frozen and the game is an exact pawn race, solved instead of searched: a cheap disjoint-*region* gate plus exact retrograde DP over 81×81×2 states, cached per topology with a real-time budget (~3% of the move budget) so a cache miss storm can never make nodes/s worse than baseline. **Read the long header comment at the top of the file and Sections 4d/4e of `plano-additional.md` before changing anything here** — it documents four rounds of corrections, including a move-*choice* bug (not a value bug) at the real game root that lost most games while reporting correct evaluations.
 
-**`nnue.hpp`** — 354 → 256 accumulator (SCReLU) → three independent heads: WL/outcome `256→32→1` (what search consumes), auxiliary `256→32→1` imitating `evalSimple` (training scaffold, to be removed once self-play comes from the net itself), policy `256→209` (move ordering). Everything is perspective-relative (`buildAccumulator(state, perspective)`); the net never knows "who is white". Features: 81+81 pawn, 64+64 wall, 21+21 one-hot BFS-distance buckets, 11+11 one-hot remaining-walls buckets. The accumulator is always updated incrementally — no move triggers a full rebuild.
+**`nnue.hpp`** — 354 → 256 accumulator (SCReLU) → two independent heads: WL/outcome `256→32→1` (what search consumes) and policy `256→209` (move ordering). A third head, auxiliary `256→32→1` imitating `evalSimple`, existed as training scaffold until self-play started recording the network's own eval instead — removed 2026-08 (see "Evaluation: what each stage uses" below and `status.md`). Everything is perspective-relative (`buildAccumulator(state, perspective)`); the net never knows "who is white". Features: 81+81 pawn, 64+64 wall, 21+21 one-hot BFS-distance buckets, 11+11 one-hot remaining-walls buckets. The accumulator is always updated incrementally — no move triggers a full rebuild.
 
 **Quantization is QAT**, not post-hoc: `QA=255`/`QB=64` are fixed *before* training and weights are clamped each optimizer step. **These constants appear in three places — `src/nnue.hpp`, `training/train_nnue.py` (`--qa`/`--qb`), and `training/quantize_nnue.py` — and must be changed together**, or `nnue_verify` parity breaks.
 
-**Self-play binary format is the dataset.** `selfplay.exe` writes the exact struct the trainer reads; there is no preprocessing step. `TrainingSample` is 27 bytes, asserted in `training/read_selfplay.py` (`SAMPLE_DTYPE.itemsize == 27`) — changing the C++ struct requires updating that dtype in lockstep.
+**Self-play binary format is the dataset.** `selfplay.exe` writes the exact struct the trainer reads; there is no preprocessing step. `TrainingSample` is 32 bytes, asserted in `training/read_selfplay.py` (`SAMPLE_DTYPE.itemsize == 32`) — changing the C++ struct requires updating that dtype in lockstep. Since 2026-08 it carries the NNUE's own evaluation (`evalNNUE`) instead of a heuristic score — see the evaluation table below.
 
 **Eval mode**: `Negamax::setEvalMode(EvalMode::Heuristic | EvalMode::NNUE)` selects `evalSimpleW` vs. the quantized net. NNUE mode requires weights loaded and maintains `nnueAccStack` incrementally across the search stack; heuristic mode leaves `accForSearch` null. Selfplay, arena, bench, and the WASM shell all expose this switch.
+
+## Evaluation: what each stage uses
+
+"Evaluation" means something slightly different at each layer of the pipeline — search, self-play data, training target, and the HTML display all use a different number, sign convention, and range. Full detail (including the `k`-blend formula and backward-compat notes) is in `status.md`'s NNUE section; summary:
+
+| Stage                                     | What it evaluates                                                              | Perspective / sign                                        | Range                    |
+| ------------------------------------------ | -------------------------------------------------------------------------------- | ------------------------------------------------------------ | --------------------------- |
+| Search (`nnueEvalInt`, `search.hpp`)    | NNUE WL head raw logit ×`NNUE_EVAL_SCALE`(200)                                 | mover-relative (positive = side to move is ahead)             | ~[-30000, 30000], mate-saturated |
+| Heuristic fallback (`evalSimple`)       | hand-tuned material/positional score (`EvalMode::Heuristic`only, or CLI`--heuristic`) | mover-relative                                                | ~[-600, 600] typical      |
+| Self-play`.bin`(`TrainingSample::evalNNUE`) | NNUE WL head, sigmoid'd to a win probability                                    | absolute color (0 = Black certain win, 65535 = White certain win) | `uint16`0..65535       |
+| Training target (`wl_target`, `train_nnue.py`) | blend`k·game_result_prob + (1-k)·ev_prob`,`k`per data source (`DATA_SOURCES_DEFAULT`) | mover-relative probability (`ev_prob`reprojected via`mover`) | float`[0, 1]`           |
+| HTML/WASM display (`formatEval`, `app.js`) | sigmoid of the raw search score / 200                                          | absolute color (0% = Black certain win, 100% = White certain win) | `0–100%`                |
+
+
 
 ## Conventions worth keeping
 

@@ -19,9 +19,9 @@ import sys
 # CONFIG
 # =============================================================================
 
-GENERATIONS = 30
+GENERATIONS = 40
 POPULATION = 24
-GAMES_PER_MATCH = 8
+GAMES_PER_MATCH = 14
 THREADS = 14  # avalia N individuos da populacao em paralelo (ver tune_spsa.cpp --help)
 
 ELITE_FRACTION = 0.20
