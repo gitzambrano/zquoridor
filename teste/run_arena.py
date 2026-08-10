@@ -32,7 +32,7 @@ REPORT_GAMES = 50             # Atualiza e imprime o relatório parcial a cada N
 TIME_MS = 100                 # Tempo de pensamento por lance em milissegundos
 THREADS = 14                  # Número de núcleos / processos em paralelo (default 14)
 RANDOM_OPENING_PLIES = 4      # Quantidade de lances aleatórios na abertura
-SEED = 858                    # Semente aleatória
+SEED = 8589                   # Semente aleatória
 COMPILER = "g++"              # Compilador C++
 CXX_FLAGS = "-O3 -std=c++17"  # Flags de compilação
 
