@@ -1,851 +1,624 @@
-// tune_spsa.cpp -- SPSA (Simultaneous Perturbation Stochastic Approximation)
-// para os parâmetros de busca/ordenação que interagem com a NNUE
-// (Fase 4.2.10+). Reescrito nesta rodada: a versão anterior tunava os 6
-// pesos de evalSimple (EvalWeights) -- ficou obsoleta porque o motor
-// virou NNUE-first (selfplay/arena/wasm já ligam EvalMode::NNUE +
-// policy ordering por default) e o pedido explícito daquela rodada foi
-// NÃO tunar mais a heurística, só os parâmetros que afetam avaliação/
-// ordenação em modo NNUE:
+// tune_spsa.cpp -- tuner evolutivo/genético robusto para os parâmetros de busca.
 //
-//   contempt          -- Negamax::setContempt/getContempt (era CONTEMPT)
-//   policyOrderScale  -- Negamax::setPolicyOrderScale/getPolicyOrderScale
-//                         (era POLICY_ORDER_SCALE) -- escala do logit cru
-//                         da cabeça de política somado na ordenação.
-//   catScoreScale     -- Negamax::setCatScoreScale/getCatScoreScale (era
-//                         CAT_SCORE_SCALE) -- peso do calor CAT vs. o
-//                         termo de política no MESMO score de
-//                         orderWallMoves; é o parâmetro que decide o
-//                         trade-off policy-vs-CAT.
-//   policyOrderingMinDepth -- discreto (piso de profundidade em que o
-//                         forward pass extra da política é pago), tratado
-//                         à parte de SPSA (ver "SWEEP" abaixo, e "HIBRIDO").
+// O nome do arquivo é mantido por compatibilidade com os scripts existentes,
+// mas o algoritmo agora é um Genetic Algorithm (GA), não SPSA.
 //
-// search.hpp expõe os três primeiros como membros de instância com
-// getters/setters -- é a mudança que viabiliza rodar 2 engines com
-// valores DIFERENTES no mesmo processo (essencial para self-play de
-// tuning), igual ao que já era feito com EvalWeights.
+// Motivo: a função objetivo de Quoridor é discreta e ruidosa (resultado de
+// partidas), portanto estimar gradiente local é particularmente frágil.
+// O GA mantém uma população, usa crossover, mutação, elitismo e imigrantes
+// aleatórios, permitindo explorar regiões distantes e escapar de ótimos locais.
 //
-// Outros candidatos considerados e DESCARTADOS: CAT_HOT_CM/CAT_COLD_CM/
-// LMR_DIVISOR (afetam redução de LMR, não são específicos de NNUE -- mudam
-// a busca igual em modo heurístico) e NNUE_EVAL_SCALE (constante de
-// CALIBRAÇÃO compartilhada com o treino via VALUE_SCALE em train_nnue.py --
-// tunar só do lado da busca descalibraria a rede sem re-treinar).
+// Parâmetros tunados:
+//   contempt, policyOrderScale, catScoreScale,
+//   lmrMinDepth, lmrMinMoveIndex, lmrDivisor,
+//   catHotCm, catColdCm, wallBfsOrderMaxPly, qsCriticalBfsDelta,
+//   policyOrderingMinDepth, policyOrderingEnabled, quiescenceEnabled,
+//   lmrPvsEnabled.
 //
-// DESIGN -- 3 modos, configuráveis via CLI (o driver Python
-// teste/run_spsa.py expõe as mesmas opções como variáveis no topo do
-// arquivo, sem precisar editar C++ nem recompilar por mudança de config):
-//
-//   --mode spsa   (default): SPSA clássico (Spall 1998) sobre o
-//     subconjunto de {contempt, policyOrderScale, catScoreScale} marcado
-//     via --tune-contempt/--tune-policy-scale/--tune-cat-scale (todos
-//     ligados por default). Cada iteração testa UMA direção aleatória de
-//     perturbação simultânea em TODOS os parâmetros ativos via um par de
-//     partidas cabeça-a-cabeça antitético (theta+c*delta vs theta-c*delta,
-//     depois cores trocadas) -- 1 "avaliação" de gradiente por iteração,
-//     independente de quantos parâmetros estão ativos (a vantagem clássica
-//     do SPSA sobre coordinate descent quando avaliar é caro).
-//
-//     2026-08 (pedido: "varia muito pouco, roda rápido demais, parece não
-//     robusto"): cada iteração agora joga --games-per-iter partidas
-//     antitéticas (default 4, ou seja 8 partidas/iteração em vez de 2) e
-//     usa a MÉDIA dos scores como estimativa de gradiente -- reduz a
-//     variância da estimativa sem mudar o algoritmo (é só mais amostragem
-//     por iteração). As --games-per-iter repetições de uma mesma iteração
-//     são independentes entre si (perturbação theta+-c*delta é a MESMA,
-//     só a semente/trajetória da partida muda), então paralelizam
-//     perfeitamente -- ver --threads. Também loga histórico completo por
-//     iteração em CSV (--history, default spsa_history.csv) para
-//     teste/plot_spsa.py plotar a convergência.
-//
-//   --mode sweep-mindepth: policyOrderingMinDepth é discreto e de faixa
-//     pequena (tipicamente 0-6) -- não se presta bem a SPSA contínuo
-//     (perturbação +-c em torno de um inteiro pequeno quase sempre cai
-//     fora do domínio útil). Em vez disso, roda um mini-torneio round-
-//     robin: cada valor candidato (--mindepth-candidates, lista separada
-//     por vírgula) joga --mindepth-games partidas antitéticas contra cada
-//     outro candidato, com contempt/policyOrderScale/catScoreScale FIXOS
-//     no valor atual (--contempt/--policy-scale/--cat-scale, ou o default
-//     de search.hpp se omitidos). Imprime uma tabela de win-rate agregado
-//     por candidato -- a escolha final é do usuário (não há um "melhor"
-//     único sem também pesar nós/s, que este programa não mede). As
-//     partidas de cada par de candidatos também paralelizam via --threads.
-//
-//   --mode hybrid (NOVO 2026-08, pedido explícito): 1 thread do SO por
-//     valor candidato de policyOrderingMinDepth (--mindepth-candidates) --
-//     cada thread roda um SPSA CONTÍNUO COMPLETO e independente sobre
-//     {contempt, policyOrderScale, catScoreScale} com o minDepth daquela
-//     thread FIXO. Ou seja: em vez de tunar os 3 parâmetros contínuos com
-//     minDepth fixo E DEPOIS variar minDepth discretamente (sweep), tuna
-//     os 3 contínuos PARA CADA valor de minDepth em paralelo -- no final
-//     você tem um conjunto {contempt*, policyOrderScale*, catScoreScale*}
-//     ótimo (ou pelo menos convergido) por candidato de minDepth, prontos
-//     pra comparar entre si (inclusive via --mode sweep-mindepth ou
-//     teste/arena.cpp de verdade, usando os thetaAvg finais de cada
-//     resultado). --threads aqui controla o paralelismo DENTRO de cada
-//     SPSA (games-per-iter daquela thread) -- os candidatos sempre rodam
-//     concorrentemente entre si, 1 thread do SO cada, independente de
-//     --threads (ver runHybrid). Cada candidato grava seu próprio
-//     checkpoint/histórico/resultado com sufixo "_depth{D}" nos nomes de
-//     --checkpoint/--history/--result.
-//
-// NNUE + policy ordering: LIGADOS por default nos 3 modos (mesmo default
-// já usado por selfplay/arena/wasm) -- requer --nnue-weights apontando
-// para um arquivo válido (default: data/nnue/nnue_weights_int8.bin, mesmo
-// default de defaultNnueWeightsPath() em nnue.hpp). --heuristic desliga
-// tudo isso e cai para evalSimple puro, útil só para comparação/depuração
-// (SPSA sobre contempt ainda funciona em modo heurístico, mas
-// catScoreScale/policyOrderScale não têm efeito nenhum sem NNUE).
-#include "nnue.hpp"
-#include "rules.hpp"
-#include "search.hpp"
-#include <algorithm>
-#include <array>
-#include <atomic>
-#include <chrono>
-#include <cmath>
+// O registro de parâmetros é genérico: para adicionar um parâmetro basta
+// adicionar uma entrada à tabela PARAM_DEFS e o respectivo setter no engine.
+
 #include <cstdio>
 #include <cstdlib>
-#include <cstring>
+#include <cmath>
 #include <random>
-#include <sstream>
-#include <string>
-#include <thread>
 #include <vector>
+#include <string>
+#include <fstream>
+#include <sstream>
+#include <algorithm>
+#include <thread>
+#include <atomic>
+#include <chrono>
+#include <numeric>
+#include <limits>
+#include "rules.hpp"
+#include "search.hpp"
+#include "nnue.hpp"
+
 using namespace qr;
 
-// =============================================================================
-// PARÂMETROS TUNÁVEIS -- lista genérica (em vez de um struct Vec6 fixo
-// como na versão anterior) para não precisar editar este arquivo toda vez
-// que um parâmetro entra/sai do conjunto tunado; teste/run_spsa.py
-// controla o subconjunto ativo via flags, este arquivo só precisa saber
-// como LER/ESCREVER cada um num Negamax (getter/setter) e default.
-// =============================================================================
-struct TunableParam {
-  const char *name;
-  double value;  // valor corrente (double por uniformidade; contempt/
-                 // catScoreScale são inteiros na engine, arredondados
-                 // ao aplicar -- ver applyParams)
-  double lo, hi; // bounds absolutos (não relativos ao inicial -- ver
-                 // nota em main() sobre contempt poder ser negativo)
-  bool active;   // participa do SPSA nesta rodada?
-};
-
 enum ParamId {
-  P_CONTEMPT = 0,
-  P_POLICY_SCALE = 1,
-  P_CAT_SCALE = 2,
-  NPARAM_MAX = 3
+    P_CONTEMPT,
+    P_POLICY_SCALE,
+    P_CAT_SCALE,
+    P_LMR_MIN_DEPTH,
+    P_LMR_MIN_MOVE_INDEX,
+    P_LMR_DIVISOR,
+    P_CAT_HOT,
+    P_CAT_COLD,
+    P_WALL_BFS_MAX_PLY,
+    P_QS_CRITICAL_BFS_DELTA,
+    P_POLICY_MIN_DEPTH,
+    P_POLICY_ENABLED,
+    P_QUIESCENCE,
+    P_LMR_PVS,
+    NPARAM
 };
 
-void applyParams(Negamax &eng, const std::vector<TunableParam> &params) {
-  for (size_t i = 0; i < params.size(); i++) {
-    const auto &p = params[i];
-    if (i == P_CONTEMPT)
-      eng.setContempt((int)std::lround(p.value));
-    else if (i == P_POLICY_SCALE)
-      eng.setPolicyOrderScale((long long)std::lround(p.value));
-    else if (i == P_CAT_SCALE)
-      eng.setCatScoreScale((long long)std::lround(p.value));
-  }
+enum class ParamKind { Integer, Real, Boolean };
+
+struct ParamDef {
+    const char* name;
+    ParamKind kind;
+    double lo, hi, init;
+    double mutationSigma; // fração da faixa
+};
+
+static const ParamDef PARAM_DEFS[NPARAM] = {
+    {"contempt",              ParamKind::Integer, -150, 0,     CONTEMPT,          0.12},
+    {"policyOrderScale",      ParamKind::Integer,    0, 2000,  POLICY_ORDER_SCALE, 0.15},
+    {"catScoreScale",         ParamKind::Integer,    0, 20,    2,                 0.18},
+    {"lmrMinDepth",           ParamKind::Integer,    1, 8,     LMR_MIN_DEPTH,     0.18},
+    {"lmrMinMoveIndex",       ParamKind::Integer,    1, 8,     LMR_MIN_MOVE_INDEX, 0.18},
+    {"lmrDivisor",            ParamKind::Real,       1.0, 4.5, LMR_DIVISOR,       0.12},
+    {"catHotCm",              ParamKind::Integer,    50, 220,  CAT_HOT_CM,        0.12},
+    {"catColdCm",             ParamKind::Integer,    0, 100,   CAT_COLD_CM,       0.15},
+    {"wallBfsOrderMaxPly",    ParamKind::Integer,    0, 5,     WALL_BFS_ORDER_MAX_PLY, 0.20},
+    {"qsCriticalBfsDelta",    ParamKind::Integer,    1, 5,     QS_CRITICAL_BFS_DELTA, 0.20},
+    {"policyOrderingMinDepth",ParamKind::Integer,    0, 6,     3,                  0.20},
+    {"policyOrderingEnabled", ParamKind::Boolean,     0, 1,     1,                  0.30},
+    {"quiescenceEnabled",     ParamKind::Boolean,     0, 1,     1,                  0.30},
+    {"lmrPvsEnabled",         ParamKind::Boolean,     0, 1,     1,                  0.30},
+};
+
+struct Individual {
+    std::array<double, NPARAM> x{};
+    double fitness = -1e9;
+    double games = 0;
+};
+
+static double clampValue(double x, int i) {
+    return std::max(PARAM_DEFS[i].lo, std::min(PARAM_DEFS[i].hi, x));
 }
 
-// --- config da partida de auto-jogo (rápida de propósito -- SPSA precisa
-// de MUITAS partidas, não de partidas profundas) ---------------------
-int g_searchDepth = 25;
-int g_timeBudgetMs = 120;
-int g_maxPlies = 70;
-int g_openingRandomPlies = 2;
-bool g_useNNUE = true;
-bool g_policyOrdering = true;
+static void applyParams(Negamax& e, const Individual& ind) {
+    e.setContempt((int)std::lround(ind.x[P_CONTEMPT]));
+    e.setPolicyOrderScale((long long)std::lround(ind.x[P_POLICY_SCALE]));
+    e.setCatScoreScale((long long)std::lround(ind.x[P_CAT_SCALE]));
+    e.setLmrMinDepth((int)std::lround(ind.x[P_LMR_MIN_DEPTH]));
+    e.setLmrMinMoveIndex((int)std::lround(ind.x[P_LMR_MIN_MOVE_INDEX]));
+    e.setLmrDivisor(ind.x[P_LMR_DIVISOR]);
+    e.setCatHotCm((int)std::lround(ind.x[P_CAT_HOT]));
+    e.setCatColdCm((int)std::lround(ind.x[P_CAT_COLD]));
+    e.setWallBfsOrderMaxPly((int)std::lround(ind.x[P_WALL_BFS_MAX_PLY]));
+    e.setQsCriticalBfsDelta((int)std::lround(ind.x[P_QS_CRITICAL_BFS_DELTA]));
+    e.setPolicyOrderingEnabled(ind.x[P_POLICY_ENABLED] >= 0.5);
+    e.setPolicyOrderingMinDepth((int)std::lround(ind.x[P_POLICY_MIN_DEPTH]));
+    e.setQuiescenceEnabled(ind.x[P_QUIESCENCE] >= 0.5);
+    e.setLmrPvsEnabled(ind.x[P_LMR_PVS] >= 0.5);
+}
 
-// minDepth NÃO é mais global (era g_policyOrderMinDepth): em --mode hybrid,
-// threads concorrentes rodam SPSA com minDepth DIFERENTE cada uma -- uma
-// global compartilhada seria uma race condition. Todo caminho de código
-// agora recebe minDepth explicitamente (configureEngine, antitheticMatch,
-// runSpsa, runSweepMinDepth). O modo spsa "normal" (não-hibrido) passa um
-// único valor fixo (--policy-order-min-depth, default 3), igual antes.
-void configureEngine(Negamax &eng, int minDepth) {
-  if (g_useNNUE) {
-    eng.setEvalMode(Negamax::EvalMode::NNUE);
-    if (g_policyOrdering) {
-      eng.setPolicyOrderingEnabled(true);
-      eng.setPolicyOrderingMinDepth(minDepth);
+static void sanitize(Individual& a) {
+    for (int i = 0; i < NPARAM; ++i) {
+        a.x[i] = clampValue(a.x[i], i);
+        if (PARAM_DEFS[i].kind == ParamKind::Integer)
+            a.x[i] = std::lround(a.x[i]);
+        else if (PARAM_DEFS[i].kind == ParamKind::Boolean)
+            a.x[i] = a.x[i] >= 0.5 ? 1.0 : 0.0;
     }
-  }
-}
+    // Não permita que o limiar frio fique acima do limiar quente.
+    if (a.x[P_CAT_COLD] >= a.x[P_CAT_HOT])
+        a.x[P_CAT_COLD] = std::max(PARAM_DEFS[P_CAT_COLD].lo, a.x[P_CAT_HOT] - 1);
 
-// joga 1 partida: engineByPlayer[0] controla o peão 0, [1] controla o 1.
-// devolve 0 ou 1 (vencedor) ou -1 (empate/estourou MAX_PLIES).
-int playGame(Negamax &eng0, Negamax &eng1, std::mt19937 &rng) {
-  State s = initialState();
-  for (int i = 0; i < g_openingRandomPlies; i++) {
-    auto moves = legalMoves(s);
-    if (winner(s) != -1)
-      return winner(s);
-    std::uniform_int_distribution<size_t> dist(0, moves.size() - 1);
-    s = applyMove(s, moves[dist(rng)]);
-  }
-  for (int ply = 0; ply < g_maxPlies; ply++) {
-    int w = winner(s);
-    if (w != -1)
-      return w;
-    Negamax &eng = (s.turn == 0) ? eng0 : eng1;
-    SearchStats st;
-    Move m = eng.chooseMove(s, g_searchDepth, g_timeBudgetMs, st);
-    s = applyMove(s, m);
-  }
-  return -1; // partida longa demais -- não decide (tratado como 0 no gradiente)
-}
-
-// partida antitética: plus controla peão0 na 1a partida / peão1 na 2a
-// (troca de cor), pra cancelar a vantagem estrutural de quem começa.
-// devolve score em [-1,+1]: +1 = plus venceu as 2, -1 = minus venceu as 2.
-double antitheticMatch(const std::vector<TunableParam> &paramsPlus,
-                       const std::vector<TunableParam> &paramsMinus,
-                       std::mt19937 &rng, int minDepth) {
-  Negamax ePlus, eMinus;
-  configureEngine(ePlus, minDepth);
-  configureEngine(eMinus, minDepth);
-  applyParams(ePlus, paramsPlus);
-  applyParams(eMinus, paramsMinus);
-  double score = 0.0;
-  int r1 = playGame(ePlus, eMinus, rng); // plus=jogador0, minus=jogador1
-  if (r1 == 0)
-    score += 1.0;
-  else if (r1 == 1)
-    score -= 1.0;
-  int r2 = playGame(eMinus, ePlus, rng); // cores trocadas
-  if (r2 == 1)
-    score += 1.0;
-  else if (r2 == 0)
-    score -= 1.0;
-  return score / 2.0;
-}
-
-// --- MÉDIA de várias repetições de antitheticMatch, opcionalmente em
-// paralelo (--games-per-iter / --threads). Reduz a variância da estimativa
-// de gradiente de uma iteração de SPSA -- é a resposta direta a "varia
-// muito pouco, parece não robusto": com 1 partida antitética (2 jogos) o
-// ruído de uma única partida CURTA (profundidade baixa, tempo curto,
-// abertura quase determinística) domina o sinal; com --games-per-iter=N
-// repetições independentes, o erro padrão da média cai ~1/sqrt(N).
-//
-// Paralelismo: mesmo padrão de src/selfplay.hpp (worker lambda + índice
-// atômico compartilhado, um thread por --threads) -- seguro porque a NNUE
-// (weightsQuant(), nnue.hpp) só é LIDA depois do load em main(), nunca
-// escrita durante a busca, e cada repetição cria seus próprios Negamax
-// locais (sem TT/estado compartilhado entre threads).
-double antitheticMatchAvg(const std::vector<TunableParam> &paramsPlus,
-                          const std::vector<TunableParam> &paramsMinus,
-                          std::mt19937 &rng, int minDepth, int repeats,
-                          int numThreads) {
-  repeats = std::max(1, repeats);
-  std::vector<unsigned> seeds(repeats);
-  for (int i = 0; i < repeats; i++)
-    seeds[i] = rng(); // sementes tiradas SEQUENCIALMENTE do rng principal ->
-                      // reprodutível independente do numero de threads
-
-  std::vector<double> scores(repeats, 0.0);
-  int nt = std::max(1, std::min(numThreads, repeats));
-  std::atomic<int> nextIdx{0};
-  auto worker = [&]() {
-    int idx;
-    while ((idx = nextIdx.fetch_add(1)) < repeats) {
-      std::mt19937 localRng(seeds[(size_t)idx]);
-      scores[(size_t)idx] =
-          antitheticMatch(paramsPlus, paramsMinus, localRng, minDepth);
+    // Canonicalização de genes condicionais (epistáticos): alguns genes só
+    // afetam o fenótipo quando um "gate" booleano correspondente está
+    // ligado -- ver os pontos exatos em search.hpp onde cada um é lido:
+    //   - policyOrderScale/policyOrderingMinDepth: só lidos dentro do `if
+    //     (policyOrderingEnabled && ...)` que monta o ponteiro de policy;
+    //     com o gate off, esse ponteiro nunca é setado e o valor nunca é
+    //     usado (orderMoves só soma policyOrderScale quando `policy`
+    //     não é nulo).
+    //   - qsCriticalBfsDelta: só lido dentro de quiescence(), que só é
+    //     chamada quando quiescenceEnabled é true.
+    //   - lmrMinDepth/lmrMinMoveIndex/lmrDivisor/catHotCm/catColdCm: só
+    //     lidos dentro do branch de tryMove() que só executa quando
+    //     lmrPvsEnabled é true (com o gate off, cai sempre no ramo de
+    //     janela cheia/profundidade cheia, sem calcular redução alguma).
+    // Sem canonicalizar, dois indivíduos com o mesmo gate OFF mas valores
+    // diferentes nesses genes jogam EXATAMENTE igual, mas o GA os trata
+    // como genótipos distintos -- crossover/mutação gastam diversidade da
+    // população distinguindo dimensões fantasma. Fixamos esses genes no
+    // valor de init (o mesmo do baseline) sempre que o gate estiver OFF.
+    if (a.x[P_POLICY_ENABLED] < 0.5) {
+        a.x[P_POLICY_SCALE] = PARAM_DEFS[P_POLICY_SCALE].init;
+        a.x[P_POLICY_MIN_DEPTH] = PARAM_DEFS[P_POLICY_MIN_DEPTH].init;
     }
-  };
-  if (nt <= 1) {
-    worker();
-  } else {
-    std::vector<std::thread> pool;
-    pool.reserve((size_t)nt);
-    for (int t = 0; t < nt; t++)
-      pool.emplace_back(worker);
-    for (auto &th : pool)
-      th.join();
-  }
-  double sum = 0.0;
-  for (double s : scores)
-    sum += s;
-  return sum / repeats;
+    if (a.x[P_QUIESCENCE] < 0.5) {
+        a.x[P_QS_CRITICAL_BFS_DELTA] = PARAM_DEFS[P_QS_CRITICAL_BFS_DELTA].init;
+    }
+    if (a.x[P_LMR_PVS] < 0.5) {
+        a.x[P_LMR_MIN_DEPTH] = PARAM_DEFS[P_LMR_MIN_DEPTH].init;
+        a.x[P_LMR_MIN_MOVE_INDEX] = PARAM_DEFS[P_LMR_MIN_MOVE_INDEX].init;
+        a.x[P_LMR_DIVISOR] = PARAM_DEFS[P_LMR_DIVISOR].init;
+        a.x[P_CAT_HOT] = PARAM_DEFS[P_CAT_HOT].init;
+        a.x[P_CAT_COLD] = PARAM_DEFS[P_CAT_COLD].init;
+    }
 }
 
-// --- SWEEP: mini-torneio round-robin sobre valores discretos de
-// policyOrderingMinDepth, com os parâmetros contínuos fixos. As
-// --mindepth-games partidas antitéticas de cada par de candidatos também
-// paralelizam via --threads (mesmo padrão de antitheticMatchAvg acima). ---
-void runSweepMinDepth(const std::vector<int> &candidates, int gamesPerPair,
-                      const std::vector<TunableParam> &fixedParams,
-                      unsigned seed, int numThreads) {
-  int n = (int)candidates.size();
-  std::vector<double> scoreSum(n, 0.0);
-  std::vector<int> gamesPlayed(n, 0);
-  std::mt19937 rng(seed);
+static Individual defaultIndividual() {
+    Individual a;
+    for (int i = 0; i < NPARAM; ++i) a.x[i] = PARAM_DEFS[i].init;
+    sanitize(a);
+    return a;
+}
 
-  printf("=== SWEEP policyOrderingMinDepth -- candidatos: ");
-  for (int d : candidates)
-    printf("%d ", d);
-  printf("(%d partidas antiteticas por par, %d thread(s)) ===\n\n",
-         gamesPerPair, std::max(1, numThreads));
-
-  for (int i = 0; i < n; i++) {
-    for (int j = i + 1; j < n; j++) {
-      std::vector<unsigned> seeds((size_t)gamesPerPair);
-      for (int g = 0; g < gamesPerPair; g++)
-        seeds[(size_t)g] = rng();
-      std::vector<double> gameScores((size_t)gamesPerPair, 0.0);
-
-      int di = candidates[i], dj = candidates[j];
-      auto worker = [&](std::atomic<int> *nextIdx) {
-        int idx;
-        while ((idx = nextIdx->fetch_add(1)) < gamesPerPair) {
-          std::mt19937 localRng(seeds[(size_t)idx]);
-          Negamax eA, eB;
-          configureEngine(eA, di);
-          configureEngine(eB, dj);
-          applyParams(eA, fixedParams);
-          applyParams(eB, fixedParams);
-          double s = 0.0;
-          int r1 = playGame(eA, eB, localRng);
-          if (r1 == 0)
-            s += 1.0;
-          else if (r1 == 1)
-            s -= 1.0;
-          int r2 = playGame(eB, eA, localRng);
-          if (r2 == 1)
-            s += 1.0;
-          else if (r2 == 0)
-            s -= 1.0;
-          gameScores[(size_t)idx] = s / 2.0; // [-1,+1] do ponto de vista de i
+static Individual randomIndividual(std::mt19937& rng) {
+    Individual a;
+    for (int i = 0; i < NPARAM; ++i) {
+        if (PARAM_DEFS[i].kind == ParamKind::Boolean)
+            a.x[i] = (rng() & 1u) ? 1.0 : 0.0;
+        else {
+            std::uniform_real_distribution<double> d(PARAM_DEFS[i].lo, PARAM_DEFS[i].hi);
+            a.x[i] = d(rng);
         }
-      };
-      std::atomic<int> nextIdx{0};
-      int nt = std::max(1, std::min(numThreads, gamesPerPair));
-      if (nt <= 1) {
-        worker(&nextIdx);
-      } else {
+    }
+    sanitize(a);
+    return a;
+}
+
+static Individual mutate(const Individual& src, std::mt19937& rng, double rate) {
+    Individual a = src;
+    std::uniform_real_distribution<double> u(0.0, 1.0);
+    for (int i = 0; i < NPARAM; ++i) {
+        if (u(rng) < rate) {
+            if (PARAM_DEFS[i].kind == ParamKind::Boolean)
+                a.x[i] = 1.0 - a.x[i];
+            else {
+                double range = PARAM_DEFS[i].hi - PARAM_DEFS[i].lo;
+                std::normal_distribution<double> n(0.0, PARAM_DEFS[i].mutationSigma * range);
+                a.x[i] += n(rng);
+            }
+        }
+    }
+    // Garante exploração: pelo menos um gene sofre mutação.
+    if (rate > 0 && u(rng) < 0.35) {
+        int i = (int)(rng() % NPARAM);
+        double range = PARAM_DEFS[i].hi - PARAM_DEFS[i].lo;
+        if (PARAM_DEFS[i].kind == ParamKind::Boolean)
+            a.x[i] = 1.0 - a.x[i];
+        else {
+            std::normal_distribution<double> n(0.0, PARAM_DEFS[i].mutationSigma * range);
+            a.x[i] += n(rng);
+        }
+    }
+    sanitize(a);
+    a.fitness = -1e9;
+    return a;
+}
+
+static Individual crossover(const Individual& a, const Individual& b, std::mt19937& rng) {
+    Individual c;
+    std::uniform_real_distribution<double> u(0.0, 1.0);
+    for (int i = 0; i < NPARAM; ++i) {
+        // BLX-alpha: não apenas escolhe A/B; permite explorar entre e ligeiramente
+        // além deles, aumentando diversidade.
+        double lo = std::min(a.x[i], b.x[i]);
+        double hi = std::max(a.x[i], b.x[i]);
+        double span = hi - lo;
+        double alpha = 0.20;
+        std::uniform_real_distribution<double> d(lo - alpha*span, hi + alpha*span);
+        c.x[i] = (span > 0.0) ? d(rng) : (u(rng) < 0.5 ? a.x[i] : b.x[i]);
+    }
+    sanitize(c);
+    return c;
+}
+
+// -----------------------------------------------------------------------------
+// Self-play
+// -----------------------------------------------------------------------------
+static int g_depth = 12;
+static int g_timeMs = 80;
+static int g_maxPlies = 140;
+static int g_openingPlies = 4;
+static bool g_useNNUE = true;
+static bool g_policyOrder = true;
+
+static void configureEngine(Negamax& e) {
+    if (g_useNNUE) e.setEvalMode(Negamax::EvalMode::NNUE);
+}
+
+// Override explícito de --no-policy-order, aplicado DEPOIS de applyParams()
+// para cada engine de uma partida. Sem isso, applyParams() (que roda no
+// mesmo lugar pra setar todos os genes do indivíduo, incluindo
+// policyOrderingEnabled) sobrescrevia silenciosamente a flag externa --
+// --no-policy-order na prática não tinha efeito nenhum. policyOrderingMinDepth
+// não tem um override equivalente porque não faz sentido conceitual: ele já
+// é inteiramente controlado pelo gene do GA (policyOrderingMinDepth), não
+// existe uma "flag externa de profundidade mínima" que não conflite com
+// isso -- por isso removemos --policy-order-min-depth em vez de tentar
+// consertar o override dela.
+static void applyExternalOverrides(Negamax& e) {
+    if (!g_policyOrder) e.setPolicyOrderingEnabled(false);
+}
+
+static int playGame(Negamax& a, Negamax& b, std::mt19937& rng) {
+    State s = initialState();
+
+    for (int i = 0; i < g_openingPlies; ++i) {
+        if (winner(s) != -1) return winner(s);
+        auto moves = legalMoves(s);
+        if (moves.empty()) return -1;
+        s = applyMove(s, moves[rng() % moves.size()]);
+    }
+
+    for (int ply = 0; ply < g_maxPlies; ++ply) {
+        int w = winner(s);
+        if (w != -1) return w;
+        Negamax& e = (s.turn == 0) ? a : b;
+        SearchStats st;
+        Move m = e.chooseMove(s, g_depth, g_timeMs, st);
+        s = applyMove(s, m);
+    }
+    return -1;
+}
+
+// Score do candidato A contra B, sempre com as duas cores.
+// Empates/partidas truncadas contam 0,5, evitando transformar um empate em
+// vitória/derrota artificial.
+static double antithetic(const Individual& A, const Individual& B, unsigned seed) {
+    std::mt19937 rng(seed);
+    Negamax a1, b1;
+    configureEngine(a1); configureEngine(b1);
+    applyParams(a1, A); applyParams(b1, B);
+    applyExternalOverrides(a1); applyExternalOverrides(b1);
+
+    int r1 = playGame(a1, b1, rng);
+    double score = (r1 == 0) ? 1.0 : (r1 == 1 ? 0.0 : 0.5);
+
+    Negamax a2, b2;
+    configureEngine(a2); configureEngine(b2);
+    applyParams(a2, A); applyParams(b2, B);
+    applyExternalOverrides(a2); applyExternalOverrides(b2);
+    int r2 = playGame(b2, a2, rng); // B é jogador 0, A jogador 1
+    double score2 = (r2 == 1) ? 1.0 : (r2 == 0 ? 0.0 : 0.5);
+
+    return 0.5 * (score + score2);
+}
+
+static double evaluatePair(const Individual& A, const Individual& B,
+                           unsigned seed, int repeats) {
+    repeats = std::max(1, repeats);
+    std::vector<unsigned> seeds(repeats);
+    std::mt19937 master(seed);
+    for (int i = 0; i < repeats; ++i) seeds[i] = master();
+
+    // Sequencial: o paralelismo do GA acontece no nível de população (ver
+    // main()), não aqui dentro. Rodar um pool de threads aninhado por par
+    // causaria oversubscription (threads^2) sem ganho real de throughput.
+    double sum = 0.0;
+    for (int i = 0; i < repeats; ++i) sum += antithetic(A, B, seeds[i]);
+    return sum / repeats;
+}
+
+// Cada indivíduo enfrenta:
+//   1) baseline atual;
+//   2) elite;
+//   3) um adversário escolhido deterministicamente da população.
+// Isso reduz a chance de o GA aprender apenas a explorar um único baseline.
+//
+// `refPop` é uma referência CONGELADA (a população já avaliada e ordenada
+// da geração anterior -- ou, na primeira geração, a população inicial ainda
+// não avaliada). Ela nunca é mutada durante a avaliação da geração atual.
+// Isso é essencial: se em vez disso escaneássemos a população que está
+// sendo avaliada agora (como na versão anterior), o "elite" escolhido para
+// um indivíduo dependeria de quais outros indivíduos já tinham sido
+// avaliados antes dele nesta mesma geração -- um vazamento de ordem que
+// tornava o fitness não-determinístico em relação à ordem de avaliação
+// (mesmo sendo single-threaded, e pior ainda ao paralelizar). Com `refPop`
+// fixo, todo indivíduo da geração é avaliado contra exatamente a mesma
+// referência, então o resultado independe de ordem e é seguro paralelizar.
+static double evaluateIndividual(const Individual& ind,
+                                 const std::vector<Individual>& refPop,
+                                 int idx, unsigned seed, int repeats) {
+    Individual base = defaultIndividual();
+    double total = 0.0;
+    int n = 0;
+
+    total += evaluatePair(ind, base, seed ^ 0xA341316Cu, repeats); n++;
+
+    int elite = 0;
+    for (int i = 1; i < (int)refPop.size(); ++i)
+        if (refPop[i].fitness > refPop[elite].fitness) elite = i;
+    if (elite != idx) {
+        total += evaluatePair(ind, refPop[elite], seed ^ 0xC8013EA4u, repeats); n++;
+    }
+
+    // Adversários adicionais. A seleção muda por indivíduo e por geração.
+    int p1 = (idx * 7 + 3) % (int)refPop.size();
+    int p2 = (idx * 11 + 5) % (int)refPop.size();
+    if (p1 != idx) { total += evaluatePair(ind, refPop[p1], seed ^ 0xAD90777Du, repeats); n++; }
+    if (p2 != idx && p2 != p1) { total += evaluatePair(ind, refPop[p2], seed ^ 0x7E95761Eu, repeats); n++; }
+
+    return n ? total / n : 0.5;
+}
+
+static bool timeExpired(std::chrono::steady_clock::time_point start, double limitSec) {
+    if (limitSec <= 0 || limitSec >= 1e17) return false;
+    double sec = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
+    return sec >= limitSec;
+}
+
+static void printIndividual(const Individual& a, const char* prefix = "") {
+    std::printf("%sfitness=%.4f", prefix, a.fitness);
+    for (int i = 0; i < NPARAM; ++i)
+        std::printf(" %s=%.4g", PARAM_DEFS[i].name, a.x[i]);
+    std::printf("\n");
+}
+
+static void saveCheckpoint(const std::string& path, int generation, const Individual& best) {
+    std::ofstream f(path);
+    if (!f) return;
+    f << generation << "\n";
+    for (int i = 0; i < NPARAM; ++i) f << PARAM_DEFS[i].name << " " << best.x[i] << "\n";
+}
+
+static bool loadCheckpoint(const std::string& path, int& generation, Individual& best) {
+    std::ifstream f(path);
+    if (!f) return false;
+    if (!(f >> generation)) return false;
+    std::string name;
+    for (int i = 0; i < NPARAM; ++i) {
+        double v;
+        if (!(f >> name >> v)) return false;
+        best.x[i] = v;
+    }
+    sanitize(best);
+    best.fitness = -1e9;
+    return true;
+}
+
+static void writeHistoryHeader(const std::string& path) {
+    std::ifstream f(path);
+    if (f.good()) return;
+    std::ofstream out(path);
+    out << "generation,bestFitness,meanFitness,diversity";
+    for (int i = 0; i < NPARAM; ++i) out << "," << PARAM_DEFS[i].name;
+    out << "\n";
+}
+
+static void writeHistory(const std::string& path, int gen,
+                         const std::vector<Individual>& pop, const Individual& best) {
+    double mean = 0.0;
+    for (const auto& x : pop) mean += x.fitness;
+    mean /= std::max<size_t>(1, pop.size());
+
+    double diversity = 0.0;
+    for (int i = 0; i < NPARAM; ++i) {
+        double m = 0.0;
+        for (const auto& x : pop) m += x.x[i];
+        m /= pop.size();
+        double v = 0.0;
+        for (const auto& x : pop) { double d = x.x[i] - m; v += d*d; }
+        diversity += std::sqrt(v / pop.size()) /
+                     std::max(1.0, PARAM_DEFS[i].hi - PARAM_DEFS[i].lo);
+    }
+    diversity /= NPARAM;
+
+    std::ofstream out(path, std::ios::app);
+    out << gen << "," << best.fitness << "," << mean << "," << diversity;
+    for (int i = 0; i < NPARAM; ++i) out << "," << best.x[i];
+    out << "\n";
+}
+
+static void printUsage(const char* p) {
+    std::printf("GA tuner (arquivo mantido como tune_spsa.cpp por compatibilidade)\n");
+    std::printf("Uso: %s [opcoes]\n", p);
+    std::printf("  --generations N        (default 30)\n");
+    std::printf("  --population N         (default 24)\n");
+    std::printf("  --games-per-match N    partidas antiteticas por confronto (default 3)\n");
+    std::printf("  --threads N            threads paralelas do GA -- avalia N individuos\n");
+    std::printf("                         da populacao simultaneamente, cada um em sua\n");
+    std::printf("                         propria thread com engines independentes\n");
+    std::printf("                         (default 14)\n");
+    std::printf("  --elite-fraction X     (default 0.20)\n");
+    std::printf("  --mutation-rate X      (default 0.25)\n");
+    std::printf("  --immigrants X         fração de indivíduos aleatórios (default 0.10)\n");
+    std::printf("  --seed N               (default 20260809)\n");
+    std::printf("  --depth N              (default 12)\n");
+    std::printf("  --time-ms N            (default 80)\n");
+    std::printf("  --max-plies N          (default 140)\n");
+    std::printf("  --opening-plies N      (default 4)\n");
+    std::printf("  --nnue-weights PATH    (default data/nnue/nnue_weights_int8.bin)\n");
+    std::printf("  --heuristic            usa evalSimple em vez de NNUE\n");
+    std::printf("  --no-policy-order      override explicito: forca policy ordering\n");
+    std::printf("                         desligado em TODA a rodada, por cima do gene\n");
+    std::printf("                         policyOrderingEnabled de cada individuo\n");
+    std::printf("  --checkpoint PATH      (default ga_checkpoint.txt)\n");
+    std::printf("  --history PATH         (default ga_history.csv)\n");
+    std::printf("  --result PATH          (default ga_result.txt)\n");
+    std::printf("\nParâmetros explorados:\n");
+    for (int i = 0; i < NPARAM; ++i)
+        std::printf("  %-24s [%g, %g] init=%g\n", PARAM_DEFS[i].name,
+                    PARAM_DEFS[i].lo, PARAM_DEFS[i].hi, PARAM_DEFS[i].init);
+}
+
+int main(int argc, char** argv) {
+    int generations = 30;
+    int populationSize = 24;
+    int gamesPerMatch = 3;
+    int threads = 14;
+    double eliteFraction = 0.20;
+    double mutationRate = 0.25;
+    double immigrantFraction = 0.10;
+    unsigned seed = 20260809u;
+    double timeLimitSec = 1e18;
+    std::string checkpoint = "ga_checkpoint.txt";
+    std::string history = "ga_history.csv";
+    std::string result = "ga_result.txt";
+    std::string nnuePath = defaultNnueWeightsPath();
+
+    for (int i = 1; i < argc; ++i) {
+        std::string a = argv[i];
+        auto next = [&]() -> std::string { return i + 1 < argc ? argv[++i] : ""; };
+        if (a == "--help" || a == "-h") { printUsage(argv[0]); return 0; }
+        else if (a == "--generations") generations = std::atoi(next().c_str());
+        else if (a == "--population") populationSize = std::atoi(next().c_str());
+        else if (a == "--games-per-match") gamesPerMatch = std::atoi(next().c_str());
+        else if (a == "--threads") threads = std::atoi(next().c_str());
+        else if (a == "--elite-fraction") eliteFraction = std::atof(next().c_str());
+        else if (a == "--mutation-rate") mutationRate = std::atof(next().c_str());
+        else if (a == "--immigrants") immigrantFraction = std::atof(next().c_str());
+        else if (a == "--seed") seed = (unsigned)std::strtoul(next().c_str(), nullptr, 10);
+        else if (a == "--time-budget-sec") timeLimitSec = std::atof(next().c_str());
+        else if (a == "--checkpoint") checkpoint = next();
+        else if (a == "--history") history = next();
+        else if (a == "--result") result = next();
+        else if (a == "--depth") g_depth = std::atoi(next().c_str());
+        else if (a == "--time-ms") g_timeMs = std::atoi(next().c_str());
+        else if (a == "--max-plies") g_maxPlies = std::atoi(next().c_str());
+        else if (a == "--opening-plies") g_openingPlies = std::atoi(next().c_str());
+        else if (a == "--nnue-weights") nnuePath = next();
+        else if (a == "--heuristic") g_useNNUE = false;
+        else if (a == "--no-policy-order") g_policyOrder = false;
+        else { std::fprintf(stderr, "flag desconhecida: %s\n", a.c_str()); return 1; }
+    }
+
+    populationSize = std::max(8, populationSize);
+    gamesPerMatch = std::max(1, gamesPerMatch);
+    threads = std::max(1, threads);
+    eliteFraction = std::clamp(eliteFraction, 0.05, 0.5);
+    mutationRate = std::clamp(mutationRate, 0.01, 1.0);
+    immigrantFraction = std::clamp(immigrantFraction, 0.0, 0.5);
+
+    if (g_useNNUE) {
+        if (!loadWeightsQuant(nnuePath)) {
+            std::fprintf(stderr, "ERRO: nao consegui carregar NNUE: %s\n", nnuePath.c_str());
+            return 1;
+        }
+        std::printf("NNUE carregada: %s\n", nnuePath.c_str());
+    } else {
+        std::printf("Modo heuristico.\n");
+    }
+
+    std::mt19937 rng(seed);
+    std::vector<Individual> pop;
+    pop.reserve(populationSize);
+    pop.push_back(defaultIndividual());
+    while ((int)pop.size() < populationSize) pop.push_back(randomIndividual(rng));
+
+    Individual checkpointBest;
+    int startGeneration = 0;
+    if (loadCheckpoint(checkpoint, startGeneration, checkpointBest)) {
+        std::printf("Checkpoint encontrado: geração %d; campeão será preservado.\n", startGeneration);
+        pop[0] = checkpointBest;
+    }
+
+    // Referência congelada usada por evaluateIndividual() para escolher
+    // elite/oponentes. Começa igual à população inicial (na 1a geração
+    // ninguém tem fitness real ainda -- tanto faz, os adversários são só
+    // pra dar diversidade) e é substituída pela população já avaliada e
+    // ordenada ao final de cada geração, antes do crossover/mutação. Nunca
+    // é mutada durante a avaliação da geração corrente.
+    std::vector<Individual> refPop = pop;
+
+    writeHistoryHeader(history);
+    auto start = std::chrono::steady_clock::now();
+    Individual globalBest = pop[0];
+
+    for (int gen = startGeneration; gen < generations; ++gen) {
+        // Avalia todos os indivíduos da população em paralelo. Cada
+        // avaliação é independente: cria suas próprias engines locais e só
+        // lê refPop (nunca escreve nela), então não há necessidade de
+        // sincronização além do contador atômico de trabalho. `threads`
+        // controla quantos indivíduos são avaliados simultaneamente.
+        std::atomic<int> next{0};
+        auto worker = [&]() {
+            for (;;) {
+                int i = next.fetch_add(1);
+                if (i >= (int)pop.size()) break;
+                pop[i].fitness = evaluateIndividual(pop[i], refPop, i,
+                                                    seed + 1000003u*(gen+1) + 7919u*i,
+                                                    gamesPerMatch);
+            }
+        };
+
+        int nWorkers = std::max(1, std::min(threads, (int)pop.size()));
         std::vector<std::thread> pool;
-        pool.reserve((size_t)nt);
-        for (int t = 0; t < nt; t++)
-          pool.emplace_back(worker, &nextIdx);
-        for (auto &th : pool)
-          th.join();
-      }
+        pool.reserve(nWorkers);
+        for (int t = 0; t < nWorkers; ++t) pool.emplace_back(worker);
+        for (auto& t : pool) t.join();
 
-      double pairScore = 0.0;
-      for (double s : gameScores)
-        pairScore += s;
-      pairScore /= gamesPerPair;
-      scoreSum[i] += pairScore;
-      gamesPlayed[i]++;
-      scoreSum[j] -= pairScore;
-      gamesPlayed[j]++;
-      printf("  minDepth=%d vs minDepth=%d: score(%d)=%+.3f\n", candidates[i],
-             candidates[j], candidates[i], pairScore);
-      fflush(stdout);
-    }
-  }
+        std::sort(pop.begin(), pop.end(), [](const Individual& a, const Individual& b) {
+            return a.fitness > b.fitness;
+        });
 
-  printf("\n=== resultado agregado (score medio, positivo = melhor) ===\n");
-  for (int i = 0; i < n; i++) {
-    double avg = gamesPlayed[i] ? scoreSum[i] / gamesPlayed[i] : 0.0;
-    printf("  minDepth=%d: score_medio=%+.3f (%d confrontos)\n", candidates[i],
-           avg, gamesPlayed[i]);
-  }
-  printf(
-      "\nEscolha manual: use o setPolicyOrderingMinDepth() correspondente ao\n"
-      "melhor score_medio acima (ou o melhor trade-off com nos/s, nao medido\n"
-      "aqui -- ver benchNegamaxNNUE/run_arena.py para isso).\n");
-}
+        if (pop.front().fitness > globalBest.fitness) {
+            globalBest = pop.front();
+            saveCheckpoint(checkpoint, gen + 1, globalBest);
+        }
 
-// --- SPSA continuo ---------------------------------------------------------
-// minDepth: valor FIXO de policyOrderingMinDepth usado por esta run inteira
-//   (no modo "spsa" normal, vem de --policy-order-min-depth; no modo
-//   "hybrid", cada thread chama runSpsa com o seu próprio candidato).
-// gamesPerIter/numThreads: ver antitheticMatchAvg acima.
-// logPrefix: prefixo impresso em toda linha de status desta run -- em modo
-//   hybrid, várias threads imprimem concorrentemente, então prefixamos com
-//   "[minDepth=D] " pra dar pra distinguir a saída entrelaçada.
-void runSpsa(std::vector<TunableParam> params, int totalIterations,
-             unsigned seed, double timeBudgetSec, std::string ckptPath,
-             std::string historyPath, std::string resultPath, int minDepth,
-             int gamesPerIter, int numThreads, std::string logPrefix) {
-  std::vector<int> activeIdx;
-  for (size_t i = 0; i < params.size(); i++)
-    if (params[i].active)
-      activeIdx.push_back((int)i);
-  int nActive = (int)activeIdx.size();
-  if (nActive == 0) {
-    printf("%snenhum parametro ativo "
-           "(--tune-contempt/--tune-policy-scale/--tune-cat-scale) -- nada a "
-           "fazer.\n",
-           logPrefix.c_str());
-    return;
-  }
+        writeHistory(history, gen + 1, pop, globalBest);
+        std::printf("GEN %3d/%d  ", gen + 1, generations);
+        printIndividual(pop.front());
+        std::printf("           global: "); printIndividual(globalBest);
 
-  std::mt19937 rng(seed);
-  std::vector<double> theta0(nActive), theta(nActive), thetaAvg(nActive);
-  for (int k = 0; k < nActive; k++)
-    theta0[k] = theta[k] = thetaAvg[k] = params[activeIdx[k]].value;
-  int avgCount = 0;
-  int kStart = 0;
+        // A população recém-avaliada e ordenada desta geração vira a
+        // referência congelada para a avaliação da PRÓXIMA geração.
+        refPop = pop;
 
-  // retoma de um checkpoint em disco, se existir (rodar em lotes --
-  // processos em background não sobrevivem entre chamadas da ferramenta
-  // de shell neste ambiente, então persistimos em arquivo em vez disso).
-  FILE *ckptIn = fopen(ckptPath.c_str(), "r");
-  if (ckptIn) {
-    int nSaved = 0;
-    fscanf(ckptIn, "%d %d %d", &kStart, &avgCount, &nSaved);
-    if (nSaved == nActive) {
-      for (int i = 0; i < nActive; i++)
-        fscanf(ckptIn, "%lf", &theta[i]);
-      for (int i = 0; i < nActive; i++)
-        fscanf(ckptIn, "%lf", &thetaAvg[i]);
-      std::stringstream rngState;
-      char buf[8192];
-      size_t n;
-      while ((n = fread(buf, 1, sizeof(buf), ckptIn)) > 0)
-        rngState.write(buf, n);
-      rngState >> rng;
-      printf("%sretomando checkpoint: iteracao %d, avgCount=%d\n",
-             logPrefix.c_str(), kStart, avgCount);
-    } else {
-      printf("%scheckpoint incompativel com o conjunto de parametros ativo "
-             "(esperava %d, achou %d) -- ignorando e comecando do zero.\n",
-             logPrefix.c_str(), nActive, nSaved);
-      kStart = 0;
-      avgCount = 0;
-    }
-    fclose(ckptIn);
-  }
+        if (timeExpired(start, timeLimitSec)) {
+            std::printf("Limite de tempo atingido.\n");
+            break;
+        }
 
-  // bounds: usa os bounds absolutos configurados por parâmetro (ver
-  // main()) -- ao contrário de "0.1x/4x do valor inicial", que quebra
-  // para parâmetros que podem ser negativos (contempt) porque multiplicar
-  // por um fator > 1 INVERTE qual bound é o "lo" quando o valor inicial
-  // é negativo.
-  std::vector<double> lo(nActive), hi(nActive);
-  for (int i = 0; i < nActive; i++) {
-    lo[i] = params[activeIdx[i]].lo;
-    hi[i] = params[activeIdx[i]].hi;
-  }
+        int eliteCount = std::max(2, (int)std::lround(populationSize * eliteFraction));
+        int immigrantCount = (int)std::lround(populationSize * immigrantFraction);
 
-  // Spall (1998), valores-padrão recomendados de alpha/gamma.
-  const double alpha = 0.602, gamma = 0.101;
-  const double bigA = 0.1 * totalIterations;
-  // c0/a0 por parâmetro, proporcional à AMPLITUDE do bound (hi-lo), não
-  // ao valor inicial -- generaliza melhor para parâmetros que podem
-  // começar perto de zero (theta0 perto de 0 faria c0/a0 colapsarem a 0
-  // com a fórmula antiga, "travando" o parâmetro).
-  std::vector<double> c0(nActive), a0(nActive);
-  for (int i = 0; i < nActive; i++) {
-    double range = hi[i] - lo[i];
-    c0[i] = 0.075 * range;
-    a0[i] = 0.04 * range;
-  }
+        std::vector<Individual> nextPop;
+        nextPop.reserve(populationSize);
 
-  bool freshHistory = (kStart == 0);
-  if (kStart == 0) {
-    printf(
-        "%sSPSA -- %d iteracoes totais, %d partida(s) antitetica(s)/iteracao "
-        "(%d thread(s)), profundidade=%d, %dms/lance, %d plies aleatorios de "
-        "abertura, NNUE=%s policyOrdering=%s(minDepth=%d)\n",
-        logPrefix.c_str(), totalIterations, std::max(1, gamesPerIter),
-        std::max(1, numThreads), g_searchDepth, g_timeBudgetMs,
-        g_openingRandomPlies, g_useNNUE ? "on" : "off",
-        g_policyOrdering ? "on" : "off", minDepth);
-    printf("%stheta0: ", logPrefix.c_str());
-    for (int i = 0; i < nActive; i++)
-      printf("%s=%.3f ", params[activeIdx[i]].name, theta0[i]);
-    printf("\n\n");
-  }
+        // Elitismo: campeões nunca são perdidos.
+        for (int i = 0; i < eliteCount; ++i) nextPop.push_back(pop[i]);
 
-  auto t0 = std::chrono::steady_clock::now();
-  const int avgStart =
-      totalIterations / 2; // só faz média da 2a metade (fase mais estável)
-  int k = kStart;
+        // Imigrantes aleatórios: defesa explícita contra convergência prematura.
+        while ((int)nextPop.size() < eliteCount + immigrantCount &&
+               (int)nextPop.size() < populationSize)
+            nextPop.push_back(randomIndividual(rng));
 
-  for (; k < totalIterations; k++) {
-    double elapsedSoFar =
-        std::chrono::duration<double>(std::chrono::steady_clock::now() - t0)
-            .count();
-    if (elapsedSoFar > timeBudgetSec)
-      break;
-
-    double ck_scale = 1.0 / std::pow(k + 1, gamma);
-    double ak_scale = 1.0 / std::pow(k + 1 + bigA, alpha);
-
-    std::bernoulli_distribution coin(0.5);
-    std::vector<int> delta(nActive);
-    for (int i = 0; i < nActive; i++)
-      delta[i] = coin(rng) ? 1 : -1;
-
-    std::vector<TunableParam> paramsPlus = params, paramsMinus = params;
-    for (int i = 0; i < nActive; i++) {
-      double ck = c0[i] * ck_scale;
-      double vp = std::clamp(theta[i] + ck * delta[i], lo[i], hi[i]);
-      double vm = std::clamp(theta[i] - ck * delta[i], lo[i], hi[i]);
-      paramsPlus[activeIdx[i]].value = vp;
-      paramsMinus[activeIdx[i]].value = vm;
+        std::uniform_int_distribution<int> parentDist(0, eliteCount - 1);
+        while ((int)nextPop.size() < populationSize) {
+            const Individual& a = pop[parentDist(rng)];
+            const Individual& b = pop[parentDist(rng)];
+            Individual child = crossover(a, b, rng);
+            child = mutate(child, rng, mutationRate);
+            nextPop.push_back(child);
+        }
+        pop.swap(nextPop);
     }
 
-    double score = antitheticMatchAvg(paramsPlus, paramsMinus, rng, minDepth,
-                                      gamesPerIter, numThreads);
 
-    for (int i = 0; i < nActive; i++) {
-      double ck = c0[i] * ck_scale;
-      double ak = a0[i] * ak_scale;
-      double ghat = score * delta[i] / (2.0 * ck);
-      theta[i] = std::clamp(theta[i] + ak * ghat, lo[i], hi[i]);
-    }
+    std::ofstream out(result);
+    out << "algorithm=genetic\n";
+    out << "generations=" << generations << "\n";
+    out << "population=" << populationSize << "\n";
+    out << "games_per_match=" << gamesPerMatch << "\n";
+    out << "fitness=" << globalBest.fitness << "\n";
+    for (int i = 0; i < NPARAM; ++i)
+        out << PARAM_DEFS[i].name << "=" << globalBest.x[i] << "\n";
 
-    if (k >= avgStart) {
-      avgCount++;
-      for (int i = 0; i < nActive; i++)
-        thetaAvg[i] += (theta[i] - thetaAvg[i]) / avgCount;
-    }
-
-    auto now = std::chrono::steady_clock::now();
-    double elapsed = std::chrono::duration<double>(now - t0).count();
-    printf("%siter %3d/%d score=%+.2f elapsed=%.0fs theta: ", logPrefix.c_str(),
-           k + 1, totalIterations, score, elapsed);
-    for (int i = 0; i < nActive; i++)
-      printf("%s=%.3f ", params[activeIdx[i]].name, theta[i]);
-    printf("\n");
-    fflush(stdout);
-
-    // histórico em CSV, 1 linha por iteração -- teste/plot_spsa.py lê
-    // este arquivo pra plotar score/theta ao longo das iteracoes.
-    // Cabeçalho só na 1a iteração de uma run do zero (freshHistory);
-    // retomadas de checkpoint (kStart>0) sempre abrem em modo "a".
-    FILE *hf =
-        fopen(historyPath.c_str(), (freshHistory && k == kStart) ? "w" : "a");
-    if (hf) {
-      if (freshHistory && k == kStart) {
-        fprintf(hf, "iter,elapsed_s,score");
-        for (int i = 0; i < nActive; i++)
-          fprintf(hf, ",%s", params[activeIdx[i]].name);
-        fprintf(hf, "\n");
-      }
-      fprintf(hf, "%d,%.2f,%.4f", k, elapsed, score);
-      for (int i = 0; i < nActive; i++)
-        fprintf(hf, ",%.6f", theta[i]);
-      fprintf(hf, "\n");
-      fclose(hf);
-    } else {
-      fprintf(stderr,
-              "%saviso: nao consegui abrir '%s' para gravar historico\n",
-              logPrefix.c_str(), historyPath.c_str());
-    }
-  }
-
-  // salva checkpoint (se ainda não terminou tudo) ou resultado final
-  FILE *ckptOut = fopen(ckptPath.c_str(), "w");
-  if (ckptOut) {
-    fprintf(ckptOut, "%d %d %d\n", k, avgCount, nActive);
-    for (int i = 0; i < nActive; i++)
-      fprintf(ckptOut, "%.10f ", theta[i]);
-    fprintf(ckptOut, "\n");
-    for (int i = 0; i < nActive; i++)
-      fprintf(ckptOut, "%.10f ", thetaAvg[i]);
-    fprintf(ckptOut, "\n");
-    std::stringstream rngState;
-    rngState << rng;
-    fprintf(ckptOut, "%s", rngState.str().c_str());
-    fclose(ckptOut);
-  }
-
-  if (k >= totalIterations) {
-    printf("\n%s=== CONCLUIDO -- resultado (media de Polyak da 2a metade das "
-           "iteracoes) ===\n",
-           logPrefix.c_str());
-    FILE *f = fopen(resultPath.c_str(), "w");
-    for (int i = 0; i < nActive; i++) {
-      printf("%s%s: %.4f (era %.4f)\n", logPrefix.c_str(),
-             params[activeIdx[i]].name, thetaAvg[i], theta0[i]);
-      if (f)
-        fprintf(f, "%s %.6f\n", params[activeIdx[i]].name, thetaAvg[i]);
-    }
-    if (f) {
-      fprintf(f, "# minDepth %d\n", minDepth);
-      fclose(f);
-    }
-  } else {
-    printf("\n%s=== lote parcial salvo em checkpoint (%d/%d iteracoes feitas) "
-           "-- rode de novo pra continuar ===\n",
-           logPrefix.c_str(), k, totalIterations);
-  }
-}
-
-// --- HIBRIDO (NOVO 2026-08): 1 thread do SO por candidato de
-// policyOrderingMinDepth, cada uma rodando um runSpsa() completo e
-// independente com o minDepth fixo naquele valor. Ver comentário de design
-// no topo do arquivo. --------------------------------------------------
-std::string withSuffix(const std::string &path, const std::string &suffix) {
-  auto slash = path.find_last_of("/\\");
-  auto dot = path.rfind('.');
-  if (dot == std::string::npos || (slash != std::string::npos && dot < slash))
-    return path + suffix;
-  return path.substr(0, dot) + suffix + path.substr(dot);
-}
-
-void runHybrid(const std::vector<int> &candidates,
-               const std::vector<TunableParam> &baseParams, int totalIterations,
-               unsigned seed, double timeBudgetSec, const std::string &ckptPath,
-               const std::string &historyPath, const std::string &resultPath,
-               int gamesPerIter, int numThreads) {
-  printf(
-      "=== HIBRIDO: 1 thread de SO por policyOrderingMinDepth -- candidatos: ");
-  for (int d : candidates)
-    printf("%d ", d);
-  printf("===\n");
-  printf("cada thread roda um SPSA completo (%d iteracoes, %d partida(s) "
-         "antitetica(s)/iteracao) com\n"
-         "policyOrderingMinDepth FIXO no seu valor. --threads=%d aplica DENTRO "
-         "de cada SPSA\n"
-         "(paraleliza as %d partidas de uma iteracao); os %zu candidatos "
-         "SEMPRE rodam\n"
-         "concorrentemente entre si (1 thread do SO cada) -- cuidado com "
-         "oversubscription\n"
-         "se --threads * numero_de_candidatos > nucleos disponiveis.\n\n",
-         totalIterations, std::max(1, gamesPerIter), std::max(1, numThreads),
-         std::max(1, gamesPerIter), candidates.size());
-
-  std::vector<std::thread> pool;
-  pool.reserve(candidates.size());
-  for (size_t i = 0; i < candidates.size(); i++) {
-    int d = candidates[i];
-    unsigned candSeed = seed + 7919u * (unsigned)(i + 1);
-    std::string ckpt = withSuffix(ckptPath, "_depth" + std::to_string(d));
-    std::string hist = withSuffix(historyPath, "_depth" + std::to_string(d));
-    std::string res = withSuffix(resultPath, "_depth" + std::to_string(d));
-    std::string prefix = "[minDepth=" + std::to_string(d) + "] ";
-    pool.emplace_back(runSpsa, baseParams, totalIterations, candSeed,
-                      timeBudgetSec, ckpt, hist, res, d, gamesPerIter,
-                      numThreads, prefix);
-  }
-  for (auto &th : pool)
-    th.join();
-
-  printf("\n=== HIBRIDO concluido -- resultados/historicos por depth: %s / %s "
-         "(sufixo _depth{D}) ===\n",
-         withSuffix(resultPath, "_depth{D}").c_str(),
-         withSuffix(historyPath, "_depth{D}").c_str());
-  printf("Compare os thetaAvg finais e a curva de 'score' da 2a metade de cada "
-         "historico\n"
-         "(python3 teste/plot_spsa.py --history %s --glob) pra escolher o "
-         "minDepth+parametros final;\n"
-         "opcionalmente confirme o vencedor com um --mode sweep-mindepth ou "
-         "teste/arena.cpp de verdade.\n",
-         historyPath.c_str());
-}
-
-// =============================================================================
-// main -- toda a config vem de CLI (o driver Python teste/run_spsa.py
-// monta os flags a partir de um bloco de variaveis no topo do arquivo,
-// para nao precisar editar/recompilar C++ a cada mudanca de config).
-// =============================================================================
-void printUsage(const char *prog) {
-  printf("Uso: %s [opcoes]\n", prog);
-  printf("  --mode spsa|sweep-mindepth|hybrid (default: spsa)\n");
-  printf(
-      "  --iterations N                   (default: 100, modos spsa/hybrid)\n");
-  printf("  --games-per-iter N               partidas antiteticas por iteracao "
-         "SPSA,\n");
-  printf("                                    media reduz o ruido do gradiente "
-         "(default: 4)\n");
-  printf("  --threads N                      paralelismo dentro de 1 "
-         "iteracao/par\n");
-  printf("                                    (spsa/sweep-mindepth) ou dentro "
-         "de 1 candidato\n");
-  printf("                                    (hybrid) -- default: 1\n");
-  printf("  --seed N                         (default: 20260719)\n");
-  printf("  --time-budget-sec S              (default: sem limite)\n");
-  printf("  --checkpoint PATH                (default: spsa_checkpoint.txt)\n");
-  printf("  --history PATH                   historico CSV p/ plot_spsa.py "
-         "(default: spsa_history.csv)\n");
-  printf("  --result PATH                    resultado final (default: "
-         "spsa_result.txt)\n");
-  printf("  --depth N                        (default: 4)\n");
-  printf("  --time-ms N                      (default: 120)\n");
-  printf("  --max-plies N                    (default: 70)\n");
-  printf("  --opening-plies N                (default: 2)\n");
-  printf("  --nnue-weights PATH              (default: "
-         "data/nnue/nnue_weights_int8.bin)\n");
-  printf("  --heuristic                      desliga NNUE (eval heuristica "
-         "evalSimple)\n");
-  printf("  --no-policy-order                desliga a ordenacao assistida por "
-         "politica\n");
-  printf("  --policy-order-min-depth N       (default: 3; modos "
-         "spsa/sweep-mindepth-fixo)\n");
-  printf("  --contempt V                     valor inicial (default: "
-         "search.hpp, -30)\n");
-  printf("  --policy-scale V                 valor inicial (default: "
-         "search.hpp, 400)\n");
-  printf("  --cat-scale V                    valor inicial (default: "
-         "search.hpp, 2)\n");
-  printf("  --contempt-bounds LO,HI          (default: -150,0)\n");
-  printf("  --policy-scale-bounds LO,HI      (default: 0,2000)\n");
-  printf("  --cat-scale-bounds LO,HI         (default: 0,20)\n");
-  printf(
-      "  --no-tune-contempt / --no-tune-policy-scale / --no-tune-cat-scale\n");
-  printf("                                   remove o parametro do SPSA (fica "
-         "fixo no valor inicial)\n");
-  printf("  --mindepth-candidates D1,D2,...  (default: 1,2,3,4,5 -- modos "
-         "sweep-mindepth/hybrid)\n");
-  printf("  --mindepth-games N               partidas antiteticas por par "
-         "(default: 20, modo sweep-mindepth)\n");
-}
-
-std::vector<int> parseIntList(const std::string &s) {
-  std::vector<int> out;
-  std::stringstream ss(s);
-  std::string item;
-  while (std::getline(ss, item, ','))
-    if (!item.empty())
-      out.push_back(std::atoi(item.c_str()));
-  return out;
-}
-
-bool parseBounds(const std::string &s, double &lo, double &hi) {
-  auto comma = s.find(',');
-  if (comma == std::string::npos)
-    return false;
-  lo = std::atof(s.substr(0, comma).c_str());
-  hi = std::atof(s.substr(comma + 1).c_str());
-  return true;
-}
-
-int main(int argc, char **argv) {
-  std::string mode = "spsa";
-  int totalIterations =
-      100; // 2026-08: era 40 -- "mais jogos, mais estatistica"
-  int gamesPerIter =
-      4; // 2026-08 (NOVO): 4 partidas antiteticas/iteracao (8 jogos)
-  int numThreads = 1;
-  unsigned seed = 20260719u;
-  double timeBudgetSec = 1e18;
-  std::string ckptPath = "spsa_checkpoint.txt";
-  std::string historyPath = "spsa_history.csv";
-  std::string resultPath = "spsa_result.txt";
-  std::string nnueWeightsPath = defaultNnueWeightsPath();
-  int policyOrderMinDepth = 3;
-
-  std::vector<TunableParam> params(NPARAM_MAX);
-  params[P_CONTEMPT] = {"contempt", (double)CONTEMPT, -150.0, 0.0, true};
-  params[P_POLICY_SCALE] = {"policyOrderScale", (double)POLICY_ORDER_SCALE, 0.0,
-                            2000.0, true};
-  params[P_CAT_SCALE] = {"catScoreScale", 2.0, 0.0, 20.0, true};
-
-  std::vector<int> mindepthCandidates = {1, 2, 3, 4, 5};
-  int mindepthGames = 20;
-
-  for (int i = 1; i < argc; i++) {
-    std::string a = argv[i];
-    auto next = [&]() -> std::string {
-      return (i + 1 < argc) ? argv[++i] : "";
-    };
-    if (a == "--help" || a == "-h") {
-      printUsage(argv[0]);
-      return 0;
-    } else if (a == "--mode")
-      mode = next();
-    else if (a == "--iterations")
-      totalIterations = std::atoi(next().c_str());
-    else if (a == "--games-per-iter")
-      gamesPerIter = std::atoi(next().c_str());
-    else if (a == "--threads")
-      numThreads = std::atoi(next().c_str());
-    else if (a == "--seed")
-      seed = (unsigned)std::atoi(next().c_str());
-    else if (a == "--time-budget-sec")
-      timeBudgetSec = std::atof(next().c_str());
-    else if (a == "--checkpoint")
-      ckptPath = next();
-    else if (a == "--history")
-      historyPath = next();
-    else if (a == "--result")
-      resultPath = next();
-    else if (a == "--depth")
-      g_searchDepth = std::atoi(next().c_str());
-    else if (a == "--time-ms")
-      g_timeBudgetMs = std::atoi(next().c_str());
-    else if (a == "--max-plies")
-      g_maxPlies = std::atoi(next().c_str());
-    else if (a == "--opening-plies")
-      g_openingRandomPlies = std::atoi(next().c_str());
-    else if (a == "--nnue-weights")
-      nnueWeightsPath = next();
-    else if (a == "--heuristic")
-      g_useNNUE = false;
-    else if (a == "--no-policy-order")
-      g_policyOrdering = false;
-    else if (a == "--policy-order-min-depth")
-      policyOrderMinDepth = std::atoi(next().c_str());
-    else if (a == "--contempt")
-      params[P_CONTEMPT].value = std::atof(next().c_str());
-    else if (a == "--policy-scale")
-      params[P_POLICY_SCALE].value = std::atof(next().c_str());
-    else if (a == "--cat-scale")
-      params[P_CAT_SCALE].value = std::atof(next().c_str());
-    else if (a == "--contempt-bounds")
-      parseBounds(next(), params[P_CONTEMPT].lo, params[P_CONTEMPT].hi);
-    else if (a == "--policy-scale-bounds")
-      parseBounds(next(), params[P_POLICY_SCALE].lo, params[P_POLICY_SCALE].hi);
-    else if (a == "--cat-scale-bounds")
-      parseBounds(next(), params[P_CAT_SCALE].lo, params[P_CAT_SCALE].hi);
-    else if (a == "--no-tune-contempt")
-      params[P_CONTEMPT].active = false;
-    else if (a == "--no-tune-policy-scale")
-      params[P_POLICY_SCALE].active = false;
-    else if (a == "--no-tune-cat-scale")
-      params[P_CAT_SCALE].active = false;
-    else if (a == "--mindepth-candidates")
-      mindepthCandidates = parseIntList(next());
-    else if (a == "--mindepth-games")
-      mindepthGames = std::atoi(next().c_str());
-    else {
-      fprintf(stderr, "flag desconhecida: %s (use --help)\n", a.c_str());
-      return 1;
-    }
-  }
-
-  if (gamesPerIter < 1)
-    gamesPerIter = 1;
-  if (numThreads < 1)
-    numThreads = 1;
-
-  if (g_useNNUE) {
-    if (!loadWeightsQuant(nnueWeightsPath)) {
-      fprintf(stderr,
-              "erro: nao consegui carregar pesos NNUE de '%s' -- passe "
-              "--nnue-weights ou --heuristic\n",
-              nnueWeightsPath.c_str());
-      return 1;
-    }
-    printf("NNUE carregada de %s\n", nnueWeightsPath.c_str());
-  } else {
-    printf("modo heuristico (evalSimple) -- catScoreScale/policyOrderScale nao "
-           "tem efeito\n");
-  }
-
-  if (mode == "spsa") {
-    runSpsa(params, totalIterations, seed, timeBudgetSec, ckptPath, historyPath,
-            resultPath, policyOrderMinDepth, gamesPerIter, numThreads, "");
-  } else if (mode == "sweep-mindepth") {
-    runSweepMinDepth(mindepthCandidates, mindepthGames, params, seed,
-                     numThreads);
-  } else if (mode == "hybrid") {
-    runHybrid(mindepthCandidates, params, totalIterations, seed, timeBudgetSec,
-              ckptPath, historyPath, resultPath, gamesPerIter, numThreads);
-  } else {
-    fprintf(stderr,
-            "--mode desconhecido: '%s' (use spsa, sweep-mindepth ou hybrid)\n",
-            mode.c_str());
-    return 1;
-  }
-  return 0;
+    std::printf("\n=== RESULTADO FINAL ===\n");
+    printIndividual(globalBest);
+    std::printf("Salvo em %s\n", result.c_str());
+    return 0;
 }

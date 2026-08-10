@@ -1,7 +1,7 @@
 @echo off
-REM build_tune_spsa.bat -- tuner SPSA dos parametros de busca/ordenacao
+REM build_tune_spsa.bat -- tuner genetico (GA) dos parametros de busca/ordenacao
 REM que interagem com a NNUE (contempt, policyOrderScale, catScoreScale)
-REM mais o sweep discreto de policyOrderingMinDepth (teste/tune_spsa.cpp).
+REM mais o parametros discretos, incluindo policyOrderingMinDepth (teste/tune_spsa.cpp).
 REM NAO tuna mais os pesos de evalSimple (EvalWeights). Normalmente nao e
 REM necessario rodar este script diretamente: use teste/run_spsa.py, que
 REM compila sozinho quando o .cpp muda. Mesmos flags de performance de
@@ -29,13 +29,13 @@ echo.
 echo OK -- %BIN%\tune_spsa.exe
 echo Uso recomendado: python3 teste\run_spsa.py (config no topo do arquivo)
 echo Uso direto: bin\tune_spsa.exe --help
-echo   default: modo spsa, 100 iteracoes, 4 partidas antiteticas/iteracao,
-echo   seed 20260719, sem limite de tempo, NNUE + policy ordering ligados
+echo   default: GA, 30 geracoes, populacao 24, 3 partidas antiteticas/confronto,
+echo   seed 20260809, sem limite de tempo, NNUE + policy ordering ligados
 echo   (data\nnue\nnue_weights_int8.bin). --threads N paraleliza as partidas
-echo   de uma iteracao. Modos: spsa ^| sweep-mindepth ^| hybrid (--help p/ tudo).
-echo   Salva checkpoint em spsa_checkpoint.txt (retoma sozinho se existir),
-echo   historico em spsa_history.csv (python3 teste\plot_spsa.py pra plotar)
-echo   e o resultado final em spsa_result.txt. Rodar a partir da raiz do repo.
+echo   das partidas de cada confronto.
+echo   Salva checkpoint em ga_checkpoint.txt,
+echo   historico em ga_history.csv (python3 teste\plot_spsa.py pra plotar)
+echo   e o resultado final em ga_result.txt. Rodar a partir da raiz do repo.
 exit /b 0
 
 :erro

@@ -23,13 +23,13 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 #     GIT_REF2 = "HEAD~3"      -> 3 commits atrás
 #     GIT_REF2 = "minha-branch"-> Outra branch
 GIT_REF1 = None               # None = versão local não comitada (ou passe string de ref git)
-GIT_REF2 = "main"             # Ref Git base para o confronto (ex: 'main', 'v1.0', 'HEAD')
+GIT_REF2 = None             # Ref Git base para o confronto (ex: 'main', 'v1.0', 'HEAD')
 
 INVERT_COLORS = True          # Se True, joga cada abertura 2x invertendo as cores (par). Se False, joga apenas 1x por abertura.
 CREATE_BIN = True            # Se True, salva os dados das partidas em data/arena/ no formato .bin de treino
-GAMES = 1000                   # Quantidade total de jogos
+GAMES = 2000                   # Quantidade total de jogos
 REPORT_GAMES = 50             # Atualiza e imprime o relatório parcial a cada N jogos concluídos (default 50)
-TIME_MS = 80                 # Tempo de pensamento por lance em milissegundos
+TIME_MS = 100                 # Tempo de pensamento por lance em milissegundos
 THREADS = 14                  # Número de núcleos / processos em paralelo (default 14)
 RANDOM_OPENING_PLIES = 4      # Quantidade de lances aleatórios na abertura
 SEED = 353                     # Semente aleatória
@@ -63,7 +63,7 @@ E2_POLICY_ORDER = True
 # ele roda em todo no interno e derruba nos/s ~3x (medido em producao).
 # Mesmo default (3) de search.hpp/selfplay/arena.cpp.
 E1_POLICY_ORDER_MIN_DEPTH = 3
-E2_POLICY_ORDER_MIN_DEPTH = 3
+E2_POLICY_ORDER_MIN_DEPTH = 4
 # --- Pasta de pesos NNUE por engine (resolve o bug de main vs local
 # carregando o MESMO arquivo, ver defaultNnueWeightsPath em nnue.hpp) ---
 # "default"/None/"" -> tenta <pasta_do_ref>/data/nnue/nnue_weights_int8.bin

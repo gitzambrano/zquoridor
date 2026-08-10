@@ -109,8 +109,8 @@ constexpr long long POLICY_ORDER_SCALE = 400;
 
 // reduction = clamp( round( ln(depth) * ln(move_index) / 2.25 ), 0, depth/2 )
 // -- ver Prioridade 3 do plano pra derivação/justificativa da fórmula.
-inline int lmrReduction(int depth, int moveIndex) {
-    double r = std::log((double)depth) * std::log((double)moveIndex) / LMR_DIVISOR;
+inline int lmrReduction(int depth, int moveIndex, double divisor = LMR_DIVISOR) {
+    double r = std::log((double)depth) * std::log((double)moveIndex) / divisor;
     int red = (int)std::lround(r);
     if (red < 0) red = 0;
     int maxRed = depth / 2;
@@ -260,6 +260,23 @@ public:
     // trade-off policy-vs-CAT. Default = valor antigo (2).
     void setCatScoreScale(long long s) { catScoreScale = s; }
     long long getCatScoreScale() const { return catScoreScale; }
+
+    // Parâmetros de busca expostos ao tuner evolutivo. São membros de instância
+    // para permitir que dois candidatos sejam avaliados simultaneamente.
+    void setLmrMinDepth(int v) { lmrMinDepth = v; }
+    int getLmrMinDepth() const { return lmrMinDepth; }
+    void setLmrMinMoveIndex(int v) { lmrMinMoveIndex = v; }
+    int getLmrMinMoveIndex() const { return lmrMinMoveIndex; }
+    void setLmrDivisor(double v) { lmrDivisor = v; }
+    double getLmrDivisor() const { return lmrDivisor; }
+    void setCatHotCm(int v) { catHotCm = v; }
+    int getCatHotCm() const { return catHotCm; }
+    void setCatColdCm(int v) { catColdCm = v; }
+    int getCatColdCm() const { return catColdCm; }
+    void setWallBfsOrderMaxPly(int v) { wallBfsOrderMaxPly = v; }
+    int getWallBfsOrderMaxPly() const { return wallBfsOrderMaxPly; }
+    void setQsCriticalBfsDelta(int v) { qsCriticalBfsDelta = v; }
+    int getQsCriticalBfsDelta() const { return qsCriticalBfsDelta; }
 
     // Limpa toda a tabela de transposição. Deve ser chamado entre partidas
     // no self-play: scores de repetição (path-dependent) ficam gravados na
@@ -474,6 +491,13 @@ private:
     int contempt = CONTEMPT;
     long long policyOrderScale = POLICY_ORDER_SCALE;
     long long catScoreScale = 2;
+    int lmrMinDepth = LMR_MIN_DEPTH;
+    int lmrMinMoveIndex = LMR_MIN_MOVE_INDEX;
+    double lmrDivisor = LMR_DIVISOR;
+    int catHotCm = CAT_HOT_CM;
+    int catColdCm = CAT_COLD_CM;
+    int wallBfsOrderMaxPly = WALL_BFS_ORDER_MAX_PLY;
+    int qsCriticalBfsDelta = QS_CRITICAL_BFS_DELTA;
     // Pilha de pares de acumuladores NNUE -- um AccPair por ply da busca,
     // indexado por aritmética de ponteiro a partir da raiz (curAcc+1 = filho).
     // Dimensionado para rootDepth até MAX_PLY + quiescência até QS_MAX_EXTRA_PLIES
@@ -564,7 +588,7 @@ private:
     // do plano, mais Prioridade 1 do plano-additional.md):
     //   1. wallByBFS (já existia): delta EXATO de shortestPathLen do
     //      oponente antes/depois do lance -- preciso, mas paga 2 BFS por
-    //      candidato, então continua restrito a ply <= WALL_BFS_ORDER_MAX_PLY
+    //      candidato, então continua restrito a ply <= wallBfsOrderMaxPly
     //      (poucos nós, perto da raiz -- custo agregado pequeno).
     //   2. CAT (cat.hpp, novo): calor de corredor do oponente, calculado
     //      UMA VEZ por nó (2 BFS, não por candidato) e recebido já pronto
@@ -586,7 +610,7 @@ private:
                          const CorridorHeat& oppHeat, const PlayerPathCache* oppCache = nullptr,
                          const std::array<float, POLICY_OUT>* policy = nullptr) {
         bool ply0 = ply >= 0 && ply < MAX_PLY;
-        bool wallByBFS = ply <= WALL_BFS_ORDER_MAX_PLY;
+        bool wallByBFS = ply <= wallBfsOrderMaxPly;
         int opp = 1 - side;
         size_t n = moves.size();
 
@@ -718,7 +742,7 @@ private:
             PlayerPathCache oppCacheAfter;
             computeDistCached(ns.wallsH, ns.wallsV, ns.pawn[opp], opp, &xdistCache, oppCacheAfter);
             int oppDistAfter = cachedShortestPathLen(oppCacheAfter);
-            bool critical = (oppDistAfter - oppDistBefore) >= QS_CRITICAL_BFS_DELTA;
+            bool critical = (oppDistAfter - oppDistBefore) >= qsCriticalBfsDelta;
             if (!critical && oppRobustBefore > QS_CRITICAL_ROBUSTNESS_DROP_TO) {
                 int oppRobustAfter = cachedPathRobustness(oppCacheAfter, ns.wallsH, ns.wallsV);
                 critical = (oppRobustAfter <= QS_CRITICAL_ROBUSTNESS_DROP_TO);
@@ -1004,11 +1028,11 @@ private:
                 bool isKillerMove = ply0 && ((killerValid[ply][0] && m == killers[ply][0]) ||
                                              (killerValid[ply][1] && m == killers[ply][1]));
                 int reduction = 0;
-                if (moveIndex > LMR_MIN_MOVE_INDEX && depth >= LMR_MIN_DEPTH && !isKillerMove) {
-                    bool hot = (catHeat >= 0 && catHeat >= CAT_HOT_CM);
+                if (moveIndex > lmrMinMoveIndex && depth >= lmrMinDepth && !isKillerMove) {
+                    bool hot = (catHeat >= 0 && catHeat >= catHotCm);
                     if (!hot) {
-                        reduction = lmrReduction(depth, moveIndex);
-                        if (catHeat >= 0 && catHeat < CAT_COLD_CM) reduction += 1;
+                        reduction = lmrReduction(depth, moveIndex, lmrDivisor);
+                        if (catHeat >= 0 && catHeat < catColdCm) reduction += 1;
                         int maxRed = depth / 2;
                         if (reduction > maxRed) reduction = maxRed;
                     }

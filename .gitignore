@@ -7,6 +7,8 @@ teste/bin/
 *.js.metadata
 spsa*.txt
 spsa*.csv
+ga*.txt
+ga*.csv
 
 # Artefatos gerados pelo emcc (intermediários -- zquoridor.html é o bundle final, sí commitado)
 gui_web/zquoridor.js

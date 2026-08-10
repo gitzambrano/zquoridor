@@ -5,27 +5,12 @@ teste/tune_spsa.cpp a partir do CSV de historico que o proprio tune_spsa
 grava a cada iteracao (--history, default spsa_history.csv; modo hybrid
 grava um arquivo por candidato, com sufixo "_depth{D}").
 
-Colunas esperadas no CSV (cabecalho escrito pelo tune_spsa):
-    iter,elapsed_s,score,<param1>,<param2>,...
+Colunas esperadas no CSV do GA:
+    generation,bestFitness,meanFitness,diversity,<param1>,<param2>,...
 
-Uso basico (1 rodada, modo "spsa"):
-    python3 teste/plot_spsa.py
-    python3 teste/plot_spsa.py --history spsa_history.csv --out spsa_plot.png
-
-Comparando os candidatos de uma rodada em modo "hybrid" (--glob casa
-"spsa_history_depth*.csv" a partir do --history base):
-    python3 teste/tune_spsa.cpp --mode hybrid ...
-    python3 teste/plot_spsa.py --history spsa_history.csv --glob
-
-Ou aponte pra um conjunto explicito de arquivos (rotulo = nome do arquivo,
-sem extensao, a menos que --labels seja passado):
-    python3 teste/plot_spsa.py spsa_history_depth2.csv spsa_history_depth3.csv
-
-Gera 1 figura com 2 linhas de subplots:
-  - topo: score bruto por iteracao (cinza, ruidoso por natureza) + media
-    movel (janela --smooth, default 10) por cima, uma cor por rodada.
-  - baixo: 1 subplot por parametro tunado (contempt/policyOrderScale/
-    catScoreScale, o que estiver no CSV), valor de theta por iteracao.
+O script aceita também o CSV antigo do SPSA, detectando automaticamente as
+colunas. Para o GA, o gráfico mostra a melhor fitness, média da população,
+diversidade e a evolução dos genes.
 
 Requer matplotlib (e opcionalmente pandas, mas usa so csv+listas puras se
 pandas nao estiver instalado -- sem dependencia obrigatoria alem de
@@ -80,7 +65,8 @@ def moving_average(values, window):
 
 
 def find_param_columns(cols):
-    return [k for k in cols.keys() if k not in ("iter", "elapsed_s", "score")]
+    excluded = {"iter", "elapsed_s", "score", "generation", "bestFitness", "meanFitness", "diversity"}
+    return [k for k in cols.keys() if k not in excluded]
 
 
 def label_for(path):
@@ -93,8 +79,8 @@ def label_for(path):
 def main():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("files", nargs="*", help="CSV(s) de historico explicitos (sobrepoe --history/--glob)")
-    p.add_argument("--history", default="spsa_history.csv",
-                    help="CSV de historico base (default: spsa_history.csv); ignorado se 'files' for passado")
+    p.add_argument("--history", default="ga_history.csv",
+                    help="CSV de historico base (default: ga_history.csv); ignorado se 'files' for passado")
     p.add_argument("--glob", action="store_true",
                     help="em vez de --history sozinho, casa '<history sem .csv>_depth*.csv' "
                          "(saida de --mode hybrid) e plota todos juntos, um por cor")
@@ -102,7 +88,7 @@ def main():
                     help="rotulos custom para cada arquivo (mesma ordem/quantidade de 'files' ou dos arquivos casados por --glob)")
     p.add_argument("--smooth", type=int, default=10,
                     help="janela da media movel sobre o score (default: 10 iteracoes; 1 = sem suavizar)")
-    p.add_argument("--out", default="spsa_plot.png", help="arquivo de imagem de saida (default: spsa_plot.png)")
+    p.add_argument("--out", default="ga_plot.png", help="arquivo de imagem de saida (default: ga_plot.png)")
     p.add_argument("--dpi", type=int, default=130)
     args = p.parse_args()
 
@@ -134,7 +120,9 @@ def main():
     runs = []  # lista de (label, cols)
     for pth, lbl in zip(paths, labels):
         cols = read_history(pth)
-        if cols is None or not cols.get("iter"):
+        # Formato GA usa "generation" como eixo x; formato SPSA legado usa "iter".
+        has_data = cols is not None and (cols.get("generation") or cols.get("iter"))
+        if not has_data:
             print(f"[plot_spsa] aviso: '{pth}' nao existe ou esta vazio -- pulando", file=sys.stderr)
             continue
         runs.append((lbl, cols))
@@ -143,8 +131,9 @@ def main():
         print("[plot_spsa] ERRO: nenhum historico valido encontrado -- nada para plotar.", file=sys.stderr)
         sys.exit(1)
 
-    # parametros tunados = uniao das colunas de todas as rodadas (uma rodada
-    # pode ter tunado um subconjunto diferente via --no-tune-*)
+    # Detecta formato GA ou SPSA antigo.
+    is_ga = all("generation" in cols and "bestFitness" in cols for _, cols in runs)
+
     param_names = []
     for _, cols in runs:
         for name in find_param_columns(cols):
@@ -152,39 +141,56 @@ def main():
                 param_names.append(name)
 
     n_param_rows = len(param_names)
-    fig, axes = plt.subplots(1 + n_param_rows, 1, figsize=(9, 3.2 * (1 + n_param_rows)), sharex=True)
-    if n_param_rows == 0:
-        axes = [axes]
+    fig, axes = plt.subplots(2 + n_param_rows, 1,
+                             figsize=(9, 3.0 * (2 + n_param_rows)),
+                             sharex=True)
+    if not isinstance(axes, (list, tuple)):
+        import numpy as np
+        axes = np.atleast_1d(axes)
 
     colors = plt.rcParams["axes.prop_cycle"].by_key()["color"]
 
-    ax_score = axes[0]
+    ax_fit = axes[0]
+    ax_div = axes[1]
     for i, (lbl, cols) in enumerate(runs):
         color = colors[i % len(colors)]
-        it = cols["iter"]
-        score = cols["score"]
-        ax_score.plot(it, score, color=color, alpha=0.25, linewidth=0.8)
-        smoothed = moving_average(score, args.smooth)
-        ax_score.plot(it, smoothed, color=color, linewidth=1.8, label=f"{lbl} (media movel={args.smooth})")
-    ax_score.axhline(0.0, color="black", linewidth=0.6, linestyle="--", alpha=0.5)
-    ax_score.set_ylabel("score da iteracao\n(+1 = plus venceu as 2, -1 = minus venceu as 2)")
-    ax_score.set_title("Convergencia do SPSA -- teste/tune_spsa.cpp")
-    ax_score.legend(fontsize=8, loc="best")
-    ax_score.grid(alpha=0.25)
+        if is_ga:
+            x = cols["generation"]
+            ax_fit.plot(x, cols["bestFitness"], color=color, linewidth=1.8, label=f"{lbl} melhor")
+            ax_fit.plot(x, cols["meanFitness"], color=color, linewidth=1.0, alpha=0.45, linestyle="--")
+            ax_div.plot(x, cols["diversity"], color=color, linewidth=1.5, label=lbl)
+        else:
+            x = cols["iter"]
+            score = cols["score"]
+            ax_fit.plot(x, score, color=color, alpha=0.25, linewidth=0.8)
+            ax_fit.plot(x, moving_average(score, args.smooth), color=color, linewidth=1.8, label=lbl)
+    ax_fit.axhline(0.5 if is_ga else 0.0, color="black", linewidth=0.6, linestyle="--", alpha=0.5)
+    ax_fit.set_ylabel("fitness" if is_ga else "score")
+    ax_fit.set_title("Convergência do GA" if is_ga else "Convergência do SPSA legado")
+    ax_fit.legend(fontsize=8, loc="best")
 
+    if is_ga:
+        ax_div.set_ylabel("diversidade normalizada")
+        ax_div.set_title("Diversidade da população — útil para detectar convergência prematura")
+        ax_div.legend(fontsize=8, loc="best")
+    else:
+        ax_div.set_visible(False)
+
+    offset = 2 if is_ga else 1
     for row, pname in enumerate(param_names):
-        ax = axes[1 + row]
+        ax = axes[offset + row]
         for i, (lbl, cols) in enumerate(runs):
             if pname not in cols:
                 continue
             color = colors[i % len(colors)]
-            ax.plot(cols["iter"], cols[pname], color=color, linewidth=1.5, label=lbl)
+            x = cols["generation"] if is_ga else cols["iter"]
+            ax.plot(x, cols[pname], color=color, linewidth=1.5, label=lbl)
         ax.set_ylabel(pname)
         ax.grid(alpha=0.25)
         if len(runs) > 1:
             ax.legend(fontsize=8, loc="best")
 
-    axes[-1].set_xlabel("iteracao SPSA")
+    axes[-1].set_xlabel("geração" if is_ga else "iteração SPSA")
     fig.tight_layout()
     fig.savefig(args.out, dpi=args.dpi)
     print(f"[plot_spsa] salvo em {args.out} ({len(runs)} rodada(s), {n_param_rows} parametro(s): {', '.join(param_names)})")
