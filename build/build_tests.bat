@@ -13,7 +13,7 @@ if errorlevel 1 (
 
 set ROOT=%~dp0..
 set SRC=%ROOT%\src
-set TESTE=%ROOT%\teste
+set TESTE=%ROOT%\tests
 set BIN=%ROOT%\bin
 
 if not exist "%BIN%" mkdir "%BIN%"

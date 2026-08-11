@@ -1,37 +1,35 @@
 ## Project
 
-Zquoridor is a 2-player Quoridor engine (9×9, 10 walls each; the 4-player variant is out of scope). Negamax + alpha-beta search, with an NNUE that is trained on the engine's own self-play games. Sister project of the chess engine **Zchezz**, whose conventions this repo deliberately mirrors.
+Zquoridor is a 2-player Quoridor engine (9×9, 10 walls each; 4-player variant is out of scope). Negamax + alpha-beta search, with an NNUE trained on self-play games. Sister project of chess engine **Zchezz**, mirroring its conventions.
 
-`readme.md` is a concise, feature-level reference for an external reader: install/build/run and what the project can do, in prose. It deliberately doesn't name individual functions/classes or explain rationale/history.
+`readme.md` is a concise, feature-level reference for external readers (install/build/run, capabilities).
 
-`status.md` holds everything readme.md leaves out: a module/function reference (file-by-file, code symbol names), design decisions and rationale ("why is it built this way"), important findings (benchmarks, bugs found and fixed, regressions), uncalibrated values, and open items/future plans. Update it, not the readme, when you touch any of those.
+`status.md` holds the technical reference: Future Plans & Roadmap, module/function specifications, design decisions, benchmarks, bugs fixed, uncalibrated values, and dated changelog.
 
 **Language: comments, commit messages, and docs are in English.**
 
 ## Layout & build model
 
-Header-only engine: everything in `src/` except `main.cpp`/`selfplay_main.cpp` is a `.hpp` included directly. There is no build system — each binary is one `g++` invocation over one translation unit, with `-Isrc`. `teste/*.cpp` and `gui_web/engine_wasm.cpp` include the same headers; no `.hpp` is ever duplicated.
+Header-only engine: everything in `src/` except `main.cpp`/`selfplay_main.cpp` is a `.hpp` included directly. No build system — each binary is a single `g++` invocation over one translation unit, with `-Isrc`. `teste/*.cpp` and `gui_web/engine_wasm.cpp` include the same headers.
 
-Two flag profiles, deliberately different:
-
+Two build profiles:
 - **Performance targets** (`src/main.cpp`, benchmarks, selfplay, tune_spsa, arena): `-O3 -std=c++17 -march=native -mavx2 -mfma`
-- **Correctness tests** (`teste/test_*.cpp`, `nnue_verify.cpp`): `-O2 -std=c++17` only — no `-march=native`/AVX2, so numerical-parity results stay reproducible.
+- **Correctness tests** (`teste/test_*.cpp`, `nnue_verify.cpp`): `-O2 -std=c++17` only — no `-march=native`/AVX2, keeping parity reproducible.
 
-`bin/` and `teste/bin/` are gitignored build output.
+`bin/` and `teste/bin/` are gitignored build outputs.
 
 ## Commands
 
-Windows uses `build/*.bat` (needs MinGW-w64 `g++` on PATH; `build_selfplay.bat` hardcodes `C:\mingw64\bin`). Linux/macOS `build/*.sh` are exact equivalents. ARM/Termux uses `build/build_termux.sh` — same optimization levels minus `-mavx2 -mfma` (x86-only flags that make the normal scripts fail).
+Windows uses `build/*.bat` (MinGW-w64 `g++` on PATH; `build_selfplay.bat` hardcodes `C:\mingw64\bin`). Linux/macOS `build/*.sh` are exact equivalents. ARM/Termux uses `build/build_termux.sh` (minus `-mavx2 -mfma`).
 
 ```bat
 build\build_all.bat              :: bench + tests + selfplay + tune_spsa (stops at first error)
-build\build_all.bat wasm         :: same plus WASM (needs emsdk already active)
+build\build_all.bat wasm         :: same plus WASM (needs emsdk active)
 build\build_tests.bat            :: correctness suite only
 build\build_bench.bat            :: performance benchmarks only
 ```
 
-Running tests — each test binary takes no arguments and is run individually; there is no test runner:
-
+Running tests (individual binaries):
 ```bat
 bin\test_rules_sanity.exe
 bin\test_search_staging.exe
@@ -41,71 +39,61 @@ bin\test_lmr_pvs.exe
 bin\nnue_verify.exe data\nnue\nnue_weights.bin data\nnue\nnue_weights_int8.bin
 ```
 
-`nnue_verify` is the C++ half of a cross-language parity check; `training/parity_check.py` is the Python half — they must be compared against each other, not run in isolation.
-
 Self-play data generation:
-
 ```bat
 build\build_selfplay.bat
-bin\selfplay.exe --games 20000 --chunk-games 2000 --threads 12 --time-ms 200 ^
-    --out "data\selfplay\selfplay_{shard:03d}.bin"
-python training\run_selfplay.py   :: orchestrator; edit the CONFIG block at the top, no CLI flags
+bin\selfplay.exe --games 20000 --chunk-games 2000 --threads 12 --time-ms 100 --mc-mode ^
+    --out "data\selfplay\gen5-montecarlo\selfplay_{shard:03d}.bin"
+python training\run_selfplay.py   :: orchestrator; edit CONFIG at the top
 ```
 
-NNUE training (Python, from `training/`):
-
+NNUE training & quantization (from `training/`):
 ```bash
-python train_nnue.py --data ../data/selfplay_*.bin --out ../data/nnue/nnue_weights.bin --plot-dir ../data/plots
-python quantize_nnue.py <in_f32.bin> <out_int8.bin>   # positional args only
+python train_nnue.py --data ../data/selfplay/*.bin --out ../data/nnue/nnue_weights.bin --plot-dir ../data/plots
+python quantize_nnue.py <in_f32.bin> <out_int8.bin>
 ```
 
-Strength testing — `teste/arena.cpp` is **not** in the build scripts. `teste/run_arena.py` compiles it twice (once per git ref) into `teste/bin/` and plays the two builds against each other with Elo + confidence interval:
-
+Strength testing:
 ```bash
 python teste/run_arena.py --ref1 "" --ref2 main --games 200 --time 500 --threads 14
 # --ref1 "" / None = current working tree including uncommitted changes
-# --e1-nnue / --e2-nnue point each side at quantized weights
 ```
 
-Web GUI (`gui_web/`): compiled `zquoridor.js`/`.wasm` are gitignored, but the bundled `gui_web/zquoridor.html` and root `index.html` are committed — `build_wasm` runs `build_standalone.py`, which regenerates both. Only rebuild after touching `rules.hpp`/`search.hpp`/`engine_wasm.cpp`; commit the regenerated bundles (that's what GitHub Pages serves). `build_wasm.bat` calls `C:\emsdk\emsdk_env.bat`; the `.sh` expects emsdk already sourced. Note the two scripts have **drifted**: the `.bat` exports more functions (NNUE toggles: `_qr_load_nnue_weights`, `_qr_set_eval_heuristic`, `_qr_eval_mode_is_nnue`) than the `.sh` — keep both `EXPORTED_FUNCTIONS` lists in sync when adding an export.
+Web GUI (`gui_web/`):
+`build_wasm` runs `build_standalone.py` to regenerate bundled HTML files. Rebuild after touching `rules.hpp`/`search.hpp`/`engine_wasm.cpp`. Keep `EXPORTED_FUNCTIONS` in `build_wasm.bat` and `build_wasm.sh` in sync.
 
 ## Architecture
 
-**`rules.hpp`** — `State` (two pawn cells, two 64-bit wall bitboards H/V, side to move, Zobrist hash), move generation, and `evalSimple`. Wall legality (both players must keep a path to goal) is the expensive part: a cheap geometric pre-filter rejects most candidates before the real check, which uses the rollback union-find in `dsu.hpp`. Four BFS variants share one engine: `hasPathToGoal`, `shortestPathLen`, `shortestPathTouchSlots`, `pathRobustness`.
-
-**`search.hpp`** — negamax/alpha-beta, transposition table, killers + history, LMR+PVS, RFP+LMP, wall quiescence, 3-fold repetition with `CONTEMPT = -30`, policy-assisted move ordering (NNUE policy head as an extra ordering term, gated by remaining depth — see `status.md` for why the depth gate exists; on by default whenever NNUE eval is active, since 2026-08). Nearly every heuristic has a runtime toggle (`setLmrPvsEnabled`, `setRfpEnabled`, `setLmpEnabled`, `setQuiescenceEnabled`, `setPolicyOrderingEnabled`, `setPolicyOrderingMinDepth`) so a benchmark or bisect can isolate it without recompiling — preserve that pattern when adding heuristics.
-
-**`cat.hpp`** — Corridor Attention Table: per-cell "heat" computed once per node (2 BFS, not per wall candidate) measuring deviation from the opponent's optimal path. Drives wall ordering.
-
-**BFS caching** is load-bearing for speed: `PlayerPathCache` (per node) plus `PlayerPathCacheTable` (~48MB, keyed on `wallsH/wallsV/pawnCell/player` — the wall *topology*, not the full position, so sibling nodes and transpositions share entries). Measured ~57% + ~5%. Anything that recomputes a BFS outside these caches is a regression.
-
-**`endgame_race.hpp`** — when `wallsLeft[0]==0 && wallsLeft[1]==0` the wall topology is frozen and the game is an exact pawn race, solved instead of searched: a cheap disjoint-*region* gate plus exact retrograde DP over 81×81×2 states, cached per topology with a real-time budget (~3% of the move budget) so a cache miss storm can never make nodes/s worse than baseline. **Read the long header comment at the top of the file and Sections 4d/4e of `plano-additional.md` before changing anything here** — it documents four rounds of corrections, including a move-*choice* bug (not a value bug) at the real game root that lost most games while reporting correct evaluations.
-
-**`nnue.hpp`** — 354 → 256 accumulator (SCReLU) → two independent heads: WL/outcome `256→32→1` (what search consumes) and policy `256→209` (move ordering). A third head, auxiliary `256→32→1` imitating `evalSimple`, existed as training scaffold until self-play started recording the network's own eval instead — removed 2026-08 (see "Evaluation: what each stage uses" below and `status.md`). Everything is perspective-relative (`buildAccumulator(state, perspective)`); the net never knows "who is white". Features: 81+81 pawn, 64+64 wall, 21+21 one-hot BFS-distance buckets, 11+11 one-hot remaining-walls buckets. The accumulator is always updated incrementally — no move triggers a full rebuild.
-
-**Quantization is QAT**, not post-hoc: `QA=255`/`QB=64` are fixed *before* training and weights are clamped each optimizer step. **These constants appear in three places — `src/nnue.hpp`, `training/train_nnue.py` (`--qa`/`--qb`), and `training/quantize_nnue.py` — and must be changed together**, or `nnue_verify` parity breaks.
-
-**Self-play binary format is the dataset.** `selfplay.exe` writes the exact struct the trainer reads; there is no preprocessing step. `TrainingSample` is 32 bytes, asserted in `training/read_selfplay.py` (`SAMPLE_DTYPE.itemsize == 32`) — changing the C++ struct requires updating that dtype in lockstep. Since 2026-08 it carries the NNUE's own evaluation (`evalNNUE`) instead of a heuristic score — see the evaluation table below.
-
-**Eval mode**: `Negamax::setEvalMode(EvalMode::Heuristic | EvalMode::NNUE)` selects `evalSimpleW` vs. the quantized net. NNUE mode requires weights loaded and maintains `nnueAccStack` incrementally across the search stack; heuristic mode leaves `accForSearch` null. Selfplay, arena, bench, and the WASM shell all expose this switch.
+- **`rules.hpp`**: `State` (pawn cells, 64-bit wall bitboards H/V, turn, Zobrist hash), move generation, `evalSimple`. Wall legality uses a geometric pre-filter followed by rollback union-find in `dsu.hpp`. Four BFS variants share one engine (`hasPathToGoal`, `shortestPathLen`, `shortestPathTouchSlots`, `pathRobustness`).
+- **`search.hpp`**: Negamax alpha-beta, transposition table, killers + history, LMR+PVS, RFP+LMP, wall quiescence, 3-fold repetition with `CONTEMPT = -30`, policy-assisted move ordering (gated by `policyOrderingMinDepth`, default 3). All heuristics have runtime toggles.
+- **`cat.hpp`**: Corridor Attention Table (CAT) heat map for wall move ordering.
+- **BFS Caching**: `PlayerPathCache` (per node) + `PlayerPathCacheTable` (~48MB, keyed on wall topology) speed up BFS calls (~57% + ~5%).
+- **`endgame_race.hpp`**: Exact pawn-race solver when `wallsLeft==(0,0)` using disjoint-region gate and retrograde DP over 81×81×2 states with real-time budget.
+- **`nnue.hpp`**: 354 → 256 accumulator (SCReLU) → two heads: WL outcome (`256→32→1`) and Policy (`256→209`). Canonical perspective-relative features (81+81 pawn, 64+64 wall, 21+21 BFS distance, 11+11 remaining walls). Incremental accumulator updates.
+- **Quantization (QAT)**: `QA=255`/`QB=64` fixed during training; weights clamped each step. Constants in `nnue.hpp`, `train_nnue.py`, and `quantize_nnue.py` must stay in sync.
+- **Self-play format**: `TrainingSample` is 32 bytes packed, storing mirrored canonical state, `evalNNUE` (network win probability), `mover`, `ownCatTotal`, `oppCatTotal`, and policy target. Fast Monte Carlo policy-temperature sampling (`--mc-mode`) generates diverse openings without search overhead. Thread memory uses stack arrays to prevent TLS destructor heap corruption.
+- **Eval mode**: `Negamax::setEvalMode(EvalMode::Heuristic | EvalMode::NNUE)` selects `evalSimple` vs quantized net.
 
 ## Evaluation: what each stage uses
 
-"Evaluation" means something slightly different at each layer of the pipeline — search, self-play data, training target, and the HTML display all use a different number, sign convention, and range. Full detail (including the `k`-blend formula and backward-compat notes) is in `status.md`'s NNUE section; summary:
+Five different things all get called "the evaluation" depending on where you look, and they don't share a sign convention, perspective, or range:
 
-| Stage                                     | What it evaluates                                                              | Perspective / sign                                        | Range                    |
-| ------------------------------------------ | -------------------------------------------------------------------------------- | ------------------------------------------------------------ | --------------------------- |
-| Search (`nnueEvalInt`, `search.hpp`)    | NNUE WL head raw logit ×`NNUE_EVAL_SCALE`(200)                                 | mover-relative (positive = side to move is ahead)             | ~[-30000, 30000], mate-saturated |
-| Heuristic fallback (`evalSimple`)       | hand-tuned material/positional score (`EvalMode::Heuristic`only, or CLI`--heuristic`) | mover-relative                                                | ~[-600, 600] typical      |
-| Self-play`.bin`(`TrainingSample::evalNNUE`) | NNUE WL head, sigmoid'd to a win probability                                    | absolute color (0 = Black certain win, 65535 = White certain win) | `uint16`0..65535       |
-| Training target (`wl_target`, `train_nnue.py`) | blend`k·game_result_prob + (1-k)·ev_prob`,`k`per data source (`DATA_SOURCES_DEFAULT`) | mover-relative probability (`ev_prob`reprojected via`mover`) | float`[0, 1]`           |
-| HTML/WASM display (`formatEval`, `app.js`) | sigmoid of the raw search score / 200                                          | absolute color (0% = Black certain win, 100% = White certain win) | `0–100%`                |
+| Stage | Symbol / entry point | What it computes | Perspective / sign | Range |
+| --- | --- | --- | --- | --- |
+| Search | `nnueEvalInt` (`nnue.hpp`), consumes `forwardValueWLQuant` | NNUE WL head raw logit, scaled ×`NNUE_EVAL_SCALE` (200) to an int on the same rough scale as `evalSimple` | mover-relative: positive = side to move is ahead | ~[-30000, 30000]; mate/certain-win positions saturate near the extremes |
+| Heuristic fallback | `evalSimple` (`rules.hpp`), used only in `EvalMode::Heuristic` or via `--heuristic` on selfplay/arena/WASM | hand-tuned material + positional heuristic, uncalibrated weights | mover-relative | ~[-600, 600] in typical midgame positions |
+| Self-play `.bin` | `TrainingSample::evalNNUE` (`selfplay.hpp`, `teste/arena.cpp`) | NNUE WL head's own opinion of the position, sigmoid'd to a win probability, computed via `buildAccumulatorQuant`+`nnueWinProbQuant` **before** the move is chosen | **absolute color**, not mover-relative: 0 = Black certain win, `EV_SCALE` (65535) = White certain win — chosen this way so the field can be read without needing `mover` alongside it | `uint16_t` 0..65535 (`EV_SCALE`) |
+| Training target | `wl_target` in `to_chunk_tensors` (`train_nnue.py`) | blend of real game outcome and recorded `evalNNUE`: `wl_target = k · game_result_prob + (1-k) · ev_prob`, where `ev_prob` is `evalNNUE` reprojected via `mover` field, `k` per data source in `DATA_SOURCES_DEFAULT` (default `1.0`) | mover-relative probability (`game_result_prob = (game_result+1)/2`) | float `[0, 1]` |
+| HTML/WASM display | `formatEval`/`evalToWhitePercent` (`gui_web/app.js`) | sigmoid of the raw search score (White-perspective) / 200 | **absolute color**, always: 0% = Black certain win, 100% = White certain win, 50% = balanced | `0–100%`, rounded to an integer |
 
+Practical notes:
+- `k=1.0` is required for any `.bin` recorded before `evalNNUE` was introduced (where that 2-byte field held heuristic `evalSimple` scores). `k=1.0` makes `wl_target` reduce to `game_result_prob` exactly.
+- `k<1.0` is a bootstrapping knob letting positions vote with network opinion during self-play.
 
+## Conventions
 
-## Conventions worth keeping
+- New search heuristics get: runtime toggle, correctness test in `teste/`, and benchmark.
+- Continuous-parameter tuning (`contempt`/`policyOrderScale`/`catScoreScale`) uses `teste/tune_spsa.cpp` (`--mode spsa|sweep-mindepth|hybrid`).
+- Real strength claims require `run_arena.py` matches, not nodes/s alone.
+- Log bug fixes, regressions, architectural decisions, and uncalibrated values in `status.md` with dated changelog entries.
 
-- New search heuristics get: a runtime toggle, a correctness test in `teste/` comparing against a reference search with the heuristic off, and a benchmark measuring nodes-to-equal-depth. Heuristic tests assert *agreement thresholds* (e.g. ≥85% score agreement, ≥90% on decisive positions, never an illegal move), not zero divergence — unlike `test_search_staging.cpp`, which must match its reference exactly.
-- Continuous-parameter tuning (`contempt`/`policyOrderScale`/`catScoreScale`) goes through `teste/tune_spsa.cpp` (SPSA, usually via `teste/run_spsa.py`; `--mode spsa|sweep-mindepth|hybrid`, checkpoints to `spsa_checkpoint.txt`, per-iteration CSV history for `teste/plot_spsa.py`, run from repo root). It no longer tunes `evalSimple` weights (dropped once the engine went NNUE-first). Several thresholds (`QS_CRITICAL_*`, `RFP_MARGIN_*`, `LMP_COUNT_*`, `robustnessWeight`) are still uncalibrated placeholders inherited from another engine — tracked in `status.md`.
-- Real strength claims come from `run_arena.py` games, not from nodes/s.
-- When you fix a bug, find a regression, make an architectural call, or leave something uncalibrated/unfinished, log it in `status.md` (with a dated changelog entry if it's a concrete change) rather than in a code comment alone or nowhere.

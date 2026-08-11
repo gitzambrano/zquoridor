@@ -9,9 +9,9 @@ if not exist "bin" mkdir "bin"
 if not exist "data\selfplay" mkdir "data\selfplay"
 
 g++ -O3 -std=c++17 -pthread -march=native -mavx2 -mfma ^
-    -I"src" ^
+    -I"src" -I"tools\selfplay" ^
     -o "bin\selfplay.exe" ^
-    "src\selfplay_main.cpp"
+    "tools\selfplay\selfplay_main.cpp"
 
 if %ERRORLEVEL% equ 0 (
     echo.

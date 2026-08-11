@@ -14,8 +14,8 @@ mkdir -p "$BIN" "$ROOT/data"
 
 FLAGS=(-O3 -std=c++17 -pthread -march=native -mavx2 -mfma)
 
-echo "selfplay  <-  src/selfplay_main.cpp"
-g++ "${FLAGS[@]}" -I"$SRC" -o "$BIN/selfplay" "$SRC/selfplay_main.cpp"
+echo "selfplay  <-  tools/selfplay/selfplay_main.cpp"
+g++ "${FLAGS[@]}" -I"$SRC" -I"$ROOT/tools/selfplay" -o "$BIN/selfplay" "$ROOT/tools/selfplay/selfplay_main.cpp"
 
 echo
 echo "OK -- $BIN/selfplay"
