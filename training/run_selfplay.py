@@ -41,7 +41,20 @@ TIME_MS       = 100     # orçamento de tempo por lance em ms
                         # 200 ms = boa qualidade; reduza para 50-100 ms se quiser
                         # gerar muito volume rapidamente (em detrimento da força)
  
-# --- Abertura aleatória ---
+# --- Modo de geração ---
+# "epsilon"    = modo antigo/original: fases de abertura por epsilon-greedy
+#                (ver OPENING_PLIES*/EPSILON_* abaixo).
+# "montecarlo" = modo novo: amostragem por temperatura (estilo AlphaZero)
+#                sobre a cabeça de política da NNUE, desde o lance 1 (ver
+#                MC_* abaixo). Mais rápido (mais partidas/minuto) porque a
+#                abertura não faz busca nenhuma, só forward pass da política
+#                -- ver nota completa em SelfPlayConfig::mcMode (selfplay.hpp).
+# Os dois modos coexistem: os parâmetros de cada um ficam sempre disponíveis
+# abaixo e nenhum apaga o outro -- só o MODE escolhido é passado como flag
+# ativa (--mc-mode) pro binário nesta execução.
+MODE = "montecarlo"   # "epsilon" ou "montecarlo"
+
+# --- Abertura aleatória (modo "epsilon") ---
 # Fase 1: lances iniciais (óbvios no Quoridor) com muito pouco ruído
 OPENING_PLIES1   = 6       # lances 1 a N1 sujeitos a EPSILON_OPENING1
 EPSILON_OPENING1 = 0.3     # baixo: não distorce os lances óbvios da abertura
@@ -51,6 +64,21 @@ OPENING_PLIES2   = 10    # lances N1+1 a N2 sujeitos a EPSILON_OPENING2
 EPSILON_OPENING2 = 0.7    # alto: cria muita variedade de abertura (lance totalmente aleatório)
  
 EPSILON_MIDGAME  = 0.01   # prob. de desvio no midgame: escolhe 2º ou 3º melhor lance (não totalmente aleatório)
+                          # -- também usado como ruído residual do modo "montecarlo" após a janela de decaimento (ver MC_TEMP_DECAY_PLIES)
+
+# --- Temperatura Monte Carlo/AlphaZero (modo "montecarlo") ---
+# Softmax(logit da política / temperatura) sobre os lances legais, em duas
+# fases sucessivas, sem busca nenhuma enquanto alguma delas estiver ativa:
+#   fase 1 "óbvios"  [0..MC_OBVIOUS_PLIES)                -> temperatura fixa baixa
+#   fase 2 "opening" [MC_OBVIOUS_PLIES..+MC_TEMP_DECAY_PLIES) -> decai linearmente
+#                                                              de MC_TEMP_OPENING a MC_TEMP_END
+# Depois disso, mesmo comportamento do midgame do modo antigo
+# (EPSILON_MIDGAME -> 2º/3º melhor lance; senão busca completa).
+MC_OBVIOUS_PLIES    = 3      # nº de lances iniciais (obvios no Quoridor) com temperatura fixa e baixa
+MC_TEMP_OBVIOUS      = 0.15  # temperatura da fase 1 (baixa -> quase argmax, pouca variancia de proposito)
+MC_TEMP_OPENING     = 1.35   # temperatura no inicio da fase 2 (>1 achata -- mais uniforme/exploratório)
+MC_TEMP_END         = 0.12   # temperatura ao fim da fase 2 (<1 afia -- quase argmax)
+MC_TEMP_DECAY_PLIES = 20     # nº de lances da fase 2 (logo apos MC_OBVIOUS_PLIES) sobre os quais a temperatura decai
  
 # --- Segurança ---  
 MAX_PLIES     = 300     # corte: partidas que não terminam são descartadas
@@ -74,9 +102,13 @@ THREADS       = 14      # 0 = auto (usa hardware_concurrency); ajuste se quiser
 SEED          = 858    # semente base do RNG; chunks subsequentes variam automaticamente
 
 # --- Saída ---
-# Use {shard:03d} para nomear os chunks automaticamente.
-# Os arquivos ficam em data/selfplay/ relativo à raiz do projeto.
-OUT_TEMPLATE  = "data/selfplay/selfplay_{shard:03d}.bin"
+# Use {shard:03d} para nomear os chunks automaticamente e {mode} para o
+# modo desta execução ("epsilon" ou "montecarlo") -- separa os dois em
+# pastas distintas automaticamente (data/selfplay/epsilon/... vs.
+# data/selfplay/montecarlo/...) pra dar pra treinar misturando as duas
+# fontes com pesos por-fonte (k diferentes) em train_nnue.py, sem que uma
+# rodada sobrescreva/misture shards da outra sem querer.
+OUT_TEMPLATE  = "data/selfplay/gen5-{mode}/selfplay_{shard:03d}.bin"
 
 # --- Avaliação de folha (NNUE vs. heurística) ---
 # NNUE é o default de avaliação deste binário desde 2026-08 (selfplay
@@ -175,11 +207,27 @@ def parse_args():
     p.add_argument("--chunk-games", type=int, default=CHUNK_GAMES, help=f"partidas por arquivo .bin (padrao: {CHUNK_GAMES})")
     p.add_argument("--depth", type=int, default=MAX_DEPTH, help=f"profundidade maxima (padrao: {MAX_DEPTH})")
     p.add_argument("--time-ms", type=int, default=TIME_MS, help=f"ms por lance (padrao: {TIME_MS})")
+    p.add_argument("--mode", choices=["epsilon", "montecarlo"], default=MODE,
+                    help=f"modo de geracao (padrao: {MODE}). 'epsilon' = fases de abertura "
+                         "epsilon-greedy (comportamento original). 'montecarlo' = amostragem "
+                         "por temperatura estilo AlphaZero sobre a politica da NNUE, desde o "
+                         "lance 1, sem busca na abertura (mais partidas/minuto).")
     p.add_argument("--opening-plies", type=int, default=OPENING_PLIES1)
     p.add_argument("--epsilon", type=float, default=EPSILON_OPENING1)
     p.add_argument("--opening-plies2", type=int, default=OPENING_PLIES2)
     p.add_argument("--epsilon-opening2", type=float, default=EPSILON_OPENING2)
-    p.add_argument("--epsilon-midgame", type=float, default=EPSILON_MIDGAME)
+    p.add_argument("--epsilon-midgame", type=float, default=EPSILON_MIDGAME,
+                    help="tambem usado como ruido residual pos-decaimento no modo montecarlo")
+    p.add_argument("--mc-obvious-plies", type=int, default=MC_OBVIOUS_PLIES,
+                    help=f"nº de lances iniciais com temperatura fixa baixa, modo montecarlo (padrao: {MC_OBVIOUS_PLIES})")
+    p.add_argument("--mc-temp-obvious", type=float, default=MC_TEMP_OBVIOUS,
+                    help=f"temperatura da janela de lances obvios, modo montecarlo (padrao: {MC_TEMP_OBVIOUS})")
+    p.add_argument("--mc-temp-opening", type=float, default=MC_TEMP_OPENING,
+                    help=f"temperatura no inicio da fase de decaimento, modo montecarlo (padrao: {MC_TEMP_OPENING})")
+    p.add_argument("--mc-temp-end", type=float, default=MC_TEMP_END,
+                    help=f"temperatura ao fim da janela de decaimento, modo montecarlo (padrao: {MC_TEMP_END})")
+    p.add_argument("--mc-temp-decay-plies", type=int, default=MC_TEMP_DECAY_PLIES,
+                    help=f"numero de lances sobre os quais a temperatura decai, modo montecarlo (padrao: {MC_TEMP_DECAY_PLIES})")
     p.add_argument("--max-plies", type=int, default=MAX_PLIES)
     p.add_argument("--threads", type=int, default=THREADS)
     p.add_argument("--seed", type=int, default=SEED)
@@ -214,6 +262,11 @@ def main():
             print("  Execute manualmente: build\\build_selfplay.bat", file=sys.stderr)
             sys.exit(1)
 
+    # Resolve {mode} no template ANTES da logica de {shard:03d} (next_free_shard/
+    # formatShardPath so conhecem o placeholder de shard) -- troca simples de
+    # string, {mode} nunca aparece de fato no .bin final.
+    args.out = args.out.replace("{mode}", args.mode)
+
     # Garante que o diretório de saída existe.
     out_dir = os.path.dirname(os.path.join(root, args.out.split("{")[0]))
     if out_dir:
@@ -241,6 +294,17 @@ def main():
         "--epsilon-opening2", str(args.epsilon_opening2),
         "--epsilon-midgame", str(args.epsilon_midgame),
         "--max-plies",       str(args.max_plies),
+    ]
+    if args.mode == "montecarlo":
+        cmd += [
+            "--mc-mode",
+            "--mc-obvious-plies",    str(args.mc_obvious_plies),
+            "--mc-temp-obvious",     str(args.mc_temp_obvious),
+            "--mc-temp-opening",     str(args.mc_temp_opening),
+            "--mc-temp-end",         str(args.mc_temp_end),
+            "--mc-temp-decay-plies", str(args.mc_temp_decay_plies),
+        ]
+    cmd += [
         "--seed",            str(args.seed + start_shard),   # semente varia por sessão
         "--start-shard",     str(start_shard),
         "--out",             out_full,
@@ -268,9 +332,15 @@ def main():
     print(f"  Executável  : {exe}")
     print(f"  Partidas    : {args.games} total / {args.chunk_games} por chunk")
     print(f"  Busca       : depth<={args.depth}, {args.time_ms} ms/lance")
-    print(f"  Abertura    : fase1=[lances 1..{args.opening_plies}] eps={args.epsilon} (lance aleatório)")
-    print(f"                fase2=[lances {args.opening_plies+1}..{args.opening_plies2}] eps={args.epsilon_opening2} (lance aleatório)")
-    print(f"                midgame eps={args.epsilon_midgame} (2º/3º melhor lance)")
+    print(f"  Modo        : {args.mode}")
+    if args.mode == "montecarlo":
+        print(f"                obvios=[lances 1..{args.mc_obvious_plies}] temp={args.mc_temp_obvious} (fixa, quase argmax)")
+        print(f"                opening=[lances {args.mc_obvious_plies+1}..{args.mc_obvious_plies+args.mc_temp_decay_plies}] temp=[{args.mc_temp_opening}..{args.mc_temp_end}) (decaindo, sem busca)")
+        print(f"                pos-decaimento: midgame eps={args.epsilon_midgame} (2º/3º melhor lance)")
+    else:
+        print(f"  Abertura    : fase1=[lances 1..{args.opening_plies}] eps={args.epsilon} (lance aleatório)")
+        print(f"                fase2=[lances {args.opening_plies+1}..{args.opening_plies2}] eps={args.epsilon_opening2} (lance aleatório)")
+        print(f"                midgame eps={args.epsilon_midgame} (2º/3º melhor lance)")
     print(f"  Avaliação   : {'heurística (evalSimple) -- forçada' if args.force_heuristic else 'NNUE (default do binário), com fallback automático para heurística se os pesos não existirem'}")
     print(f"  Ordenação politica NNUE: {'LIGADA (default, min-depth=' + str(args.policy_order_min_depth) + ')' if args.policy_order else 'desligada (--no-policy-order)'}{'  [sem efeito -- heuristica forcada]' if args.policy_order and args.force_heuristic else ''}")
     print(f"  Threads     : {args.threads or 'auto'}")

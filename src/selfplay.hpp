@@ -192,6 +192,56 @@ struct SelfPlayConfig {
     // e derruba nós/s ~3x (medido em produção). Default 3, sobreponivel
     // via --policy-order-min-depth.
     int policyOrderingMinDepth = 3;
+
+    // =====================================================================
+    // Modo Monte Carlo / temperatura (opção A MAIS, 2026-08) -- alternativa
+    // ao modo epsilon-greedy acima (que continua existindo intacto: todos
+    // os campos epsilon*/openingRandomPlies* acima seguem valendo quando
+    // mcMode==false, que é o default -- nada do comportamento antigo muda).
+    //
+    // Ideia (estilo AlphaZero "move temperature", não MCTS de verdade --
+    // este motor é alfa-beta, não tem árvore de visitas pra reamostrar):
+    // em vez de escolher entre "lance da busca" xor "lance uniformemente
+    // aleatório/2º-3º melhor" com uma moeda epsilon, os lances são
+    // sorteados de uma distribuição softmax sobre os logits da cabeça de
+    // política da NNUE (forwardPolicyQuant), em TRÊS fases sucessivas:
+    //
+    //   1) "óbvios" (ply 0..mcObviousPlies-1): temperatura BAIXA e
+    //      constante (mcTemperatureObvious) -- os 2-3 primeiros lances do
+    //      Quoridor são essencialmente forçados/óbvios (não faz sentido
+    //      sortear com a mesma variância que o resto da abertura; softmax
+    //      quase-argmax aqui ainda dá alguma variedade sem jogar lances
+    //      ruins de propósito).
+    //   2) "opening" (mcObviousPlies..mcObviousPlies+mcTempDecayPlies-1):
+    //      temperatura decai linearmente de mcTemperatureOpening (alta,
+    //      quase uniforme -> muita variedade) até mcTemperatureEnd (baixa,
+    //      quase argmax) ao longo de mcTempDecayPlies lances -- mesmo
+    //      espírito da temperatura de AlphaZero (1.0 nos primeiros N
+    //      lances, depois ~0).
+    //   3) "meio/fim de jogo" (dali em diante): cai no MESMO fallback
+    //      residual do modo antigo (epsilonMidgame -> 2º/3º melhor lance
+    //      via busca rasa) ou busca completa (chooseMove) -- ou seja, o
+    //      pós-abertura das duas partidas é gerado do mesmo jeito; só a
+    //      ABERTURA muda de mecanismo entre os dois modos.
+    //
+    // Por que isso é mais rápido (mais partidas/minuto) que o modo antigo:
+    // a amostragem por temperatura (fases 1 e 2) usa só o forward da
+    // cabeça de política sobre o accumulator QUE JÁ é construído para o
+    // campo evalNNUE (nenhum custo extra de acumulador) -- nenhuma busca
+    // (nem completa nem rasa) acontece nesses lances, ao contrário do modo
+    // antigo, que roda busca rasa depth=2 sobre TODOS os lances legais
+    // sempre que cai no ramo epsilon2/epsilonMidgame por sorte "não
+    // totalmente aleatória". Isso aproxima o custo da abertura ao de um
+    // único forward pass por lance em vez de dezenas de buscas rasas.
+    bool mcMode = false;              // false (default) = modo antigo, epsilon-greedy. true = modo Monte Carlo/temperatura.
+    int    mcObviousPlies       = 3;    // fase 1: nº de lances iniciais (a partir do ply 0) com temperatura fixa baixa (lances "óbvios" do Quoridor)
+    double mcTemperatureObvious = 0.15; // temperatura da fase 1 (baixa -> quase argmax, pouca variância nos lances óbvios)
+    double mcTemperatureOpening = 1.35; // temperatura no início da fase 2 (ply mcObviousPlies; >1 achata a softmax -> mais uniforme/exploratório que os logits crus)
+    double mcTemperatureEnd     = 0.12; // temperatura ao final da fase 2 (<1 afia a softmax -> quase argmax)
+    int    mcTempDecayPlies     = 20;   // nº de lances da fase 2 (logo após mcObviousPlies) sobre os quais a temperatura decai linearmente de mcTemperatureOpening a mcTemperatureEnd
+    // epsilonMidgame (campo antigo, acima) é reaproveitado como ruído
+    // residual do modo MC após a fase 2 -- não duplicamos o conceito; dá
+    // pra tunar os dois modos com os mesmos --epsilon-midgame.
 };
 
 struct SelfPlayStats {
@@ -201,6 +251,86 @@ struct SelfPlayStats {
     std::atomic<uint64_t> positionsWritten{0};
     std::atomic<uint64_t> totalNodes{0};
 };
+
+// Amostra um lance de uma distribuição softmax(logit/temperatura) sobre os
+// logits crus da cabeça de política da NNUE (policyOut, já calculado pelo
+// chamador via forwardPolicyQuant -- não recomputa nada aqui). Estilo
+// "move temperature" do AlphaZero: temperatura alta achata a distribuição
+// (quase uniforme sobre os lances legais -- muita exploração); temperatura
+// baixa afia (aproxima do argmax -- quase o lance que a política prefere).
+// Não faz nenhuma busca: custo O(nº de lances legais), a mesma ordem de
+// grandeza de gerar os lances legais em si, não da busca alfa-beta.
+inline Move sampleMoveByPolicyTemperature(const std::array<float, POLICY_OUT>& policyOut,
+                                           const MoveList& moves, int side,
+                                           double temperature, std::mt19937_64& rng) {
+    // Piso de temperatura: evita divisão por ~0 (softmax degenerando em
+    // NaN/Inf quando mcTemperatureEnd for configurada muito perto de 0).
+    // Abaixo deste piso o comportamento já é argmax para qualquer efeito
+    // prático (exp((logit-max)/1e-3) satura em 0 ou 1).
+    constexpr double MIN_TEMP = 1e-3;
+    double t = std::max(temperature, MIN_TEMP);
+
+    // Softmax numericamente estável: subtrai o logit máximo antes do exp
+    // (evita overflow; não muda a distribuição resultante).
+    // Buffer de tamanho fixo na stack: evita alocação na heap e thread_local
+    // com destruidor dinâmico (que causa STATUS_HEAP_CORRUPTION no MinGW no exit das threads).
+    std::array<double, POLICY_OUT> weights{};
+    size_t nMoves = moves.size();
+    if (nMoves == 0) return Move::pawn(0); // defensivo
+
+    double maxLogit = -1e300;
+    for (size_t i = 0; i < nMoves; i++) {
+        double logit = (double)policyLogitForMove(policyOut, moves[i], side);
+        weights[i] = logit;  // guarda o logit cru temporariamente
+        maxLogit = std::max(maxLogit, logit);
+    }
+    double sum = 0.0;
+    for (size_t i = 0; i < nMoves; i++) {
+        weights[i] = std::exp((weights[i] - maxLogit) / t);
+        sum += weights[i];
+    }
+    // sum > 0 sempre: pelo menos um termo vale exp(0)=1 (o do logit máximo).
+    std::uniform_real_distribution<double> unif(0.0, sum);
+    double r = unif(rng);
+    double acc = 0.0;
+    for (size_t i = 0; i < nMoves; i++) {
+        acc += weights[i];
+        if (r <= acc) return moves[i];
+    }
+    return moves[nMoves - 1];  // fallback de arredondamento de ponto flutuante (r ligeiramente > sum)
+}
+
+// Escolhe o 2º ou 3º melhor lance (empate: 50/50) via busca rasa depth=2
+// sobre todos os lances legais -- mesmo mecanismo usado pelo ramo
+// epsilonMidgame do modo antigo (fatorado aqui pra ser reaproveitado
+// também pelo ruído residual pós-decaimento do modo Monte Carlo).
+inline Move chooseShallowRunnerUp(Negamax& engine, const State& s, const MoveList& moves,
+                                   RepetitionTable& reptbl, std::mt19937_64& rng) {
+    struct ScoredMove { Move m; int score; };
+    size_t nMoves = moves.size();
+    if (nMoves == 0) return Move::pawn(0);
+
+    std::array<ScoredMove, POLICY_OUT> scoredMoves{};
+
+    SearchStats dummyStats;
+    for (size_t i = 0; i < nMoves; i++) {
+        const auto& m = moves[i];
+        State ns = applyMove(s, m);
+        reptbl.push(ns.hash);
+        // Busca rasa do ponto de vista do oponente, então negamos o score
+        int score = -engine.searchShallow(ns, 2, dummyStats);
+        reptbl.pop();
+        scoredMoves[i] = {m, score};
+    }
+
+    std::sort(scoredMoves.begin(), scoredMoves.begin() + nMoves, [](const ScoredMove& a, const ScoredMove& b) {
+        return a.score > b.score;
+    });
+
+    if (nMoves <= 2) return scoredMoves[0].m;
+    std::uniform_int_distribution<size_t> pick(1, std::min<size_t>(2, nMoves - 1));
+    return scoredMoves[pick(rng)].m;
+}
 
 // Joga uma partida completa contra si mesmo e devolve as amostras já
 // rotuladas com o resultado final. Descarta a partida (vetor vazio) se
@@ -246,67 +376,82 @@ inline std::vector<TrainingSample> playOneGame(Negamax& engine0, Negamax& engine
         // ao contrário do antigo searchScore que só existia pra virar alvo
         // auxiliar de treino.
         double evalWhiteProb;
+        // policyOut só é preenchido (forwardPolicyQuant) quando o modo
+        // Monte Carlo de fato precisa dele neste ply -- nos demais casos
+        // (modo antigo, ou MC já além das fases 1+2) o forward extra da
+        // cabeça de política seria custo desperdiçado.
+        std::array<float, POLICY_OUT> policyOut{};
+        int mcTemperatureWindow = cfg.mcObviousPlies + cfg.mcTempDecayPlies;
+        bool mcTemperaturePly = cfg.mcMode && ply < mcTemperatureWindow;
         {
             AccumulatorQuant accMover = buildAccumulatorQuant(s, s.turn);
             double probMoverWins = (double)nnueWinProbQuant(accMover);
             evalWhiteProb = (s.turn == 0) ? probMoverWins : (1.0 - probMoverWins);
+            if (mcTemperaturePly) {
+                forwardPolicyQuant(accMover, policyOut);
+            }
         }
-        bool randomMove = false;
-        double epsNow;
-        if (ply < cfg.openingRandomPlies) {
-            // Fase 1: lances iniciais óbvios, pouco ruído
-            epsNow = cfg.epsilon;
-        } else if (ply < cfg.openingRandomPlies2) {
-            // Fase 2: janela de exploração pesada
-            epsNow = cfg.epsilon2;
-        } else {
-            // Midgame: ruído mínimo para quebrar loops simétricos
-            epsNow = cfg.epsilonMidgame;
-        }
-        randomMove = (unif(rng) < epsNow);
 
-        if (randomMove) {
-            if (ply < cfg.openingRandomPlies2) {
-                // Abertura (fase 1 ou 2): totalmente aleatória para criar novos cenários
-                std::uniform_int_distribution<size_t> pick(0, moves.size() - 1);
-                chosen = moves[pick(rng)];
-            } else {
-                // Meio/fim do jogo: escolhe o 2º ou 3º melhor lance via busca rasa (depth=2)
-                struct ScoredMove {
-                    Move m;
-                    int score;
-                };
-                std::vector<ScoredMove> scoredMoves;
-                scoredMoves.reserve(moves.size());
-
-                SearchStats dummyStats;
-                for (size_t i = 0; i < moves.size(); i++) {
-                    const auto& m = moves[i];
-                    State ns = applyMove(s, m);
-                    reptbl.push(ns.hash);
-                    // Busca rasa do ponto de vista do oponente, então negamos o score
-                    int score = -engine.searchShallow(ns, 2, dummyStats);
-                    reptbl.pop();
-                    scoredMoves.push_back({m, score});
-                }
-
-                // Ordena decrescente pelo score
-                std::sort(scoredMoves.begin(), scoredMoves.end(), [](const ScoredMove& a, const ScoredMove& b) {
-                    return a.score > b.score;
-                });
-
-                if (scoredMoves.size() <= 2) {
-                    chosen = scoredMoves[0].m;
+        if (cfg.mcMode) {
+            // --- Modo Monte Carlo / temperatura --------------------------
+            if (mcTemperaturePly) {
+                double temperature;
+                if (ply < cfg.mcObviousPlies) {
+                    // Fase 1: lances iniciais óbvios do Quoridor -- temperatura
+                    // baixa e constante (pouca variância de propósito).
+                    temperature = cfg.mcTemperatureObvious;
                 } else {
-                    // Escolhe entre o 2º (index 1) ou 3º (index 2) melhor lance
-                    std::uniform_int_distribution<size_t> pick(1, std::min<size_t>(2, scoredMoves.size() - 1));
-                    chosen = scoredMoves[pick(rng)].m;
+                    // Fase 2: decaimento linear de mcTemperatureOpening (no
+                    // primeiro ply desta fase) até mcTemperatureEnd (no
+                    // último), estilo AlphaZero. mcTempDecayPlies<=1 usa
+                    // direto mcTemperatureOpening.
+                    int decayPly = ply - cfg.mcObviousPlies;
+                    double frac = (cfg.mcTempDecayPlies > 1)
+                        ? (double)decayPly / (double)(cfg.mcTempDecayPlies - 1)
+                        : 0.0;
+                    temperature = cfg.mcTemperatureOpening +
+                        frac * (cfg.mcTemperatureEnd - cfg.mcTemperatureOpening);
                 }
+                chosen = sampleMoveByPolicyTemperature(policyOut, moves, s.turn, temperature, rng);
+            } else if (unif(rng) < cfg.epsilonMidgame) {
+                // Mesmo ruído residual do modo antigo, reaproveitado aqui
+                // pra manter alguma variedade depois que a temperatura já
+                // decaiu (quebra loops simétricos no meio/fim de jogo).
+                chosen = chooseShallowRunnerUp(engine, s, moves, reptbl, rng);
+            } else {
+                SearchStats st;
+                chosen = engine.chooseMove(s, cfg.maxDepth, cfg.timeBudgetMs, st, reptbl);
+                nodesOut += st.nodes;
             }
         } else {
-            SearchStats st;
-            chosen = engine.chooseMove(s, cfg.maxDepth, cfg.timeBudgetMs, st, reptbl);
-            nodesOut += st.nodes;
+            // --- Modo antigo (epsilon-greedy, inalterado) -----------------
+            double epsNow;
+            if (ply < cfg.openingRandomPlies) {
+                // Fase 1: lances iniciais óbvios, pouco ruído
+                epsNow = cfg.epsilon;
+            } else if (ply < cfg.openingRandomPlies2) {
+                // Fase 2: janela de exploração pesada
+                epsNow = cfg.epsilon2;
+            } else {
+                // Midgame: ruído mínimo para quebrar loops simétricos
+                epsNow = cfg.epsilonMidgame;
+            }
+            bool randomMove = (unif(rng) < epsNow);
+
+            if (randomMove) {
+                if (ply < cfg.openingRandomPlies2) {
+                    // Abertura (fase 1 ou 2): totalmente aleatória para criar novos cenários
+                    std::uniform_int_distribution<size_t> pick(0, moves.size() - 1);
+                    chosen = moves[pick(rng)];
+                } else {
+                    // Meio/fim do jogo: escolhe o 2º ou 3º melhor lance via busca rasa (depth=2)
+                    chosen = chooseShallowRunnerUp(engine, s, moves, reptbl, rng);
+                }
+            } else {
+                SearchStats st;
+                chosen = engine.chooseMove(s, cfg.maxDepth, cfg.timeBudgetMs, st, reptbl);
+                nodesOut += st.nodes;
+            }
         }
 
         TrainingSample rec;

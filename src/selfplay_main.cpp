@@ -67,7 +67,25 @@ static void printUsage(const char* prog) {
         "  --epsilon F         epsilon da fase 1 (default 0.05)\n"
         "  --opening-plies2 N  fase 2: lances N1..N2-1 com epsilon2 (default 10)\n"
         "  --epsilon-opening2 F epsilon da fase 2 (default 0.8)\n"
-        "  --epsilon-midgame F  epsilon apos fase 2 (default 0.02)\n"
+        "  --epsilon-midgame F  epsilon apos fase 2 (default 0.02; tambem usado\n"
+        "                      como ruido residual do modo --mc-mode apos a\n"
+        "                      janela de decaimento de temperatura)\n"
+        "\n"
+        "  --- modo Monte Carlo / temperatura (alternativa ao epsilon-greedy\n"
+        "      acima -- ver nota completa em SelfPlayConfig::mcMode, selfplay.hpp) ---\n"
+        "  --mc-mode           liga o modo Monte Carlo (default: desligado, usa\n"
+        "                      o modo epsilon-greedy antigo controlado pelas\n"
+        "                      flags --opening-plies*/--epsilon* acima)\n"
+        "  --mc-obvious-plies N nº de lances iniciais (ply 0..N-1) com temperatura\n"
+        "                      fixa e baixa (lances obvios do Quoridor, pouca\n"
+        "                      variancia de proposito) (default 3)\n"
+        "  --mc-temp-obvious F temperatura da janela de lances obvios acima (default 0.15)\n"
+        "  --mc-temp-opening F temperatura no primeiro ply pos-obvios, estilo AlphaZero (default 1.35)\n"
+        "  --mc-temp-end F     temperatura ao fim da janela de decaimento (default 0.12)\n"
+        "  --mc-temp-decay-plies N  nº de lances (apos --mc-obvious-plies) sobre os\n"
+        "                      quais a temperatura decai linearmente de\n"
+        "                      --mc-temp-opening a --mc-temp-end (default 20);\n"
+        "                      sem busca nenhuma nesses lances -- so forward da cabeca de politica\n"
         "  --separate-tt        cada cor usa sua propria TT/engine, isolada\n"
         "                       (default: TT compartilhada entre as 2 cores --\n"
         "                       mais rapido para gerar dados; use esta flag para\n"
@@ -113,6 +131,12 @@ int main(int argc, char** argv) {
         else if (a == "--opening-plies2")  cfg.openingRandomPlies2   = std::atoi(next("--opening-plies2").c_str());
         else if (a == "--epsilon-opening2") cfg.epsilon2             = std::atof(next("--epsilon-opening2").c_str());
         else if (a == "--epsilon-midgame") cfg.epsilonMidgame        = std::atof(next("--epsilon-midgame").c_str());
+        else if (a == "--mc-mode")         cfg.mcMode                = true;
+        else if (a == "--mc-obvious-plies") cfg.mcObviousPlies       = std::atoi(next("--mc-obvious-plies").c_str());
+        else if (a == "--mc-temp-obvious") cfg.mcTemperatureObvious  = std::atof(next("--mc-temp-obvious").c_str());
+        else if (a == "--mc-temp-opening") cfg.mcTemperatureOpening  = std::atof(next("--mc-temp-opening").c_str());
+        else if (a == "--mc-temp-end")     cfg.mcTemperatureEnd      = std::atof(next("--mc-temp-end").c_str());
+        else if (a == "--mc-temp-decay-plies") cfg.mcTempDecayPlies  = std::atoi(next("--mc-temp-decay-plies").c_str());
         else if (a == "--separate-tt")     cfg.sharedTT              = false;
         else if (a == "--max-plies")       cfg.maxPlies              = std::atoi(next("--max-plies").c_str());
         else if (a == "--threads")         cfg.numThreads            = std::atoi(next("--threads").c_str());
@@ -154,10 +178,18 @@ int main(int argc, char** argv) {
     std::printf("ordenacao por politica NNUE: %s\n",
                 cfg.forceHeuristic ? "n/a (heuristica forcada)"
                                    : (cfg.policyOrderingEnabled ? ("LIGADA (default, min-depth=" + std::to_string(cfg.policyOrderingMinDepth) + ")").c_str() : "desligada (--no-policy-order)"));
-    std::printf("abertura: fase1=[0..%d) eps=%.2f | fase2=[%d..%d) eps=%.2f | midgame eps=%.3f\n",
-                cfg.openingRandomPlies, cfg.epsilon,
-                cfg.openingRandomPlies, cfg.openingRandomPlies2, cfg.epsilon2,
-                cfg.epsilonMidgame);
+    if (cfg.mcMode) {
+        std::printf("modo: MONTE CARLO/temperatura | obvios=[0..%d) temp=%.3f | opening=[%d..%d) temp=[%.3f..%.3f) | pos-decaimento eps=%.3f (2o/3o melhor)\n",
+                    cfg.mcObviousPlies, cfg.mcTemperatureObvious,
+                    cfg.mcObviousPlies, cfg.mcObviousPlies + cfg.mcTempDecayPlies,
+                    cfg.mcTemperatureOpening, cfg.mcTemperatureEnd,
+                    cfg.epsilonMidgame);
+    } else {
+        std::printf("modo: epsilon-greedy (antigo) | fase1=[0..%d) eps=%.2f | fase2=[%d..%d) eps=%.2f | midgame eps=%.3f\n",
+                    cfg.openingRandomPlies, cfg.epsilon,
+                    cfg.openingRandomPlies, cfg.openingRandomPlies2, cfg.epsilon2,
+                    cfg.epsilonMidgame);
+    }
     std::printf("threads: %d | corte de seguranca: %d lances/partida\n", nThreads, cfg.maxPlies);
     std::printf("TT: %s\n", cfg.sharedTT ? "compartilhada entre as 2 cores (default)" : "separada por cor (--separate-tt)");
     std::printf("registro: %zu bytes/posicao (packed)\n\n", sizeof(TrainingSample));
