@@ -11,13 +11,13 @@ set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$HERE/.."
 SRC="$ROOT/src"
-TESTE="$ROOT/teste"
+SPSA="$ROOT/tools/spsa"
 BIN="$ROOT/bin"
 
 mkdir -p "$BIN"
 
-echo "tune_spsa  <-  teste/tune_spsa.cpp"
-g++ -O3 -std=c++17 -march=native -pthread -I"$SRC" -o "$BIN/tune_spsa" "$TESTE/tune_spsa.cpp"
+echo "tune_spsa  <-  tools/spsa/tune_spsa.cpp"
+g++ -O3 -std=c++17 -march=native -pthread -I"$SRC" -o "$BIN/tune_spsa" "$SPSA/tune_spsa.cpp"
 
 echo
 echo "OK -- $BIN/tune_spsa"

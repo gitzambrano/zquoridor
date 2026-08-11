@@ -17,7 +17,10 @@ set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$HERE/.."
 SRC="$ROOT/src"
-TESTE="$ROOT/teste"
+BENCHMARK="$ROOT/benchmarks"
+TESTS="$ROOT/tests"
+SELFPLAY="$ROOT/tools/selfplay"
+SPSA="$ROOT/tools/spsa"
 BIN="$ROOT/bin"
 
 mkdir -p "$BIN" "$ROOT/data"
@@ -31,29 +34,29 @@ echo "Compilador: $CXX"
 PERF_FLAGS=(-O3 -std=c++17 -march=native)
 TEST_FLAGS=(-O2 -std=c++17)
 
-echo "[1/8] bench  <-  src/main.cpp"
-"$CXX" "${PERF_FLAGS[@]}" -I"$SRC" -o "$BIN/bench" "$SRC/main.cpp"
+echo "[1/8] bench  <-  benchmarks/main.cpp"
+"$CXX" "${PERF_FLAGS[@]}" -I"$SRC" -I"$SELFPLAY" -o "$BIN/bench" "$BENCHMARK/main.cpp"
 
-echo "[2/8] bench_wall_touch_bonus  <-  teste/bench_wall_touch_bonus.cpp"
-"$CXX" "${PERF_FLAGS[@]}" -I"$SRC" -o "$BIN/bench_wall_touch_bonus" "$TESTE/bench_wall_touch_bonus.cpp"
+echo "[2/8] bench_wall_touch_bonus  <-  benchmarks/bench_wall_touch_bonus.cpp"
+"$CXX" "${PERF_FLAGS[@]}" -I"$SRC" -o "$BIN/bench_wall_touch_bonus" "$BENCHMARK/bench_wall_touch_bonus.cpp"
 
 echo "[3/8] test_rules_sanity"
-"$CXX" "${TEST_FLAGS[@]}" -I"$SRC" -o "$BIN/test_rules_sanity" "$TESTE/test_rules_sanity.cpp"
+"$CXX" "${TEST_FLAGS[@]}" -I"$SRC" -o "$BIN/test_rules_sanity" "$TESTS/test_rules_sanity.cpp"
 
 echo "[4/8] test_search_staging"
-"$CXX" "${TEST_FLAGS[@]}" -I"$SRC" -o "$BIN/test_search_staging" "$TESTE/test_search_staging.cpp"
+"$CXX" "${TEST_FLAGS[@]}" -I"$SRC" -o "$BIN/test_search_staging" "$TESTS/test_search_staging.cpp"
 
 echo "[5/8] test_move_ordering"
-"$CXX" "${TEST_FLAGS[@]}" -I"$SRC" -o "$BIN/test_move_ordering" "$TESTE/test_move_ordering.cpp"
+"$CXX" "${TEST_FLAGS[@]}" -I"$SRC" -o "$BIN/test_move_ordering" "$TESTS/test_move_ordering.cpp"
 
 echo "[6/8] nnue_verify"
-"$CXX" "${TEST_FLAGS[@]}" -pthread -I"$SRC" -o "$BIN/nnue_verify" "$TESTE/nnue_verify.cpp"
+"$CXX" "${TEST_FLAGS[@]}" -pthread -I"$SRC" -o "$BIN/nnue_verify" "$TESTS/nnue_verify.cpp"
 
-echo "[7/8] selfplay  <-  src/selfplay_main.cpp"
-"$CXX" "${PERF_FLAGS[@]}" -pthread -I"$SRC" -o "$BIN/selfplay" "$SRC/selfplay_main.cpp"
+echo "[7/8] selfplay  <-  tools/selfplay/selfplay_main.cpp"
+"$CXX" "${PERF_FLAGS[@]}" -pthread -I"$SRC" -I"$SELFPLAY" -o "$BIN/selfplay" "$SELFPLAY/selfplay_main.cpp"
 
-echo "[8/8] tune_spsa  <-  teste/tune_spsa.cpp"
-"$CXX" "${PERF_FLAGS[@]}" -I"$SRC" -o "$BIN/tune_spsa" "$TESTE/tune_spsa.cpp"
+echo "[8/8] tune_spsa  <-  tools/spsa/tune_spsa.cpp"
+"$CXX" "${PERF_FLAGS[@]}" -I"$SRC" -o "$BIN/tune_spsa" "$SPSA/tune_spsa.cpp"
 
 echo
 echo "OK -- binários em $BIN (sem extensão, mesmo layout do Linux desktop)"

@@ -12,14 +12,14 @@ Zquoridor is a 2-player Quoridor engine (9×9, 10 walls each; the 4-player varia
 
 ## Layout & build model
 
-Header-only engine: everything in `src/` except `main.cpp`/`selfplay_main.cpp` is a `.hpp` included directly. There is no build system — each binary is one `g++` invocation over one translation unit, with `-Isrc`. `teste/*.cpp` and `gui_web/engine_wasm.cpp` include the same headers; no `.hpp` is ever duplicated.
+Header-only engine core: `src/` contains pure C++ header files (`rules.hpp`, `dsu.hpp`, `cat.hpp`, `search.hpp`, `endgame_race.hpp`, `nnue.hpp`). Executables and tools are modularized in `tools/`, `benchmarks/`, and `tests/`. No build system — each binary is a single `g++` invocation over one translation unit, with `-Isrc` (and `-Itools/selfplay` for selfplay-aware components). `tests/*.cpp`, `gui_web/engine_wasm.cpp`, and `benchmarks/*.cpp` include the same headers.
 
 Two flag profiles, deliberately different:
 
-- **Performance targets** (`src/main.cpp`, benchmarks, selfplay, tune_spsa, arena): `-O3 -std=c++17 -march=native -mavx2 -mfma`
-- **Correctness tests** (`teste/test_*.cpp`, `nnue_verify.cpp`): `-O2 -std=c++17` only — no `-march=native`/AVX2, so numerical-parity results stay reproducible.
+- **Performance targets** (`benchmarks/main.cpp`, benchmarks, selfplay, tune_spsa, arena): `-O3 -std=c++17 -march=native -mavx2 -mfma`
+- **Correctness tests** (`tests/test_*.cpp`, `tests/nnue_verify.cpp`): `-O2 -std=c++17` only — no `-march=native`/AVX2, so numerical-parity results stay reproducible.
 
-`bin/` and `teste/bin/` are gitignored build output.
+`bin/` is the gitignored build output directory.
 
 ## Commands
 
@@ -51,7 +51,7 @@ Self-play data generation:
 build\build_selfplay.bat
 bin\selfplay.exe --games 20000 --chunk-games 2000 --threads 12 --time-ms 200 ^
     --out "data\selfplay\selfplay_{shard:03d}.bin"
-python training\run_selfplay.py   :: orchestrator; edit the CONFIG block at the top, no CLI flags
+python tools\selfplay\run_selfplay.py   :: orchestrator; edit the CONFIG block at the top, no CLI flags
 ```
 
 NNUE training (Python, from `training/`):
@@ -61,10 +61,10 @@ python train_nnue.py --data ../data/selfplay_*.bin --out ../data/nnue/nnue_weigh
 python quantize_nnue.py <in_f32.bin> <out_int8.bin>   # positional args only
 ```
 
-Strength testing — `teste/arena.cpp` is **not** in the build scripts. `teste/run_arena.py` compiles it twice (once per git ref) into `teste/bin/` and plays the two builds against each other with Elo + confidence interval:
+Strength testing — `tools/arena/arena.cpp` is **not** in the build scripts directly (compiled via `build_arena.bat` or `run_arena.py`). `tools/arena/run_arena.py` compiles it twice (once per git ref) into `bin/` and plays the two builds against each other with Elo + confidence interval:
 
 ```bash
-python teste/run_arena.py --ref1 "" --ref2 main --games 200 --time 500 --threads 14
+python tools/arena/run_arena.py --ref1 "" --ref2 main --games 200 --time 500 --threads 14
 # --ref1 "" / None = current working tree including uncommitted changes
 # --e1-nnue / --e2-nnue point each side at quantized weights
 ```

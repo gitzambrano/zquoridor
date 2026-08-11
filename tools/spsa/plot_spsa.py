@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 plot_spsa.py -- plota a convergencia de uma (ou varias) rodada(s) de
-teste/tune_spsa.cpp a partir do CSV de historico que o proprio tune_spsa
+tools/spsa/tune_spsa.cpp a partir do CSV de historico que o proprio tune_spsa
 grava a cada iteracao (--history, default spsa_history.csv; modo hybrid
 grava um arquivo por candidato, com sufixo "_depth{D}").
 

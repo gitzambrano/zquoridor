@@ -10,13 +10,13 @@ Zquoridor is a 2-player Quoridor engine (9×9, 10 walls each; 4-player variant i
 
 ## Layout & build model
 
-Header-only engine: everything in `src/` except `main.cpp`/`selfplay_main.cpp` is a `.hpp` included directly. No build system — each binary is a single `g++` invocation over one translation unit, with `-Isrc`. `teste/*.cpp` and `gui_web/engine_wasm.cpp` include the same headers.
+Header-only engine core: `src/` contains pure C++ header files (`rules.hpp`, `dsu.hpp`, `cat.hpp`, `search.hpp`, `endgame_race.hpp`, `nnue.hpp`). Executables and tools are modularized in `tools/`, `benchmarks/`, and `tests/`. No complex build system — each binary is a single `g++` invocation over one translation unit, with `-Isrc` (and `-Itools/selfplay` for selfplay-aware components). `tests/*.cpp`, `gui_web/engine_wasm.cpp`, and `benchmarks/*.cpp` include the same headers.
 
 Two build profiles:
-- **Performance targets** (`src/main.cpp`, benchmarks, selfplay, tune_spsa, arena): `-O3 -std=c++17 -march=native -mavx2 -mfma`
-- **Correctness tests** (`teste/test_*.cpp`, `nnue_verify.cpp`): `-O2 -std=c++17` only — no `-march=native`/AVX2, keeping parity reproducible.
+- **Performance targets** (`benchmarks/main.cpp`, benchmarks, selfplay, tune_spsa, arena): `-O3 -std=c++17 -march=native -mavx2 -mfma`
+- **Correctness tests** (`tests/test_*.cpp`, `tests/nnue_verify.cpp`): `-O2 -std=c++17` only — no `-march=native`/AVX2, keeping parity reproducible.
 
-`bin/` and `teste/bin/` are gitignored build outputs.
+`bin/` is the gitignored build output directory.
 
 ## Commands
 
@@ -44,7 +44,7 @@ Self-play data generation:
 build\build_selfplay.bat
 bin\selfplay.exe --games 20000 --chunk-games 2000 --threads 12 --time-ms 100 --mc-mode ^
     --out "data\selfplay\gen5-montecarlo\selfplay_{shard:03d}.bin"
-python training\run_selfplay.py   :: orchestrator; edit CONFIG at the top
+python tools\selfplay\run_selfplay.py   :: orchestrator; edit CONFIG at the top
 ```
 
 NNUE training & quantization (from `training/`):
@@ -55,7 +55,7 @@ python quantize_nnue.py <in_f32.bin> <out_int8.bin>
 
 Strength testing:
 ```bash
-python teste/run_arena.py --ref1 "" --ref2 main --games 200 --time 500 --threads 14
+python tools/arena/run_arena.py --ref1 "" --ref2 main --games 200 --time 500 --threads 14
 # --ref1 "" / None = current working tree including uncommitted changes
 ```
 
@@ -82,7 +82,7 @@ Five different things all get called "the evaluation" depending on where you loo
 | --- | --- | --- | --- | --- |
 | Search | `nnueEvalInt` (`nnue.hpp`), consumes `forwardValueWLQuant` | NNUE WL head raw logit, scaled ×`NNUE_EVAL_SCALE` (200) to an int on the same rough scale as `evalSimple` | mover-relative: positive = side to move is ahead | ~[-30000, 30000]; mate/certain-win positions saturate near the extremes |
 | Heuristic fallback | `evalSimple` (`rules.hpp`), used only in `EvalMode::Heuristic` or via `--heuristic` on selfplay/arena/WASM | hand-tuned material + positional heuristic, uncalibrated weights | mover-relative | ~[-600, 600] in typical midgame positions |
-| Self-play `.bin` | `TrainingSample::evalNNUE` (`selfplay.hpp`, `teste/arena.cpp`) | NNUE WL head's own opinion of the position, sigmoid'd to a win probability, computed via `buildAccumulatorQuant`+`nnueWinProbQuant` **before** the move is chosen | **absolute color**, not mover-relative: 0 = Black certain win, `EV_SCALE` (65535) = White certain win — chosen this way so the field can be read without needing `mover` alongside it | `uint16_t` 0..65535 (`EV_SCALE`) |
+| Self-play `.bin` | `TrainingSample::evalNNUE` (`selfplay.hpp`, `tools/arena/arena.cpp`) | NNUE WL head's own opinion of the position, sigmoid'd to a win probability, computed via `buildAccumulatorQuant`+`nnueWinProbQuant` **before** the move is chosen | **absolute color**, not mover-relative: 0 = Black certain win, `EV_SCALE` (65535) = White certain win — chosen this way so the field can be read without needing `mover` alongside it | `uint16_t` 0..65535 (`EV_SCALE`) |
 | Training target | `wl_target` in `to_chunk_tensors` (`train_nnue.py`) | blend of real game outcome and recorded `evalNNUE`: `wl_target = k · game_result_prob + (1-k) · ev_prob`, where `ev_prob` is `evalNNUE` reprojected via `mover` field, `k` per data source in `DATA_SOURCES_DEFAULT` (default `1.0`) | mover-relative probability (`game_result_prob = (game_result+1)/2`) | float `[0, 1]` |
 | HTML/WASM display | `formatEval`/`evalToWhitePercent` (`gui_web/app.js`) | sigmoid of the raw search score (White-perspective) / 200 | **absolute color**, always: 0% = Black certain win, 100% = White certain win, 50% = balanced | `0–100%`, rounded to an integer |
 
@@ -92,8 +92,8 @@ Practical notes:
 
 ## Conventions
 
-- New search heuristics get: runtime toggle, correctness test in `teste/`, and benchmark.
-- Continuous-parameter tuning (`contempt`/`policyOrderScale`/`catScoreScale`) uses `teste/tune_spsa.cpp` (`--mode spsa|sweep-mindepth|hybrid`).
+- New search heuristics get: runtime toggle, correctness test in `tests/`, and benchmark in `benchmarks/`.
+- Continuous-parameter tuning (`contempt`/`policyOrderScale`/`catScoreScale`) uses `tools/spsa/tune_spsa.cpp` (`--mode spsa|sweep-mindepth|hybrid`).
 - Real strength claims require `run_arena.py` matches, not nodes/s alone.
 - Log bug fixes, regressions, architectural decisions, and uncalibrated values in `status.md` with dated changelog entries.
 

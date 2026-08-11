@@ -137,14 +137,14 @@ EMSCRIPTEN_KEEPALIVE int qr_last_move_eval() { return g_lastEngineScore; }
 // não chame esta função -- o engine nasce em modo heurístico por default.
 //
 // Também liga a ordenação assistida por política (Negamax::setPolicyOrderingEnabled,
-// search.hpp) por default aqui -- medido mais forte em teste (run_arena.py)
+// search.hpp) por default aqui -- medido mais forte em teste (tools/arena/run_arena.py)
 // que o move ordering puramente heurístico/CAT, então o engine "de
 // produção" (este binário WASM, o único chooseMove() fora de benchmark/
 // selfplay) passa a jogar com ela ativa sempre que NNUE está carregado.
 // min-depth fica no default da classe (3, ver comentário em search.hpp).
 // Chamada explícita aqui hoje é redundante com o default de search.hpp
 // (2026-08: policyOrderingEnabled passou a nascer true na classe, e
-// selfplay.hpp/teste/arena.cpp seguiram o mesmo default) -- mantida
+// selfplay.hpp/tools/arena/arena.cpp seguiram o mesmo default) -- mantida
 // mesmo assim, por clareza e para não depender silenciosamente do
 // default da classe caso ele mude de novo no futuro.
 EMSCRIPTEN_KEEPALIVE

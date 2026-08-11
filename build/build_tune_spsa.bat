@@ -16,13 +16,13 @@ if errorlevel 1 (
 
 set ROOT=%~dp0..
 set SRC=%ROOT%\src
-set TESTE=%ROOT%\teste
+set SPSA=%ROOT%\tools\spsa
 set BIN=%ROOT%\bin
 
 if not exist "%BIN%" mkdir "%BIN%"
 
-echo tune_spsa.exe  ^<-  teste\tune_spsa.cpp
-g++ -O3 -std=c++17 -march=native -mavx2 -mfma -pthread -I"%SRC%" -o "%BIN%\tune_spsa.exe" "%TESTE%\tune_spsa.cpp"
+echo tune_spsa.exe  <-  tools\spsa\tune_spsa.cpp
+g++ -O3 -std=c++17 -march=native -mavx2 -mfma -pthread -I"%SRC%" -o "%BIN%\tune_spsa.exe" "%SPSA%\tune_spsa.cpp"
 if errorlevel 1 goto :erro
 
 echo.

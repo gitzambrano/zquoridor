@@ -15,7 +15,7 @@ if not exist "bin" mkdir "bin"
 g++ -O3 -std=c++17 -march=native -mavx2 -mfma ^
     -I"src" ^
     -o "bin\qtp_engine.exe" ^
-    "src\qtp_main.cpp"
+    "tools\qtp\qtp_main.cpp"
 
 if %ERRORLEVEL% equ 0 (
     echo.

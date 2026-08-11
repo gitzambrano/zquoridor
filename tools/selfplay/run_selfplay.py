@@ -201,7 +201,7 @@ def parse_args():
     passada aqui sobrepõe só aquela constante para esta execução, sem
     precisar editar/recompilar nada. Mesmo padrão já usado em
     selfplay_main.cpp (FORCE_HEURISTIC_DEFAULT/--heuristic/--nnue) e em
-    teste/run_arena.py."""
+    tools/arena/run_arena.py."""
     p = argparse.ArgumentParser(description="Orquestrador de self-play (config no topo do arquivo ou via flags)")
     p.add_argument("--games", type=int, default=TOTAL_GAMES, help=f"partidas totais (padrao: {TOTAL_GAMES})")
     p.add_argument("--chunk-games", type=int, default=CHUNK_GAMES, help=f"partidas por arquivo .bin (padrao: {CHUNK_GAMES})")

@@ -18,8 +18,8 @@ Negamax + alpha-beta search powered by a Quantization-Aware Trained (QAT) neural
 - **NNUE Evaluation & Policy**: 354-feature network (pawn cells, wall bitboards, bucketed BFS distances, and remaining walls) with SCReLU activation, outputting win probability and move ordering logits.
 - **Fast Monte Carlo Self-Play Generator**: Multi-threaded C++ self-play generator with standard epsilon-greedy and AlphaZero-style Monte Carlo policy-temperature sampling (`--mc-mode`) for rapid opening generation. Stack-allocated to ensure zero heap corruption.
 - **Training & Quantization Pipeline**: PyTorch training script with dataset blending (`train_nnue.py`), automated int8 quantization (`quantize_nnue.py`), and C++/Python numerical parity verification (`nnue_verify`).
-- **Strength Arena**: Automated head-to-head match runner (`teste/run_arena.py`) with Elo estimation and confidence intervals.
-- **SPSA Parameter Tuning**: Multi-mode SPSA tuner (`teste/tune_spsa.cpp`) supporting continuous parameter tuning (`--mode spsa`), discrete depth sweeps (`--mode sweep-mindepth`), and multi-depth parallel tuning (`--mode hybrid`) with matplotlib visualization (`plot_spsa.py`).
+- **Strength Arena**: Automated head-to-head match runner (`tools/arena/run_arena.py`) with Elo estimation and confidence intervals.
+- **SPSA Parameter Tuning**: Multi-mode SPSA tuner (`tools/spsa/tune_spsa.cpp`) supporting continuous parameter tuning (`--mode spsa`), discrete depth sweeps (`--mode sweep-mindepth`), and multi-depth parallel tuning (`--mode hybrid`) with matplotlib visualization (`tools/spsa/plot_spsa.py`).
 - **WebAssembly & Browser GUI**: Mobile-friendly browser UI compiled via Emscripten with WebAssembly engine backend.
 
 ---
@@ -44,7 +44,7 @@ Windows: equivalent `build/*.bat` scripts (MinGW-w64 `g++` on `PATH`). ARM/Termu
 | `build_wasm.sh` / `.bat`      | WebAssembly build (requires `emsdk`)                         |
 | `build_all.sh` / `.bat`       | All targets except WASM (add `wasm` argument to include it)  |
 
-Binaries are placed in `bin/` (arena in `teste/bin/`), both git-ignored.
+Binaries are placed in `bin/`, git-ignored.
 
 ---
 
@@ -60,14 +60,18 @@ bin/test_lmr_pvs
 bin/nnue_verify data/nnue/nnue_weights.bin data/nnue/nnue_weights_int8.bin
 ```
 
-### Self-play Data Generation
+### Self-Play Data Generation
 ```bash
+# Epsilon-greedy mode (legacy)
+bin/selfplay --games 20000 --chunk-games 2000 --threads 12 --time-ms 100 \
+    --out "data/selfplay/gen5-epsilon/selfplay_{shard:03d}.bin"
+
 # Monte Carlo policy-temperature mode (fast openings)
 bin/selfplay --games 20000 --chunk-games 2000 --threads 12 --time-ms 100 --mc-mode \
     --out "data/selfplay/gen5-montecarlo/selfplay_{shard:03d}.bin"
 
 # Or via Python orchestrator
-python3 training/run_selfplay.py
+python3 tools/selfplay/run_selfplay.py
 ```
 
 ### NNUE Training & Quantization
@@ -79,7 +83,7 @@ python3 quantize_nnue.py ../data/nnue/nnue_weights.bin ../data/nnue/nnue_weights
 
 ### Strength Arena (Head-to-Head)
 ```bash
-python3 teste/run_arena.py --ref1 "" --ref2 main --games 200 --time 500 --threads 14
+python3 tools/arena/run_arena.py --ref1 "" --ref2 main --games 200 --time 500 --threads 14
 ```
 
 ### Web GUI
@@ -120,8 +124,9 @@ Full flag list: `bin/selfplay --help`.
 | `src/search.hpp` | Negamax, alpha-beta, transposition table, move ordering, quiescence |
 | `src/endgame_race.hpp` | Exact retrograde DP pawn-race endgame solver |
 | `src/nnue.hpp` | 354-feature NNUE network, incremental accumulator, inference |
-| `src/selfplay.hpp`, `src/selfplay_main.cpp` | Multi-threaded self-play dataset generator |
-| `teste/` | Correctness tests, benchmarks, arena, SPSA tuning |
+| `tools/` | CLI tools & orchestrators (`selfplay`, `arena`, `spsa`, `qtp`, `path_clash_bot_arena`) |
+| `benchmarks/` | Performance benchmarks (`main.cpp`, `bench_*.cpp`) |
+| `tests/` | Correctness and NNUE parity test suite |
 | `training/` | PyTorch training, quantization, dataset readers |
 | `gui_web/` | WebAssembly build and HTML/JS frontend |
 

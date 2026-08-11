@@ -77,8 +77,8 @@ E1_WEIGHTS_DIR = "default"
 E2_WEIGHTS_DIR = "default"
 # ==============================================================================
 
-PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-BIN_DIR = os.path.join(PROJECT_ROOT, "teste", "bin")
+PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+BIN_DIR = os.path.join(PROJECT_ROOT, "bin")
 ARENA_DATA_DIR = os.path.join(PROJECT_ROOT, "data", "arena")
 
 def calculate_elo_and_ci(wins_1, wins_2, draws):
@@ -130,14 +130,14 @@ def _bump_mtimes(src_dir, epoch_offset_seconds):
 
 def compile_arena(dir1, dir2, output_exe):
     """
-    Compila teste/arena.cpp incluindo os headers REAIS de dir1 (ref1)
+    Compila tools/arena/arena.cpp incluindo os headers REAIS de dir1 (ref1)
     e dir2 (ref2) no MESMO binário, sob namespaces separados (qr_e1 /
     qr_e2) -- ao contrário do compile_arena antigo, que só compilava dir1
     e fazia "Engine 2" ser, na prática, uma cópia do código de Engine 1
     (o worktree de --ref2 era criado e descartado sem nunca ser usado).
     """
     os.makedirs(os.path.dirname(output_exe), exist_ok=True)
-    arena_src = os.path.join(PROJECT_ROOT, "teste", "arena.cpp")
+    arena_src = os.path.join(PROJECT_ROOT, "tools", "arena", "arena.cpp")
 
     # CORREÇÃO: quando --ref1/--ref2 são omitidos (caso comum: comparar o
     # build local contra ele mesmo, ex. smoke-test), prepare_engine_source

@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
-# build_arena_common.py -- compila teste/arena.cpp como um binario
-# standalone (fora do fluxo completo de teste/run_arena.py, que faz git
+# build_arena_common.py -- compila tools/arena/arena.cpp como um binario
+# standalone (fora do fluxo completo de tools/arena/run_arena.py, que faz git
 # worktree + paralelismo + relatorio de Elo). Chamado por build_arena.sh
 # e build_arena.bat.
 #
-# POR QUE ISTO NAO EXISTIA: tentar compilar teste/arena.cpp direto (g++
-# teste/arena.cpp) sempre falhava com o #error no topo do arquivo --
+# POR QUE ISTO NAO EXISTIA: tentar compilar tools/arena/arena.cpp direto (g++
+# tools/arena/arena.cpp) sempre falhava com o #error no topo do arquivo --
 # arena.cpp exige -DENGINE1_SEARCH_HPP/-DENGINE2_SEARCH_HPP apontando pra
 # dois search.hpp reais (compila os DOIS motores no mesmo binario, sob
-# namespaces qr_e1/qr_e2). Só teste/run_arena.py montava esse comando, e
+# namespaces qr_e1/qr_e2). Só tools/arena/run_arena.py montava esse comando, e
 # só via git worktree -- sem repo git (ex. rodando a partir de um zip),
 # run_arena.py também não ajudava. Este script cobre o caso "só quero
 # compilar/testar o arena.cpp local", sem precisar de git nem de duas refs
@@ -27,8 +27,8 @@ import subprocess
 import tempfile
 
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-ARENA_SRC = os.path.join(PROJECT_ROOT, "teste", "arena.cpp")
-BIN_DIR = os.path.join(PROJECT_ROOT, "teste", "bin")
+ARENA_SRC = os.path.join(PROJECT_ROOT, "tools", "arena", "arena.cpp")
+BIN_DIR = os.path.join(PROJECT_ROOT, "bin")
 
 COMPILER = os.environ.get("CXX", "g++")
 CXX_FLAGS = ["-O3", "-std=c++17"]
@@ -97,12 +97,12 @@ def main():
         print("(ex.: heuristica vs. NNUE no mesmo confronto), ou --e1-nnue/--e2-nnue")
         print("para apontar pesos especificos. Mesmo efeito sem flag nenhuma: edite")
         print("E1_FORCE_HEURISTIC_DEFAULT/E2_FORCE_HEURISTIC_DEFAULT no topo de")
-        print("teste/arena.cpp e recompile.")
+        print("tools/arena/arena.cpp e recompile.")
         print("Rode a partir da RAIZ do projeto para o caminho default resolver:")
         print(f"  {os.path.relpath(out_exe, PROJECT_ROOT)} --games 40 --time 50")
         print()
         print("Para um confronto de verdade entre duas refs git (paralelismo,")
-        print("relatorio de Elo, dataset .bin), use teste/run_arena.py em vez")
+        print("relatorio de Elo, dataset .bin), use tools/arena/run_arena.py em vez")
         print("deste script -- este aqui e so para compilar/testar rapido.")
     finally:
         shutil.rmtree(work1, ignore_errors=True)

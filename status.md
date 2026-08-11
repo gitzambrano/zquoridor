@@ -37,11 +37,15 @@ Code-level detail (function/class names, file-by-file) for developer reference.
 
 **`nnue.hpp`** — 354 → 256 accumulator (SCReLU) → two heads: WL outcome head (`256→32→1`) and Policy head (`256→209`). `buildAccumulatorQuant` / `updateAccumulatorForMoveQuant` maintain fixed-point quantized accumulators incrementally. `nnueEvalInt` provides leaf evaluation for search; `nnueWinProbQuant` computes absolute win probability for self-play. `AccPair` manages per-ply per-perspective accumulators on the search stack (`nnueAccStack`).
 
-**`selfplay.hpp` / `selfplay_main.cpp`** — Multi-threaded self-play dataset generator. Supports traditional epsilon-greedy and fast Monte Carlo policy-temperature sampling (`--mc-mode`). Allocates memory on stack frames (`std::array`) to prevent MinGW TLS destructor heap corruption on thread exit.
+**`tools/selfplay/` (`selfplay.hpp`, `selfplay_main.cpp`, `run_selfplay.py`)** — Multi-threaded self-play dataset generator and Python orchestrator. Supports traditional epsilon-greedy and fast Monte Carlo policy-temperature sampling (`--mc-mode`). Allocates memory on stack frames (`std::array`) to prevent MinGW TLS destructor heap corruption on thread exit.
 
-**`teste/arena.cpp` / `run_arena.py`** — Head-to-head engine strength tester with Elo estimation and confidence intervals.
+**`tools/arena/` (`arena.cpp`, `run_arena.py`)** — Head-to-head engine strength tester with Elo estimation and confidence intervals.
 
-**`training/*.py`** — PyTorch NNUE training pipeline (`train_nnue.py`), QAT quantization (`quantize_nnue.py`), dataset reader (`read_selfplay.py`), parity verifier (`parity_check.py`), and orchestrator (`run_selfplay.py`).
+**`tools/spsa/` (`tune_spsa.cpp`, `run_spsa.py`, `plot_spsa.py`)** — Multi-mode SPSA parameter tuner & visualizer.
+
+**`tools/qtp/` (`qtp_main.cpp`)** — QTP text protocol interface.
+
+**`training/*.py`** — PyTorch NNUE training pipeline (`train_nnue.py`), QAT quantization (`quantize_nnue.py`), dataset reader (`read_selfplay.py`), and parity verifier (`parity_check.py`).
 
 **`gui_web/`** — `engine_wasm.cpp` C-API shell, compiled to `zquoridor.js`/`.wasm` for browser play (`index.html`, `app.js`).
 
@@ -75,7 +79,7 @@ Five different things all get called "the evaluation" depending on where you loo
 | --- | --- | --- | --- | --- |
 | Search | `nnueEvalInt` (`nnue.hpp`), consumes `forwardValueWLQuant` | NNUE WL head raw logit, scaled ×`NNUE_EVAL_SCALE` (200) to an int on the same rough scale as `evalSimple` | mover-relative: positive = side to move is ahead | ~[-30000, 30000]; mate/certain-win positions saturate near the extremes |
 | Heuristic fallback | `evalSimple` (`rules.hpp`), used only in `EvalMode::Heuristic` or via `--heuristic` on selfplay/arena/WASM | hand-tuned material + positional heuristic, uncalibrated weights | mover-relative | ~[-600, 600] in typical midgame positions |
-| Self-play `.bin` | `TrainingSample::evalNNUE` (`selfplay.hpp`, `teste/arena.cpp`) | NNUE WL head's own opinion of the position, sigmoid'd to a win probability, computed via `buildAccumulatorQuant`+`nnueWinProbQuant` **before** the move is chosen (independent of whether the move itself comes from random play, shallow search, or full search) | **absolute color**, not mover-relative: 0 = Black certain win, `EV_SCALE` (65535) = White certain win — chosen this way so the field can be read without needing `mover` alongside it just to know "how White is doing" | `uint16_t` 0..65535 (`EV_SCALE`) |
+| Self-play `.bin` | `TrainingSample::evalNNUE` (`selfplay.hpp`, `tools/arena/arena.cpp`) | NNUE WL head's own opinion of the position, sigmoid'd to a win probability, computed via `buildAccumulatorQuant`+`nnueWinProbQuant` **before** the move is chosen (independent of whether the move itself comes from random play, shallow search, or full search) | **absolute color**, not mover-relative: 0 = Black certain win, `EV_SCALE` (65535) = White certain win — chosen this way so the field can be read without needing `mover` alongside it just to know "how White is doing" | `uint16_t` 0..65535 (`EV_SCALE`) |
 | Training target | `wl_target` in `to_chunk_tensors` (`train_nnue.py`) | blend of the real game outcome and the recorded `evalNNUE`: `wl_target = k · game_result_prob + (1-k) · ev_prob`, where `ev_prob` is `evalNNUE` reprojected from absolute-White back to mover-relative via the `mover` field, and `k` is chosen **per data source** in `DATA_SOURCES_DEFAULT`/`--data-sources` (`"k"`, default `1.0`) | mover-relative probability (same frame as `game_result_prob = (game_result+1)/2`) | float `[0, 1]` |
 | HTML/WASM display | `formatEval`/`evalToWhitePercent` (`gui_web/app.js`, mirrored into `gui_web/zquoridor.html` and root `index.html`) | sigmoid of the raw search score (White-perspective, same units as the Search row) / 200, i.e. the inverse of the scaling `nnueEvalInt` applies going the other way | **absolute color**, always: 0% = Black certain win, 100% = White certain win, 50% = balanced. This is the one place a person actually reads a number, and it's deliberately *not* mover-relative — the percentage doesn't flip meaning depending on whose turn it is | `0–100%`, rounded to an integer |
 

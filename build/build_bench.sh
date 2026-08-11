@@ -9,24 +9,25 @@ set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$HERE/.."
 SRC="$ROOT/src"
-TESTE="$ROOT/teste"
+SELFPLAY="$ROOT/tools/selfplay"
+BENCHMARK="$ROOT/benchmarks"
 BIN="$ROOT/bin"
 
 mkdir -p "$BIN"
 
 FLAGS=(-O3 -std=c++17 -march=native -mavx2 -mfma)
 
-echo "[1/3] bench  <-  src/main.cpp"
-g++ "${FLAGS[@]}" -I"$SRC" -o "$BIN/bench" "$SRC/main.cpp"
+echo "[1/4] bench  <-  benchmarks/main.cpp"
+g++ "${FLAGS[@]}" -I"$SRC" -I"$SELFPLAY" -o "$BIN/bench" "$BENCHMARK/main.cpp"
 
-echo "[2/4] bench_wall_touch_bonus  <-  teste/bench_wall_touch_bonus.cpp"
-g++ "${FLAGS[@]}" -I"$SRC" -o "$BIN/bench_wall_touch_bonus" "$TESTE/bench_wall_touch_bonus.cpp"
+echo "[2/4] bench_wall_touch_bonus  <-  benchmarks/bench_wall_touch_bonus.cpp"
+g++ "${FLAGS[@]}" -I"$SRC" -o "$BIN/bench_wall_touch_bonus" "$BENCHMARK/bench_wall_touch_bonus.cpp"
 
-echo "[3/4] bench_quiescence_toggle  <-  teste/bench_quiescence_toggle.cpp"
-g++ "${FLAGS[@]}" -I"$SRC" -o "$BIN/bench_quiescence_toggle" "$TESTE/bench_quiescence_toggle.cpp"
+echo "[3/4] bench_quiescence_toggle  <-  benchmarks/bench_quiescence_toggle.cpp"
+g++ "${FLAGS[@]}" -I"$SRC" -o "$BIN/bench_quiescence_toggle" "$BENCHMARK/bench_quiescence_toggle.cpp"
 
-echo "[4/4] bench_lmr_pvs  <-  teste/bench_lmr_pvs.cpp"
-g++ "${FLAGS[@]}" -I"$SRC" -o "$BIN/bench_lmr_pvs" "$TESTE/bench_lmr_pvs.cpp"
+echo "[4/4] bench_lmr_pvs  <-  benchmarks/bench_lmr_pvs.cpp"
+g++ "${FLAGS[@]}" -I"$SRC" -o "$BIN/bench_lmr_pvs" "$BENCHMARK/bench_lmr_pvs.cpp"
 
 echo
 echo "OK -- binários em $BIN"

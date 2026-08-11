@@ -3,11 +3,11 @@
 run_spsa.py -- launcher do tuner evolutivo/genético.
 
 O nome é mantido para compatibilidade com o projeto. O algoritmo implementado
-em teste/tune_spsa.cpp agora é um Genetic Algorithm robusto, adequado à função
+em tools/spsa/tune_spsa.cpp agora é um Genetic Algorithm robusto, adequado à função
 objetivo discreta/ruidosa das partidas de Quoridor.
 
 Ajuste CONFIG e rode:
-    python teste/run_spsa.py
+    python tools/spsa/run_spsa.py
 """
 
 import argparse
@@ -64,7 +64,7 @@ def find_exe(root):
 
 
 def needs_recompile(root, exe):
-    src = os.path.join(root, "teste", "tune_spsa.cpp")
+    src = os.path.join(root, "tools", "spsa", "tune_spsa.cpp")
     search = os.path.join(root, "src", "search.hpp")
     if exe is None:
         return True

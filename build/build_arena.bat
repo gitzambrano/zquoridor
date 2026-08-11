@@ -13,7 +13,6 @@ set "PATH=C:\mingw64\bin;%PATH%"
 cd /d "%~dp0"
 python build_arena_common.py %*
 if %ERRORLEVEL% neq 0 (
-    pause
     exit /b 1
 )
-pause
+exit /b 0

@@ -16,8 +16,8 @@ mkdir -p "$BIN"
 
 FLAGS=(-O3 -std=c++17 -march=native -mavx2 -mfma)
 
-echo "qtp_engine  <-  src/qtp_main.cpp"
-g++ "${FLAGS[@]}" -I"$SRC" -o "$BIN/qtp_engine" "$SRC/qtp_main.cpp"
+echo "qtp_engine  <-  tools/qtp/qtp_main.cpp"
+g++ "${FLAGS[@]}" -I"$SRC" -o "$BIN/qtp_engine" "$ROOT/tools/qtp/qtp_main.cpp"
 
 echo
 echo "OK -- $BIN/qtp_engine"

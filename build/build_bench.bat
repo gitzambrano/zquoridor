@@ -17,27 +17,28 @@ if errorlevel 1 (
 
 set ROOT=%~dp0..
 set SRC=%ROOT%\src
-set TESTE=%ROOT%\teste
+set SELFPLAY=%ROOT%\tools\selfplay
+set BENCHMARK=%ROOT%\benchmarks
 set BIN=%ROOT%\bin
 
 if not exist "%BIN%" mkdir "%BIN%"
 
 set FLAGS=-O3 -std=c++17 -march=native -mavx2 -mfma
 
-echo [1/4] bench.exe  ^<-  src\main.cpp
-g++ %FLAGS% -I"%SRC%" -o "%BIN%\bench.exe" "%SRC%\main.cpp"
+echo [1/4] bench.exe  ^<-  benchmarks\main.cpp
+g++ %FLAGS% -I"%SRC%" -I"%SELFPLAY%" -o "%BIN%\bench.exe" "%BENCHMARK%\main.cpp"
 if errorlevel 1 goto :erro
 
-echo [2/4] bench_wall_touch_bonus.exe  ^<-  teste\bench_wall_touch_bonus.cpp
-g++ %FLAGS% -I"%SRC%" -o "%BIN%\bench_wall_touch_bonus.exe" "%TESTE%\bench_wall_touch_bonus.cpp"
+echo [2/4] bench_wall_touch_bonus.exe  ^<-  benchmarks\bench_wall_touch_bonus.cpp
+g++ %FLAGS% -I"%SRC%" -o "%BIN%\bench_wall_touch_bonus.exe" "%BENCHMARK%\bench_wall_touch_bonus.cpp"
 if errorlevel 1 goto :erro
 
-echo [3/4] bench_quiescence_toggle.exe  ^<-  teste\bench_quiescence_toggle.cpp
-g++ %FLAGS% -I"%SRC%" -o "%BIN%\bench_quiescence_toggle.exe" "%TESTE%\bench_quiescence_toggle.cpp"
+echo [3/4] bench_quiescence_toggle.exe  ^<-  benchmarks\bench_quiescence_toggle.cpp
+g++ %FLAGS% -I"%SRC%" -o "%BIN%\bench_quiescence_toggle.exe" "%BENCHMARK%\bench_quiescence_toggle.cpp"
 if errorlevel 1 goto :erro
 
-echo [4/4] bench_lmr_pvs.exe  ^<-  teste\bench_lmr_pvs.cpp
-g++ %FLAGS% -I"%SRC%" -o "%BIN%\bench_lmr_pvs.exe" "%TESTE%\bench_lmr_pvs.cpp"
+echo [4/4] bench_lmr_pvs.exe  ^<-  benchmarks\bench_lmr_pvs.cpp
+g++ %FLAGS% -I"%SRC%" -o "%BIN%\bench_lmr_pvs.exe" "%BENCHMARK%\bench_lmr_pvs.cpp"
 if errorlevel 1 goto :erro
 
 echo.
