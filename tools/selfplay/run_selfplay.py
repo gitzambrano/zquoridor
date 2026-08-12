@@ -37,7 +37,7 @@ CHUNK_GAMES   = 3000    # partidas por arquivo .bin
 
 # --- Busca ---
 MAX_DEPTH     = 50      # profundidade máxima do negamax (iterative deepening)
-TIME_MS       = 100     # orçamento de tempo por lance em ms
+TIME_MS       = 60     # orçamento de tempo por lance em ms
                         # 200 ms = boa qualidade; reduza para 50-100 ms se quiser
                         # gerar muito volume rapidamente (em detrimento da força)
  
@@ -57,17 +57,17 @@ MODE = "montecarlo"   # "epsilon" ou "montecarlo"
 # --- Abertura aleatória (modo "epsilon") ---
 # Fase 1: lances iniciais (óbvios no Quoridor) com muito pouco ruído
 OPENING_PLIES1   = 6       # lances 1 a N1 sujeitos a EPSILON_OPENING1
-EPSILON_OPENING1 = 0.3     # baixo: não distorce os lances óbvios da abertura
+EPSILON_OPENING1 = 0.2     # baixo: não distorce os lances óbvios da abertura
 
 # Fase 2: janela de exploração pesada para diversificar posições iniciais
-OPENING_PLIES2   = 10    # lances N1+1 a N2 sujeitos a EPSILON_OPENING2
-EPSILON_OPENING2 = 0.7    # alto: cria muita variedade de abertura (lance totalmente aleatório)
+OPENING_PLIES2   = 8    # lances N1+1 a N2 sujeitos a EPSILON_OPENING2
+EPSILON_OPENING2 = 0.99    # alto: cria muita variedade de abertura (lance totalmente aleatório)
  
-EPSILON_MIDGAME  = 0.01   # prob. de desvio no midgame: escolhe 2º ou 3º melhor lance (não totalmente aleatório)
+EPSILON_MIDGAME  = 0.04   # prob. de desvio no midgame: escolhe 2º ou 3º melhor lance (não totalmente aleatório)
                           # -- também usado como ruído residual do modo "montecarlo" após a janela de decaimento (ver MC_TEMP_DECAY_PLIES)
 
 # --- Temperatura Monte Carlo/AlphaZero (modo "montecarlo") ---
-# Softmax(logit da política / temperatura) sobre os lances legais, em duas
+# Softmax(logit da política / temperatura) sobre os lances  legais, em duas
 # fases sucessivas, sem busca nenhuma enquanto alguma delas estiver ativa:
 #   fase 1 "óbvios"  [0..MC_OBVIOUS_PLIES)                -> temperatura fixa baixa
 #   fase 2 "opening" [MC_OBVIOUS_PLIES..+MC_TEMP_DECAY_PLIES) -> decai linearmente
@@ -95,7 +95,7 @@ MAX_PLIES     = 300     # corte: partidas que não terminam são descartadas
 SEPARATE_TT   = False
 
 # --- Paralelismo ---
-THREADS       = 14      # 0 = auto (usa hardware_concurrency); ajuste se quiser
+THREADS       = 15      # 0 = auto (usa hardware_concurrency); ajuste se quiser
                         # reservar threads para outras tarefas
 
 # --- Semente ---
