@@ -64,6 +64,25 @@ E2_POLICY_ORDER = True
 # Mesmo default (3) de search.hpp/selfplay/arena.cpp.
 E1_POLICY_ORDER_MIN_DEPTH = 3
 E2_POLICY_ORDER_MIN_DEPTH = 3
+# --- MCTS híbrido com alpha-beta (busca de produção) ---
+# Regra deste bloco: None = "vazio", não manda flag nenhuma e o arena.exe usa
+# o valor de produção (o comentário de cada campo diz qual é). Preencher aqui
+# sobrescreve; as flags de linha de comando sobrescrevem isto.
+#
+# Precedência: flag de CLI > constante aqui > produção (mcab::McabParams).
+#
+# O híbrido é a busca de produção e vem LIGADO. Ressalva de faixa: os +46.9
+# ±23.5 Elo sobre alpha-beta puro foram medidos a 200ms/lance. O híbrido roda
+# a ~1/9 dos nós/s do AB puro, então em controles de tempo bem mais curtos a
+# troca provavelmente inverte -- para medir AB puro, use False (ou --no-mcab).
+E1_MCAB = None                # None = default do binário (ligado) | True | False
+E2_MCAB = None                # idem
+MCAB_NODES = None             # produção: 20000 (a 200ms quem limita é o tempo, não isto)
+MCAB_LEAF_DEPTH = None        # produção: 0 -- plies de alpha-beta em cada folha (medido)
+MCAB_CPUCT = None             # produção: 1.5
+MCAB_FPU = None               # produção: 0.0 (medido)
+MCAB_SCORE_SCALE = None       # produção: 200.0 (= NNUE_EVAL_SCALE)
+MCAB_ROOT_SELECT = None       # produção: "visits" | "q" | "visits-then-q"
 # --- Pasta de pesos NNUE por engine (resolve o bug de main vs local
 # carregando o MESMO arquivo, ver defaultNnueWeightsPath em nnue.hpp) ---
 # "default"/None/"" -> tenta <pasta_do_ref>/data/nnue/nnue_weights_int8.bin
@@ -263,7 +282,7 @@ def resolve_weights_path(weights_dir, engine_source_dir, engine_label):
 
 import multiprocessing
 
-def worker_process(exe_path, worker_games, time_ms, random_plies, seed, report_games, bin_path, invert_colors, progress_queue, e1_nnue="", e2_nnue="", heuristic=False, e1_heuristic=False, e2_heuristic=False, policy_order=False, e1_policy_order=False, e2_policy_order=False, e1_policy_min_depth=3, e2_policy_min_depth=3, e1_mcab=False, e2_mcab=False, mcab_nodes=None, mcab_leaf_depth=None, e1_mcab_opts=None, e2_mcab_opts=None):
+def worker_process(exe_path, worker_games, time_ms, random_plies, seed, report_games, bin_path, invert_colors, progress_queue, e1_nnue="", e2_nnue="", heuristic=False, e1_heuristic=False, e2_heuristic=False, policy_order=False, e1_policy_order=False, e2_policy_order=False, e1_policy_min_depth=3, e2_policy_min_depth=3, e1_mcab=None, e2_mcab=None, mcab_nodes=None, mcab_leaf_depth=None, e1_mcab_opts=None, e2_mcab_opts=None):
     cmd = [
         exe_path,
         "--games", str(worker_games),
@@ -302,16 +321,22 @@ def worker_process(exe_path, worker_games, time_ms, random_plies, seed, report_g
     else:
         cmd.append("--e2-no-policy-order")
 
-    # Hibrido MCab (plan-hybrid-mc-ab.md, Fase 5). Default DESLIGADO nas duas
-    # engines em arena.cpp (E1/E2_MCAB_ENABLED_DEFAULT=false), entao aqui basta
-    # mandar a flag quando ligado -- nao existe "--eX-no-mcab" a mandar.
+    # MCTS hibrido com alpha-beta. Agora e a busca de PRODUCAO -- vem LIGADO
+    # por default no arena.exe -- entao isto e tri-estado:
+    #   None  = nao manda flag, o binario decide (o normal)
+    #   True  = --eX-mcab      (forca ligado)
+    #   False = --eX-no-mcab   (forca alpha-beta puro)
     # IMPORTANTE: um --refX anterior a esta feature nao tem searchLeaf; o
     # arena compila mesmo assim (dispatch SFINAE em tools/common/mcab.hpp) e
     # imprime um aviso 1x, rodando AB puro daquele lado.
-    if e1_mcab:
+    if e1_mcab is True:
         cmd.append("--e1-mcab")
-    if e2_mcab:
+    elif e1_mcab is False:
+        cmd.append("--e1-no-mcab")
+    if e2_mcab is True:
         cmd.append("--e2-mcab")
+    elif e2_mcab is False:
+        cmd.append("--e2-no-mcab")
     if mcab_nodes is not None:
         cmd.extend(["--mcab-nodes", str(mcab_nodes)])
     if mcab_leaf_depth is not None:
@@ -403,9 +428,15 @@ def main():
     parser.add_argument("--policy-order-min-depth", type=int, default=None, help="Piso de profundidade da ordenacao por politica nas duas engines (padrao: 3 -- ver E1_POLICY_ORDER_MIN_DEPTH/E2_POLICY_ORDER_MIN_DEPTH)")
     parser.add_argument("--e1-policy-order-min-depth", type=int, default=E1_POLICY_ORDER_MIN_DEPTH, help=f"Piso de profundidade so no Engine 1 (padrao: {E1_POLICY_ORDER_MIN_DEPTH})")
     parser.add_argument("--e2-policy-order-min-depth", type=int, default=E2_POLICY_ORDER_MIN_DEPTH, help=f"Piso de profundidade so no Engine 2 (padrao: {E2_POLICY_ORDER_MIN_DEPTH})")
-    parser.add_argument("--mcab", action="store_true", default=False, help="Liga o hibrido MCTS+alpha-beta (MCab) nas DUAS engines (plan-hybrid-mc-ab.md). Sem isto, as duas rodam AB puro, como sempre")
-    parser.add_argument("--e1-mcab", dest="e1_mcab", action="store_true", default=False, help="Liga o hibrido MCab so no Engine 1 (--ref1). Se o ref for anterior a feature, o arena avisa e roda AB puro nesse lado")
-    parser.add_argument("--e2-mcab", dest="e2_mcab", action="store_true", default=False, help="Liga o hibrido MCab so no Engine 2 (--ref2)")
+    # Tri-estado: o MCTS hibrido e a busca de PRODUCAO e vem ligado por
+    # default no arena.exe. Sem nenhuma destas flags, nada e mandado e o
+    # binario decide. --no-mcab e como se mede alpha-beta puro.
+    parser.add_argument("--mcab", dest="mcab", action="store_true", default=None, help="Forca o MCTS hibrido LIGADO nas DUAS engines (ja e o default do binario)")
+    parser.add_argument("--no-mcab", dest="mcab", action="store_false", help="Forca alpha-beta PURO nas DUAS engines")
+    parser.add_argument("--e1-mcab", dest="e1_mcab", action="store_true", default=None, help="Forca o hibrido ligado so no Engine 1 (--ref1). Se o ref for anterior a feature, o arena avisa e roda AB puro nesse lado")
+    parser.add_argument("--e1-no-mcab", dest="e1_mcab", action="store_false", help="Forca alpha-beta puro so no Engine 1")
+    parser.add_argument("--e2-mcab", dest="e2_mcab", action="store_true", default=None, help="Forca o hibrido ligado so no Engine 2 (--ref2)")
+    parser.add_argument("--e2-no-mcab", dest="e2_mcab", action="store_false", help="Forca alpha-beta puro so no Engine 2")
     parser.add_argument("--mcab-nodes", type=int, default=None, help="Orcamento de nos MCTS por lance nas engines com MCab ligado (padrao do binario: 20000)")
     parser.add_argument("--mcab-leaf-depth", type=int, default=None, help="Profundidade da busca AB em cada folha do MCab (padrao do binario: 4). 0 = so avaliacao NNUE + quiescencia de muro, que a Fase 8 mediu como o unico ponto competitivo a 200ms")
     # Knobs de tuning. Cada um tem a forma global (as duas engines) e a forma
@@ -427,10 +458,24 @@ def main():
     if args.policy_order:
         args.e1_policy_order = True
         args.e2_policy_order = True
-    # --mcab liga as duas engines, mesmo padrao de --heuristic/--policy-order.
-    if args.mcab:
-        args.e1_mcab = True
-        args.e2_mcab = True
+    # --mcab/--no-mcab valem para as duas engines; o --eX- correspondente,
+    # quando passado, vence para aquele lado.
+    if args.mcab is not None:
+        if args.e1_mcab is None:
+            args.e1_mcab = args.mcab
+        if args.e2_mcab is None:
+            args.e2_mcab = args.mcab
+    # Nada na CLI -> cai no bloco de config do topo do arquivo (que, se
+    # tambem estiver vazio/None, deixa o binario decidir).
+    if args.e1_mcab is None:
+        args.e1_mcab = E1_MCAB
+    if args.e2_mcab is None:
+        args.e2_mcab = E2_MCAB
+    for attr, constante in (("mcab_nodes", MCAB_NODES), ("mcab_leaf_depth", MCAB_LEAF_DEPTH),
+                            ("mcab_cpuct", MCAB_CPUCT), ("mcab_fpu", MCAB_FPU),
+                            ("mcab_score_scale", MCAB_SCORE_SCALE), ("mcab_root_select", MCAB_ROOT_SELECT)):
+        if getattr(args, attr) is None:
+            setattr(args, attr, constante)
 
     # Monta os dicts de knobs por engine: o valor global vale para os dois
     # lados, e o --eX- sobrescreve aquele lado. Chaves = sufixo da flag do

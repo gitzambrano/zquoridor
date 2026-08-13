@@ -1,6 +1,6 @@
 ## Project
 
-Zquoridor is a 2-player Quoridor engine (9×9, 10 walls each; 4-player variant is out of scope). Negamax + alpha-beta search, with an NNUE trained on self-play games. Sister project of chess engine **Zchezz**, mirroring its conventions.
+Zquoridor is a 2-player Quoridor engine (9×9, 10 walls each; 4-player variant is out of scope). The production search is a **hybrid MCTS with alpha-beta**: a best-first PUCT tree over an NNUE trained on self-play games, whose leaves are resolved by a real alpha-beta search. Pure Negamax + alpha-beta is preserved and selectable (`--no-mcab`). Sister project of chess engine **Zchezz**, mirroring its conventions.
 
 `readme.md` is a concise, feature-level reference for external readers (install/build/run, capabilities).
 
@@ -45,6 +45,7 @@ build\build_selfplay.bat
 bin\selfplay.exe --games 20000 --chunk-games 2000 --threads 12 --time-ms 100 --mc-mode ^
     --out "data\selfplay\gen5-montecarlo\selfplay_{shard:03d}.bin"
 python tools\selfplay\run_selfplay.py   :: orchestrator; edit CONFIG at the top
+:: Hybrid MCTS is ON by default here too; --no-mcab generates with pure alpha-beta.
 ```
 
 NNUE training & quantization (from `training/`):
@@ -57,6 +58,11 @@ Strength testing:
 ```bash
 python tools/arena/run_arena.py --ref1 "" --ref2 main --games 200 --time 500 --threads 14
 # --ref1 "" / None = current working tree including uncommitted changes
+# Hybrid MCTS is ON by default in both engines. --no-mcab (or --e1-no-mcab /
+# --e2-no-mcab) selects pure alpha-beta -- that is how the AB baseline is measured.
+# Knobs: --mcab-nodes/--mcab-leaf-depth/--mcab-cpuct/--mcab-fpu/--mcab-score-scale/
+# --mcab-root-select, each also in --e1-/--e2- form. Defaults live in mcab::McabParams;
+# the config blocks at the top of arena.cpp/selfplay_main.cpp/run_arena.py start empty.
 ```
 
 Web GUI (`gui_web/`):
@@ -65,7 +71,8 @@ Web GUI (`gui_web/`):
 ## Architecture
 
 - **`rules.hpp`**: `State` (pawn cells, 64-bit wall bitboards H/V, turn, Zobrist hash), move generation, `evalSimple`. Wall legality uses a geometric pre-filter followed by rollback union-find in `dsu.hpp`. Four BFS variants share one engine (`hasPathToGoal`, `shortestPathLen`, `shortestPathTouchSlots`, `pathRobustness`).
-- **`search.hpp`**: Negamax alpha-beta, transposition table, killers + history, LMR+PVS, RFP+LMP, wall quiescence, 3-fold repetition with `CONTEMPT = -30`, policy-assisted move ordering (gated by `policyOrderingMinDepth`, default 3). All heuristics have runtime toggles.
+- **`search.hpp`**: Negamax alpha-beta, transposition table, killers + history, LMR+PVS, RFP+LMP, wall quiescence, 3-fold repetition with `CONTEMPT = -30`, policy-assisted move ordering (gated by `policyOrderingMinDepth`, default 3). All heuristics have runtime toggles. `searchLeaf()`/`resetOrderingState()`/`searchWasStopped()` are the surface the hybrid uses.
+- **`tools/common/mcab.hpp`**: Hybrid MCTS + alpha-beta — best-first PUCT tree, alpha-beta leaves, minimax-hard backup (Huang, AAAI 2015). **On by default** in arena and self-play; `+46.9 ±23.5` Elo over pure alpha-beta at 200ms/move. Requires NNUE. `mcab::McabParams` is the single source of truth for production defaults (`leafDepth=0`, `fpuReduction=0.0`, `cPuct=1.5`, `scoreScale=200`, `nodeBudget=20000`); the override blocks at the top of `arena.cpp`/`selfplay_main.cpp`/`run_arena.py` start empty and fall back to it. Lives in `tools/`, **not** `src/`, because `run_arena.py` checks out `src/` per git ref — a header there could not compile against a ref predating the feature. Compile-time SFINAE (`hasMcabSupport`) handles that fallback.
 - **`cat.hpp`**: Corridor Attention Table (CAT) heat map for wall move ordering.
 - **BFS Caching**: `PlayerPathCache` (per node) + `PlayerPathCacheTable` (~48MB, keyed on wall topology) speed up BFS calls (~57% + ~5%).
 - **`endgame_race.hpp`**: Exact pawn-race solver when `wallsLeft==(0,0)` using disjoint-region gate and retrograde DP over 81×81×2 states with real-time budget.

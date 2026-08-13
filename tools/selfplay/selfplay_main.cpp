@@ -28,56 +28,53 @@
 using namespace qr;
 
 // =============================================================================
-// CONFIG DEFAULTS -- MCab (hibrido MCTS+alpha-beta, plan-hybrid-mc-ab.md,
-// Fase 6). Mesmo padrao/regra do bloco equivalente em tools/arena/arena.cpp
-// (Secao 10.1 do plano): toda flag de argv abaixo tem uma constante
-// `constexpr` nomeada aqui, uma variavel `static` inicializada a partir
-// dela, e o parsing em main() so sobrescreve essa variavel quando a flag
-// correspondente aparece. Rodar este binario sem NENHUMA flag --mcab-*
-// produz exatamente o mesmo comportamento que passar todas nos valores
-// abaixo -- e, com MCAB_ENABLED_DEFAULT=false, exatamente o mesmo
-// comportamento de antes desta fase existir (AB puro, byte-compativel).
+// MCTS HIBRIDO COM ALPHA-BETA -- bloco de OVERRIDE (self-play)
+//
+// Regra: campo VAZIO (mcab::UNSET_INT / mcab::UNSET_REAL / mcab::Tri::Unset)
+// usa o valor de PRODUCAO, que mora em mcab::McabParams
+// (tools/common/mcab.hpp). O valor real de producao esta no comentario de
+// cada campo. Preencher um campo aqui sobrescreve so ele.
+//
+// Precedencia, do mais forte pro mais fraco:
+//   flag de CLI  >  override deste bloco  >  producao (mcab::McabParams)
 //
 // Sem prefixo e1-/e2- (ao contrario de arena.cpp): self-play so tem UMA
 // engine logica por partida.
 //
-// ATENCAO, unica diferenca de proposito frente aos defaults de arena.cpp:
-// MCAB_ROOT_NOISE_ENABLED_DEFAULT = true aqui (arena.cpp usa false). Ruido
-// de Dirichlet na raiz serve para diversidade de ABERTURA em dados de
-// treino -- e o comportamento correto por default quando o hibrido estiver
-// ligado aqui -- nao para forca de partida (arena mede forca, entao la o
-// ruido so deve entrar via flag explicita). Isso so tem efeito quando
-// MCAB_ENABLED_DEFAULT (ou --mcab) estiver de fato ligado; com o default
-// MCAB_ENABLED_DEFAULT=false o binario continua 100% AB puro.
+// UNICA divergencia proposital frente ao arena: o ruido de Dirichlet na raiz
+// vem LIGADO aqui (Tri::On) e desligado la. Ruido serve para diversidade de
+// ABERTURA nos dados de treino; arena mede forca, e ruido so atrapalharia.
 // =============================================================================
-constexpr bool   MCAB_ENABLED_DEFAULT             = false;
-constexpr int    MCAB_NODE_BUDGET_DEFAULT         = 20000;
-// leafDepth=0 / fpuReduction=0.0: ponto de trabalho medido (status.md).
-constexpr int    MCAB_LEAF_DEPTH_DEFAULT          = 0;
-constexpr int    MCAB_LEAF_DEPTH_MAX_DEFAULT      = 8;
-constexpr bool   MCAB_ADAPTIVE_LEAF_DEPTH_DEFAULT = false;
-constexpr double MCAB_CPUCT_DEFAULT               = 1.5;
-constexpr double MCAB_FPU_REDUCTION_DEFAULT       = 0.0;
-constexpr double MCAB_SCORE_SCALE_DEFAULT         = 200.0;  // = NNUE_EVAL_SCALE
-constexpr bool   MCAB_TREE_REUSE_DEFAULT          = true;
-constexpr bool   MCAB_ROOT_NOISE_ENABLED_DEFAULT  = true;   // diferente de arena.cpp -- ver nota acima
-constexpr double MCAB_ROOT_NOISE_ALPHA_DEFAULT    = 0.3;
-constexpr double MCAB_ROOT_NOISE_EPSILON_DEFAULT  = 0.25;
-constexpr int    MCAB_MAX_TREE_DEPTH_DEFAULT      = 48;
+constexpr mcab::Tri MCAB_ENABLED_OVERRIDE             = mcab::Tri::Unset;  // producao: LIGADO
+constexpr int    MCAB_NODE_BUDGET_OVERRIDE            = mcab::UNSET_INT;   // producao: 20000
+constexpr int    MCAB_LEAF_DEPTH_OVERRIDE             = mcab::UNSET_INT;   // producao: 0 (medido)
+constexpr int    MCAB_LEAF_DEPTH_MAX_OVERRIDE         = mcab::UNSET_INT;   // producao: 8
+constexpr mcab::Tri MCAB_ADAPTIVE_LEAF_DEPTH_OVERRIDE = mcab::Tri::Unset;  // producao: desligado
+constexpr double MCAB_CPUCT_OVERRIDE                  = mcab::UNSET_REAL;  // producao: 1.5
+constexpr double MCAB_FPU_REDUCTION_OVERRIDE          = mcab::UNSET_REAL;  // producao: 0.0 (medido)
+constexpr double MCAB_SCORE_SCALE_OVERRIDE            = mcab::UNSET_REAL;  // producao: 200.0 (= NNUE_EVAL_SCALE)
+constexpr mcab::Tri MCAB_TREE_REUSE_OVERRIDE          = mcab::Tri::Unset;  // producao: ligado
+constexpr mcab::Tri MCAB_ROOT_NOISE_OVERRIDE          = mcab::Tri::On;     // producao do modulo: desligado -- ver nota acima
+constexpr double MCAB_ROOT_NOISE_ALPHA_OVERRIDE       = mcab::UNSET_REAL;  // producao: 0.3
+constexpr double MCAB_ROOT_NOISE_EPSILON_OVERRIDE     = mcab::UNSET_REAL;  // producao: 0.25
+constexpr int    MCAB_MAX_TREE_DEPTH_OVERRIDE         = mcab::UNSET_INT;   // producao: 48
 
-static bool   g_mcabEnabled           = MCAB_ENABLED_DEFAULT;
-static int    g_mcabNodeBudget        = MCAB_NODE_BUDGET_DEFAULT;
-static int    g_mcabLeafDepth         = MCAB_LEAF_DEPTH_DEFAULT;
-static int    g_mcabLeafDepthMax      = MCAB_LEAF_DEPTH_MAX_DEFAULT;
-static bool   g_mcabAdaptiveLeafDepth = MCAB_ADAPTIVE_LEAF_DEPTH_DEFAULT;
-static double g_mcabCPuct             = MCAB_CPUCT_DEFAULT;
-static double g_mcabFpuReduction      = MCAB_FPU_REDUCTION_DEFAULT;
-static double g_mcabScoreScale        = MCAB_SCORE_SCALE_DEFAULT;
-static bool   g_mcabTreeReuse         = MCAB_TREE_REUSE_DEFAULT;
-static bool   g_mcabRootNoiseEnabled  = MCAB_ROOT_NOISE_ENABLED_DEFAULT;
-static double g_mcabRootNoiseAlpha    = MCAB_ROOT_NOISE_ALPHA_DEFAULT;
-static double g_mcabRootNoiseEpsilon  = MCAB_ROOT_NOISE_EPSILON_DEFAULT;
-static int    g_mcabMaxTreeDepth      = MCAB_MAX_TREE_DEPTH_DEFAULT;
+// Valores de producao, resolvidos uma vez (McabParams default-construido).
+static const mcab::McabParams MCAB_PROD;
+
+static bool   g_mcabEnabled           = mcab::resolve(MCAB_ENABLED_OVERRIDE, MCAB_PROD.enabled);
+static int    g_mcabNodeBudget        = mcab::resolve(MCAB_NODE_BUDGET_OVERRIDE, MCAB_PROD.nodeBudget);
+static int    g_mcabLeafDepth         = mcab::resolve(MCAB_LEAF_DEPTH_OVERRIDE, MCAB_PROD.leafDepth);
+static int    g_mcabLeafDepthMax      = mcab::resolve(MCAB_LEAF_DEPTH_MAX_OVERRIDE, MCAB_PROD.leafDepthMax);
+static bool   g_mcabAdaptiveLeafDepth = mcab::resolve(MCAB_ADAPTIVE_LEAF_DEPTH_OVERRIDE, MCAB_PROD.adaptiveLeafDepth);
+static double g_mcabCPuct             = mcab::resolve(MCAB_CPUCT_OVERRIDE, MCAB_PROD.cPuct);
+static double g_mcabFpuReduction      = mcab::resolve(MCAB_FPU_REDUCTION_OVERRIDE, MCAB_PROD.fpuReduction);
+static double g_mcabScoreScale        = mcab::resolve(MCAB_SCORE_SCALE_OVERRIDE, MCAB_PROD.scoreScale);
+static bool   g_mcabTreeReuse         = mcab::resolve(MCAB_TREE_REUSE_OVERRIDE, MCAB_PROD.treeReuse);
+static bool   g_mcabRootNoiseEnabled  = mcab::resolve(MCAB_ROOT_NOISE_OVERRIDE, MCAB_PROD.rootNoiseEnabled);
+static double g_mcabRootNoiseAlpha    = mcab::resolve(MCAB_ROOT_NOISE_ALPHA_OVERRIDE, MCAB_PROD.rootNoiseAlpha);
+static double g_mcabRootNoiseEpsilon  = mcab::resolve(MCAB_ROOT_NOISE_EPSILON_OVERRIDE, MCAB_PROD.rootNoiseEpsilon);
+static int    g_mcabMaxTreeDepth      = mcab::resolve(MCAB_MAX_TREE_DEPTH_OVERRIDE, MCAB_PROD.maxTreeDepth);
 
 // Substitui "{shard:03d}" no template pelo numero do shard com zero-padding.
 static std::string formatShardPath(const std::string& tmpl, int shard) {
@@ -139,11 +136,12 @@ static void printUsage(const char* prog) {
         "                      --mc-temp-opening a --mc-temp-end (default 20);\n"
         "                      sem busca nenhuma nesses lances -- so forward da cabeca de politica\n"
         "\n"
-        "  --- MCab: hibrido MCTS+alpha-beta (plan-hybrid-mc-ab.md, Fase 6) ---\n"
-        "  --mcab              liga o hibrido MCab (default: desligado -- AB puro,\n"
-        "                      igual a antes desta feature existir). REQUER NNUE\n"
-        "                      ativa (erro se combinado com --heuristic ou se o\n"
-        "                      load dos pesos NNUE falhar).\n"
+        "  --- MCTS hibrido com alpha-beta (busca de producao, LIGADA por default) ---\n"
+        "  --no-mcab           DESLIGA o hibrido: usa alpha-beta puro.\n"
+        "  --mcab              liga o hibrido (ja e o default; a flag existe so\n"
+        "                      para deixar explicito). REQUER NNUE ativa (erro se\n"
+        "                      combinado com --heuristic ou se o load dos pesos\n"
+        "                      NNUE falhar).\n"
         "  --mcab-nodes N      orcamento de nos expandidos por lance (default %d)\n"
         "  --mcab-leaf-depth N profundidade (plies) da busca AB rasa em cada folha\n"
         "                      MCTS (default %d)\n"
@@ -175,9 +173,9 @@ static void printUsage(const char* prog) {
         "  --out PATH          arquivo/template de saida (obrigatorio).\n"
         "                      Use {shard:03d} para chunks: data/selfplay_{shard:03d}.bin\n",
         prog,
-        MCAB_NODE_BUDGET_DEFAULT, MCAB_LEAF_DEPTH_DEFAULT, MCAB_LEAF_DEPTH_MAX_DEFAULT,
-        MCAB_CPUCT_DEFAULT, MCAB_FPU_REDUCTION_DEFAULT, MCAB_SCORE_SCALE_DEFAULT,
-        MCAB_ROOT_NOISE_ALPHA_DEFAULT, MCAB_ROOT_NOISE_EPSILON_DEFAULT, MCAB_MAX_TREE_DEPTH_DEFAULT);
+        g_mcabNodeBudget, g_mcabLeafDepth, g_mcabLeafDepthMax,
+        g_mcabCPuct, g_mcabFpuReduction, g_mcabScoreScale,
+        g_mcabRootNoiseAlpha, g_mcabRootNoiseEpsilon, g_mcabMaxTreeDepth);
 }
 
 int main(int argc, char** argv) {
@@ -217,7 +215,8 @@ int main(int argc, char** argv) {
         else if (a == "--mc-temp-opening") cfg.mcTemperatureOpening  = std::atof(next("--mc-temp-opening").c_str());
         else if (a == "--mc-temp-end")     cfg.mcTemperatureEnd      = std::atof(next("--mc-temp-end").c_str());
         else if (a == "--mc-temp-decay-plies") cfg.mcTempDecayPlies  = std::atoi(next("--mc-temp-decay-plies").c_str());
-        else if (a == "--mcab")                     g_mcabEnabled           = true;
+        else if (a == "--mcab")                      g_mcabEnabled           = true;
+        else if (a == "--no-mcab")                   g_mcabEnabled           = false;
         else if (a == "--mcab-nodes")                g_mcabNodeBudget        = std::atoi(next("--mcab-nodes").c_str());
         else if (a == "--mcab-leaf-depth")           g_mcabLeafDepth         = std::atoi(next("--mcab-leaf-depth").c_str());
         else if (a == "--mcab-leaf-depth-max")       g_mcabLeafDepthMax      = std::atoi(next("--mcab-leaf-depth-max").c_str());
@@ -311,7 +310,7 @@ int main(int argc, char** argv) {
                     cfg.epsilonMidgame);
     }
     if (cfg.mcabParams.enabled) {
-        std::printf("MCab: LIGADO | nodes=%d leaf-depth=%d cpuct=%.2f fpu=%.2f score-scale=%.1f"
+        std::printf("MCTS hibrido: LIGADO | nodes=%d leaf-depth=%d cpuct=%.2f fpu=%.2f score-scale=%.1f"
                     " | tree-reuse=%s root-noise=%s(alpha=%.2f eps=%.2f) max-tree-depth=%d\n",
                     cfg.mcabParams.nodeBudget, cfg.mcabParams.leafDepth, cfg.mcabParams.cPuct,
                     cfg.mcabParams.fpuReduction, cfg.mcabParams.scoreScale,
@@ -320,7 +319,7 @@ int main(int argc, char** argv) {
                     cfg.mcabParams.rootNoiseAlpha, cfg.mcabParams.rootNoiseEpsilon,
                     cfg.mcabParams.maxTreeDepth);
     } else {
-        std::printf("MCab: desligado (AB puro -- default; use --mcab para ligar)\n");
+        std::printf("MCTS hibrido: DESLIGADO -- alpha-beta puro (o default e ligado; --no-mcab foi passado, ou a NNUE nao carregou)\n");
     }
     std::printf("threads: %d | corte de seguranca: %d lances/partida\n", nThreads, cfg.maxPlies);
     std::printf("TT: %s\n", cfg.sharedTT ? "compartilhada entre as 2 cores (default)" : "separada por cor (--separate-tt)");

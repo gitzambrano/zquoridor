@@ -101,84 +101,97 @@ constexpr bool INVERT_COLORS_DEFAULT = true;
 constexpr bool E1_FORCE_HEURISTIC_DEFAULT = false;
 constexpr bool E2_FORCE_HEURISTIC_DEFAULT = false;
 
-// Modulo hibrido MCTS+alpha-beta (MCab, plan-hybrid-mc-ab.md, Secao 10.1) --
-// AB puro continua sendo o default (E{1,2}_MCAB_ENABLED_DEFAULT=false);
-// ligar exige --e1-mcab/--e2-mcab/--mcab (ou mudar as constantes abaixo).
-// Nenhuma flag de argv abaixo tem valor hardcoded so no parser -- toda
-// flag tem a constante nomeada correspondente aqui (regra da Secao 10.1).
-constexpr bool E1_MCAB_ENABLED_DEFAULT = false;
-constexpr bool E2_MCAB_ENABLED_DEFAULT = false;
-constexpr int E1_MCAB_NODE_BUDGET_DEFAULT = 20000;
-constexpr int E2_MCAB_NODE_BUDGET_DEFAULT = 20000;
-// leafDepth=0 e fpuReduction=0.0: ponto de trabalho medido na Fase 8/8b
-// (ver a nota MCab em status.md), nao os valores originais do plano (4 e 0.1).
-constexpr int E1_MCAB_LEAF_DEPTH_DEFAULT = 0;
-constexpr int E2_MCAB_LEAF_DEPTH_DEFAULT = 0;
-constexpr int E1_MCAB_LEAF_DEPTH_MAX_DEFAULT = 8;
-constexpr int E2_MCAB_LEAF_DEPTH_MAX_DEFAULT = 8;
-constexpr bool E1_MCAB_ADAPTIVE_LEAF_DEPTH_DEFAULT = false;
-constexpr bool E2_MCAB_ADAPTIVE_LEAF_DEPTH_DEFAULT = false;
-constexpr double E1_MCAB_CPUCT_DEFAULT = 1.5;
-constexpr double E2_MCAB_CPUCT_DEFAULT = 1.5;
-constexpr double E1_MCAB_FPU_REDUCTION_DEFAULT = 0.0;
-constexpr double E2_MCAB_FPU_REDUCTION_DEFAULT = 0.0;
-constexpr double E1_MCAB_SCORE_SCALE_DEFAULT = 200.0;  // = NNUE_EVAL_SCALE
-constexpr double E2_MCAB_SCORE_SCALE_DEFAULT = 200.0;
-constexpr mcab::RootSelectMode E1_MCAB_ROOT_SELECT_MODE_DEFAULT = mcab::RootSelectMode::MaxVisits;
-constexpr mcab::RootSelectMode E2_MCAB_ROOT_SELECT_MODE_DEFAULT = mcab::RootSelectMode::MaxVisits;
-constexpr mcab::BackupMode E1_MCAB_BACKUP_MODE_DEFAULT = mcab::BackupMode::MinimaxHard;
-constexpr mcab::BackupMode E2_MCAB_BACKUP_MODE_DEFAULT = mcab::BackupMode::MinimaxHard;
-constexpr bool E1_MCAB_TREE_REUSE_DEFAULT = true;
-constexpr bool E2_MCAB_TREE_REUSE_DEFAULT = true;
-constexpr bool E1_MCAB_CLEAR_TT_PER_MOVE_DEFAULT = false;
-constexpr bool E2_MCAB_CLEAR_TT_PER_MOVE_DEFAULT = false;
-// Ruido de Dirichlet na raiz: so serve para diversidade de self-play (Secao
-// 2/9 do plano); arena de forca nunca liga isto -- sem flag de CLI
-// correspondente aqui de proposito, mas a constante fica documentada.
-constexpr bool E1_MCAB_ROOT_NOISE_ENABLED_DEFAULT = false;
-constexpr bool E2_MCAB_ROOT_NOISE_ENABLED_DEFAULT = false;
-constexpr double E1_MCAB_ROOT_NOISE_ALPHA_DEFAULT = 0.3;
-constexpr double E2_MCAB_ROOT_NOISE_ALPHA_DEFAULT = 0.3;
-constexpr double E1_MCAB_ROOT_NOISE_EPSILON_DEFAULT = 0.25;
-constexpr double E2_MCAB_ROOT_NOISE_EPSILON_DEFAULT = 0.25;
-constexpr int E1_MCAB_MAX_TREE_DEPTH_DEFAULT = 48;
-constexpr int E2_MCAB_MAX_TREE_DEPTH_DEFAULT = 48;
+// =============================================================================
+// MCTS HIBRIDO COM ALPHA-BETA -- bloco de OVERRIDE
+//
+// Regra deste bloco: campo VAZIO (mcab::UNSET_INT / mcab::UNSET_REAL /
+// mcab::Tri::Unset / "") usa o valor de PRODUCAO, que mora em
+// mcab::McabParams (tools/common/mcab.hpp). O valor real de producao esta
+// no comentario de cada campo. Preencher um campo aqui sobrescreve so ele.
+//
+// Todos tambem tem flag de linha de comando equivalente (--e1-mcab-*,
+// --e2-mcab-*, ou a forma global --mcab-*), que tem prioridade sobre o que
+// estiver escrito aqui. Ordem de precedencia, do mais forte pro mais fraco:
+//   flag de CLI  >  override deste bloco  >  producao (mcab::McabParams)
+// =============================================================================
+constexpr mcab::Tri E1_MCAB_ENABLED_OVERRIDE = mcab::Tri::Unset;   // producao: LIGADO
+constexpr mcab::Tri E2_MCAB_ENABLED_OVERRIDE = mcab::Tri::Unset;   // producao: LIGADO
+constexpr int E1_MCAB_NODE_BUDGET_OVERRIDE = mcab::UNSET_INT;      // producao: 20000
+constexpr int E2_MCAB_NODE_BUDGET_OVERRIDE = mcab::UNSET_INT;      // producao: 20000
+constexpr int E1_MCAB_LEAF_DEPTH_OVERRIDE = mcab::UNSET_INT;       // producao: 0 (medido)
+constexpr int E2_MCAB_LEAF_DEPTH_OVERRIDE = mcab::UNSET_INT;       // producao: 0 (medido)
+constexpr int E1_MCAB_LEAF_DEPTH_MAX_OVERRIDE = mcab::UNSET_INT;   // producao: 8
+constexpr int E2_MCAB_LEAF_DEPTH_MAX_OVERRIDE = mcab::UNSET_INT;   // producao: 8
+constexpr mcab::Tri E1_MCAB_ADAPTIVE_LEAF_DEPTH_OVERRIDE = mcab::Tri::Unset;  // producao: desligado
+constexpr mcab::Tri E2_MCAB_ADAPTIVE_LEAF_DEPTH_OVERRIDE = mcab::Tri::Unset;  // producao: desligado
+constexpr double E1_MCAB_CPUCT_OVERRIDE = mcab::UNSET_REAL;        // producao: 1.5
+constexpr double E2_MCAB_CPUCT_OVERRIDE = mcab::UNSET_REAL;        // producao: 1.5
+constexpr double E1_MCAB_FPU_REDUCTION_OVERRIDE = mcab::UNSET_REAL;  // producao: 0.0 (medido)
+constexpr double E2_MCAB_FPU_REDUCTION_OVERRIDE = mcab::UNSET_REAL;  // producao: 0.0 (medido)
+constexpr double E1_MCAB_SCORE_SCALE_OVERRIDE = mcab::UNSET_REAL;  // producao: 200.0 (= NNUE_EVAL_SCALE)
+constexpr double E2_MCAB_SCORE_SCALE_OVERRIDE = mcab::UNSET_REAL;  // producao: 200.0 (= NNUE_EVAL_SCALE)
+// "" | "visits" | "q" | "visits-then-q"
+constexpr const char* E1_MCAB_ROOT_SELECT_OVERRIDE = "";           // producao: "visits" (MaxVisits)
+constexpr const char* E2_MCAB_ROOT_SELECT_OVERRIDE = "";           // producao: "visits" (MaxVisits)
+constexpr mcab::Tri E1_MCAB_TREE_REUSE_OVERRIDE = mcab::Tri::Unset;  // producao: ligado
+constexpr mcab::Tri E2_MCAB_TREE_REUSE_OVERRIDE = mcab::Tri::Unset;  // producao: ligado
+constexpr mcab::Tri E1_MCAB_CLEAR_TT_PER_MOVE_OVERRIDE = mcab::Tri::Unset;  // producao: desligado
+constexpr mcab::Tri E2_MCAB_CLEAR_TT_PER_MOVE_OVERRIDE = mcab::Tri::Unset;  // producao: desligado
+constexpr int E1_MCAB_MAX_TREE_DEPTH_OVERRIDE = mcab::UNSET_INT;   // producao: 48
+constexpr int E2_MCAB_MAX_TREE_DEPTH_OVERRIDE = mcab::UNSET_INT;   // producao: 48
+// Ruido de Dirichlet na raiz: producao = DESLIGADO aqui de proposito. Serve
+// para diversidade de abertura em dados de treino (selfplay liga), nunca
+// para medir forca -- arena mede forca. Sem flag de CLI correspondente.
+constexpr mcab::Tri E1_MCAB_ROOT_NOISE_OVERRIDE = mcab::Tri::Off;  // producao do modulo: desligado
+constexpr mcab::Tri E2_MCAB_ROOT_NOISE_OVERRIDE = mcab::Tri::Off;  // producao do modulo: desligado
+constexpr double E1_MCAB_ROOT_NOISE_ALPHA_OVERRIDE = mcab::UNSET_REAL;    // producao: 0.3
+constexpr double E2_MCAB_ROOT_NOISE_ALPHA_OVERRIDE = mcab::UNSET_REAL;    // producao: 0.3
+constexpr double E1_MCAB_ROOT_NOISE_EPSILON_OVERRIDE = mcab::UNSET_REAL;  // producao: 0.25
+constexpr double E2_MCAB_ROOT_NOISE_EPSILON_OVERRIDE = mcab::UNSET_REAL;  // producao: 0.25
 // Atalho da Secao 6: forca nodeBudget=0 (modo equivalencia) quando ligado.
 constexpr bool E1_MCAB_EQUIV_MODE_DEFAULT = false;
 constexpr bool E2_MCAB_EQUIV_MODE_DEFAULT = false;
+// backupMode nao tem override: AvgBlend nao esta implementado (Secao 5).
+constexpr mcab::BackupMode E1_MCAB_BACKUP_MODE_DEFAULT = mcab::BackupMode::MinimaxHard;
+constexpr mcab::BackupMode E2_MCAB_BACKUP_MODE_DEFAULT = mcab::BackupMode::MinimaxHard;
 
-static bool g_e1McabEnabled = E1_MCAB_ENABLED_DEFAULT;
-static bool g_e2McabEnabled = E2_MCAB_ENABLED_DEFAULT;
-static int g_e1McabNodeBudget = E1_MCAB_NODE_BUDGET_DEFAULT;
-static int g_e2McabNodeBudget = E2_MCAB_NODE_BUDGET_DEFAULT;
-static int g_e1McabLeafDepth = E1_MCAB_LEAF_DEPTH_DEFAULT;
-static int g_e2McabLeafDepth = E2_MCAB_LEAF_DEPTH_DEFAULT;
-static int g_e1McabLeafDepthMax = E1_MCAB_LEAF_DEPTH_MAX_DEFAULT;
-static int g_e2McabLeafDepthMax = E2_MCAB_LEAF_DEPTH_MAX_DEFAULT;
-static bool g_e1McabAdaptiveLeafDepth = E1_MCAB_ADAPTIVE_LEAF_DEPTH_DEFAULT;
-static bool g_e2McabAdaptiveLeafDepth = E2_MCAB_ADAPTIVE_LEAF_DEPTH_DEFAULT;
-static double g_e1McabCPuct = E1_MCAB_CPUCT_DEFAULT;
-static double g_e2McabCPuct = E2_MCAB_CPUCT_DEFAULT;
-static double g_e1McabFpuReduction = E1_MCAB_FPU_REDUCTION_DEFAULT;
-static double g_e2McabFpuReduction = E2_MCAB_FPU_REDUCTION_DEFAULT;
-static double g_e1McabScoreScale = E1_MCAB_SCORE_SCALE_DEFAULT;
-static double g_e2McabScoreScale = E2_MCAB_SCORE_SCALE_DEFAULT;
-static mcab::RootSelectMode g_e1McabRootSelectMode = E1_MCAB_ROOT_SELECT_MODE_DEFAULT;
-static mcab::RootSelectMode g_e2McabRootSelectMode = E2_MCAB_ROOT_SELECT_MODE_DEFAULT;
+// Valores de producao, resolvidos uma vez (McabParams default-construido).
+static const mcab::McabParams MCAB_PROD;
+
+// Config resolvida (override do bloco acima, senao producao). As flags de
+// CLI sobrescrevem estes valores em main() antes do inicio das partidas.
+static bool g_e1McabEnabled = mcab::resolve(E1_MCAB_ENABLED_OVERRIDE, MCAB_PROD.enabled);
+static bool g_e2McabEnabled = mcab::resolve(E2_MCAB_ENABLED_OVERRIDE, MCAB_PROD.enabled);
+static int g_e1McabNodeBudget = mcab::resolve(E1_MCAB_NODE_BUDGET_OVERRIDE, MCAB_PROD.nodeBudget);
+static int g_e2McabNodeBudget = mcab::resolve(E2_MCAB_NODE_BUDGET_OVERRIDE, MCAB_PROD.nodeBudget);
+static int g_e1McabLeafDepth = mcab::resolve(E1_MCAB_LEAF_DEPTH_OVERRIDE, MCAB_PROD.leafDepth);
+static int g_e2McabLeafDepth = mcab::resolve(E2_MCAB_LEAF_DEPTH_OVERRIDE, MCAB_PROD.leafDepth);
+static int g_e1McabLeafDepthMax = mcab::resolve(E1_MCAB_LEAF_DEPTH_MAX_OVERRIDE, MCAB_PROD.leafDepthMax);
+static int g_e2McabLeafDepthMax = mcab::resolve(E2_MCAB_LEAF_DEPTH_MAX_OVERRIDE, MCAB_PROD.leafDepthMax);
+static bool g_e1McabAdaptiveLeafDepth = mcab::resolve(E1_MCAB_ADAPTIVE_LEAF_DEPTH_OVERRIDE, MCAB_PROD.adaptiveLeafDepth);
+static bool g_e2McabAdaptiveLeafDepth = mcab::resolve(E2_MCAB_ADAPTIVE_LEAF_DEPTH_OVERRIDE, MCAB_PROD.adaptiveLeafDepth);
+static double g_e1McabCPuct = mcab::resolve(E1_MCAB_CPUCT_OVERRIDE, MCAB_PROD.cPuct);
+static double g_e2McabCPuct = mcab::resolve(E2_MCAB_CPUCT_OVERRIDE, MCAB_PROD.cPuct);
+static double g_e1McabFpuReduction = mcab::resolve(E1_MCAB_FPU_REDUCTION_OVERRIDE, MCAB_PROD.fpuReduction);
+static double g_e2McabFpuReduction = mcab::resolve(E2_MCAB_FPU_REDUCTION_OVERRIDE, MCAB_PROD.fpuReduction);
+static double g_e1McabScoreScale = mcab::resolve(E1_MCAB_SCORE_SCALE_OVERRIDE, MCAB_PROD.scoreScale);
+static double g_e2McabScoreScale = mcab::resolve(E2_MCAB_SCORE_SCALE_OVERRIDE, MCAB_PROD.scoreScale);
+static mcab::RootSelectMode g_e1McabRootSelectMode = mcab::resolveRootSelect(E1_MCAB_ROOT_SELECT_OVERRIDE, MCAB_PROD.rootSelectMode);
+static mcab::RootSelectMode g_e2McabRootSelectMode = mcab::resolveRootSelect(E2_MCAB_ROOT_SELECT_OVERRIDE, MCAB_PROD.rootSelectMode);
 static mcab::BackupMode g_e1McabBackupMode = E1_MCAB_BACKUP_MODE_DEFAULT;
 static mcab::BackupMode g_e2McabBackupMode = E2_MCAB_BACKUP_MODE_DEFAULT;
-static bool g_e1McabTreeReuse = E1_MCAB_TREE_REUSE_DEFAULT;
-static bool g_e2McabTreeReuse = E2_MCAB_TREE_REUSE_DEFAULT;
-static bool g_e1McabClearTTPerMove = E1_MCAB_CLEAR_TT_PER_MOVE_DEFAULT;
-static bool g_e2McabClearTTPerMove = E2_MCAB_CLEAR_TT_PER_MOVE_DEFAULT;
-static bool g_e1McabRootNoiseEnabled = E1_MCAB_ROOT_NOISE_ENABLED_DEFAULT;
-static bool g_e2McabRootNoiseEnabled = E2_MCAB_ROOT_NOISE_ENABLED_DEFAULT;
-static double g_e1McabRootNoiseAlpha = E1_MCAB_ROOT_NOISE_ALPHA_DEFAULT;
-static double g_e2McabRootNoiseAlpha = E2_MCAB_ROOT_NOISE_ALPHA_DEFAULT;
-static double g_e1McabRootNoiseEpsilon = E1_MCAB_ROOT_NOISE_EPSILON_DEFAULT;
-static double g_e2McabRootNoiseEpsilon = E2_MCAB_ROOT_NOISE_EPSILON_DEFAULT;
-static int g_e1McabMaxTreeDepth = E1_MCAB_MAX_TREE_DEPTH_DEFAULT;
-static int g_e2McabMaxTreeDepth = E2_MCAB_MAX_TREE_DEPTH_DEFAULT;
+static bool g_e1McabTreeReuse = mcab::resolve(E1_MCAB_TREE_REUSE_OVERRIDE, MCAB_PROD.treeReuse);
+static bool g_e2McabTreeReuse = mcab::resolve(E2_MCAB_TREE_REUSE_OVERRIDE, MCAB_PROD.treeReuse);
+static bool g_e1McabClearTTPerMove = mcab::resolve(E1_MCAB_CLEAR_TT_PER_MOVE_OVERRIDE, MCAB_PROD.clearTTPerMove);
+static bool g_e2McabClearTTPerMove = mcab::resolve(E2_MCAB_CLEAR_TT_PER_MOVE_OVERRIDE, MCAB_PROD.clearTTPerMove);
+static bool g_e1McabRootNoiseEnabled = mcab::resolve(E1_MCAB_ROOT_NOISE_OVERRIDE, MCAB_PROD.rootNoiseEnabled);
+static bool g_e2McabRootNoiseEnabled = mcab::resolve(E2_MCAB_ROOT_NOISE_OVERRIDE, MCAB_PROD.rootNoiseEnabled);
+static double g_e1McabRootNoiseAlpha = mcab::resolve(E1_MCAB_ROOT_NOISE_ALPHA_OVERRIDE, MCAB_PROD.rootNoiseAlpha);
+static double g_e2McabRootNoiseAlpha = mcab::resolve(E2_MCAB_ROOT_NOISE_ALPHA_OVERRIDE, MCAB_PROD.rootNoiseAlpha);
+static double g_e1McabRootNoiseEpsilon = mcab::resolve(E1_MCAB_ROOT_NOISE_EPSILON_OVERRIDE, MCAB_PROD.rootNoiseEpsilon);
+static double g_e2McabRootNoiseEpsilon = mcab::resolve(E2_MCAB_ROOT_NOISE_EPSILON_OVERRIDE, MCAB_PROD.rootNoiseEpsilon);
+static int g_e1McabMaxTreeDepth = mcab::resolve(E1_MCAB_MAX_TREE_DEPTH_OVERRIDE, MCAB_PROD.maxTreeDepth);
+static int g_e2McabMaxTreeDepth = mcab::resolve(E2_MCAB_MAX_TREE_DEPTH_OVERRIDE, MCAB_PROD.maxTreeDepth);
 static bool g_e1McabEquivMode = E1_MCAB_EQUIV_MODE_DEFAULT;
 static bool g_e2McabEquivMode = E2_MCAB_EQUIV_MODE_DEFAULT;
 
@@ -526,24 +539,38 @@ int main(int argc, char* argv[]) {
     bool e1PolicyOrder = E1_POLICY_ORDERING_DEFAULT, e2PolicyOrder = E2_POLICY_ORDERING_DEFAULT;
     int e1PolicyMinDepth = E1_POLICY_ORDER_MIN_DEPTH_DEFAULT, e2PolicyMinDepth = E2_POLICY_ORDER_MIN_DEPTH_DEFAULT;
 
-    bool e1McabEnabled = E1_MCAB_ENABLED_DEFAULT, e2McabEnabled = E2_MCAB_ENABLED_DEFAULT;
-    int e1McabNodeBudget = E1_MCAB_NODE_BUDGET_DEFAULT, e2McabNodeBudget = E2_MCAB_NODE_BUDGET_DEFAULT;
-    int e1McabLeafDepth = E1_MCAB_LEAF_DEPTH_DEFAULT, e2McabLeafDepth = E2_MCAB_LEAF_DEPTH_DEFAULT;
-    int e1McabLeafDepthMax = E1_MCAB_LEAF_DEPTH_MAX_DEFAULT, e2McabLeafDepthMax = E2_MCAB_LEAF_DEPTH_MAX_DEFAULT;
-    bool e1McabAdaptiveLeafDepth = E1_MCAB_ADAPTIVE_LEAF_DEPTH_DEFAULT, e2McabAdaptiveLeafDepth = E2_MCAB_ADAPTIVE_LEAF_DEPTH_DEFAULT;
-    double e1McabCPuct = E1_MCAB_CPUCT_DEFAULT, e2McabCPuct = E2_MCAB_CPUCT_DEFAULT;
-    double e1McabFpu = E1_MCAB_FPU_REDUCTION_DEFAULT, e2McabFpu = E2_MCAB_FPU_REDUCTION_DEFAULT;
-    double e1McabScoreScale = E1_MCAB_SCORE_SCALE_DEFAULT, e2McabScoreScale = E2_MCAB_SCORE_SCALE_DEFAULT;
-    mcab::RootSelectMode e1McabRootSelect = E1_MCAB_ROOT_SELECT_MODE_DEFAULT, e2McabRootSelect = E2_MCAB_ROOT_SELECT_MODE_DEFAULT;
-    bool e1McabTreeReuse = E1_MCAB_TREE_REUSE_DEFAULT, e2McabTreeReuse = E2_MCAB_TREE_REUSE_DEFAULT;
-    bool e1McabClearTTPerMove = E1_MCAB_CLEAR_TT_PER_MOVE_DEFAULT, e2McabClearTTPerMove = E2_MCAB_CLEAR_TT_PER_MOVE_DEFAULT;
-    int e1McabMaxTreeDepth = E1_MCAB_MAX_TREE_DEPTH_DEFAULT, e2McabMaxTreeDepth = E2_MCAB_MAX_TREE_DEPTH_DEFAULT;
+    // Mesma resolucao das globais acima (override do bloco de CONFIG, senao
+    // producao); o parsing de argv logo abaixo sobrescreve o que vier por flag.
+    bool e1McabEnabled = mcab::resolve(E1_MCAB_ENABLED_OVERRIDE, MCAB_PROD.enabled);
+    bool e2McabEnabled = mcab::resolve(E2_MCAB_ENABLED_OVERRIDE, MCAB_PROD.enabled);
+    int e1McabNodeBudget = mcab::resolve(E1_MCAB_NODE_BUDGET_OVERRIDE, MCAB_PROD.nodeBudget);
+    int e2McabNodeBudget = mcab::resolve(E2_MCAB_NODE_BUDGET_OVERRIDE, MCAB_PROD.nodeBudget);
+    int e1McabLeafDepth = mcab::resolve(E1_MCAB_LEAF_DEPTH_OVERRIDE, MCAB_PROD.leafDepth);
+    int e2McabLeafDepth = mcab::resolve(E2_MCAB_LEAF_DEPTH_OVERRIDE, MCAB_PROD.leafDepth);
+    int e1McabLeafDepthMax = mcab::resolve(E1_MCAB_LEAF_DEPTH_MAX_OVERRIDE, MCAB_PROD.leafDepthMax);
+    int e2McabLeafDepthMax = mcab::resolve(E2_MCAB_LEAF_DEPTH_MAX_OVERRIDE, MCAB_PROD.leafDepthMax);
+    bool e1McabAdaptiveLeafDepth = mcab::resolve(E1_MCAB_ADAPTIVE_LEAF_DEPTH_OVERRIDE, MCAB_PROD.adaptiveLeafDepth);
+    bool e2McabAdaptiveLeafDepth = mcab::resolve(E2_MCAB_ADAPTIVE_LEAF_DEPTH_OVERRIDE, MCAB_PROD.adaptiveLeafDepth);
+    double e1McabCPuct = mcab::resolve(E1_MCAB_CPUCT_OVERRIDE, MCAB_PROD.cPuct);
+    double e2McabCPuct = mcab::resolve(E2_MCAB_CPUCT_OVERRIDE, MCAB_PROD.cPuct);
+    double e1McabFpu = mcab::resolve(E1_MCAB_FPU_REDUCTION_OVERRIDE, MCAB_PROD.fpuReduction);
+    double e2McabFpu = mcab::resolve(E2_MCAB_FPU_REDUCTION_OVERRIDE, MCAB_PROD.fpuReduction);
+    double e1McabScoreScale = mcab::resolve(E1_MCAB_SCORE_SCALE_OVERRIDE, MCAB_PROD.scoreScale);
+    double e2McabScoreScale = mcab::resolve(E2_MCAB_SCORE_SCALE_OVERRIDE, MCAB_PROD.scoreScale);
+    mcab::RootSelectMode e1McabRootSelect = mcab::resolveRootSelect(E1_MCAB_ROOT_SELECT_OVERRIDE, MCAB_PROD.rootSelectMode);
+    mcab::RootSelectMode e2McabRootSelect = mcab::resolveRootSelect(E2_MCAB_ROOT_SELECT_OVERRIDE, MCAB_PROD.rootSelectMode);
+    bool e1McabTreeReuse = mcab::resolve(E1_MCAB_TREE_REUSE_OVERRIDE, MCAB_PROD.treeReuse);
+    bool e2McabTreeReuse = mcab::resolve(E2_MCAB_TREE_REUSE_OVERRIDE, MCAB_PROD.treeReuse);
+    bool e1McabClearTTPerMove = mcab::resolve(E1_MCAB_CLEAR_TT_PER_MOVE_OVERRIDE, MCAB_PROD.clearTTPerMove);
+    bool e2McabClearTTPerMove = mcab::resolve(E2_MCAB_CLEAR_TT_PER_MOVE_OVERRIDE, MCAB_PROD.clearTTPerMove);
+    int e1McabMaxTreeDepth = mcab::resolve(E1_MCAB_MAX_TREE_DEPTH_OVERRIDE, MCAB_PROD.maxTreeDepth);
+    int e2McabMaxTreeDepth = mcab::resolve(E2_MCAB_MAX_TREE_DEPTH_OVERRIDE, MCAB_PROD.maxTreeDepth);
     bool e1McabEquivMode = E1_MCAB_EQUIV_MODE_DEFAULT, e2McabEquivMode = E2_MCAB_EQUIV_MODE_DEFAULT;
 
+    // Valor nao reconhecido cai no de producao (nao vira MaxVisits calado):
+    // um typo em "visits-then-q" nao deve parecer que funcionou.
     auto parseRootSelectMode = [](const char* s) -> mcab::RootSelectMode {
-        if (std::strcmp(s, "q") == 0) return mcab::RootSelectMode::MaxQ;
-        if (std::strcmp(s, "visits-then-q") == 0) return mcab::RootSelectMode::MaxVisitsThenQ;
-        return mcab::RootSelectMode::MaxVisits;  // "visits" ou qualquer outro valor -- default seguro
+        return mcab::resolveRootSelect(s, MCAB_PROD.rootSelectMode);
     };
 
     for (int i = 1; i < argc; i++) {
@@ -574,6 +601,12 @@ int main(int argc, char* argv[]) {
         else if (std::strcmp(argv[i], "--mcab") == 0) { e1McabEnabled = true; e2McabEnabled = true; }
         else if (std::strcmp(argv[i], "--e1-mcab") == 0) e1McabEnabled = true;
         else if (std::strcmp(argv[i], "--e2-mcab") == 0) e2McabEnabled = true;
+        // O hibrido passou a ser o default (producao), entao o lado
+        // "desligar" virou necessario: e assim que se mede alpha-beta puro,
+        // e e o que run_arena.py manda quando o usuario pede --no-mcab.
+        else if (std::strcmp(argv[i], "--no-mcab") == 0) { e1McabEnabled = false; e2McabEnabled = false; }
+        else if (std::strcmp(argv[i], "--e1-no-mcab") == 0) e1McabEnabled = false;
+        else if (std::strcmp(argv[i], "--e2-no-mcab") == 0) e2McabEnabled = false;
         else if (std::strcmp(argv[i], "--mcab-nodes") == 0 && i + 1 < argc) {
             int n = std::atoi(argv[++i]); e1McabNodeBudget = n; e2McabNodeBudget = n;
         }
@@ -732,11 +765,11 @@ int main(int argc, char* argv[]) {
     // NNUE, ou --eX-heuristic explicito), desliga MCAB para aquele lado em
     // vez de deixar cair no assert() de McabSearch::chooseMoveMCAB.
     if (g_e1McabEnabled && !g_e1UseNnue) {
-        std::fprintf(stderr, "[arena] aviso: --e1-mcab pedido mas Engine 1 nao esta em NNUE -- MCAB requer NNUE (Secao 2), desligando para Engine 1\n");
+        std::fprintf(stderr, "[arena] aviso: MCTS hibrido ativo para Engine 1 mas ela nao esta em NNUE -- o hibrido exige NNUE (os priors do PUCT vem da cabeca de politica), caindo para alpha-beta puro\n");
         g_e1McabEnabled = false;
     }
     if (g_e2McabEnabled && !g_e2UseNnue) {
-        std::fprintf(stderr, "[arena] aviso: --e2-mcab pedido mas Engine 2 nao esta em NNUE -- MCAB requer NNUE (Secao 2), desligando para Engine 2\n");
+        std::fprintf(stderr, "[arena] aviso: MCTS hibrido ativo para Engine 2 mas ela nao esta em NNUE -- o hibrido exige NNUE (os priors do PUCT vem da cabeca de politica), caindo para alpha-beta puro\n");
         g_e2McabEnabled = false;
     }
 
@@ -746,21 +779,27 @@ int main(int argc, char* argv[]) {
     // efeito, e a partida roda normalmente com AB puro para aquele lado.
     if (g_e1McabEnabled) {
         if (!McabRunner1::supported) {
-            std::fprintf(stderr, "[arena] Engine 1: ref nao suporta MCAB (compilado antes da feature), rodando AB puro\n");
+            std::fprintf(stderr, "[arena] Engine 1: ref nao suporta o MCTS hibrido (compilado antes da feature), rodando alpha-beta puro\n");
         } else {
-            std::fprintf(stderr, "[arena] Engine 1: MCAB LIGADO (nodes=%d, leaf-depth=%d, cpuct=%.2f%s)\n",
+            std::fprintf(stderr, "[arena] Engine 1: MCTS HIBRIDO (nodes=%d, leaf-depth=%d, cpuct=%.2f, fpu=%.2f, scale=%.0f%s)\n",
                           g_e1McabEquivMode ? 0 : g_e1McabNodeBudget, g_e1McabLeafDepth, g_e1McabCPuct,
+                          g_e1McabFpuReduction, g_e1McabScoreScale,
                           g_e1McabEquivMode ? ", modo equivalencia" : "");
         }
+    } else {
+        std::fprintf(stderr, "[arena] Engine 1: ALPHA-BETA PURO (MCTS hibrido desligado)\n");
     }
     if (g_e2McabEnabled) {
         if (!McabRunner2::supported) {
-            std::fprintf(stderr, "[arena] Engine 2: ref nao suporta MCAB (compilado antes da feature), rodando AB puro\n");
+            std::fprintf(stderr, "[arena] Engine 2: ref nao suporta o MCTS hibrido (compilado antes da feature), rodando alpha-beta puro\n");
         } else {
-            std::fprintf(stderr, "[arena] Engine 2: MCAB LIGADO (nodes=%d, leaf-depth=%d, cpuct=%.2f%s)\n",
+            std::fprintf(stderr, "[arena] Engine 2: MCTS HIBRIDO (nodes=%d, leaf-depth=%d, cpuct=%.2f, fpu=%.2f, scale=%.0f%s)\n",
                           g_e2McabEquivMode ? 0 : g_e2McabNodeBudget, g_e2McabLeafDepth, g_e2McabCPuct,
+                          g_e2McabFpuReduction, g_e2McabScoreScale,
                           g_e2McabEquivMode ? ", modo equivalencia" : "");
         }
+    } else {
+        std::fprintf(stderr, "[arena] Engine 2: ALPHA-BETA PURO (MCTS hibrido desligado)\n");
     }
 
     if (totalGames % 2 != 0) totalGames++;

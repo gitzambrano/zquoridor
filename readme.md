@@ -2,7 +2,7 @@
 
 A high-performance Quoridor engine for the 9×9, 2-player variant (10 walls per side).
 
-Negamax + alpha-beta search powered by a Quantization-Aware Trained (QAT) neural network (NNUE) for position evaluation and policy-assisted move ordering. Includes a multi-threaded self-play generator, NNUE training pipeline, strength-testing arena, test/benchmark suite, and WebAssembly browser GUI.
+**Hybrid MCTS with alpha-beta**: a best-first PUCT tree guided by a Quantization-Aware Trained neural network (NNUE), whose leaves are resolved by a real alpha-beta search rather than a random rollout. The same NNUE provides position evaluation and policy-assisted move ordering. Pure alpha-beta remains fully supported and is one flag away (`--no-mcab`). Includes a multi-threaded self-play generator, NNUE training pipeline, strength-testing arena, test/benchmark suite, and WebAssembly browser GUI.
 
 🎮 [Play online](https://gitzambrano.github.io/zquoridor/) — *WebAssembly build.*
 
@@ -14,7 +14,7 @@ Negamax + alpha-beta search powered by a Quantization-Aware Trained (QAT) neural
 - **Policy-Assisted & CAT Move Ordering**: Killer moves, history heuristic, Corridor Attention Table (CAT wall heat map), and NNUE policy head logits (gated by depth floor `policyOrderingMinDepth`).
 - **Pruning & Reductions**: Late Move Reductions (LMR), Reverse Futility Pruning (RFP), and Late Move Pruning (LMP) at shallow depths. All heuristics include runtime toggles.
 - **Wall Quiescence Search**: Extends search past nominal depth for critical-looking wall placements.
-- **Optional MCαβ Hybrid Search**: Best-first PUCT tree whose leaves are evaluated by a real shallow alpha-beta search instead of a random rollout, with minimax-hard backup (`tools/common/mcab.hpp`). **Off by default** — arena, self-play, and the tuner all run pure alpha-beta unless the hybrid is explicitly enabled, and enabling it costs the pure path nothing.
+- **Hybrid MCTS + Alpha-Beta (default search)**: Best-first PUCT tree whose leaves are evaluated by a real alpha-beta search instead of a random rollout, with minimax-hard backup (`tools/common/mcab.hpp`). **On by default** in arena and self-play since 2026-08-13, worth **+46.9 ±23.5 Elo** over pure alpha-beta at 200 ms/move. Pure alpha-beta is preserved bit-for-bit behind `--no-mcab` and loses nothing when the hybrid is enabled. Requires NNUE (the PUCT priors come from the policy head).
 - **Exact Endgame Solver**: Exact retrograde DP pawn-race solver over 81×81×2 states when both players run out of walls (`wallsLeft==(0,0)`), with a real-time budget.
 - **NNUE Evaluation & Policy**: 354-feature network (pawn cells, wall bitboards, bucketed BFS distances, and remaining walls) with SCReLU activation, outputting win probability and move ordering logits.
 - **Fast Monte Carlo Self-Play Generator**: Multi-threaded C++ self-play generator with standard epsilon-greedy and AlphaZero-style Monte Carlo policy-temperature sampling (`--mc-mode`) for rapid opening generation. Stack-allocated to ensure zero heap corruption.
@@ -87,36 +87,48 @@ python3 quantize_nnue.py ../data/nnue/nnue_weights.bin ../data/nnue/nnue_weights
 python3 tools/arena/run_arena.py --ref1 "" --ref2 main --games 200 --time 500 --threads 14
 ```
 
-### MCαβ Hybrid (optional, off by default)
+### Hybrid MCTS + Alpha-Beta (default search)
 
-Requires NNUE (the PUCT priors come from the policy head). Add `--e1-mcab` / `--e2-mcab` to
-enable it per engine, or `--mcab` for both; `--mcab-nodes` and `--mcab-leaf-depth` set the
-budget. A `--ref` older than the feature compiles fine and plays pure alpha-beta, with a
-one-line warning.
-
-```bash
-python3 tools/arena/run_arena.py --ref1 "" --ref2 main --e1-mcab --mcab-nodes 2000 --mcab-leaf-depth 3 --games 200 --time 500
-```
-
-The search knobs `--mcab-cpuct`, `--mcab-fpu`, `--mcab-score-scale` and `--mcab-root-select`
-also come in `--e1-`/`--e2-` forms, so one config can be played directly against another
-(same tree budget, one parameter changed) instead of measuring each against pure alpha-beta:
+This is the production search and it is **on by default** in `arena` and `selfplay`. It
+requires NNUE — the PUCT priors come from the policy head — and falls back to pure
+alpha-beta with a warning if the weights are missing or `--heuristic` is set.
 
 ```bash
-python3 tools/arena/run_arena.py --ref1 "" --ref2= --mcab --mcab-leaf-depth 0 --e2-mcab-cpuct 2.5 --games 400 --time 200
+# Pure alpha-beta on both sides (this is how you measure the AB baseline)
+python3 tools/arena/run_arena.py --ref1 "" --ref2= --no-mcab --games 400 --time 200
+
+# Hybrid vs pure alpha-beta
+python3 tools/arena/run_arena.py --ref1 "" --ref2= --e1-no-mcab --games 800 --time 200
 ```
 
-Defaults are the measured working point: `leafDepth=0` (NNUE value + wall quiescence at the
-leaf) and `fpuReduction=0.0`. At 200 ms/move that config beats pure alpha-beta by **+46.9 ±23.5
-Elo** over 800 games; deeper leaves lose badly (`leafDepth=2` is ~340 Elo *worse*). Note this makes the
-hybrid effectively plain PUCT MCTS over the policy/value net rather than alpha-beta rollouts,
-and that it runs at roughly a tenth of pure AB's nodes/s. See the MCαβ design note in
-`status.md` for the full table.
+**Parameters.** Every knob has three places to set it, strongest first:
 
-Self-play (`bin/selfplay --mcab ...`, with root Dirichlet noise on by default there) and the
-GA tuner (`bin/tune_spsa --mcab-tuning ...`, which also tunes `mcabCPuct`/`mcabLeafDepth`/
-`mcabFpuReduction`/`mcabScoreScale`/`mcabNodeBudget`) take the same switch. See
-`bin/selfplay --help` and `bin/tune_spsa --help` for the full flag list.
+1. a command-line flag — `--mcab-nodes`, `--mcab-leaf-depth`, `--mcab-cpuct`, `--mcab-fpu`,
+   `--mcab-score-scale`, `--mcab-root-select`, each also in `--e1-`/`--e2-` per-engine form;
+2. the **override block** at the top of `tools/arena/arena.cpp`, `tools/selfplay/selfplay_main.cpp`
+   and `tools/arena/run_arena.py` — every field starts *empty*, and each field's comment
+   states the production value it falls back to;
+3. the production defaults themselves, which live in one place: `mcab::McabParams` in
+   `tools/common/mcab.hpp`.
+
+Production values: `leafDepth=0`, `fpuReduction=0.0`, `cPuct=1.5`, `scoreScale=200`,
+`nodeBudget=20000`, `rootSelectMode=visits`.
+
+**Validity range — read before changing the time control.** The +46.9 ±23.5 Elo was measured
+at **200 ms/move**. The hybrid runs at roughly a ninth of pure alpha-beta's nodes/s (41k vs
+359k), so the trade is expected to invert at much shorter time controls; it has not been
+measured anywhere but 200 ms, on one machine. `leafDepth` is the parameter that matters —
+`leafDepth=2` is ~340 Elo *worse* than `leafDepth=0`. Note also that `leafDepth=0` means there
+is essentially no alpha-beta below the leaf, so what wins here is plain PUCT MCTS over the
+policy/value net rather than the alpha-beta rollouts the design is named for. Playing at a very
+different time control? Re-measure, and use `--mcab-leaf-depth` / `--no-mcab` accordingly.
+
+Self-play adds root Dirichlet noise on top (on by default there, off in arena — noise buys
+opening diversity in training data and would only add variance to a strength match). The GA
+tuner still opts in explicitly via `bin/tune_spsa --mcab-tuning`, which tunes
+`mcabCPuct`/`mcabLeafDepth`/`mcabFpuReduction`/`mcabScoreScale`/`mcabNodeBudget`. See
+`bin/selfplay --help` and `bin/tune_spsa --help` for the full flag list. A `--ref` older than
+the feature compiles fine and plays pure alpha-beta, with a one-line warning.
 
 ### Web GUI
 ```bash
@@ -156,7 +168,7 @@ Full flag list: `bin/selfplay --help`.
 | `src/search.hpp` | Negamax, alpha-beta, transposition table, move ordering, quiescence |
 | `src/endgame_race.hpp` | Exact retrograde DP pawn-race endgame solver |
 | `src/nnue.hpp` | 354-feature NNUE network, incremental accumulator, inference |
-| `tools/common/mcab.hpp` | Optional MCαβ hybrid search (PUCT tree + alpha-beta leaves), off by default |
+| `tools/common/mcab.hpp` | Hybrid MCTS + alpha-beta search (PUCT tree, alpha-beta leaves) — the default search |
 | `tools/` | CLI tools & orchestrators (`selfplay`, `arena`, `spsa`, `qtp`, `path_clash_bot_arena`) |
 | `benchmarks/` | Performance benchmarks (`main.cpp`, `bench_*.cpp`) |
 | `tests/` | Correctness and NNUE parity test suite |

@@ -1,5 +1,27 @@
 # Plano: Híbrido MCTS + Alpha-Beta (MCαβ) para zquoridor
 
+> **STATUS: IMPLEMENTADO E EM PRODUÇÃO (2026-08-13).** Todas as fases da
+> Seção 11 estão concluídas. O híbrido — agora chamado **MCTS híbrido com
+> alpha-beta** na documentação de usuário — passou a ser a busca **default**
+> em `arena` e `selfplay`, medido em **+46.9 ±23.5 Elo** sobre alpha-beta puro
+> a 200ms/lance (800 partidas). Alpha-beta puro continua íntegro e selecionável
+> com `--no-mcab`.
+>
+> Três pontos onde a realidade divergiu deste documento, todos medidos:
+> 1. **`leafDepth=0` é o ponto de trabalho, não 4.** A tabela da Seção 9
+>    propunha `leafDepth=4`; isso perde ~338 Elo a 200ms. O fator de
+>    ramificação do Quoridor (~130) faz cada ply de folha custar uma ordem de
+>    grandeza de tamanho de árvore.
+> 2. **Com `leafDepth=0` não há alpha-beta abaixo da folha**, só avaliação
+>    NNUE + quiescência de muro. Ou seja: o que ganha Elo aqui é PUCT/MCTS
+>    puro sobre a rede, **não** a ideia de *alpha-beta rollouts* que dá nome
+>    ao MCαβ e que este plano descreve na Seção 1.
+> 3. **`fpuReduction=0.0`**, não 0.1 (medido, -24.4 ±22.9 Elo).
+>
+> Faixa de validade: tudo medido a 200ms/lance, numa máquina. O híbrido roda a
+> ~1/9 dos nós/s do AB puro. Ver a nota "Hybrid MCTS + alpha-beta" em
+> `status.md` para as tabelas completas.
+
 Documento de especificação para implementação por outro agente. Todo o texto
 abaixo assume acesso ao repositório `zquoridor` (arquivos referenciados:
 `src/search.hpp`, `src/nnue.hpp`, `src/rules.hpp`, `tools/arena/arena.cpp`,
@@ -800,3 +822,18 @@ fase decide se vale a pena prosseguir para a Fase 9.
   argumento original: o próprio Scorpio mostra que isso não é garantido)
   — nesse caso o módulo fica documentado e desligado por padrão
   (`mcabEnabled=false`), sem custo para o resto do engine.
+
+### Resultado medido (2026-08-13)
+
+Os três critérios acima foram atingidos:
+
+- **AB puro sem regressão**: `bench_fixed_depth` e o bloco A de `bench_mcab`
+  reportam contagem de nós bit-a-bit idêntica (8.293.935); nós/s dentro do
+  ruído de CPU.
+- **Modo equivalência**: 0/10 posições divergentes em `leafDepth` 3, 4 e 5
+  (depois de isolar a TT por filho — ver a nota em `status.md`).
+- **Híbrido vs AB puro**: **+46.9 ±23.5 Elo** a 200ms/lance sobre 800
+  partidas, com `leafDepth=0`/`fpuReduction=0.0`. Positivo e estatisticamente
+  significativo, então o módulo foi **ligado por padrão** (`enabled=true` em
+  `mcab::McabParams`) em vez de ficar desligado como o parágrafo acima previa
+  para o caso de ganho nulo.

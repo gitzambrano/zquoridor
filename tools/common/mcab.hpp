@@ -42,6 +42,7 @@
 #include <vector>
 #include <array>
 #include <cstdint>
+#include <cstring>      // std::strcmp em resolveRootSelect
 #include <cmath>
 #include <cassert>
 #include <algorithm>
@@ -79,8 +80,50 @@ constexpr int MCAB_WIN_SCORE = 1'000'000;
 enum class RootSelectMode { MaxVisits, MaxQ, MaxVisitsThenQ };
 enum class BackupMode { MinimaxHard, AvgBlend };  // AvgBlend reservado (não implementado na Fase 1)
 
+// -------------------------------------------------------------------------
+// "Campo vazio" para os blocos de CONFIG no topo das ferramentas.
+//
+// Regra: um campo vazio usa o valor de produção definido em McabParams logo
+// abaixo; preenchê-lo sobrescreve. Assim o default mora num lugar só, e o
+// bloco de config de cada ferramenta é apenas uma lista de exceções -- não
+// uma segunda cópia dos números, que se descola da primeira no dia em que
+// alguém mudar só uma das duas.
+//
+// -1 como sentinela é seguro para todos os parâmetros do MCab: nenhum tem
+// -1 como valor legítimo. Repare que NÃO é 0 -- `nodeBudget = 0` é um valor
+// legítimo e significativo (modo equivalência, Seção 6).
+// -------------------------------------------------------------------------
+constexpr int    UNSET_INT  = -1;
+constexpr double UNSET_REAL = -1.0;
+enum class Tri { Unset = -1, Off = 0, On = 1 };   // booleano de três estados
+
+inline int    resolve(int v, int prod)       { return v == UNSET_INT  ? prod : v; }
+inline double resolve(double v, double prod) { return v == UNSET_REAL ? prod : v; }
+inline bool   resolve(Tri v, bool prod)      { return v == Tri::Unset ? prod : (v == Tri::On); }
+
+// String vazia = campo vazio. Um valor não reconhecido cai no de produção em
+// vez de virar MaxVisits silenciosamente -- um typo em "visits-then-q" não
+// deve parecer que funcionou.
+inline RootSelectMode resolveRootSelect(const char* s, RootSelectMode prod) {
+    if (s == nullptr || s[0] == '\0') return prod;
+    if (std::strcmp(s, "visits") == 0)        return RootSelectMode::MaxVisits;
+    if (std::strcmp(s, "q") == 0)             return RootSelectMode::MaxQ;
+    if (std::strcmp(s, "visits-then-q") == 0) return RootSelectMode::MaxVisitsThenQ;
+    return prod;
+}
+
+// Estes são os valores de PRODUÇÃO: é aqui que mora o default de verdade.
+// Os blocos de CONFIG no topo de arena.cpp e selfplay_main.cpp são só listas
+// de override -- campo vazio (mcab::UNSET_*/Tri::Unset) cai no valor daqui.
+// Mudar um número neste struct muda o comportamento das duas ferramentas.
 struct McabParams {
-    bool enabled = false;
+    // LIGADO por default desde 2026-08-13: com leafDepth=0/fpuReduction=0.0 o
+    // híbrido mede +46.9 ±23.5 Elo sobre alpha-beta puro a 200ms/lance (800
+    // partidas). Vale a ressalva de faixa: isso foi medido a 200ms; o híbrido
+    // roda a ~1/9 dos nós/s do AB puro, e em controles de tempo bem mais
+    // curtos a troca deve inverter. Ver a nota "Hybrid MCTS + alpha-beta" em
+    // status.md antes de assumir que vale para o seu controle de tempo.
+    bool enabled = true;
     int nodeBudget = 20000;              // 0/1 = modo equivalência, Seção 6
     // 0 = folha avaliada só por NNUE + quiescência de muro, sem alpha-beta
     // abaixo dela. Era 4 (valor do plano); a Fase 8 mediu 4 como catastrófico
