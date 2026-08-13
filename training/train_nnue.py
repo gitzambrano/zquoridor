@@ -177,6 +177,8 @@ DATA_SOURCES_DEFAULT = [
       {"path": "selfplay/gen2", "frac": 0.2, "k": 1.0},
       {"path": "selfplay/gen3", "frac": 1.0, "k": 1.0},
       {"path": "selfplay/gen4", "frac": 1.0, "k": 0.7},
+      {"path": "selfplay/gen5-epsilon", "frac": 1.0, "k": 0.7},
+      {"path": "selfplay/gen5-montecarlo", "frac": 1.0, "k": 0.65},
       {"path": "arena/gen1",    "frac": 0.3, "k": 1.0},
       {"path": "arena/gen2",    "frac": 0.2, "k": 1.0},
 ]
@@ -184,7 +186,7 @@ DATA_SOURCES_DEFAULT = [
 OUT_DEFAULT = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data", "nnue", "nnue_weights.bin")
  
 # --- treino / otimizacao -----------------------------------------------------
-EPOCHS_DEFAULT = 10
+EPOCHS_DEFAULT = 120
 BATCH_SIZE_DEFAULT = "auto"           # inteiro, ou "auto" (via --vram-budget-gb)
 SEED_DEFAULT = 0
 VAL_SPLIT_DEFAULT = 0.1               # fracao dos dados reservada p/ validacao
@@ -199,7 +201,7 @@ WARMUP_EPOCHS_DEFAULT = 2
 # p/ treino do zero) e alto demais aqui: afastaria pesos ja convergidos do
 # otimo local em vez de so refina-los. So entra em uso quando --lr fica em
 # "auto"; --lr numerico explicito sempre tem prioridade.
-NEW_CYCLE_LR_DEFAULT = 5e-6
+NEW_CYCLE_LR_DEFAULT = 1e-5
 STEP_SIZE_DEFAULT = 10                # epochs por degrau em --lr-schedule=step
 STEP_GAMMA_DEFAULT = 0.5
 EXP_GAMMA_DEFAULT = 0.97
