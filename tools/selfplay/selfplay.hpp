@@ -42,7 +42,10 @@
 // FORA da arvore versionada-por-ref (Secao 4.4 do plano): e sempre a versao
 // do HEAD atual de tools/, igual a este proprio arquivo. Caminho relativo a
 // partir de tools/selfplay/, mesmo padrao de tools/arena/arena.cpp.
-#include "../common/mcab.hpp"
+#include "mcab.hpp"
+// Overrides dos parametros de busca (contempt, LMR, CAT, quiescencia...) --
+// mesma ideia de "vazio = valor de producao" do McabParams acima.
+#include "search_tuning.hpp"
 
 namespace qr {
 
@@ -259,6 +262,12 @@ struct SelfPlayConfig {
     // nem sampleMoveByPolicyTemperature -- esses caminhos continuam
     // exatamente como estão (ver instruções da Fase 6).
     mcab::McabParams mcabParams;
+
+    // Overrides dos parâmetros de busca de search.hpp (contempt, LMR, CAT,
+    // quiescência, escala da política na ordenação...). Todo campo vazio por
+    // default => applySearchTuning é um no-op e cada engine fica no valor de
+    // produção. Preenchido pelo bloco de config/flags de selfplay_main.cpp.
+    tuning::SearchTuning tuning;
 };
 
 struct SelfPlayStats {
@@ -638,6 +647,11 @@ inline void runSelfPlay(const SelfPlayConfig& cfg, const std::string& outputPath
         if (!cfg.sharedTT) engine1Storage = std::make_unique<Negamax>();
         Negamax& engine1 = cfg.sharedTT ? engine0 : *engine1Storage;
 
+        // Parâmetros de busca vindos do bloco de config/CLI (contempt, LMR,
+        // CAT, quiescência...). Vazio = no-op, engine fica em produção.
+        tuning::applySearchTuning(engine0, cfg.tuning);
+        if (!cfg.sharedTT) tuning::applySearchTuning(engine1, cfg.tuning);
+
         // Ativa NNUE em todas as engines se pesos foram carregados.
         if (useNNUE) {
             engine0.setEvalMode(Negamax::EvalMode::NNUE);
@@ -650,13 +664,14 @@ inline void runSelfPlay(const SelfPlayConfig& cfg, const std::string& outputPath
             // (2026-08): liga por default sempre que NNUE esta ativo;
             // use --no-policy-order pra reproduzir shards gerados antes
             // dessa mudanca.
+            // Sempre chama o setter (não só quando ligado): search.hpp passou
+            // a nascer com policyOrderingEnabled=true, então omitir a chamada
+            // no caso "desligado" deixava --no-policy-order sem efeito nenhum.
+            engine0.setPolicyOrderingEnabled(cfg.policyOrderingEnabled);
+            if (!cfg.sharedTT) engine1.setPolicyOrderingEnabled(cfg.policyOrderingEnabled);
             if (cfg.policyOrderingEnabled) {
-                engine0.setPolicyOrderingEnabled(true);
                 engine0.setPolicyOrderingMinDepth(cfg.policyOrderingMinDepth);
-                if (!cfg.sharedTT) {
-                    engine1.setPolicyOrderingEnabled(true);
-                    engine1.setPolicyOrderingMinDepth(cfg.policyOrderingMinDepth);
-                }
+                if (!cfg.sharedTT) engine1.setPolicyOrderingMinDepth(cfg.policyOrderingMinDepth);
             }
         }
 

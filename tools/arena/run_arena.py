@@ -64,25 +64,126 @@ E2_POLICY_ORDER = True
 # Mesmo default (3) de search.hpp/selfplay/arena.cpp.
 E1_POLICY_ORDER_MIN_DEPTH = 3
 E2_POLICY_ORDER_MIN_DEPTH = 3
+# =============================================================================
+# CONFIG DE ENGINE -- tudo por lado (E1_ = --ref1, E2_ = --ref2)
+# =============================================================================
+# Regra dos dois blocos abaixo: None = "vazio" -- não manda flag nenhuma e o
+# arena.exe usa o valor de PRODUÇÃO, anotado no comentário de cada linha (a
+# fonte da verdade são mcab::McabParams em src/mcab.hpp e os defaults de
+# src/search.hpp; os comentários aqui são cópia de leitura). Preencher um
+# campo sobrescreve só ele, só naquele lado.
+#
+# Precedência: flag --e1-/--e2- > flag global > constante aqui > produção.
+#
+# Tudo é por engine porque o ponto da arena é comparar duas configurações com
+# UM parâmetro diferente -- muito menos variância do que medir cada
+# configuração contra uma baseline separada. Toda flag também existe na forma
+# global (--mcab-cpuct, --contempt), que vale para as duas engines.
+#
+# Um --refX anterior a uma feature (MCab, ou um setter novo de search.hpp) não
+# tem o método correspondente: o arena compila mesmo assim (dispatch SFINAE em
+# src/mcab.hpp e src/search_tuning.hpp), avisa quando é o caso, e aquele lado
+# simplesmente ignora o knob.
+
 # --- MCTS híbrido com alpha-beta (busca de produção) ---
-# Regra deste bloco: None = "vazio", não manda flag nenhuma e o arena.exe usa
-# o valor de produção (o comentário de cada campo diz qual é). Preencher aqui
-# sobrescreve; as flags de linha de comando sobrescrevem isto.
-#
-# Precedência: flag de CLI > constante aqui > produção (mcab::McabParams).
-#
-# O híbrido é a busca de produção e vem LIGADO. Ressalva de faixa: os +46.9
-# ±23.5 Elo sobre alpha-beta puro foram medidos a 200ms/lance. O híbrido roda
-# a ~1/9 dos nós/s do AB puro, então em controles de tempo bem mais curtos a
-# troca provavelmente inverte -- para medir AB puro, use False (ou --no-mcab).
-E1_MCAB = None                # None = default do binário (ligado) | True | False
-E2_MCAB = None                # idem
-MCAB_NODES = None             # produção: 20000 (a 200ms quem limita é o tempo, não isto)
-MCAB_LEAF_DEPTH = None        # produção: 0 -- plies de alpha-beta em cada folha (medido)
-MCAB_CPUCT = None             # produção: 1.5
-MCAB_FPU = None               # produção: 0.0 (medido)
-MCAB_SCORE_SCALE = None       # produção: 200.0 (= NNUE_EVAL_SCALE)
-MCAB_ROOT_SELECT = None       # produção: "visits" | "q" | "visits-then-q"
+# O híbrido vem LIGADO. Ressalva de faixa: os +46.9 ±23.5 Elo sobre alpha-beta
+# puro foram medidos a 200ms/lance. Ele roda a ~1/9 dos nós/s do AB puro, então
+# em controles de tempo bem mais curtos a troca provavelmente inverte -- para
+# medir AB puro de um lado, use False (ou --e1-no-mcab/--e2-no-mcab).
+E1_MCAB = None                     # None = default do binário (LIGADO) | True | False
+E2_MCAB = None                     # idem
+E1_MCAB_NODES = None               # produção: 20000 nós de árvore por lance
+E2_MCAB_NODES = None               # (a 200ms quem limita é o tempo, não isto)
+E1_MCAB_LEAF_DEPTH = None          # produção: 0 -- plies de alpha-beta em cada folha.
+E2_MCAB_LEAF_DEPTH = None          # 0 = só NNUE + quiescência de muro; a Fase 8 mediu
+                                   # 4 como catastrófico e 0 como o único ponto que
+                                   # bate o AB puro a 200ms
+E1_MCAB_LEAF_DEPTH_MAX = None      # produção: 8 -- teto de leaf-depth; só tem efeito
+E2_MCAB_LEAF_DEPTH_MAX = None      # com ADAPTIVE_LEAF_DEPTH ligado
+E1_MCAB_ADAPTIVE_LEAF_DEPTH = None # produção: desligado (não implementado na Fase 1).
+E2_MCAB_ADAPTIVE_LEAF_DEPTH = None # True liga; False é o próprio default
+E1_MCAB_CPUCT = None               # produção: 1.5 -- constante de exploração do PUCT
+E2_MCAB_CPUCT = None
+E1_MCAB_FPU = None                 # produção: 0.0 -- First Play Urgency: Q(pai) - fpu
+E2_MCAB_FPU = None                 # nos filhos não visitados (0.0 mediu +24.4 vs. 0.1)
+E1_MCAB_SCORE_SCALE = None         # produção: 200.0 -- escala do sigmoide score->Q
+E2_MCAB_SCORE_SCALE = None         # em scoreToQ (= NNUE_EVAL_SCALE)
+E1_MCAB_ROOT_SELECT = None         # produção: "visits" | "q" | "visits-then-q"
+E2_MCAB_ROOT_SELECT = None
+E1_MCAB_TREE_REUSE = None          # produção: ligado -- reusa a subárvore do lance
+E2_MCAB_TREE_REUSE = None          # anterior. False desliga
+E1_MCAB_CLEAR_TT_PER_MOVE = None   # produção: desligado -- True limpa a TT do
+E2_MCAB_CLEAR_TT_PER_MOVE = None   # alpha-beta a cada lance
+E1_MCAB_MAX_TREE_DEPTH = None      # produção: 48 -- dimensiona mcabAccStack
+E2_MCAB_MAX_TREE_DEPTH = None
+E1_MCAB_EQUIV_MODE = None          # produção: desligado -- True força nodeBudget=0
+E2_MCAB_EQUIV_MODE = None          # (modo equivalência com o alpha-beta puro)
+
+# --- Parâmetros de busca (search.hpp) ---
+# Os mesmos knobs que tools/spsa/tune_spsa.cpp otimiza. Expostos aqui para dar
+# para MEDIR em Elo o candidato que o SPSA propôs -- antes disso era preciso
+# editar search.hpp e recompilar. O uso típico é preencher só o lado E1 e
+# deixar E2 vazio: aí a partida é "candidato vs. produção" com o resto igual.
+E1_CONTEMPT = None                 # produção: -30 (score de empate, em centi-lances)
+E2_CONTEMPT = None
+E1_POLICY_ORDER_SCALE = None       # produção: 400 (escala do logit da política
+E2_POLICY_ORDER_SCALE = None       # somado na ordenação de lances)
+E1_CAT_SCORE_SCALE = None          # produção: 2 (peso do calor CAT vs. política
+E2_CAT_SCORE_SCALE = None          # em orderWallMoves)
+E1_LMR_MIN_DEPTH = None            # produção: 3 (profundidade mínima p/ LMR reduzir)
+E2_LMR_MIN_DEPTH = None
+E1_LMR_MIN_MOVE_INDEX = None       # produção: 3 (1-based; o 1º lance é PVS)
+E2_LMR_MIN_MOVE_INDEX = None
+E1_LMR_DIVISOR = None              # produção: 2.25 (divisor da fórmula de redução)
+E2_LMR_DIVISOR = None
+E1_CAT_HOT_CM = None               # produção: 150 (calor CAT que marca o lance como
+E2_CAT_HOT_CM = None               # tático e faz o LMR pular a redução)
+E1_CAT_COLD_CM = None              # produção: 30 (calor abaixo do qual reduz +1)
+E2_CAT_COLD_CM = None
+E1_WALL_BFS_ORDER_MAX_PLY = None   # produção: 2 (último ply com ordenação de muro
+E2_WALL_BFS_ORDER_MAX_PLY = None   # por BFS)
+E1_QS_CRITICAL_BFS_DELTA = None    # produção: 2 (delta de BFS que torna o muro
+E2_QS_CRITICAL_BFS_DELTA = None    # crítico na quiescência)
+E1_QUIESCENCE = None               # produção: ligada -- True/False liga/desliga a
+E2_QUIESCENCE = None               # quiescência de muro
+E1_LMR_PVS = None                  # produção: ligado -- True/False liga/desliga
+E2_LMR_PVS = None                  # LMR+PVS
+
+# Tabelas que ligam constante <-> flag do arena.exe. Um knob novo precisa de
+# uma linha aqui e mais nada -- parse_args e a montagem do comando são
+# geradas a partir delas.
+#   (sufixo da flag, dest base, const E1, const E2, tipo)
+MCAB_VALUE_KNOBS = [
+    ("mcab-nodes",          "mcab_nodes",          E1_MCAB_NODES,          E2_MCAB_NODES,          int),
+    ("mcab-leaf-depth",     "mcab_leaf_depth",     E1_MCAB_LEAF_DEPTH,     E2_MCAB_LEAF_DEPTH,     int),
+    ("mcab-leaf-depth-max", "mcab_leaf_depth_max", E1_MCAB_LEAF_DEPTH_MAX, E2_MCAB_LEAF_DEPTH_MAX, int),
+    ("mcab-cpuct",          "mcab_cpuct",          E1_MCAB_CPUCT,          E2_MCAB_CPUCT,          float),
+    ("mcab-fpu",            "mcab_fpu",            E1_MCAB_FPU,            E2_MCAB_FPU,            float),
+    ("mcab-score-scale",    "mcab_score_scale",    E1_MCAB_SCORE_SCALE,    E2_MCAB_SCORE_SCALE,    float),
+    ("mcab-max-tree-depth", "mcab_max_tree_depth", E1_MCAB_MAX_TREE_DEPTH, E2_MCAB_MAX_TREE_DEPTH, int),
+    ("mcab-root-select",    "mcab_root_select",    E1_MCAB_ROOT_SELECT,    E2_MCAB_ROOT_SELECT,    str),
+    ("contempt",               "contempt",               E1_CONTEMPT,               E2_CONTEMPT,               int),
+    ("policy-order-scale",     "policy_order_scale",     E1_POLICY_ORDER_SCALE,     E2_POLICY_ORDER_SCALE,     int),
+    ("cat-score-scale",        "cat_score_scale",        E1_CAT_SCORE_SCALE,        E2_CAT_SCORE_SCALE,        int),
+    ("lmr-min-depth",          "lmr_min_depth",          E1_LMR_MIN_DEPTH,          E2_LMR_MIN_DEPTH,          int),
+    ("lmr-min-move-index",     "lmr_min_move_index",     E1_LMR_MIN_MOVE_INDEX,     E2_LMR_MIN_MOVE_INDEX,     int),
+    ("lmr-divisor",            "lmr_divisor",            E1_LMR_DIVISOR,            E2_LMR_DIVISOR,            float),
+    ("cat-hot-cm",             "cat_hot_cm",             E1_CAT_HOT_CM,             E2_CAT_HOT_CM,             int),
+    ("cat-cold-cm",            "cat_cold_cm",            E1_CAT_COLD_CM,            E2_CAT_COLD_CM,            int),
+    ("wall-bfs-order-max-ply", "wall_bfs_order_max_ply", E1_WALL_BFS_ORDER_MAX_PLY, E2_WALL_BFS_ORDER_MAX_PLY, int),
+    ("qs-critical-bfs-delta",  "qs_critical_bfs_delta",  E1_QS_CRITICAL_BFS_DELTA,  E2_QS_CRITICAL_BFS_DELTA,  int),
+]
+# Knobs liga/desliga. `flag_on`/`flag_off` = o que o arena.exe aceita; None
+# nesse campo significa "aquele lado é o default do binário, não há flag".
+#   (dest base, const E1, const E2, flag_on, flag_off)
+MCAB_FLAG_KNOBS = [
+    ("mcab_adaptive_leaf_depth", E1_MCAB_ADAPTIVE_LEAF_DEPTH, E2_MCAB_ADAPTIVE_LEAF_DEPTH, "mcab-adaptive-leaf-depth", None),
+    ("mcab_tree_reuse",          E1_MCAB_TREE_REUSE,          E2_MCAB_TREE_REUSE,          None, "mcab-no-tree-reuse"),
+    ("mcab_clear_tt_per_move",   E1_MCAB_CLEAR_TT_PER_MOVE,   E2_MCAB_CLEAR_TT_PER_MOVE,   "mcab-clear-tt-per-move", None),
+    ("mcab_equiv_mode",          E1_MCAB_EQUIV_MODE,          E2_MCAB_EQUIV_MODE,          "mcab-equiv-mode", None),
+    ("quiescence",               E1_QUIESCENCE,               E2_QUIESCENCE,               "quiescence", "no-quiescence"),
+    ("lmr_pvs",                  E1_LMR_PVS,                  E2_LMR_PVS,                  "lmr-pvs", "no-lmr-pvs"),
+]
 # --- Pasta de pesos NNUE por engine (resolve o bug de main vs local
 # carregando o MESMO arquivo, ver defaultNnueWeightsPath em nnue.hpp) ---
 # "default"/None/"" -> tenta <pasta_do_ref>/data/nnue/nnue_weights_int8.bin
@@ -282,7 +383,7 @@ def resolve_weights_path(weights_dir, engine_source_dir, engine_label):
 
 import multiprocessing
 
-def worker_process(exe_path, worker_games, time_ms, random_plies, seed, report_games, bin_path, invert_colors, progress_queue, e1_nnue="", e2_nnue="", heuristic=False, e1_heuristic=False, e2_heuristic=False, policy_order=False, e1_policy_order=False, e2_policy_order=False, e1_policy_min_depth=3, e2_policy_min_depth=3, e1_mcab=None, e2_mcab=None, mcab_nodes=None, mcab_leaf_depth=None, e1_mcab_opts=None, e2_mcab_opts=None):
+def worker_process(exe_path, worker_games, time_ms, random_plies, seed, report_games, bin_path, invert_colors, progress_queue, e1_nnue="", e2_nnue="", heuristic=False, e1_heuristic=False, e2_heuristic=False, policy_order=False, e1_policy_order=False, e2_policy_order=False, e1_policy_min_depth=3, e2_policy_min_depth=3, e1_mcab=None, e2_mcab=None, e1_engine_args=None, e2_engine_args=None):
     cmd = [
         exe_path,
         "--games", str(worker_games),
@@ -327,7 +428,7 @@ def worker_process(exe_path, worker_games, time_ms, random_plies, seed, report_g
     #   True  = --eX-mcab      (forca ligado)
     #   False = --eX-no-mcab   (forca alpha-beta puro)
     # IMPORTANTE: um --refX anterior a esta feature nao tem searchLeaf; o
-    # arena compila mesmo assim (dispatch SFINAE em tools/common/mcab.hpp) e
+    # arena compila mesmo assim (dispatch SFINAE em src/mcab.hpp) e
     # imprime um aviso 1x, rodando AB puro daquele lado.
     if e1_mcab is True:
         cmd.append("--e1-mcab")
@@ -337,19 +438,13 @@ def worker_process(exe_path, worker_games, time_ms, random_plies, seed, report_g
         cmd.append("--e2-mcab")
     elif e2_mcab is False:
         cmd.append("--e2-no-mcab")
-    if mcab_nodes is not None:
-        cmd.extend(["--mcab-nodes", str(mcab_nodes)])
-    if mcab_leaf_depth is not None:
-        cmd.extend(["--mcab-leaf-depth", str(mcab_leaf_depth)])
-    # Knobs de tuning do MCab (cpuct/fpu/score-scale/root-select), por engine.
-    # Sao dicts em vez de argumentos soltos porque o ponto deles e comparar
-    # hibrido contra hibrido com UM parametro diferente -- muito menos
-    # variancia do que medir cada configuracao contra o AB puro em separado.
-    # Um dict vazio/None nao manda flag nenhuma, e o binario fica no default.
-    for prefixo, opts in (("--e1-mcab-", e1_mcab_opts), ("--e2-mcab-", e2_mcab_opts)):
-        for chave, valor in (opts or {}).items():
-            if valor is not None:
-                cmd.extend([prefixo + chave, str(valor)])
+    # Demais knobs de engine (MCab + parametros de busca), ja resolvidos em
+    # main() na forma "--e1-<flag> [valor]" -- lista vazia = tudo em producao.
+    # Sao por engine porque o ponto e comparar duas configuracoes com UM
+    # parametro diferente, com muito menos variancia do que medir cada uma
+    # contra uma baseline separada.
+    cmd.extend(e1_engine_args or [])
+    cmd.extend(e2_engine_args or [])
 
     # cwd=PROJECT_ROOT: arena.exe agora tenta carregar o caminho default de
     # pesos NNUE (data/nnue/nnue_weights_int8.bin, RELATIVO) quando
@@ -402,8 +497,15 @@ def main():
     parser.add_argument("--threads", type=int, default=THREADS, help=f"Numero de nucleos/threads (padrao: {THREADS})")
     parser.add_argument("--random-plies", type=int, default=RANDOM_OPENING_PLIES, help=f"Lances aleatorios na abertura (padrao: {RANDOM_OPENING_PLIES})")
     parser.add_argument("--seed", type=int, default=SEED, help=f"Semente RNG (padrao: {SEED})")
-    parser.add_argument("--no-invert", dest="invert_colors", action="store_false", default=False, help="Nao inverte as cores na mesma abertura")
-    parser.add_argument("--invert-colors", dest="invert_colors", action="store_true", default=True, help="Inverte as cores jogando a mesma abertura 2x")
+    # BUG CORRIGIDO (2026-08-13): as duas flags declaravam `default=` para o
+    # MESMO dest. O argparse aplica o default da PRIMEIRA action registrada e
+    # ignora o das seguintes, entao o default efetivo era o False do
+    # --no-invert -- a constante INVERT_COLORS do topo do arquivo nunca valia,
+    # e toda arena rodava sem inversao de cores, mesmo com INVERT_COLORS=True.
+    # O default agora vem de set_defaults, uma vez so, a partir da constante.
+    parser.add_argument("--no-invert", dest="invert_colors", action="store_false", help="Nao inverte as cores na mesma abertura")
+    parser.add_argument("--invert-colors", dest="invert_colors", action="store_true", help="Inverte as cores jogando a mesma abertura 2x")
+    parser.set_defaults(invert_colors=INVERT_COLORS)
     parser.add_argument("--e1-nnue", default="", help="Caminho para pesos NNUE quantizados (.qbin) do Engine 1 (default: data/nnue/nnue_weights_int8.bin, se existir)")
     parser.add_argument("--e2-nnue", default="", help="Caminho para pesos NNUE quantizados (.qbin) do Engine 2 (default: data/nnue/nnue_weights_int8.bin, se existir)")
     parser.add_argument("--e1-weights-dir", default=E1_WEIGHTS_DIR,
@@ -437,20 +539,27 @@ def main():
     parser.add_argument("--e1-no-mcab", dest="e1_mcab", action="store_false", help="Forca alpha-beta puro so no Engine 1")
     parser.add_argument("--e2-mcab", dest="e2_mcab", action="store_true", default=None, help="Forca o hibrido ligado so no Engine 2 (--ref2)")
     parser.add_argument("--e2-no-mcab", dest="e2_mcab", action="store_false", help="Forca alpha-beta puro so no Engine 2")
-    parser.add_argument("--mcab-nodes", type=int, default=None, help="Orcamento de nos MCTS por lance nas engines com MCab ligado (padrao do binario: 20000)")
-    parser.add_argument("--mcab-leaf-depth", type=int, default=None, help="Profundidade da busca AB em cada folha do MCab (padrao do binario: 4). 0 = so avaliacao NNUE + quiescencia de muro, que a Fase 8 mediu como o unico ponto competitivo a 200ms")
-    # Knobs de tuning. Cada um tem a forma global (as duas engines) e a forma
-    # --e1-/--e2- (so um lado). A per-engine vence sobre a global.
+    # Knobs de engine (MCab + parametros de busca). Cada um tem a forma global
+    # (as duas engines) e a forma --e1-/--e2- (so um lado); a per-engine vence
+    # sobre a global, e as duas vencem sobre a constante do topo do arquivo.
     for lado, rotulo in (("", "nas DUAS engines"), ("e1-", "so no Engine 1"), ("e2-", "so no Engine 2")):
-        parser.add_argument(f"--{lado}mcab-cpuct", type=float, default=None,
-                            help=f"Constante de exploracao do PUCT, {rotulo} (padrao do binario: 1.5)")
-        parser.add_argument(f"--{lado}mcab-fpu", type=float, default=None,
-                            help=f"First Play Urgency: Q do pai menos este valor para filhos nao visitados, {rotulo} (padrao do binario: 0.1)")
-        parser.add_argument(f"--{lado}mcab-score-scale", type=float, default=None,
-                            help=f"Escala do sigmoide score->Q em scoreToQ, {rotulo} (padrao do binario: 200, = NNUE_EVAL_SCALE)")
-        parser.add_argument(f"--{lado}mcab-root-select", choices=["visits", "q", "visits-then-q"], default=None,
-                            help=f"Criterio de escolha do lance na raiz, {rotulo} (padrao do binario: visits)")
-    
+        for flag, dest, _c1, _c2, tipo in MCAB_VALUE_KNOBS:
+            kwargs = {"default": None, "dest": lado.replace("-", "_") + dest,
+                       "help": f"{flag} {rotulo} (vazio = valor de producao; ver a constante correspondente no topo do arquivo)"}
+            if flag == "mcab-root-select":
+                kwargs["choices"] = ["visits", "q", "visits-then-q"]
+            else:
+                kwargs["type"] = tipo
+            parser.add_argument(f"--{lado}{flag}", **kwargs)
+        for dest, _c1, _c2, flag_on, flag_off in MCAB_FLAG_KNOBS:
+            d = lado.replace("-", "_") + dest
+            if flag_on:
+                parser.add_argument(f"--{lado}{flag_on}", dest=d, action="store_true", default=None,
+                                    help=f"liga {dest} {rotulo}")
+            if flag_off:
+                parser.add_argument(f"--{lado}{flag_off}", dest=d, action="store_false", default=None,
+                                    help=f"desliga {dest} {rotulo}")
+
     args = parser.parse_args()
     # --policy-order liga as duas engines, igual --heuristic; --e1-.../--e2-...
     # continuam disponiveis pra ligar so uma de cada vez (mesmo padrao que
@@ -471,23 +580,42 @@ def main():
         args.e1_mcab = E1_MCAB
     if args.e2_mcab is None:
         args.e2_mcab = E2_MCAB
-    for attr, constante in (("mcab_nodes", MCAB_NODES), ("mcab_leaf_depth", MCAB_LEAF_DEPTH),
-                            ("mcab_cpuct", MCAB_CPUCT), ("mcab_fpu", MCAB_FPU),
-                            ("mcab_score_scale", MCAB_SCORE_SCALE), ("mcab_root_select", MCAB_ROOT_SELECT)):
-        if getattr(args, attr) is None:
-            setattr(args, attr, constante)
-
-    # Monta os dicts de knobs por engine: o valor global vale para os dois
-    # lados, e o --eX- sobrescreve aquele lado. Chaves = sufixo da flag do
-    # arena.exe (--eX-mcab-<chave>).
-    MCAB_KNOBS = [("cpuct", "mcab_cpuct"), ("fpu", "mcab_fpu"),
-                  ("score-scale", "mcab_score_scale"), ("root-select", "mcab_root_select")]
-    args.e1_mcab_opts, args.e2_mcab_opts = {}, {}
-    for chave, attr in MCAB_KNOBS:
-        globalv = getattr(args, attr)
-        for lado, destino in (("e1_", args.e1_mcab_opts), ("e2_", args.e2_mcab_opts)):
-            v = getattr(args, lado + attr)
-            destino[chave] = v if v is not None else globalv
+    # Monta a lista de flags extras de cada engine. Precedencia por lado:
+    #   --eX-<knob>  >  --<knob> (global)  >  constante EX_ do topo  >  producao
+    # Nada resolvido em nenhum nivel => nenhuma flag e mandada e o arena.exe
+    # fica no valor de producao daquele knob.
+    args.e1_engine_args, args.e2_engine_args = [], []
+    args.engine_tuning_resumo = {"e1": [], "e2": []}
+    for flag, dest, c1, c2, _tipo in MCAB_VALUE_KNOBS:
+        globalv = getattr(args, dest)
+        for lado, constante, destino, resumo in (("e1_", c1, args.e1_engine_args, args.engine_tuning_resumo["e1"]),
+                                                  ("e2_", c2, args.e2_engine_args, args.engine_tuning_resumo["e2"])):
+            v = getattr(args, lado + dest)
+            if v is None:
+                v = globalv
+            if v is None:
+                v = constante
+            if v is not None:
+                destino += [f"--{lado[:2]}-{flag}", str(v)]
+                resumo.append(f"{flag}={v}")
+    for dest, c1, c2, flag_on, flag_off in MCAB_FLAG_KNOBS:
+        globalv = getattr(args, dest)
+        for lado, constante, destino, resumo in (("e1_", c1, args.e1_engine_args, args.engine_tuning_resumo["e1"]),
+                                                  ("e2_", c2, args.e2_engine_args, args.engine_tuning_resumo["e2"])):
+            v = getattr(args, lado + dest)
+            if v is None:
+                v = globalv
+            if v is None:
+                v = constante
+            # Só existe flag para o lado que difere do default do binário
+            # (ex.: tree-reuse só tem "--...-no-tree-reuse"); pedir o outro
+            # lado é justamente o default, então não há nada a mandar.
+            if v is True and flag_on:
+                destino.append(f"--{lado[:2]}-{flag_on}")
+                resumo.append(f"{dest}=on")
+            elif v is False and flag_off:
+                destino.append(f"--{lado[:2]}-{flag_off}")
+                resumo.append(f"{dest}=off")
     # --policy-order-min-depth (sem prefixo e1/e2) sobrepoe as duas de uma vez.
     if args.policy_order_min_depth is not None:
         args.e1_policy_order_min_depth = args.policy_order_min_depth
@@ -506,6 +634,12 @@ def main():
     print(f"  Engine 2 : {ref2_label}")
     print(f"  Config   : {args.games} jogos | {args.threads} threads | {args.time}ms/lance | Relatorio a cada {args.report_games} jogos")
     print(f"  Salvar .bin: {args.create_bin}")
+    # So aparece o que foi tirado do valor de producao; silencio = as duas
+    # engines em producao, que e o caso normal.
+    for lado, rotulo in (("e1", "Engine 1"), ("e2", "Engine 2")):
+        resumo = args.engine_tuning_resumo[lado]
+        if resumo:
+            print(f"  {rotulo} (fora do default): {', '.join(resumo)}")
     print(f"  Politica NNUE na ordenacao: Engine 1 {'LIGADA (min-depth=' + str(args.e1_policy_order_min_depth) + ')' if args.e1_policy_order else 'desligada'} | Engine 2 {'LIGADA (min-depth=' + str(args.e2_policy_order_min_depth) + ')' if args.e2_policy_order else 'desligada'}")
     print("=" * 65 + "\n")
     
@@ -576,7 +710,13 @@ def main():
         worker_pairs = pairs_per_thread + (1 if w < extra_pairs else 0)
         if worker_pairs <= 0:
             continue
-        worker_games = worker_pairs * 2 if args.invert_colors else (args.games // threads_count + (1 if w < (args.games % threads_count) else 0))
+        # SEMPRE par, mesmo sem inversao de cores: o arena.exe arredonda
+        # `--games` impar para cima (totalGames++ em main()), entao um worker
+        # com numero impar jogava uma partida a mais do que o Python contava --
+        # o denominador do relatorio ficava menor que os jogos realmente
+        # disputados (ex.: 100 pedidos, 112 jogados) e o Elo saia de uma
+        # amostra diferente da anunciada.
+        worker_games = worker_pairs * 2
         if worker_games <= 0: continue
         worker_seed = args.seed + w * 10007
         worker_bin = os.path.join(temp_bin_dir, f"part_{w}.bin") if temp_bin_dir else None
@@ -588,7 +728,7 @@ def main():
     for worker_games, worker_seed, worker_bin in tasks:
         p = multiprocessing.Process(
             target=worker_process,
-            args=(cand_exe, worker_games, args.time, args.random_plies, worker_seed, worker_report, worker_bin, args.invert_colors, queue, args.e1_nnue, args.e2_nnue, args.heuristic, args.e1_heuristic, args.e2_heuristic, False, args.e1_policy_order, args.e2_policy_order, args.e1_policy_order_min_depth, args.e2_policy_order_min_depth, args.e1_mcab, args.e2_mcab, args.mcab_nodes, args.mcab_leaf_depth, args.e1_mcab_opts, args.e2_mcab_opts)
+            args=(cand_exe, worker_games, args.time, args.random_plies, worker_seed, worker_report, worker_bin, args.invert_colors, queue, args.e1_nnue, args.e2_nnue, args.heuristic, args.e1_heuristic, args.e2_heuristic, False, args.e1_policy_order, args.e2_policy_order, args.e1_policy_order_min_depth, args.e2_policy_order_min_depth, args.e1_mcab, args.e2_mcab, args.e1_engine_args, args.e2_engine_args)
         )
         p.start()
         processes.append(p)
@@ -601,6 +741,17 @@ def main():
     tot_eng1_time = 0.0
     tot_eng2_time = 0.0
     
+    # Totais definitivos, montados so a partir dos RESULT_JSON (um por worker,
+    # ja acumulado). Os tot_* acima seguem servindo a impressao de progresso.
+    final_eng1_wins = 0
+    final_eng2_wins = 0
+    final_draws = 0
+    final_eng1_nodes = 0
+    final_eng2_nodes = 0
+    final_eng1_time = 0.0
+    final_eng2_time = 0.0
+    got_final = False
+
     completed_games = 0
     next_report_target = args.report_games
     total_games = sum(t[0] for t in tasks)
@@ -617,6 +768,12 @@ def main():
                 seen_log_lines.add(data)
                 print(f"  {data}", flush=True)
         elif msg_type == "PROGRESS":
+            # PROGRESS e so a visao AO VIVO: cada worker manda um delta a cada
+            # `worker_report` partidas e as partidas restantes (worker_games %
+            # worker_report) nunca viram um PROGRESS -- elas so aparecem no
+            # RESULT_JSON final daquele worker. Os totais definitivos vem dos
+            # RESULTs, abaixo; somar as duas fontes contaria os mesmos jogos
+            # duas vezes.
             tot_eng1_wins += data["candWins"]
             tot_eng2_wins += data["baseWins"]
             tot_draws += data["draws"]
@@ -624,7 +781,7 @@ def main():
             tot_eng2_nodes += data["baseNodes"]
             tot_eng1_time += data["candTimeSec"]
             tot_eng2_time += data["baseTimeSec"]
-            
+
             completed_games += data["games"]
             if completed_games >= next_report_target or completed_games == total_games:
                 elo_diff, elo_margin = calculate_elo_and_ci(tot_eng1_wins, tot_eng2_wins, tot_draws)
@@ -636,21 +793,33 @@ def main():
                     next_report_target += args.report_games
         elif msg_type == "RESULT":
             finished_workers += 1
-            if data and worker_report == 0:
-                tot_eng1_wins += data["candWins"]
-                tot_eng2_wins += data["baseWins"]
-                tot_draws += data["draws"]
-                tot_eng1_nodes += data["candNodes"]
-                tot_eng2_nodes += data["baseNodes"]
-                tot_eng1_time += data["candTimeSec"]
-                tot_eng2_time += data["baseTimeSec"]
-                completed_games += (data["candWins"] + data["baseWins"] + data["draws"])
+            # RESULT traz os totais ACUMULADOS do worker (nao um delta), entao
+            # e a fonte definitiva: acumula aqui e, no fim, substitui o que os
+            # PROGRESS montaram. Antes isto so era lido quando
+            # --report-games 0, e com report ligado as partidas da sobra de
+            # cada worker simplesmente sumiam do placar.
+            if data:
+                final_eng1_wins += data["candWins"]
+                final_eng2_wins += data["baseWins"]
+                final_draws += data["draws"]
+                final_eng1_nodes += data["candNodes"]
+                final_eng2_nodes += data["baseNodes"]
+                final_eng1_time += data["candTimeSec"]
+                final_eng2_time += data["baseTimeSec"]
+                got_final = True
         elif msg_type == "ERROR":
             print(f"[!] {data}", flush=True)
             finished_workers += 1
             
     for p in processes:
         p.join()
+
+    # Placar definitivo: os RESULTs de todos os workers. So cai de volta nos
+    # contadores de progresso se nenhum RESULT tiver chegado (worker morto).
+    if got_final:
+        tot_eng1_wins, tot_eng2_wins, tot_draws = final_eng1_wins, final_eng2_wins, final_draws
+        tot_eng1_nodes, tot_eng2_nodes = final_eng1_nodes, final_eng2_nodes
+        tot_eng1_time, tot_eng2_time = final_eng1_time, final_eng2_time
 
     shutil.rmtree(weights_cache_dir, ignore_errors=True)
 

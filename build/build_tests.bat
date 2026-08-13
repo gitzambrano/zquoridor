@@ -53,7 +53,7 @@ g++ %FLAGS% -pthread -I"%SRC%" -o "%BIN%\nnue_sign_check.exe" "%TESTE%\nnue_sign
 if errorlevel 1 goto :erro
 
 REM [9..12] Hibrido MCab (plan-hybrid-mc-ab.md). Nao precisam de -I extra:
-REM os .cpp incluem "../tools/common/mcab.hpp" relativo a si mesmos.
+REM os .cpp incluem "../src/mcab.hpp" relativo a si mesmos.
 echo [9/12] test_search_leaf_smoke.exe  (Fase 0: searchLeaf/resetOrderingState)
 g++ %FLAGS% -I"%SRC%" -o "%BIN%\test_search_leaf_smoke.exe" "%TESTE%\test_search_leaf_smoke.cpp"
 if errorlevel 1 goto :erro

@@ -50,12 +50,20 @@
 #include ENGINE2_SEARCH_HPP
 #undef qr
 
-// Modulo hibrido MCTS+alpha-beta (MCab, plan-hybrid-mc-ab.md, Fase 5) --
-// fica FORA da arvore versionada-por-ref (Secao 4.4): e sempre a versao do
-// HEAD atual de tools/, nunca a de um --ref1/--ref2 antigo, entao o
-// #include abaixo nao pode quebrar a compilacao mesmo contra um worktree
-// anterior a este plano (mecanismo SFINAE de hasMcabSupport cuida disso).
-#include "../common/mcab.hpp"
+// MCTS hibrido com alpha-beta. O caminho e RELATIVO A ESTE ARQUIVO
+// (tools/arena/ -> ../../src/), nao via -Isrc: isso garante que o modulo
+// venha sempre do HEAD atual, nunca do src/ que run_arena.py fez checkout
+// para um --ref1/--ref2 antigo. Um ref anterior a esta feature nem tem
+// src/mcab.hpp, e ainda assim o arena compila -- o dispatch SFINAE de
+// hasMcabSupport resolve isso em tempo de compilacao e aquele lado joga
+// alpha-beta puro.
+#include "../../src/mcab.hpp"
+
+// Overrides dos parametros de busca (contempt, LMR, CAT, quiescencia...).
+// Mesmo motivo do caminho relativo acima: vem sempre do HEAD, e cada setter
+// e aplicado por SFINAE -- um ref antigo que nao tenha um dos metodos
+// simplesmente ignora aquele knob, sem quebrar a compilacao.
+#include "../../src/search_tuning.hpp"
 
 // Aliases de instanciacao do McabRunner para cada engine (Secao 4.1 do
 // plano) -- um McabRunner por engine, vivo pela partida inteira (criado em
@@ -106,7 +114,7 @@ constexpr bool E2_FORCE_HEURISTIC_DEFAULT = false;
 //
 // Regra deste bloco: campo VAZIO (mcab::UNSET_INT / mcab::UNSET_REAL /
 // mcab::Tri::Unset / "") usa o valor de PRODUCAO, que mora em
-// mcab::McabParams (tools/common/mcab.hpp). O valor real de producao esta
+// mcab::McabParams (src/mcab.hpp). O valor real de producao esta
 // no comentario de cada campo. Preencher um campo aqui sobrescreve so ele.
 //
 // Todos tambem tem flag de linha de comando equivalente (--e1-mcab-*,
@@ -154,6 +162,40 @@ constexpr bool E2_MCAB_EQUIV_MODE_DEFAULT = false;
 // backupMode nao tem override: AvgBlend nao esta implementado (Secao 5).
 constexpr mcab::BackupMode E1_MCAB_BACKUP_MODE_DEFAULT = mcab::BackupMode::MinimaxHard;
 constexpr mcab::BackupMode E2_MCAB_BACKUP_MODE_DEFAULT = mcab::BackupMode::MinimaxHard;
+
+// =============================================================================
+// PARAMETROS DE BUSCA (search.hpp) -- bloco de OVERRIDE, por engine
+// =============================================================================
+// Mesma regra do bloco MCab acima: campo vazio (tuning::UNSET_*/Tri::Unset)
+// = nao chama o setter e vale o default de producao de search.hpp, anotado no
+// comentario de cada linha. Preencher sobrescreve so aquele knob, so naquela
+// engine. As flags --<knob> (as duas engines) e --e1-<knob>/--e2-<knob> (um
+// lado) sobrescrevem isto por execucao, sem recompilar.
+//
+// Precedencia: --e1-/--e2- > flag global > override daqui > producao.
+//
+// Estes sao os mesmos parametros que tune_spsa.cpp otimiza: o ponto de
+// expo-los aqui e conseguir MEDIR em Elo, com run_arena.py, o candidato que
+// o SPSA propos -- antes disso era preciso editar search.hpp e recompilar.
+static const tuning::SearchTuning E1_TUNING_OVERRIDE = {
+    /*quiescence*/          tuning::Tri::Unset,   // producao: ligada
+    /*lmrPvs*/              tuning::Tri::Unset,   // producao: ligado
+    /*contempt*/            tuning::UNSET_INT,    // producao: -30
+    /*policyOrderScale*/    tuning::UNSET_I64,    // producao: 400
+    /*catScoreScale*/       tuning::UNSET_I64,    // producao: 2
+    /*lmrMinDepth*/         tuning::UNSET_INT,    // producao: 3
+    /*lmrMinMoveIndex*/     tuning::UNSET_INT,    // producao: 3
+    /*lmrDivisor*/          tuning::UNSET_REAL,   // producao: 2.25
+    /*catHotCm*/            tuning::UNSET_INT,    // producao: 150
+    /*catColdCm*/           tuning::UNSET_INT,    // producao: 30
+    /*wallBfsOrderMaxPly*/  tuning::UNSET_INT,    // producao: 2
+    /*qsCriticalBfsDelta*/  tuning::UNSET_INT,    // producao: 2
+};
+static const tuning::SearchTuning E2_TUNING_OVERRIDE = E1_TUNING_OVERRIDE;
+
+// Config resolvida; as flags de CLI escrevem por cima em main().
+static tuning::SearchTuning g_e1Tuning = E1_TUNING_OVERRIDE;
+static tuning::SearchTuning g_e2Tuning = E2_TUNING_OVERRIDE;
 
 // Valores de producao, resolvidos uma vez (McabParams default-construido).
 static const mcab::McabParams MCAB_PROD;
@@ -404,14 +446,21 @@ int playArenaGame(int engine1PlayerIdx, int timeMs, int randomPlies, std::mt1993
     // Só faz sentido (e só tem efeito real dentro de Negamax, ver
     // policyOrderingEnabled em search.hpp) quando a engine correspondente
     // está em NNUE -- gate aqui evita uma chamada supérflua em heurística.
-    if (g_e1UseNnue && g_e1UsePolicyOrdering) {
-        trySetPolicyOrdering(eng1, true, 0);
-        trySetPolicyOrderingMinDepth(eng1, g_e1PolicyOrderMinDepth, 0);
+    // Sempre chama o setter (nao so quando ligado): search.hpp passou a
+    // nascer com policyOrderingEnabled=true, entao nao chamar nada no caso
+    // "desligado" deixava --e1-no-policy-order/--no-policy-order sem efeito
+    // nenhum -- a engine seguia com a ordenacao por politica ligada.
+    if (g_e1UseNnue) {
+        trySetPolicyOrdering(eng1, g_e1UsePolicyOrdering, 0);
+        if (g_e1UsePolicyOrdering) trySetPolicyOrderingMinDepth(eng1, g_e1PolicyOrderMinDepth, 0);
     }
-    if (g_e2UseNnue && g_e2UsePolicyOrdering) {
-        trySetPolicyOrdering(eng2, true, 0);
-        trySetPolicyOrderingMinDepth(eng2, g_e2PolicyOrderMinDepth, 0);
+    if (g_e2UseNnue) {
+        trySetPolicyOrdering(eng2, g_e2UsePolicyOrdering, 0);
+        if (g_e2UsePolicyOrdering) trySetPolicyOrderingMinDepth(eng2, g_e2PolicyOrderMinDepth, 0);
     }
+    // Parametros de busca do bloco de config/CLI. Vazio = no-op completo.
+    tuning::applySearchTuning(eng1, g_e1Tuning);
+    tuning::applySearchTuning(eng2, g_e2Tuning);
     eng1.clearTT();
     eng2.clearTT();
 
@@ -655,6 +704,22 @@ int main(int argc, char* argv[]) {
         else if (std::strcmp(argv[i], "--e1-mcab-equiv-mode") == 0) e1McabEquivMode = true;
         else if (std::strcmp(argv[i], "--e2-mcab-equiv-mode") == 0) e2McabEquivMode = true;
         else if (std::strcmp(argv[i], "--no-invert") == 0) invertColors = false;
+        // Parametros de busca (search.hpp): --e1-<knob>/--e2-<knob> valem so
+        // aquele lado, --<knob> escreve nos dois. O helper casa o nome
+        // inteiro, entao "--e1-contempt" nunca e confundido com "--contempt".
+        else {
+            int j = i;   // indice da flag; cada tentativa avanca sua propria copia
+            if (tuning::parseSearchTuningArg(argv[i], argc, argv, j, "e1-", g_e1Tuning)) { i = j; continue; }
+            j = i;
+            if (tuning::parseSearchTuningArg(argv[i], argc, argv, j, "e2-", g_e2Tuning)) { i = j; continue; }
+            j = i;
+            if (tuning::parseSearchTuningArg(argv[i], argc, argv, j, "", g_e1Tuning)) {
+                int k = i;   // mesmo argumento, agora para a Engine 2
+                tuning::parseSearchTuningArg(argv[i], argc, argv, k, "", g_e2Tuning);
+                i = j;
+                continue;
+            }
+        }
     }
 
     g_e1McabEnabled = e1McabEnabled;
@@ -781,9 +846,11 @@ int main(int argc, char* argv[]) {
         if (!McabRunner1::supported) {
             std::fprintf(stderr, "[arena] Engine 1: ref nao suporta o MCTS hibrido (compilado antes da feature), rodando alpha-beta puro\n");
         } else {
-            std::fprintf(stderr, "[arena] Engine 1: MCTS HIBRIDO (nodes=%d, leaf-depth=%d, cpuct=%.2f, fpu=%.2f, scale=%.0f%s)\n",
+            std::fprintf(stderr, "[arena] Engine 1: MCTS HIBRIDO (nodes=%d, leaf-depth=%d, cpuct=%.2f, fpu=%.2f, scale=%.0f, root-select=%s, tree-reuse=%s%s)\n",
                           g_e1McabEquivMode ? 0 : g_e1McabNodeBudget, g_e1McabLeafDepth, g_e1McabCPuct,
                           g_e1McabFpuReduction, g_e1McabScoreScale,
+                          mcab::rootSelectName(g_e1McabRootSelectMode),
+                          g_e1McabTreeReuse ? "on" : "off",
                           g_e1McabEquivMode ? ", modo equivalencia" : "");
         }
     } else {
@@ -793,13 +860,25 @@ int main(int argc, char* argv[]) {
         if (!McabRunner2::supported) {
             std::fprintf(stderr, "[arena] Engine 2: ref nao suporta o MCTS hibrido (compilado antes da feature), rodando alpha-beta puro\n");
         } else {
-            std::fprintf(stderr, "[arena] Engine 2: MCTS HIBRIDO (nodes=%d, leaf-depth=%d, cpuct=%.2f, fpu=%.2f, scale=%.0f%s)\n",
+            std::fprintf(stderr, "[arena] Engine 2: MCTS HIBRIDO (nodes=%d, leaf-depth=%d, cpuct=%.2f, fpu=%.2f, scale=%.0f, root-select=%s, tree-reuse=%s%s)\n",
                           g_e2McabEquivMode ? 0 : g_e2McabNodeBudget, g_e2McabLeafDepth, g_e2McabCPuct,
                           g_e2McabFpuReduction, g_e2McabScoreScale,
+                          mcab::rootSelectName(g_e2McabRootSelectMode),
+                          g_e2McabTreeReuse ? "on" : "off",
                           g_e2McabEquivMode ? ", modo equivalencia" : "");
         }
     } else {
         std::fprintf(stderr, "[arena] Engine 2: ALPHA-BETA PURO (MCTS hibrido desligado)\n");
+    }
+
+    // Parametros de busca fora do valor de producao. Silencio = nada foi
+    // configurado (as duas engines em producao) -- e o caso normal; imprimir
+    // so o que difere evita que o banner vire ruido.
+    {
+        const std::string t1 = tuning::describeSearchTuning(g_e1Tuning);
+        const std::string t2 = tuning::describeSearchTuning(g_e2Tuning);
+        if (!t1.empty()) std::fprintf(stderr, "[arena] Engine 1: busca fora do default -> %s\n", t1.c_str());
+        if (!t2.empty()) std::fprintf(stderr, "[arena] Engine 2: busca fora do default -> %s\n", t2.c_str());
     }
 
     if (totalGames % 2 != 0) totalGames++;

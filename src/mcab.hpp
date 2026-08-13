@@ -1,4 +1,8 @@
-// tools/common/mcab.hpp -- Híbrido MCTS + Alpha-Beta (MCαβ) para zquoridor.
+// src/mcab.hpp -- MCTS híbrido com alpha-beta para zquoridor.
+//
+// Esta é a BUSCA DE PRODUÇÃO do engine (default ligada desde 2026-08-13,
+// +46.9 ±23.5 Elo sobre alpha-beta puro a 200ms/lance). Alpha-beta puro
+// continua íntegro e selecionável -- ver `McabParams::enabled`.
 //
 // Fase 1 do plano (ver plan-hybrid-mc-ab.md, Seções 4-5): núcleo de
 // MCABSearch<...> -- MCABNode, PUCT, expansão, backup -- isolado do
@@ -12,10 +16,19 @@
 // Nenhum binário que só usa AB puro paga custo de compilação ou risco de
 // regressão por causa deste arquivo, porque nunca o inclui.
 //
-// Fica FORA de `src/` de propósito (Seção 4): `tools/` não é versionado
-// por ref no mecanismo de git worktree do arena (`run_arena.py`), então
-// este arquivo é sempre a versão do HEAD atual, mesmo quando comparando
-// contra um --ref1/--ref2 antigo via `chooseMoveAuto` (Fase 2).
+// MORAVA em `tools/common/` até 2026-08-13, para ficar fora da árvore que
+// `run_arena.py` versiona por ref (ele faz checkout de `src/` por
+// --ref1/--ref2). Ao virar a busca de produção, precisa estar em `src/`
+// junto do resto do core, para que TODO consumidor -- incluindo o build
+// WASM/GUI, que só enxerga `src/` -- possa usá-lo.
+//
+// A compatibilidade com refs antigos continua garantida, por outro
+// caminho: `tools/arena/arena.cpp` inclui este arquivo por caminho
+// relativo a SI MESMO (`../../src/mcab.hpp`), não via `-Isrc`. Isso o
+// prende ao HEAD atual, então o `src/` que o worktree do ref antigo
+// materializou nunca é usado para este módulo -- e um ref anterior à
+// feature, que nem tem `src/mcab.hpp`, ainda compila. O dispatch SFINAE
+// de `hasMcabSupport` cuida do resto e faz aquele lado jogar AB puro.
 //
 // NOTA DE IMPLEMENTAÇÃO (desvio pontual do plano, documentado explicita-
 // mente): a lista de parâmetros de template da Seção 4.1 tem 7 tipos
@@ -110,6 +123,17 @@ inline RootSelectMode resolveRootSelect(const char* s, RootSelectMode prod) {
     if (std::strcmp(s, "q") == 0)             return RootSelectMode::MaxQ;
     if (std::strcmp(s, "visits-then-q") == 0) return RootSelectMode::MaxVisitsThenQ;
     return prod;
+}
+
+// Inverso de resolveRootSelect, para os banners das ferramentas: com o modo
+// escolhível por flag, imprimir só nodes/cpuct/... deixava o log ambíguo
+// sobre qual critério de raiz aquela execução usou de fato.
+inline const char* rootSelectName(RootSelectMode m) {
+    switch (m) {
+        case RootSelectMode::MaxQ:            return "q";
+        case RootSelectMode::MaxVisitsThenQ:  return "visits-then-q";
+        default:                              return "visits";
+    }
 }
 
 // Estes são os valores de PRODUÇÃO: é aqui que mora o default de verdade.

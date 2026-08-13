@@ -35,7 +35,7 @@
 #include "rules.hpp"
 #include "search.hpp"
 #include "nnue.hpp"
-#include "../common/mcab.hpp"
+#include "mcab.hpp"
 
 using namespace qr;
 

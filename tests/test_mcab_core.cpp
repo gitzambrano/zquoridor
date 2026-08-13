@@ -1,5 +1,5 @@
 // test_mcab_core.cpp -- Fase 1 do plano plan-hybrid-mc-ab.md: valida o
-// núcleo de MCABSearch<...> (tools/common/mcab.hpp) isolado, contra a
+// núcleo de MCABSearch<...> (src/mcab.hpp) isolado, contra a
 // src/ local (sem dual-ref, sem arena.cpp/selfplay/tune_spsa -- nenhum
 // desses binários é tocado por este teste).
 //
@@ -12,7 +12,7 @@
 #include <cassert>
 #include <cmath>
 #include "search.hpp"
-#include "../tools/common/mcab.hpp"
+#include "../src/mcab.hpp"
 
 using namespace qr;
 

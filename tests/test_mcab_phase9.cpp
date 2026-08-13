@@ -20,7 +20,7 @@
 #include <vector>
 #include "rules.hpp"
 #include "search.hpp"
-#include "../tools/common/mcab.hpp"
+#include "../src/mcab.hpp"
 
 using namespace qr;
 

@@ -60,10 +60,10 @@ OPENING_PLIES1   = 6       # lances 1 a N1 sujeitos a EPSILON_OPENING1
 EPSILON_OPENING1 = 0.2     # baixo: não distorce os lances óbvios da abertura
 
 # Fase 2: janela de exploração pesada para diversificar posições iniciais
-OPENING_PLIES2   = 8    # lances N1+1 a N2 sujeitos a EPSILON_OPENING2
-EPSILON_OPENING2 = 0.99    # alto: cria muita variedade de abertura (lance totalmente aleatório)
+OPENING_PLIES2   = 12    # lances N1+1 a N2 sujeitos a EPSILON_OPENING2
+EPSILON_OPENING2 = 0.7    # alto: cria muita variedade de abertura (lance totalmente aleatório)
  
-EPSILON_MIDGAME  = 0.04   # prob. de desvio no midgame: escolhe 2º ou 3º melhor lance (não totalmente aleatório)
+EPSILON_MIDGAME  = 0.01   # prob. de desvio no midgame: escolhe 2º ou 3º melhor lance (não totalmente aleatório)
                           # -- também usado como ruído residual do modo "montecarlo" após a janela de decaimento (ver MC_TEMP_DECAY_PLIES)
 
 # --- Temperatura Monte Carlo/AlphaZero (modo "montecarlo") ---
@@ -75,8 +75,8 @@ EPSILON_MIDGAME  = 0.04   # prob. de desvio no midgame: escolhe 2º ou 3º melho
 # Depois disso, mesmo comportamento do midgame do modo antigo
 # (EPSILON_MIDGAME -> 2º/3º melhor lance; senão busca completa).
 MC_OBVIOUS_PLIES    = 3      # nº de lances iniciais (obvios no Quoridor) com temperatura fixa e baixa
-MC_TEMP_OBVIOUS      = 0.15  # temperatura da fase 1 (baixa -> quase argmax, pouca variancia de proposito)
-MC_TEMP_OPENING     = 1.35   # temperatura no inicio da fase 2 (>1 achata -- mais uniforme/exploratório)
+MC_TEMP_OBVIOUS      = 0.3  # temperatura da fase 1 (baixa -> quase argmax, pouca variancia de proposito)
+MC_TEMP_OPENING     = 1.00   # temperatura no inicio da fase 2 (>1 achata -- mais uniforme/exploratório)
 MC_TEMP_END         = 0.12   # temperatura ao fim da fase 2 (<1 afia -- quase argmax)
 MC_TEMP_DECAY_PLIES = 20     # nº de lances da fase 2 (logo apos MC_OBVIOUS_PLIES) sobre os quais a temperatura decai
  
@@ -95,11 +95,11 @@ MAX_PLIES     = 300     # corte: partidas que não terminam são descartadas
 SEPARATE_TT   = False
 
 # --- Paralelismo ---
-THREADS       = 15      # 0 = auto (usa hardware_concurrency); ajuste se quiser
+THREADS       = 10      # 0 = auto (usa hardware_concurrency); ajuste se quiser
                         # reservar threads para outras tarefas
 
 # --- Semente ---
-SEED          = 858    # semente base do RNG; chunks subsequentes variam automaticamente
+SEED          = 150    # semente base do RNG; chunks subsequentes variam automaticamente
 
 # --- Saída ---
 # Use {shard:03d} para nomear os chunks automaticamente e {mode} para o
@@ -144,6 +144,84 @@ POLICY_ORDERING = True
 # forwardPolicyQuant custa ~5.8x mais que o eval de folha; sem este piso
 # ele roda em todo no interno e derruba nos/s ~3x (medido em producao).
 POLICY_ORDER_MIN_DEPTH = 3
+
+# --- MCTS híbrido com alpha-beta (busca de produção) ---
+# Regra deste bloco: None = "vazio" -- não manda flag nenhuma e o selfplay.exe
+# usa o valor de PRODUÇÃO, que está anotado no comentário de cada campo (a
+# fonte da verdade é mcab::McabParams, em src/mcab.hpp). Preencher um campo
+# aqui sobrescreve só ele.
+#
+# Precedência: flag de linha de comando > constante aqui > produção.
+#
+# RESSALVA DE FAIXA: os +46.9 ±23.5 Elo do híbrido sobre alpha-beta puro foram
+# medidos a 200ms/lance. Ele roda a ~1/9 dos nós/s do AB puro; com TIME_MS
+# baixo (o caso comum aqui, para gerar volume) a troca pode não compensar, e
+# isso NÃO foi medido. Se estiver gerando com TIME_MS bem abaixo de 200,
+# considere MCAB = False e compare a força da rede resultante.
+MCAB              = None   # None = default do binário (LIGADO) | True | False
+MCAB_NODES        = None   # produção: 20000 nós de árvore por lance
+MCAB_LEAF_DEPTH   = None   # produção: 0 -- plies de alpha-beta em cada folha (medido)
+MCAB_LEAF_DEPTH_MAX = None # produção: 8 (teto quando MCAB_ADAPTIVE_LEAF_DEPTH)
+MCAB_ADAPTIVE_LEAF_DEPTH = None  # produção: desligado
+MCAB_CPUCT        = None   # produção: 1.5
+MCAB_FPU          = None   # produção: 0.0 (medido)
+MCAB_SCORE_SCALE  = None   # produção: 200.0 (= NNUE_EVAL_SCALE)
+MCAB_TREE_REUSE   = None   # produção: ligado (reuso de subárvore entre lances)
+MCAB_MAX_TREE_DEPTH = None # produção: 48
+# Ruído de Dirichlet nos priors da raiz: LIGADO por default no selfplay (e
+# desligado na arena) -- é o que dá diversidade de abertura aos dados de
+# treino. Desligue só se quiser reproduzir shards antigos.
+MCAB_ROOT_NOISE   = None   # produção (selfplay): ligado
+MCAB_ROOT_NOISE_ALPHA   = None  # produção: 0.3
+MCAB_ROOT_NOISE_EPSILON = None  # produção: 0.25
+MCAB_ROOT_SELECT  = None   # produção: "visits" | "q" | "visits-then-q"
+MCAB_CLEAR_TT_PER_MOVE = None   # produção: desligado (limpa a TT do AB a cada lance)
+
+# =============================================================================
+# PARÂMETROS DE BUSCA (search.hpp) -- mesma regra: None = produção
+# =============================================================================
+# Todos os knobs runtime de Negamax, os mesmos que tools/spsa/tune_spsa.cpp
+# otimiza. None = não manda flag nenhuma e o binário fica no valor de PRODUÇÃO,
+# anotado no comentário de cada linha (fonte da verdade: src/search.hpp).
+#
+# Precedência: flag de linha de comando > constante aqui > produção.
+#
+# Cuidado ao gerar dados de treino com qualquer um destes fora do default: os
+# shards ficam com uma distribuição de posições diferente da de produção, e
+# nada no arquivo .bin registra qual configuração os gerou -- anote no nome da
+# pasta de saída (OUT_TEMPLATE) quando fugir dos valores de produção.
+CONTEMPT             = None   # produção: -30 (score de empate, em centi-lances)
+POLICY_ORDER_SCALE   = None   # produção: 400 (escala do logit da política na ordenação)
+CAT_SCORE_SCALE      = None   # produção: 2 (peso do calor CAT vs. política em orderWallMoves)
+LMR_MIN_DEPTH        = None   # produção: 3 (profundidade mínima para o LMR reduzir)
+LMR_MIN_MOVE_INDEX   = None   # produção: 3 (1-based: 1º lance é PVS, reduz a partir do 3º)
+LMR_DIVISOR          = None   # produção: 2.25 (divisor da fórmula de redução)
+CAT_HOT_CM           = None   # produção: 150 (calor CAT que marca o lance como tático, pula LMR)
+CAT_COLD_CM          = None   # produção: 30 (calor abaixo do qual o LMR reduz +1)
+WALL_BFS_ORDER_MAX_PLY = None # produção: 2 (último ply com ordenação de muro por BFS)
+QS_CRITICAL_BFS_DELTA  = None # produção: 2 (delta de BFS que torna o muro crítico na quiescência)
+QUIESCENCE           = None   # produção: ligada -- True/False liga/desliga a quiescência de muro
+LMR_PVS              = None   # produção: ligado -- True/False liga/desliga LMR+PVS
+
+# Tabela usada pelo parse_args/monta-comando abaixo: (flag, constante, tipo).
+# Um knob novo em search_tuning.hpp só precisa de uma linha aqui.
+SEARCH_TUNING_KNOBS = [
+    ("--contempt",               "contempt",               CONTEMPT,             int),
+    ("--policy-order-scale",     "policy_order_scale",     POLICY_ORDER_SCALE,   int),
+    ("--cat-score-scale",        "cat_score_scale",        CAT_SCORE_SCALE,      int),
+    ("--lmr-min-depth",          "lmr_min_depth",          LMR_MIN_DEPTH,        int),
+    ("--lmr-min-move-index",     "lmr_min_move_index",     LMR_MIN_MOVE_INDEX,   int),
+    ("--lmr-divisor",            "lmr_divisor",            LMR_DIVISOR,          float),
+    ("--cat-hot-cm",             "cat_hot_cm",             CAT_HOT_CM,           int),
+    ("--cat-cold-cm",            "cat_cold_cm",            CAT_COLD_CM,          int),
+    ("--wall-bfs-order-max-ply", "wall_bfs_order_max_ply", WALL_BFS_ORDER_MAX_PLY, int),
+    ("--qs-critical-bfs-delta",  "qs_critical_bfs_delta",  QS_CRITICAL_BFS_DELTA,  int),
+]
+# Liga/desliga: o binário tem as duas formas (--X e --no-X).
+SEARCH_TUNING_FLAGS = [
+    ("quiescence", "quiescence", QUIESCENCE),
+    ("lmr-pvs",    "lmr_pvs",    LMR_PVS),
+]
 
 # =============================================================================
 # INTERNALS -- normalmente não é necessário editar abaixo desta linha
@@ -246,6 +324,41 @@ def parse_args():
                     help="sobrepoe POLICY_ORDERING=True do arquivo, desligando sem editar/recompilar")
     p.add_argument("--policy-order-min-depth", type=int, default=POLICY_ORDER_MIN_DEPTH,
                     help=f"piso de profundidade da ordenacao por politica (padrao: {POLICY_ORDER_MIN_DEPTH}); sem efeito se --policy-order/POLICY_ORDERING estiver desligado")
+    # MCTS hibrido. default=None em tudo => "nao passa flag, o binario decide";
+    # o valor do bloco CONFIG entra depois, em resolve_mcab().
+    p.add_argument("--mcab", dest="mcab", action="store_true", default=None,
+                    help="forca o MCTS hibrido LIGADO (ja e o default do binario)")
+    p.add_argument("--no-mcab", dest="mcab", action="store_false",
+                    help="forca alpha-beta PURO (util com --time-ms baixo: o hibrido so foi medido a 200ms/lance)")
+    p.add_argument("--mcab-nodes", type=int, default=None, help="nos de arvore por lance (producao: 20000)")
+    p.add_argument("--mcab-leaf-depth", type=int, default=None, help="plies de alpha-beta em cada folha (producao: 0)")
+    p.add_argument("--mcab-leaf-depth-max", type=int, default=None, help="teto de leaf-depth no modo adaptativo (producao: 8)")
+    p.add_argument("--mcab-adaptive-leaf-depth", dest="mcab_adaptive_leaf_depth", action="store_true", default=None,
+                    help="escala leaf-depth com as visitas do no pai (producao: desligado)")
+    p.add_argument("--mcab-cpuct", type=float, default=None, help="constante de exploracao do PUCT (producao: 1.5)")
+    p.add_argument("--mcab-fpu", type=float, default=None, help="first-play-urgency: Q(pai) - X (producao: 0.0)")
+    p.add_argument("--mcab-score-scale", type=float, default=None, help="escala do sigmoide score->Q (producao: 200)")
+    p.add_argument("--mcab-no-tree-reuse", dest="mcab_tree_reuse", action="store_false", default=None,
+                    help="desliga o reuso de subarvore entre lances (producao: ligado)")
+    p.add_argument("--mcab-no-root-noise", dest="mcab_root_noise", action="store_false", default=None,
+                    help="desliga o ruido de Dirichlet na raiz (producao no selfplay: ligado)")
+    p.add_argument("--mcab-root-noise-alpha", type=float, default=None, help="alfa da Dirichlet (producao: 0.3)")
+    p.add_argument("--mcab-root-noise-epsilon", type=float, default=None, help="peso do ruido no prior (producao: 0.25)")
+    p.add_argument("--mcab-max-tree-depth", type=int, default=None, help="pilha de acumuladores NNUE da arvore (producao: 48)")
+    p.add_argument("--mcab-root-select", choices=["visits", "q", "visits-then-q"], default=None,
+                    help="criterio de escolha do lance na raiz (producao: visits)")
+    p.add_argument("--mcab-clear-tt-per-move", dest="mcab_clear_tt_per_move", action="store_true", default=None,
+                    help="limpa a TT do alpha-beta a cada lance (producao: desligado)")
+    # Parametros de busca (search.hpp). default=None em tudo => "nao manda
+    # flag"; a constante do bloco CONFIG entra depois, na montagem do comando.
+    for flag, dest, _const, tipo in SEARCH_TUNING_KNOBS:
+        p.add_argument(flag, dest=dest, type=tipo, default=None,
+                        help=f"parametro de busca (vazio = valor de producao, ver {dest.upper()} no topo do arquivo)")
+    for flag, dest, _const in SEARCH_TUNING_FLAGS:
+        p.add_argument(f"--{flag}", dest=dest, action="store_true", default=None,
+                        help=f"liga {flag} (producao: ligado)")
+        p.add_argument(f"--no-{flag}", dest=dest, action="store_false",
+                        help=f"desliga {flag}")
     return p.parse_args()
 
 
@@ -327,6 +440,60 @@ def main():
     else:
         cmd += ["--no-policy-order"]
 
+    # MCTS hibrido: CLI (ja em args) > bloco CONFIG > default do binario.
+    # Nada resolvido (None nos dois) => nenhuma flag e mandada.
+    def mcab_val(attr, constante):
+        v = getattr(args, attr)
+        return constante if v is None else v
+
+    mcab_on = mcab_val("mcab", MCAB)
+    if mcab_on is True:
+        cmd += ["--mcab"]
+    elif mcab_on is False:
+        cmd += ["--no-mcab"]
+    for attr, constante, flag in (
+        ("mcab_nodes",              MCAB_NODES,              "--mcab-nodes"),
+        ("mcab_leaf_depth",         MCAB_LEAF_DEPTH,         "--mcab-leaf-depth"),
+        ("mcab_leaf_depth_max",     MCAB_LEAF_DEPTH_MAX,     "--mcab-leaf-depth-max"),
+        ("mcab_cpuct",              MCAB_CPUCT,              "--mcab-cpuct"),
+        ("mcab_fpu",                MCAB_FPU,                "--mcab-fpu"),
+        ("mcab_score_scale",        MCAB_SCORE_SCALE,        "--mcab-score-scale"),
+        ("mcab_root_noise_alpha",   MCAB_ROOT_NOISE_ALPHA,   "--mcab-root-noise-alpha"),
+        ("mcab_root_noise_epsilon", MCAB_ROOT_NOISE_EPSILON, "--mcab-root-noise-epsilon"),
+        ("mcab_max_tree_depth",     MCAB_MAX_TREE_DEPTH,     "--mcab-max-tree-depth"),
+    ):
+        v = mcab_val(attr, constante)
+        if v is not None:
+            cmd += [flag, str(v)]
+    # Flags sem valor (so existem na forma "liga" ou "desliga" no binario).
+    if mcab_val("mcab_adaptive_leaf_depth", MCAB_ADAPTIVE_LEAF_DEPTH) is True:
+        cmd += ["--mcab-adaptive-leaf-depth"]
+    if mcab_val("mcab_tree_reuse", MCAB_TREE_REUSE) is False:
+        cmd += ["--mcab-no-tree-reuse"]
+    if mcab_val("mcab_root_noise", MCAB_ROOT_NOISE) is False:
+        cmd += ["--mcab-no-root-noise"]
+    if mcab_val("mcab_root_select", MCAB_ROOT_SELECT) is not None:
+        cmd += ["--mcab-root-select", str(mcab_val("mcab_root_select", MCAB_ROOT_SELECT))]
+    if mcab_val("mcab_clear_tt_per_move", MCAB_CLEAR_TT_PER_MOVE) is True:
+        cmd += ["--mcab-clear-tt-per-move"]
+
+    # Parametros de busca (search.hpp): mesma regra -- CLI > CONFIG > producao.
+    # Nada resolvido => nenhuma flag, e o binario fica no valor de producao.
+    tuning_ativos = []
+    for flag, dest, constante, _tipo in SEARCH_TUNING_KNOBS:
+        v = mcab_val(dest, constante)
+        if v is not None:
+            cmd += [flag, str(v)]
+            tuning_ativos.append(f"{flag.lstrip('-')}={v}")
+    for flag, dest, constante in SEARCH_TUNING_FLAGS:
+        v = mcab_val(dest, constante)
+        if v is True:
+            cmd += [f"--{flag}"]
+            tuning_ativos.append(f"{flag}=on")
+        elif v is False:
+            cmd += [f"--no-{flag}"]
+            tuning_ativos.append(f"{flag}=off")
+
     print("=" * 60)
     print(f"[run_selfplay] Iniciando geração de dados")
     print(f"  Executável  : {exe}")
@@ -343,6 +510,10 @@ def main():
         print(f"                midgame eps={args.epsilon_midgame} (2º/3º melhor lance)")
     print(f"  Avaliação   : {'heurística (evalSimple) -- forçada' if args.force_heuristic else 'NNUE (default do binário), com fallback automático para heurística se os pesos não existirem'}")
     print(f"  Ordenação politica NNUE: {'LIGADA (default, min-depth=' + str(args.policy_order_min_depth) + ')' if args.policy_order else 'desligada (--no-policy-order)'}{'  [sem efeito -- heuristica forcada]' if args.policy_order and args.force_heuristic else ''}")
+    # Só aparece quando algo foi tirado do valor de produção -- silêncio aqui
+    # significa "busca em produção", que é o caso normal.
+    if tuning_ativos:
+        print(f"  Busca (fora do default): {', '.join(tuning_ativos)}")
     print(f"  Threads     : {args.threads or 'auto'}")
     print(f"  TT          : {'separada por cor' if args.separate_tt else 'compartilhada entre as 2 cores (default)'}")
     print(f"  Shard início: {start_shard:03d}")

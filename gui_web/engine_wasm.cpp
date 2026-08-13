@@ -12,6 +12,7 @@
 #include "../src/rules.hpp"
 #include "../src/search.hpp"
 #include "../src/nnue.hpp"
+#include "../src/mcab.hpp"
 
 #ifdef __EMSCRIPTEN__
 #include <emscripten/emscripten.h>
@@ -24,6 +25,24 @@ using namespace qr;
 namespace {
 State g_state;
 Negamax g_engine;   // reaproveita a TT entre lances do motor (padrão comum em GUIs de xadrez/damas)
+
+// MCTS híbrido com alpha-beta -- a busca de produção (src/mcab.hpp).
+// Uma instância viva pela partida inteira: o reuso de subárvore entre
+// lances depende de o mesmo runner ver todos os lances consecutivos.
+using McabRunnerT = mcab::McabRunner<qr::Negamax, qr::State, qr::Move, qr::MoveList,
+                                      qr::AccPair, qr::RepetitionTable, qr::SearchStats>;
+McabRunnerT g_mcab;
+// Espelha McabParams::enabled, mas só entra em vigor quando a NNUE está
+// carregada -- os priors do PUCT vêm da cabeça de política, então em modo
+// heurístico o híbrido não tem como funcionar e cai para AB puro.
+bool g_mcabWanted = mcab::McabParams{}.enabled;
+
+// RESSALVA DE FAIXA (importante justamente aqui): os +46.9 ±23.5 Elo do
+// híbrido foram medidos a 200ms/lance. Ele roda a ~1/9 dos nós/s do
+// alpha-beta puro, e a GUI costuma pedir buscas bem mais curtas que isso
+// -- abaixo de algum ponto (não medido) a troca inverte e o AB puro volta
+// a ser mais forte. Por isso `qr_set_mcab_enabled` existe e é exposto ao
+// JS: dá para desligar por partida sem recompilar. Ver status.md.
 std::vector<Move> g_moves;
 Move g_lastEngineMove = Move::pawn(0);
 int g_lastEngineScore = 0;   // avaliação (SearchStats::score) do último qr_engine_move
@@ -52,6 +71,9 @@ void qr_new_game() {
     g_engine.setPolicyOrderingMinDepth(prevPolicyOrderingMinDepth);
     g_reptbl.clear();
     g_reptbl.push(g_state.hash);
+    // Mesma razão de zerar a TT: a subárvore reaproveitada entre lances é
+    // da partida anterior e não vale nada para a nova.
+    g_mcab.resetTree();
     regenMoves();
 }
 
@@ -112,7 +134,11 @@ EMSCRIPTEN_KEEPALIVE
 int qr_engine_move(int maxDepth, int timeMs) {
     if (winner(g_state) != -1 || g_reptbl.count(g_state.hash) >= 3) return 0;
     SearchStats st;
-    Move m = g_engine.chooseMove(g_state, maxDepth, timeMs, st, g_reptbl);
+    // Híbrido só quando a NNUE está ativa; senão, alpha-beta puro.
+    mcab::McabParams p = g_mcab.params();
+    p.enabled = g_mcabWanted && (g_engine.getEvalMode() == qr::Negamax::EvalMode::NNUE);
+    g_mcab.setParams(p);
+    Move m = g_mcab.choose(g_engine, g_state, maxDepth, timeMs, st, g_reptbl);
     g_lastEngineMove = m;
     g_lastEngineScore = st.score;
     g_state = applyMove(g_state, m);
@@ -166,6 +192,22 @@ void qr_set_eval_heuristic() {
 EMSCRIPTEN_KEEPALIVE
 int qr_eval_mode_is_nnue() {
     return g_engine.getEvalMode() == qr::Negamax::EvalMode::NNUE ? 1 : 0;
+}
+
+// Liga/desliga o MCTS híbrido em tempo de execução (1 = híbrido, 0 =
+// alpha-beta puro). Ligado por default. Em modo heurístico é ignorado --
+// o híbrido exige NNUE.
+EMSCRIPTEN_KEEPALIVE
+void qr_set_mcab_enabled(int on) {
+    g_mcabWanted = (on != 0);
+    g_mcab.resetTree();
+}
+
+// 1 se a busca do próximo lance vai de fato usar o híbrido (ou seja:
+// pedido E com NNUE carregada).
+EMSCRIPTEN_KEEPALIVE
+int qr_mcab_active() {
+    return (g_mcabWanted && g_engine.getEvalMode() == qr::Negamax::EvalMode::NNUE) ? 1 : 0;
 }
 
 EMSCRIPTEN_KEEPALIVE

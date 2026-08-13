@@ -4,7 +4,7 @@
 // Duas medições, nesta ordem de importância:
 //
 // A) REGRESSÃO ZERO NO AB PURO (Seção 0/13). Este binário inclui
-//    `tools/common/mcab.hpp`; `benchmarks/bench_fixed_depth.cpp` não. A
+//    `src/mcab.hpp`; `benchmarks/bench_fixed_depth.cpp` não. A
 //    primeira parte roda EXATAMENTE a mesma carga fixa daquele benchmark
 //    (mesma seed 2026, mesmas 10 posições, mesma profundidade 5, mesma
 //    `testFixedDepthFullWindow`) para que os dois resultados sejam
@@ -34,7 +34,7 @@
 #include <vector>
 #include "rules.hpp"
 #include "search.hpp"
-#include "../tools/common/mcab.hpp"
+#include "../src/mcab.hpp"
 
 using namespace qr;
 
@@ -88,7 +88,7 @@ int main(int argc, char** argv) {
         double secs = std::chrono::duration<double>(t1 - t0).count();
         printf("=== A) AB PURO (Secao 0: regressao zero) ===\n");
         printf("carga identica a benchmarks/bench_fixed_depth.cpp, mas num binario\n"
-               "que inclui tools/common/mcab.hpp.\n");
+               "que inclui src/mcab.hpp.\n");
         printf("nos totais=%llu tempo=%.3fs nos/seg=%.0f\n",
                (unsigned long long)totalNodes, secs, totalNodes / secs);
         printf("--> compare com `bin\\bench_fixed_depth.exe`: a CONTAGEM DE NOS tem\n"

@@ -43,7 +43,7 @@ echo "[9/13] lazy_acc_parity  (Item 3: update preguicoso por perspectiva vs rebu
 g++ "${FLAGS[@]}" -pthread -I"$SRC" -o "$BIN/lazy_acc_parity" "$TESTS/lazy_acc_parity.cpp"
 
 # [10..13] Híbrido MCαβ (plan-hybrid-mc-ab.md). Não precisam de -I extra:
-# os .cpp incluem "../tools/common/mcab.hpp" relativo a si mesmos.
+# os .cpp incluem "../src/mcab.hpp" relativo a si mesmos.
 echo "[10/13] test_search_leaf_smoke  (Fase 0: searchLeaf/resetOrderingState)"
 g++ "${FLAGS[@]}" -I"$SRC" -o "$BIN/test_search_leaf_smoke" "$TESTS/test_search_leaf_smoke.cpp"
 

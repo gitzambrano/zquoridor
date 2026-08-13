@@ -17,7 +17,7 @@
 #include <cassert>
 #include <vector>
 #include <array>
-#include "../tools/common/mcab.hpp"
+#include "../src/mcab.hpp"
 
 // =========================================================================
 // "Jogo" de brinquedo minimalista -- não usa qr::/src nenhum de propósito

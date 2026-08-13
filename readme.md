@@ -14,7 +14,7 @@ A high-performance Quoridor engine for the 9×9, 2-player variant (10 walls per 
 - **Policy-Assisted & CAT Move Ordering**: Killer moves, history heuristic, Corridor Attention Table (CAT wall heat map), and NNUE policy head logits (gated by depth floor `policyOrderingMinDepth`).
 - **Pruning & Reductions**: Late Move Reductions (LMR), Reverse Futility Pruning (RFP), and Late Move Pruning (LMP) at shallow depths. All heuristics include runtime toggles.
 - **Wall Quiescence Search**: Extends search past nominal depth for critical-looking wall placements.
-- **Hybrid MCTS + Alpha-Beta (default search)**: Best-first PUCT tree whose leaves are evaluated by a real alpha-beta search instead of a random rollout, with minimax-hard backup (`tools/common/mcab.hpp`). **On by default** in arena and self-play since 2026-08-13, worth **+46.9 ±23.5 Elo** over pure alpha-beta at 200 ms/move. Pure alpha-beta is preserved bit-for-bit behind `--no-mcab` and loses nothing when the hybrid is enabled. Requires NNUE (the PUCT priors come from the policy head).
+- **Hybrid MCTS + Alpha-Beta (default search)**: Best-first PUCT tree whose leaves are evaluated by a real alpha-beta search instead of a random rollout, with minimax-hard backup (`src/mcab.hpp`). **On by default** in arena and self-play since 2026-08-13, worth **+46.9 ±23.5 Elo** over pure alpha-beta at 200 ms/move. Pure alpha-beta is preserved bit-for-bit behind `--no-mcab` and loses nothing when the hybrid is enabled. Requires NNUE (the PUCT priors come from the policy head).
 - **Exact Endgame Solver**: Exact retrograde DP pawn-race solver over 81×81×2 states when both players run out of walls (`wallsLeft==(0,0)`), with a real-time budget.
 - **NNUE Evaluation & Policy**: 354-feature network (pawn cells, wall bitboards, bucketed BFS distances, and remaining walls) with SCReLU activation, outputting win probability and move ordering logits.
 - **Fast Monte Carlo Self-Play Generator**: Multi-threaded C++ self-play generator with standard epsilon-greedy and AlphaZero-style Monte Carlo policy-temperature sampling (`--mc-mode`) for rapid opening generation. Stack-allocated to ensure zero heap corruption.
@@ -109,7 +109,7 @@ python3 tools/arena/run_arena.py --ref1 "" --ref2= --e1-no-mcab --games 800 --ti
    and `tools/arena/run_arena.py` — every field starts *empty*, and each field's comment
    states the production value it falls back to;
 3. the production defaults themselves, which live in one place: `mcab::McabParams` in
-   `tools/common/mcab.hpp`.
+   `src/mcab.hpp`.
 
 Production values: `leafDepth=0`, `fpuReduction=0.0`, `cPuct=1.5`, `scoreScale=200`,
 `nodeBudget=20000`, `rootSelectMode=visits`.
@@ -168,7 +168,8 @@ Full flag list: `bin/selfplay --help`.
 | `src/search.hpp` | Negamax, alpha-beta, transposition table, move ordering, quiescence |
 | `src/endgame_race.hpp` | Exact retrograde DP pawn-race endgame solver |
 | `src/nnue.hpp` | 354-feature NNUE network, incremental accumulator, inference |
-| `tools/common/mcab.hpp` | Hybrid MCTS + alpha-beta search (PUCT tree, alpha-beta leaves) — the default search |
+| `src/mcab.hpp` | Hybrid MCTS + alpha-beta search (PUCT tree, alpha-beta leaves) — the default search |
+| `src/search_tuning.hpp` | Single override surface for every runtime knob of `search.hpp` (empty field = production value) |
 | `tools/` | CLI tools & orchestrators (`selfplay`, `arena`, `spsa`, `qtp`, `path_clash_bot_arena`) |
 | `benchmarks/` | Performance benchmarks (`main.cpp`, `bench_*.cpp`) |
 | `tests/` | Correctness and NNUE parity test suite |

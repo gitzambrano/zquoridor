@@ -32,7 +32,7 @@ using namespace qr;
 //
 // Regra: campo VAZIO (mcab::UNSET_INT / mcab::UNSET_REAL / mcab::Tri::Unset)
 // usa o valor de PRODUCAO, que mora em mcab::McabParams
-// (tools/common/mcab.hpp). O valor real de producao esta no comentario de
+// (src/mcab.hpp). O valor real de producao esta no comentario de
 // cada campo. Preencher um campo aqui sobrescreve so ele.
 //
 // Precedencia, do mais forte pro mais fraco:
@@ -58,6 +58,8 @@ constexpr mcab::Tri MCAB_ROOT_NOISE_OVERRIDE          = mcab::Tri::On;     // pr
 constexpr double MCAB_ROOT_NOISE_ALPHA_OVERRIDE       = mcab::UNSET_REAL;  // producao: 0.3
 constexpr double MCAB_ROOT_NOISE_EPSILON_OVERRIDE     = mcab::UNSET_REAL;  // producao: 0.25
 constexpr int    MCAB_MAX_TREE_DEPTH_OVERRIDE         = mcab::UNSET_INT;   // producao: 48
+constexpr const char* MCAB_ROOT_SELECT_OVERRIDE       = "";                // producao: "visits" (MaxVisits)
+constexpr mcab::Tri MCAB_CLEAR_TT_PER_MOVE_OVERRIDE   = mcab::Tri::Unset;  // producao: desligado
 
 // Valores de producao, resolvidos uma vez (McabParams default-construido).
 static const mcab::McabParams MCAB_PROD;
@@ -75,6 +77,32 @@ static bool   g_mcabRootNoiseEnabled  = mcab::resolve(MCAB_ROOT_NOISE_OVERRIDE, 
 static double g_mcabRootNoiseAlpha    = mcab::resolve(MCAB_ROOT_NOISE_ALPHA_OVERRIDE, MCAB_PROD.rootNoiseAlpha);
 static double g_mcabRootNoiseEpsilon  = mcab::resolve(MCAB_ROOT_NOISE_EPSILON_OVERRIDE, MCAB_PROD.rootNoiseEpsilon);
 static int    g_mcabMaxTreeDepth      = mcab::resolve(MCAB_MAX_TREE_DEPTH_OVERRIDE, MCAB_PROD.maxTreeDepth);
+static mcab::RootSelectMode g_mcabRootSelectMode = mcab::resolveRootSelect(MCAB_ROOT_SELECT_OVERRIDE, MCAB_PROD.rootSelectMode);
+static bool   g_mcabClearTTPerMove    = mcab::resolve(MCAB_CLEAR_TT_PER_MOVE_OVERRIDE, MCAB_PROD.clearTTPerMove);
+
+// =============================================================================
+// PARAMETROS DE BUSCA (search.hpp) -- bloco de OVERRIDE
+//
+// Mesma regra do bloco acima: campo vazio (tuning::UNSET_*/Tri::Unset) nao
+// chama o setter e vale o default de producao de search.hpp -- anotado no
+// comentario de cada linha. As flags equivalentes (--contempt, --lmr-divisor,
+// ...) sobrescrevem isto por execucao, e o bloco de config de
+// run_selfplay.py so repassa o que estiver preenchido la.
+// =============================================================================
+static tuning::SearchTuning g_tuning = {
+    /*quiescence*/          tuning::Tri::Unset,   // producao: ligada
+    /*lmrPvs*/              tuning::Tri::Unset,   // producao: ligado
+    /*contempt*/            tuning::UNSET_INT,    // producao: -30
+    /*policyOrderScale*/    tuning::UNSET_I64,    // producao: 400
+    /*catScoreScale*/       tuning::UNSET_I64,    // producao: 2
+    /*lmrMinDepth*/         tuning::UNSET_INT,    // producao: 3
+    /*lmrMinMoveIndex*/     tuning::UNSET_INT,    // producao: 3
+    /*lmrDivisor*/          tuning::UNSET_REAL,   // producao: 2.25
+    /*catHotCm*/            tuning::UNSET_INT,    // producao: 150
+    /*catColdCm*/           tuning::UNSET_INT,    // producao: 30
+    /*wallBfsOrderMaxPly*/  tuning::UNSET_INT,    // producao: 2
+    /*qsCriticalBfsDelta*/  tuning::UNSET_INT,    // producao: 2
+};
 
 // Substitui "{shard:03d}" no template pelo numero do shard com zero-padding.
 static std::string formatShardPath(const std::string& tmpl, int shard) {
@@ -161,6 +189,10 @@ static void printUsage(const char* prog) {
         "  --mcab-root-noise-epsilon X peso do ruido misturado ao prior (default %.2f)\n"
         "  --mcab-max-tree-depth N     dimensiona a pilha de acumuladores NNUE\n"
         "                      incremental da arvore MCab (default %d)\n"
+        "  --mcab-root-select M        criterio de escolha na raiz:\n"
+        "                      visits | q | visits-then-q (producao: visits)\n"
+        "  --mcab-clear-tt-per-move    limpa a TT do alpha-beta a cada lance\n"
+        "                      (producao: desligado)\n"
         "  --separate-tt        cada cor usa sua propria TT/engine, isolada\n"
         "                       (default: TT compartilhada entre as 2 cores --\n"
         "                       mais rapido para gerar dados; use esta flag para\n"
@@ -171,11 +203,15 @@ static void printUsage(const char* prog) {
         "  --start-shard N     primeiro indice de shard a escrever (default 0);\n"
         "                      permite retomar sem sobrescrever shards existentes.\n"
         "  --out PATH          arquivo/template de saida (obrigatorio).\n"
-        "                      Use {shard:03d} para chunks: data/selfplay_{shard:03d}.bin\n",
+        "                      Use {shard:03d} para chunks: data/selfplay_{shard:03d}.bin\n"
+        "\n"
+        " PARAMETROS DE BUSCA (search.hpp) -- sem nenhum destes, vale producao:\n"
+        "%s",
         prog,
         g_mcabNodeBudget, g_mcabLeafDepth, g_mcabLeafDepthMax,
         g_mcabCPuct, g_mcabFpuReduction, g_mcabScoreScale,
-        g_mcabRootNoiseAlpha, g_mcabRootNoiseEpsilon, g_mcabMaxTreeDepth);
+        g_mcabRootNoiseAlpha, g_mcabRootNoiseEpsilon, g_mcabMaxTreeDepth,
+        tuning::searchTuningUsage());
 }
 
 int main(int argc, char** argv) {
@@ -229,6 +265,11 @@ int main(int argc, char** argv) {
         else if (a == "--mcab-root-noise-alpha")     g_mcabRootNoiseAlpha    = std::atof(next("--mcab-root-noise-alpha").c_str());
         else if (a == "--mcab-root-noise-epsilon")   g_mcabRootNoiseEpsilon  = std::atof(next("--mcab-root-noise-epsilon").c_str());
         else if (a == "--mcab-max-tree-depth")       g_mcabMaxTreeDepth      = std::atoi(next("--mcab-max-tree-depth").c_str());
+        // Um valor invalido cai no de PRODUCAO (nao vira MaxVisits calado):
+        // um typo em "visits-then-q" nao deve parecer que funcionou.
+        else if (a == "--mcab-root-select")          g_mcabRootSelectMode    = mcab::resolveRootSelect(next("--mcab-root-select").c_str(), MCAB_PROD.rootSelectMode);
+        else if (a == "--mcab-clear-tt-per-move")    g_mcabClearTTPerMove    = true;
+        else if (a == "--mcab-root-noise")           g_mcabRootNoiseEnabled  = true;
         else if (a == "--separate-tt")     cfg.sharedTT              = false;
         else if (a == "--max-plies")       cfg.maxPlies              = std::atoi(next("--max-plies").c_str());
         else if (a == "--threads")         cfg.numThreads            = std::atoi(next("--threads").c_str());
@@ -236,6 +277,10 @@ int main(int argc, char** argv) {
         else if (a == "--start-shard")     startShard                = std::atoi(next("--start-shard").c_str());
         else if (a == "--out")           outTemplate         = next("--out");
         else if (a == "-h" || a == "--help") { printUsage(argv[0]); return 0; }
+        // Parametros de busca de search.hpp (contempt, LMR, CAT, quiescencia,
+        // ...). Consome a flag e seu valor quando reconhece; senao devolve
+        // false e cai no erro de opcao desconhecida abaixo, como antes.
+        else if (tuning::parseSearchTuningArg(argv[i], argc, argv, i, "", g_tuning)) {}
         else {
             std::fprintf(stderr, "opcao desconhecida: %s\n", a.c_str());
             printUsage(argv[0]);
@@ -276,9 +321,19 @@ int main(int argc, char** argv) {
     cfg.mcabParams.rootNoiseAlpha    = g_mcabRootNoiseAlpha;
     cfg.mcabParams.rootNoiseEpsilon  = g_mcabRootNoiseEpsilon;
     cfg.mcabParams.maxTreeDepth      = g_mcabMaxTreeDepth;
+    cfg.mcabParams.rootSelectMode    = g_mcabRootSelectMode;
+    cfg.mcabParams.clearTTPerMove    = g_mcabClearTTPerMove;
+    cfg.tuning                       = g_tuning;
     // rootNoiseSeed fica no default de McabParams (0x9E3779B9) aqui -- é
     // sobreposto por thread/partida em playOneGame via mcabRunner.seedNoise
     // (ver selfplay.hpp), então o valor global não importa na prática.
+
+    {
+        // Só imprime o que está fora do valor de produção; silêncio = tudo
+        // em produção (o caso normal).
+        const std::string t = tuning::describeSearchTuning(cfg.tuning);
+        if (!t.empty()) std::printf("busca fora do default: %s\n", t.c_str());
+    }
 
     bool multiChunk = (outTemplate.find("{shard:03d}") != std::string::npos);
     int nChunks = multiChunk ? (totalGames + chunkGames - 1) / chunkGames : 1;
@@ -311,13 +366,16 @@ int main(int argc, char** argv) {
     }
     if (cfg.mcabParams.enabled) {
         std::printf("MCTS hibrido: LIGADO | nodes=%d leaf-depth=%d cpuct=%.2f fpu=%.2f score-scale=%.1f"
-                    " | tree-reuse=%s root-noise=%s(alpha=%.2f eps=%.2f) max-tree-depth=%d\n",
+                    " | tree-reuse=%s root-noise=%s(alpha=%.2f eps=%.2f) max-tree-depth=%d"
+                    " root-select=%s clear-tt-per-move=%s\n",
                     cfg.mcabParams.nodeBudget, cfg.mcabParams.leafDepth, cfg.mcabParams.cPuct,
                     cfg.mcabParams.fpuReduction, cfg.mcabParams.scoreScale,
                     cfg.mcabParams.treeReuse ? "on" : "off",
                     cfg.mcabParams.rootNoiseEnabled ? "on" : "off",
                     cfg.mcabParams.rootNoiseAlpha, cfg.mcabParams.rootNoiseEpsilon,
-                    cfg.mcabParams.maxTreeDepth);
+                    cfg.mcabParams.maxTreeDepth,
+                    mcab::rootSelectName(cfg.mcabParams.rootSelectMode),
+                    cfg.mcabParams.clearTTPerMove ? "on" : "off");
     } else {
         std::printf("MCTS hibrido: DESLIGADO -- alpha-beta puro (o default e ligado; --no-mcab foi passado, ou a NNUE nao carregou)\n");
     }

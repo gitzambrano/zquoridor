@@ -14,7 +14,7 @@ if exist "..\data\nnue\nnue_weights_int8.bin" (
 echo Compiling Zquoridor...
 emcc -O3 -std=c++17 -msimd128 ^
   -s MODULARIZE=1 -s EXPORT_NAME=ZquoridorModule ^
-  -s "EXPORTED_FUNCTIONS=[""_qr_new_game"",""_qr_turn"",""_qr_winner"",""_qr_pawn"",""_qr_walls_left"",""_qr_wall_h_bit"",""_qr_wall_v_bit"",""_qr_dist_to_goal"",""_qr_legal_moves_count"",""_qr_legal_move_is_wall"",""_qr_legal_move_a"",""_qr_legal_move_b"",""_qr_legal_move_c"",""_qr_apply_pawn_move"",""_qr_apply_wall_move"",""_qr_engine_move"",""_qr_last_move_is_wall"",""_qr_last_move_a"",""_qr_last_move_b"",""_qr_last_move_c"",""_qr_last_move_eval"",""_qr_is_draw"",""_qr_load_nnue_weights"",""_qr_set_eval_heuristic"",""_qr_eval_mode_is_nnue""]" ^
+  -s "EXPORTED_FUNCTIONS=[""_qr_new_game"",""_qr_turn"",""_qr_winner"",""_qr_pawn"",""_qr_walls_left"",""_qr_wall_h_bit"",""_qr_wall_v_bit"",""_qr_dist_to_goal"",""_qr_legal_moves_count"",""_qr_legal_move_is_wall"",""_qr_legal_move_a"",""_qr_legal_move_b"",""_qr_legal_move_c"",""_qr_apply_pawn_move"",""_qr_apply_wall_move"",""_qr_engine_move"",""_qr_last_move_is_wall"",""_qr_last_move_a"",""_qr_last_move_b"",""_qr_last_move_c"",""_qr_last_move_eval"",""_qr_is_draw"",""_qr_load_nnue_weights"",""_qr_set_eval_heuristic"",""_qr_eval_mode_is_nnue"",""_qr_set_mcab_enabled"",""_qr_mcab_active""]" ^
   -s "EXPORTED_RUNTIME_METHODS=[""ccall"",""cwrap""]" ^
   -s ALLOW_MEMORY_GROWTH=1 -s INITIAL_MEMORY=268435456 ^
   -s MAXIMUM_MEMORY=536870912 -s STACK_SIZE=4194304 ^
