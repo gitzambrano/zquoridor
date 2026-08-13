@@ -72,6 +72,17 @@ Code-level detail (function/class names, file-by-file) for developer reference.
 - **The leaf time cap has to be propagated into `searchLeaf`.** The simulation loop only checks the clock *between* simulations, and one depth-4 leaf costs ~40ms in a midgame position: a 60ms budget measured ~110ms. `evaluateLeaf` now passes the remaining time down, and discards leaves that were truncated (counted in `McabStats::leafTruncated`) instead of feeding a partial score into Q.
 - **Adaptive leaf depth keys on the parent's `totalN`, not the edge's `N`.** A leaf is evaluated exactly once, at creation, when the edge leading to it still has `N==0` — keying on the edge made the feature silently inert. This is the reading of Section 9 of the plan ("scales with N of the parent node"), and the log₄ step (+1 ply per 4× visits) is uncalibrated.
 - **Equivalence mode isolates each child (TT cleared per child).** The real path shares the TT across neighbouring leaves on purpose; equivalence mode exists only to be compared against a yardstick that scores each move with a fresh engine. With a shared TT, siblings searched later inherit fail-soft bounds and score systematically higher — measured up to +105 on a single move, enough to swap two close moves and make the benchmark cry regression where there is none.
+- **Phase 8 result: alpha-beta leaves are what makes the hybrid lose; the tree is what makes it win.** Measured at 200ms/move, local vs local, the only difference being `--e2-mcab` (Elo of pure AB relative to the hybrid, so negative = hybrid ahead):
+
+  | `leafDepth` | MCTS nodes in 200ms | games | Elo (AB vs hybrid) |
+  | --- | --- | --- | --- |
+  | 3 | 24 | — | not played (tree too small to mean anything) |
+  | 2 | 158 | 100 | **+338 ±89** (hybrid crushed) |
+  | 1 | 981 | 100 | **+76 ±65** |
+  | 0 | 3434 | 100 | **−56 ±64** |
+  | 0 | 3434 | 400 | **−30 ±33** |
+
+  Quoridor's branching factor is ~130, so a tree of 24–158 nodes cannot visit the root's children even once each — the hybrid is then just a badly chosen shallow search. Every ply of leaf search costs roughly an order of magnitude of tree size, and the trade is not worth it at this time control. At `leafDepth=0` (NNUE value + wall quiescence, essentially no alpha-beta below the leaf) the hybrid draws level with or slightly beats pure AB. Honest reading: what wins here is plain PUCT MCTS over the policy/value net, not the MCαβ idea of alpha-beta rollouts. Also worth noting the same trend in time: at `leafDepth=1`, pure AB is +76 ±65 at 200ms but only +38 ±81 at 1000ms — the hybrid scales better with time, as expected from a tree that keeps growing.
 - **The hybrid needs a real node budget to be worth anything.** At 60ms/move with `leafDepth=4`, the whole budget buys 1–3 MCTS nodes; at `nodeBudget=500`/`leafDepth=3` a move costs ~4,600 AB nodes per MCTS node and ~1.4MB of tree. Any strength claim must come from `run_arena.py` at a time control where the tree actually grows.
 
 ### NNUE Architecture (`nnue.hpp`)
@@ -128,3 +139,4 @@ The following parameters are functional initial values awaiting GA / SPSA tuning
 - **2026-08**: Added SPSA hybrid mode (`--mode hybrid`), CSV logging, and `plot_spsa.py` visualization.
 - **2026-08-13**: Hybrid MCαβ search (`tools/common/mcab.hpp`) implemented end to end and wired into arena, self-play, and the GA tuner — **off by default in all three**, so pure alpha-beta remains the shipped behaviour. Compile-time SFINAE dispatch (`hasMcabSupport`) keeps `arena.exe` compiling against git refs that predate the feature. New: `tests/test_mcab_core.cpp`, `tests/test_mcab_dispatch.cpp`, `tests/test_mcab_phase9.cpp`, `tests/test_search_leaf_smoke.cpp`, `benchmarks/bench_mcab.cpp`, `benchmarks/bench_mcab_equivalence.cpp` (all registered in `build/build_tests.*` and `build/build_bench.*`).
 - **2026-08-13**: Fixed `Negamax::searchLeaf` not resetting `stopped`/`deadline`, which made every MCαβ leaf evaluate to 0 (Q=0.5) without any visible failure. Added `Negamax::searchWasStopped()` so the hybrid can discard time-truncated leaves.
+- **2026-08-13**: Phase 8 (strength) run at 200ms/move. Hybrid loses badly with alpha-beta leaves (`leafDepth=2`: −338 Elo) and reaches parity/slight edge only with `leafDepth=0` (−30 ±33 Elo over 400 games, hybrid ahead). Default stays off; see the MCαβ design note for the full table.
