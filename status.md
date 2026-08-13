@@ -15,8 +15,10 @@ Design decisions, rationale, important findings, and open items for Zquoridor. `
 - **Genetic Algorithm (GA) & SPSA Engine Parameter Tuning**:
   - Implement and run GA / SPSA parameter optimization for uncalibrated search thresholds (`RFP_MARGIN_*`, `LMP_COUNT_*`, `QS_CRITICAL_*`, `robustnessWeight`, `POLICY_ORDER_SCALE`, `catScoreScale`).
 - **Hybrid Search (MCαβ)** — implemented and off by default (`tools/common/mcab.hpp`); see the design note below. What is left is *merit*, not plumbing:
-  - Run the real strength match (hybrid vs pure AB at equal time/move) via `run_arena.py --e2-mcab`, across several `mcabNodeBudget`/`mcabLeafDepth` pairs.
-  - Tune the MCαβ parameters with `tune_spsa --mcab-tuning` once a working point is known.
+  - ~~Run the real strength match across several `mcabNodeBudget`/`mcabLeafDepth` pairs~~ — done at 200ms/move; the hybrid wins by ~26 Elo, but only at `leafDepth=0`.
+  - ~~Tune the MCαβ parameters once a working point is known~~ — swept by hand around `leafDepth=0`; only `fpuReduction=0.0` improved. `tune_spsa --mcab-tuning` has never been run to convergence.
+  - Open: is the ~26 Elo edge worth shipping? It costs ~10× the nodes/s (305k → 35k) and only shows up with `leafDepth=0`, i.e. as plain PUCT MCTS, not as MCαβ. Measure at other time controls before deciding — 200ms is the only one tested.
+  - Open: sweep `nodeBudget` (fixed at 20000 throughout, never the binding constraint at 200ms — time was) and re-check whether `adaptiveLeafDepth` changes the picture now that it actually works.
   - Decide whether self-play data generation should switch to `--mcab` (root Dirichlet noise is already wired for that use).
 - **WASM Web Worker UI**:
   - Move the WebAssembly engine execution in `gui_web/` to a background Web Worker so deep engine searches do not block the browser UI thread.
@@ -81,8 +83,22 @@ Code-level detail (function/class names, file-by-file) for developer reference.
   | 1 | 981 | 100 | **+76 ±65** |
   | 0 | 3434 | 100 | **−56 ±64** |
   | 0 | 3434 | 400 | **−30 ±33** |
+  | 0 | 3434 | 1000 | **−26.2 ±21.0** (44.2% / 51.8% / 4.8% draws — margin no longer crosses zero) |
 
-  Quoridor's branching factor is ~130, so a tree of 24–158 nodes cannot visit the root's children even once each — the hybrid is then just a badly chosen shallow search. Every ply of leaf search costs roughly an order of magnitude of tree size, and the trade is not worth it at this time control. At `leafDepth=0` (NNUE value + wall quiescence, essentially no alpha-beta below the leaf) the hybrid draws level with or slightly beats pure AB. Honest reading: what wins here is plain PUCT MCTS over the policy/value net, not the MCαβ idea of alpha-beta rollouts. Also worth noting the same trend in time: at `leafDepth=1`, pure AB is +76 ±65 at 200ms but only +38 ±81 at 1000ms — the hybrid scales better with time, as expected from a tree that keeps growing.
+  Quoridor's branching factor is ~130, so a tree of 24–158 nodes cannot visit the root's children even once each — the hybrid is then just a badly chosen shallow search. Every ply of leaf search costs roughly an order of magnitude of tree size, and the trade is not worth it at this time control. At `leafDepth=0` (NNUE value + wall quiescence, essentially no alpha-beta below the leaf) the hybrid beats pure AB by ~26 Elo — a margin that only became statistically separated from zero at 1000 games. Honest reading: what wins here is plain PUCT MCTS over the policy/value net, not the MCαβ idea of alpha-beta rollouts. Also worth noting the same trend in time: at `leafDepth=1`, pure AB is +76 ±65 at 200ms but only +38 ±81 at 1000ms — the hybrid scales better with time, as expected from a tree that keeps growing.
+- **Parameter sweep around the `leafDepth=0` working point.** Hybrid vs hybrid, 300 games each at 200ms, both sides `--mcab --mcab-leaf-depth 0`, one knob changed on Engine 2 (Elo of the *default* config relative to the variant, so negative = variant better). Playing the configs against each other rather than each against pure AB removes most of the common-mode variance:
+
+  | variant | Elo (default vs variant) |
+  | --- | --- |
+  | `cPuct` 2.5 (vs 1.5) | +91.2 ±36.7 |
+  | `fpuReduction` 0.3 (vs 0.1) | +72.1 ±37.5 |
+  | `scoreScale` 350 (vs 200) | +46.5 ±37.9 |
+  | `rootSelectMode` visits-then-q | +45.4 ±37.3 |
+  | `cPuct` 0.8 | +31.7 ±37.1 (inside the margin) |
+  | `scoreScale` 120 | ±0.0 ±36.9 |
+  | `fpuReduction` 0.0 | **−35.1 ±37.5** → **−24.4 ±22.9** over 800 games |
+
+  Only `fpuReduction=0.0` improved on the plan's defaults, and only after 800 games did it separate from zero. `cPuct=1.5`, `scoreScale=200` and `rootSelectMode=MaxVisits` survive the sweep — they were guesses that happen to be near a local optimum, not measured values, and every deviation tried was worse. Defaults now in force: `leafDepth=0`, `fpuReduction=0.0` (in `mcab.hpp`, `arena.cpp` and `selfplay_main.cpp`, and as the GA `init` in `tune_spsa.cpp`). Every test and benchmark that exercises real alpha-beta leaves sets `leafDepth` explicitly, so none of them depend on the changed default.
 - **The hybrid needs a real node budget to be worth anything.** At 60ms/move with `leafDepth=4`, the whole budget buys 1–3 MCTS nodes; at `nodeBudget=500`/`leafDepth=3` a move costs ~4,600 AB nodes per MCTS node and ~1.4MB of tree. Any strength claim must come from `run_arena.py` at a time control where the tree actually grows.
 
 ### NNUE Architecture (`nnue.hpp`)
@@ -123,7 +139,7 @@ The following parameters are functional initial values awaiting GA / SPSA tuning
 - `RFP_MARGIN_*`, `LMP_COUNT_*`
 - `robustnessWeight` (`evalSimple`)
 - `POLICY_ORDER_SCALE` (400) and `policyOrderingMinDepth` (3)
-- Every MCαβ parameter in `mcab::McabParams` — `cPuct` (1.5), `fpuReduction` (0.1), `scoreScale` (200, borrowed from `NNUE_EVAL_SCALE`), `nodeBudget` (20000), `leafDepth` (4), `leafDepthMax` (8), and the log₄ growth rate of `effectiveLeafDepth`. All are plan defaults, none measured. `tune_spsa --mcab-tuning` exposes the first five as GA genes.
+- `mcab::McabParams`: `leafDepth` (0) and `fpuReduction` (0.0) are **measured** at 200ms/move (see the sweep in the MCαβ note). `cPuct` (1.5), `scoreScale` (200, borrowed from `NNUE_EVAL_SCALE`) and `rootSelectMode` (MaxVisits) survived a sweep — every deviation tried was neutral or worse — but were never optimised, only defended. Still uncalibrated and untested: `nodeBudget` (20000), `leafDepthMax` (8), the log₄ growth rate of `effectiveLeafDepth`, and the Dirichlet noise `alpha`/`epsilon`. All measurements are at one time control (200ms) on one machine. `tune_spsa --mcab-tuning` exposes five of these as GA genes.
 
 ---
 
@@ -140,3 +156,4 @@ The following parameters are functional initial values awaiting GA / SPSA tuning
 - **2026-08-13**: Hybrid MCαβ search (`tools/common/mcab.hpp`) implemented end to end and wired into arena, self-play, and the GA tuner — **off by default in all three**, so pure alpha-beta remains the shipped behaviour. Compile-time SFINAE dispatch (`hasMcabSupport`) keeps `arena.exe` compiling against git refs that predate the feature. New: `tests/test_mcab_core.cpp`, `tests/test_mcab_dispatch.cpp`, `tests/test_mcab_phase9.cpp`, `tests/test_search_leaf_smoke.cpp`, `benchmarks/bench_mcab.cpp`, `benchmarks/bench_mcab_equivalence.cpp` (all registered in `build/build_tests.*` and `build/build_bench.*`).
 - **2026-08-13**: Fixed `Negamax::searchLeaf` not resetting `stopped`/`deadline`, which made every MCαβ leaf evaluate to 0 (Q=0.5) without any visible failure. Added `Negamax::searchWasStopped()` so the hybrid can discard time-truncated leaves.
 - **2026-08-13**: Phase 8 (strength) run at 200ms/move. Hybrid loses badly with alpha-beta leaves (`leafDepth=2`: −338 Elo) and reaches parity/slight edge only with `leafDepth=0` (−30 ±33 Elo over 400 games, hybrid ahead). Default stays off; see the MCαβ design note for the full table.
+- **2026-08-13**: `leafDepth=0` confirmed over 1000 games: **−26.2 ±21.0 Elo**, hybrid ahead, margin no longer crossing zero. Parameter sweep around that working point (hybrid vs hybrid, one knob at a time) found only `fpuReduction=0.0` better than the plan's defaults (−24.4 ±22.9 over 800 games); `cPuct=1.5`, `scoreScale=200` and `rootSelectMode=MaxVisits` beat every alternative tried. Defaults moved to `leafDepth=0`/`fpuReduction=0.0` in `mcab.hpp`, `arena.cpp`, `selfplay_main.cpp`, and as GA `init` in `tune_spsa.cpp` (whose `mcabLeafDepth` range was `1..20`, which could never reach the working point — now `0..20`). `run_arena.py` gained `--mcab-cpuct`/`--mcab-fpu`/`--mcab-score-scale`/`--mcab-root-select` in global and `--e1-`/`--e2-` forms, so configs can be played against each other instead of each against pure AB. Pure AB unchanged: `bench_fixed_depth` and `bench_mcab` block A still agree at 8,293,935 nodes, and all 9 tests plus `nnue_verify` pass.

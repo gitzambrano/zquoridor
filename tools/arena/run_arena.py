@@ -263,7 +263,7 @@ def resolve_weights_path(weights_dir, engine_source_dir, engine_label):
 
 import multiprocessing
 
-def worker_process(exe_path, worker_games, time_ms, random_plies, seed, report_games, bin_path, invert_colors, progress_queue, e1_nnue="", e2_nnue="", heuristic=False, e1_heuristic=False, e2_heuristic=False, policy_order=False, e1_policy_order=False, e2_policy_order=False, e1_policy_min_depth=3, e2_policy_min_depth=3, e1_mcab=False, e2_mcab=False, mcab_nodes=None, mcab_leaf_depth=None):
+def worker_process(exe_path, worker_games, time_ms, random_plies, seed, report_games, bin_path, invert_colors, progress_queue, e1_nnue="", e2_nnue="", heuristic=False, e1_heuristic=False, e2_heuristic=False, policy_order=False, e1_policy_order=False, e2_policy_order=False, e1_policy_min_depth=3, e2_policy_min_depth=3, e1_mcab=False, e2_mcab=False, mcab_nodes=None, mcab_leaf_depth=None, e1_mcab_opts=None, e2_mcab_opts=None):
     cmd = [
         exe_path,
         "--games", str(worker_games),
@@ -316,6 +316,15 @@ def worker_process(exe_path, worker_games, time_ms, random_plies, seed, report_g
         cmd.extend(["--mcab-nodes", str(mcab_nodes)])
     if mcab_leaf_depth is not None:
         cmd.extend(["--mcab-leaf-depth", str(mcab_leaf_depth)])
+    # Knobs de tuning do MCab (cpuct/fpu/score-scale/root-select), por engine.
+    # Sao dicts em vez de argumentos soltos porque o ponto deles e comparar
+    # hibrido contra hibrido com UM parametro diferente -- muito menos
+    # variancia do que medir cada configuracao contra o AB puro em separado.
+    # Um dict vazio/None nao manda flag nenhuma, e o binario fica no default.
+    for prefixo, opts in (("--e1-mcab-", e1_mcab_opts), ("--e2-mcab-", e2_mcab_opts)):
+        for chave, valor in (opts or {}).items():
+            if valor is not None:
+                cmd.extend([prefixo + chave, str(valor)])
 
     # cwd=PROJECT_ROOT: arena.exe agora tenta carregar o caminho default de
     # pesos NNUE (data/nnue/nnue_weights_int8.bin, RELATIVO) quando
@@ -398,7 +407,18 @@ def main():
     parser.add_argument("--e1-mcab", dest="e1_mcab", action="store_true", default=False, help="Liga o hibrido MCab so no Engine 1 (--ref1). Se o ref for anterior a feature, o arena avisa e roda AB puro nesse lado")
     parser.add_argument("--e2-mcab", dest="e2_mcab", action="store_true", default=False, help="Liga o hibrido MCab so no Engine 2 (--ref2)")
     parser.add_argument("--mcab-nodes", type=int, default=None, help="Orcamento de nos MCTS por lance nas engines com MCab ligado (padrao do binario: 20000)")
-    parser.add_argument("--mcab-leaf-depth", type=int, default=None, help="Profundidade da busca AB em cada folha do MCab (padrao do binario: 4)")
+    parser.add_argument("--mcab-leaf-depth", type=int, default=None, help="Profundidade da busca AB em cada folha do MCab (padrao do binario: 4). 0 = so avaliacao NNUE + quiescencia de muro, que a Fase 8 mediu como o unico ponto competitivo a 200ms")
+    # Knobs de tuning. Cada um tem a forma global (as duas engines) e a forma
+    # --e1-/--e2- (so um lado). A per-engine vence sobre a global.
+    for lado, rotulo in (("", "nas DUAS engines"), ("e1-", "so no Engine 1"), ("e2-", "so no Engine 2")):
+        parser.add_argument(f"--{lado}mcab-cpuct", type=float, default=None,
+                            help=f"Constante de exploracao do PUCT, {rotulo} (padrao do binario: 1.5)")
+        parser.add_argument(f"--{lado}mcab-fpu", type=float, default=None,
+                            help=f"First Play Urgency: Q do pai menos este valor para filhos nao visitados, {rotulo} (padrao do binario: 0.1)")
+        parser.add_argument(f"--{lado}mcab-score-scale", type=float, default=None,
+                            help=f"Escala do sigmoide score->Q em scoreToQ, {rotulo} (padrao do binario: 200, = NNUE_EVAL_SCALE)")
+        parser.add_argument(f"--{lado}mcab-root-select", choices=["visits", "q", "visits-then-q"], default=None,
+                            help=f"Criterio de escolha do lance na raiz, {rotulo} (padrao do binario: visits)")
     
     args = parser.parse_args()
     # --policy-order liga as duas engines, igual --heuristic; --e1-.../--e2-...
@@ -411,6 +431,18 @@ def main():
     if args.mcab:
         args.e1_mcab = True
         args.e2_mcab = True
+
+    # Monta os dicts de knobs por engine: o valor global vale para os dois
+    # lados, e o --eX- sobrescreve aquele lado. Chaves = sufixo da flag do
+    # arena.exe (--eX-mcab-<chave>).
+    MCAB_KNOBS = [("cpuct", "mcab_cpuct"), ("fpu", "mcab_fpu"),
+                  ("score-scale", "mcab_score_scale"), ("root-select", "mcab_root_select")]
+    args.e1_mcab_opts, args.e2_mcab_opts = {}, {}
+    for chave, attr in MCAB_KNOBS:
+        globalv = getattr(args, attr)
+        for lado, destino in (("e1_", args.e1_mcab_opts), ("e2_", args.e2_mcab_opts)):
+            v = getattr(args, lado + attr)
+            destino[chave] = v if v is not None else globalv
     # --policy-order-min-depth (sem prefixo e1/e2) sobrepoe as duas de uma vez.
     if args.policy_order_min_depth is not None:
         args.e1_policy_order_min_depth = args.policy_order_min_depth
@@ -511,7 +543,7 @@ def main():
     for worker_games, worker_seed, worker_bin in tasks:
         p = multiprocessing.Process(
             target=worker_process,
-            args=(cand_exe, worker_games, args.time, args.random_plies, worker_seed, worker_report, worker_bin, args.invert_colors, queue, args.e1_nnue, args.e2_nnue, args.heuristic, args.e1_heuristic, args.e2_heuristic, False, args.e1_policy_order, args.e2_policy_order, args.e1_policy_order_min_depth, args.e2_policy_order_min_depth, args.e1_mcab, args.e2_mcab, args.mcab_nodes, args.mcab_leaf_depth)
+            args=(cand_exe, worker_games, args.time, args.random_plies, worker_seed, worker_report, worker_bin, args.invert_colors, queue, args.e1_nnue, args.e2_nnue, args.heuristic, args.e1_heuristic, args.e2_heuristic, False, args.e1_policy_order, args.e2_policy_order, args.e1_policy_order_min_depth, args.e2_policy_order_min_depth, args.e1_mcab, args.e2_mcab, args.mcab_nodes, args.mcab_leaf_depth, args.e1_mcab_opts, args.e2_mcab_opts)
         )
         p.start()
         processes.append(p)

@@ -119,8 +119,15 @@ static const ParamDef PARAM_DEFS[NPARAM] = {
     {"lmrPvsEnabled",         ParamKind::Boolean,     0, 1,     1,                  0.30},
     // Fase 7 -- ranges/inits da tabela da Seção 9 do plano.
     {"mcabCPuct",             ParamKind::Real,      0.5, 5.0,     1.5,   0.15, true},
-    {"mcabLeafDepth",         ParamKind::Integer,      1, 20,      4,    0.20, true},
-    {"mcabFpuReduction",      ParamKind::Real,       0.0, 1.0,     0.1,  0.20, true},
+    // lo=0 (não 1): a Fase 8 mediu que `leafDepth=0` -- avaliação NNUE + qs de
+    // muro, sem alpha-beta abaixo da folha -- é o único ponto onde o híbrido
+    // empata/passa o AB puro a 200ms/lance. Com lo=1 o GA nunca alcançava esse
+    // ponto. `init` desce de 4 para 0 pelo mesmo motivo: 4 é o valor do plano,
+    // medido depois como ~-338 Elo. Ver a nota "Hybrid MCab" em status.md.
+    {"mcabLeafDepth",         ParamKind::Integer,      0, 20,      0,    0.20, true},
+    // init=0.0 (era 0.1, valor do plano): medido -24.4 ±22.9 Elo a favor de
+    // 0.0 em 800 partidas a 200ms com leafDepth=0.
+    {"mcabFpuReduction",      ParamKind::Real,       0.0, 1.0,     0.0,  0.20, true},
     {"mcabScoreScale",        ParamKind::Real,      50.0, 600.0, 200.0,  0.15, true},
     {"mcabNodeBudget",        ParamKind::Integer,      0, 200000, 20000, 0.20, true},
 };

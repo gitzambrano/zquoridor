@@ -52,11 +52,12 @@ using namespace qr;
 // =============================================================================
 constexpr bool   MCAB_ENABLED_DEFAULT             = false;
 constexpr int    MCAB_NODE_BUDGET_DEFAULT         = 20000;
-constexpr int    MCAB_LEAF_DEPTH_DEFAULT          = 4;
+// leafDepth=0 / fpuReduction=0.0: ponto de trabalho medido (status.md).
+constexpr int    MCAB_LEAF_DEPTH_DEFAULT          = 0;
 constexpr int    MCAB_LEAF_DEPTH_MAX_DEFAULT      = 8;
 constexpr bool   MCAB_ADAPTIVE_LEAF_DEPTH_DEFAULT = false;
 constexpr double MCAB_CPUCT_DEFAULT               = 1.5;
-constexpr double MCAB_FPU_REDUCTION_DEFAULT       = 0.1;
+constexpr double MCAB_FPU_REDUCTION_DEFAULT       = 0.0;
 constexpr double MCAB_SCORE_SCALE_DEFAULT         = 200.0;  // = NNUE_EVAL_SCALE
 constexpr bool   MCAB_TREE_REUSE_DEFAULT          = true;
 constexpr bool   MCAB_ROOT_NOISE_ENABLED_DEFAULT  = true;   // diferente de arena.cpp -- ver nota acima

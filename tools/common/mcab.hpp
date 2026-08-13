@@ -82,11 +82,18 @@ enum class BackupMode { MinimaxHard, AvgBlend };  // AvgBlend reservado (não im
 struct McabParams {
     bool enabled = false;
     int nodeBudget = 20000;              // 0/1 = modo equivalência, Seção 6
-    int leafDepth = 4;
+    // 0 = folha avaliada só por NNUE + quiescência de muro, sem alpha-beta
+    // abaixo dela. Era 4 (valor do plano); a Fase 8 mediu 4 como catastrófico
+    // a 200ms/lance e 0 como o único ponto que bate o AB puro (-26 Elo em 1000
+    // partidas). Todo teste/benchmark que exercita folhas de AB de verdade
+    // fixa `leafDepth` explicitamente, então não dependem deste default.
+    int leafDepth = 0;
     int leafDepthMax = 8;                // teto p/ mcabAdaptiveLeafDepth (não usado na Fase 1)
     bool adaptiveLeafDepth = false;      // não implementado na Fase 1 (Seção 9 já documenta v1=false)
     double cPuct = 1.5;
-    double fpuReduction = 0.1;           // FPU = Q(pai) - fpuReduction (Seção 5.1)
+    // FPU = Q(pai) - fpuReduction (Seção 5.1). 0.0, não o 0.1 do plano: medido
+    // -24.4 ±22.9 Elo a favor de 0.0 em 800 partidas a 200ms, leafDepth=0.
+    double fpuReduction = 0.0;
     double scoreScale = 200.0;           // = NNUE_EVAL_SCALE
     RootSelectMode rootSelectMode = RootSelectMode::MaxVisits;
     BackupMode backupMode = BackupMode::MinimaxHard;

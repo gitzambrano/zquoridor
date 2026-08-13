@@ -110,16 +110,18 @@ constexpr bool E1_MCAB_ENABLED_DEFAULT = false;
 constexpr bool E2_MCAB_ENABLED_DEFAULT = false;
 constexpr int E1_MCAB_NODE_BUDGET_DEFAULT = 20000;
 constexpr int E2_MCAB_NODE_BUDGET_DEFAULT = 20000;
-constexpr int E1_MCAB_LEAF_DEPTH_DEFAULT = 4;
-constexpr int E2_MCAB_LEAF_DEPTH_DEFAULT = 4;
+// leafDepth=0 e fpuReduction=0.0: ponto de trabalho medido na Fase 8/8b
+// (ver a nota MCab em status.md), nao os valores originais do plano (4 e 0.1).
+constexpr int E1_MCAB_LEAF_DEPTH_DEFAULT = 0;
+constexpr int E2_MCAB_LEAF_DEPTH_DEFAULT = 0;
 constexpr int E1_MCAB_LEAF_DEPTH_MAX_DEFAULT = 8;
 constexpr int E2_MCAB_LEAF_DEPTH_MAX_DEFAULT = 8;
 constexpr bool E1_MCAB_ADAPTIVE_LEAF_DEPTH_DEFAULT = false;
 constexpr bool E2_MCAB_ADAPTIVE_LEAF_DEPTH_DEFAULT = false;
 constexpr double E1_MCAB_CPUCT_DEFAULT = 1.5;
 constexpr double E2_MCAB_CPUCT_DEFAULT = 1.5;
-constexpr double E1_MCAB_FPU_REDUCTION_DEFAULT = 0.1;
-constexpr double E2_MCAB_FPU_REDUCTION_DEFAULT = 0.1;
+constexpr double E1_MCAB_FPU_REDUCTION_DEFAULT = 0.0;
+constexpr double E2_MCAB_FPU_REDUCTION_DEFAULT = 0.0;
 constexpr double E1_MCAB_SCORE_SCALE_DEFAULT = 200.0;  // = NNUE_EVAL_SCALE
 constexpr double E2_MCAB_SCORE_SCALE_DEFAULT = 200.0;
 constexpr mcab::RootSelectMode E1_MCAB_ROOT_SELECT_MODE_DEFAULT = mcab::RootSelectMode::MaxVisits;
@@ -591,6 +593,20 @@ int main(int argc, char* argv[]) {
         }
         else if (std::strcmp(argv[i], "--e1-mcab-cpuct") == 0 && i + 1 < argc) e1McabCPuct = std::atof(argv[++i]);
         else if (std::strcmp(argv[i], "--e2-mcab-cpuct") == 0 && i + 1 < argc) e2McabCPuct = std::atof(argv[++i]);
+        // Aliases globais (as duas engines de uma vez), mesmo padrao de
+        // --mcab-nodes/--mcab-leaf-depth/--mcab-cpuct. Existem para que
+        // run_arena.py possa varrer estes parametros sem precisar saber de
+        // que lado o MCab esta ligado -- o lado com MCab desligado ignora.
+        else if (std::strcmp(argv[i], "--mcab-fpu") == 0 && i + 1 < argc) {
+            double v = std::atof(argv[++i]); e1McabFpu = v; e2McabFpu = v;
+        }
+        else if (std::strcmp(argv[i], "--mcab-score-scale") == 0 && i + 1 < argc) {
+            double v = std::atof(argv[++i]); e1McabScoreScale = v; e2McabScoreScale = v;
+        }
+        else if (std::strcmp(argv[i], "--mcab-root-select") == 0 && i + 1 < argc) {
+            mcab::RootSelectMode m = parseRootSelectMode(argv[++i]);
+            e1McabRootSelect = m; e2McabRootSelect = m;
+        }
         else if (std::strcmp(argv[i], "--e1-mcab-fpu") == 0 && i + 1 < argc) e1McabFpu = std::atof(argv[++i]);
         else if (std::strcmp(argv[i], "--e2-mcab-fpu") == 0 && i + 1 < argc) e2McabFpu = std::atof(argv[++i]);
         else if (std::strcmp(argv[i], "--e1-mcab-score-scale") == 0 && i + 1 < argc) e1McabScoreScale = std::atof(argv[++i]);

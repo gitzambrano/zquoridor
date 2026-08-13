@@ -98,6 +98,21 @@ one-line warning.
 python3 tools/arena/run_arena.py --ref1 "" --ref2 main --e1-mcab --mcab-nodes 2000 --mcab-leaf-depth 3 --games 200 --time 500
 ```
 
+The search knobs `--mcab-cpuct`, `--mcab-fpu`, `--mcab-score-scale` and `--mcab-root-select`
+also come in `--e1-`/`--e2-` forms, so one config can be played directly against another
+(same tree budget, one parameter changed) instead of measuring each against pure alpha-beta:
+
+```bash
+python3 tools/arena/run_arena.py --ref1 "" --ref2= --mcab --mcab-leaf-depth 0 --e2-mcab-cpuct 2.5 --games 400 --time 200
+```
+
+Defaults are the measured working point: `leafDepth=0` (NNUE value + wall quiescence at the
+leaf) and `fpuReduction=0.0`. At 200 ms/move that config beats pure alpha-beta by ~26 Elo over
+1000 games; deeper leaves lose badly (`leafDepth=2` is ~340 Elo *worse*). Note this makes the
+hybrid effectively plain PUCT MCTS over the policy/value net rather than alpha-beta rollouts,
+and that it runs at roughly a tenth of pure AB's nodes/s. See the MCαβ design note in
+`status.md` for the full table.
+
 Self-play (`bin/selfplay --mcab ...`, with root Dirichlet noise on by default there) and the
 GA tuner (`bin/tune_spsa --mcab-tuning ...`, which also tunes `mcabCPuct`/`mcabLeafDepth`/
 `mcabFpuReduction`/`mcabScoreScale`/`mcabNodeBudget`) take the same switch. See
