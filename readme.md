@@ -107,8 +107,8 @@ python3 tools/arena/run_arena.py --ref1 "" --ref2= --mcab --mcab-leaf-depth 0 --
 ```
 
 Defaults are the measured working point: `leafDepth=0` (NNUE value + wall quiescence at the
-leaf) and `fpuReduction=0.0`. At 200 ms/move that config beats pure alpha-beta by ~26 Elo over
-1000 games; deeper leaves lose badly (`leafDepth=2` is ~340 Elo *worse*). Note this makes the
+leaf) and `fpuReduction=0.0`. At 200 ms/move that config beats pure alpha-beta by **+46.9 ±23.5
+Elo** over 800 games; deeper leaves lose badly (`leafDepth=2` is ~340 Elo *worse*). Note this makes the
 hybrid effectively plain PUCT MCTS over the policy/value net rather than alpha-beta rollouts,
 and that it runs at roughly a tenth of pure AB's nodes/s. See the MCαβ design note in
 `status.md` for the full table.

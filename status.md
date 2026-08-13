@@ -17,7 +17,7 @@ Design decisions, rationale, important findings, and open items for Zquoridor. `
 - **Hybrid Search (MCαβ)** — implemented and off by default (`tools/common/mcab.hpp`); see the design note below. What is left is *merit*, not plumbing:
   - ~~Run the real strength match across several `mcabNodeBudget`/`mcabLeafDepth` pairs~~ — done at 200ms/move; the hybrid wins by ~26 Elo, but only at `leafDepth=0`.
   - ~~Tune the MCαβ parameters once a working point is known~~ — swept by hand around `leafDepth=0`; only `fpuReduction=0.0` improved. `tune_spsa --mcab-tuning` has never been run to convergence.
-  - Open: is the ~26 Elo edge worth shipping? It costs ~10× the nodes/s (305k → 35k) and only shows up with `leafDepth=0`, i.e. as plain PUCT MCTS, not as MCαβ. Measure at other time controls before deciding — 200ms is the only one tested.
+  - Open: is the +46.9 ±23.5 Elo edge worth shipping? It costs ~9× the nodes/s (359k → 41k) and only shows up with `leafDepth=0`, i.e. as plain PUCT MCTS, not as MCαβ. Measure at other time controls before deciding — 200ms is the only one tested, and the trade almost certainly inverts as time shrinks.
   - Open: sweep `nodeBudget` (fixed at 20000 throughout, never the binding constraint at 200ms — time was) and re-check whether `adaptiveLeafDepth` changes the picture now that it actually works.
   - Decide whether self-play data generation should switch to `--mcab` (root Dirichlet noise is already wired for that use).
 - **WASM Web Worker UI**:
@@ -97,6 +97,8 @@ Code-level detail (function/class names, file-by-file) for developer reference.
   | `cPuct` 0.8 | +31.7 ±37.1 (inside the margin) |
   | `scoreScale` 120 | ±0.0 ±36.9 |
   | `fpuReduction` 0.0 | **−35.1 ±37.5** → **−24.4 ±22.9** over 800 games |
+
+  **Combined config vs pure AB: −46.9 ±23.5 Elo over 800 games** (41.2% / 54.9% / 5.4% draws), hybrid ahead — this is the number that matters, since the 1000-game `leafDepth=0` result above was measured with the old `fpuReduction=0.1` and the `fpuReduction` result was measured hybrid-vs-hybrid. The two gains turned out to be near-additive (26.2 + 24.4 predicted, 46.9 measured). Cost: 359k nodes/s → 41k.
 
   Only `fpuReduction=0.0` improved on the plan's defaults, and only after 800 games did it separate from zero. `cPuct=1.5`, `scoreScale=200` and `rootSelectMode=MaxVisits` survive the sweep — they were guesses that happen to be near a local optimum, not measured values, and every deviation tried was worse. Defaults now in force: `leafDepth=0`, `fpuReduction=0.0` (in `mcab.hpp`, `arena.cpp` and `selfplay_main.cpp`, and as the GA `init` in `tune_spsa.cpp`). Every test and benchmark that exercises real alpha-beta leaves sets `leafDepth` explicitly, so none of them depend on the changed default.
 - **The hybrid needs a real node budget to be worth anything.** At 60ms/move with `leafDepth=4`, the whole budget buys 1–3 MCTS nodes; at `nodeBudget=500`/`leafDepth=3` a move costs ~4,600 AB nodes per MCTS node and ~1.4MB of tree. Any strength claim must come from `run_arena.py` at a time control where the tree actually grows.
