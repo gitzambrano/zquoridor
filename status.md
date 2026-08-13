@@ -14,8 +14,10 @@ Design decisions, rationale, important findings, and open items for Zquoridor. `
   - Train and quantize the Gen 5 NNUE network (`train_nnue.py` + `quantize_nnue.py`) with updated policy-loss weights and dataset blending.
 - **Genetic Algorithm (GA) & SPSA Engine Parameter Tuning**:
   - Implement and run GA / SPSA parameter optimization for uncalibrated search thresholds (`RFP_MARGIN_*`, `LMP_COUNT_*`, `QS_CRITICAL_*`, `robustnessWeight`, `POLICY_ORDER_SCALE`, `catScoreScale`).
-- **Hybrid Search (MCTS + Alpha-Beta / Negamax)**:
-  - Research and prototype a hybrid search combining Monte Carlo Tree Search (MCTS) rollouts/priors with Negamax alpha-beta pruning.
+- **Hybrid Search (MCαβ)** — implemented and off by default (`tools/common/mcab.hpp`); see the design note below. What is left is *merit*, not plumbing:
+  - Run the real strength match (hybrid vs pure AB at equal time/move) via `run_arena.py --e2-mcab`, across several `mcabNodeBudget`/`mcabLeafDepth` pairs.
+  - Tune the MCαβ parameters with `tune_spsa --mcab-tuning` once a working point is known.
+  - Decide whether self-play data generation should switch to `--mcab` (root Dirichlet noise is already wired for that use).
 - **WASM Web Worker UI**:
   - Move the WebAssembly engine execution in `gui_web/` to a background Web Worker so deep engine searches do not block the browser UI thread.
 
@@ -39,7 +41,9 @@ Code-level detail (function/class names, file-by-file) for developer reference.
 
 **`tools/selfplay/` (`selfplay.hpp`, `selfplay_main.cpp`, `run_selfplay.py`)** — Multi-threaded self-play dataset generator and Python orchestrator. Supports traditional epsilon-greedy and fast Monte Carlo policy-temperature sampling (`--mc-mode`). Allocates memory on stack frames (`std::array`) to prevent MinGW TLS destructor heap corruption on thread exit.
 
-**`tools/arena/` (`arena.cpp`, `run_arena.py`)** — Head-to-head engine strength tester with Elo estimation and confidence intervals.
+**`tools/common/mcab.hpp`** — MCαβ hybrid: a best-first PUCT tree whose leaves are evaluated by a *real shallow alpha-beta search* (`Negamax::searchLeaf`) rather than by a random rollout, with minimax-hard backup (Huang, "Pruning Game Tree by Rollouts", AAAI 2015; the same shape Scorpio uses). `MCABSearch<...>` is a template over the engine type; `McabRunner`/`chooseMoveAuto` pick between the hybrid and pure AB **at compile time** via the `hasMcabSupport` SFINAE trait. Disabled by default everywhere — `params.enabled=false` delegates straight to `Negamax::chooseMove`. Lives in `tools/`, *not* `src/`, on purpose: `run_arena.py` checks out `src/` per git ref, so a header in `src/` could not be used to compile an engine from a ref that predates the feature.
+
+**`tools/arena/` (`arena.cpp`, `run_arena.py`)** — Head-to-head engine strength tester with Elo estimation and confidence intervals. `--e1-mcab`/`--e2-mcab`/`--mcab` select the hybrid per engine; a ref older than the feature compiles fine, prints a one-shot warning, and plays pure AB.
 
 **`tools/spsa/` (`tune_spsa.cpp`, `run_spsa.py`, `plot_spsa.py`)** — Multi-mode SPSA parameter tuner & visualizer.
 
@@ -60,6 +64,15 @@ Code-level detail (function/class names, file-by-file) for developer reference.
 - **LMR + PVS + RFP + LMP**: LMR combined with LMP requires explicit guard (`reducedByLmr`) to prevent invalid pruning. Nodes-to-depth reduced ~0.19–0.22×.
 - **Endgame race solver**: Activated when `wallsLeft[0]==0 && wallsLeft[1]==0`. Uses exact DP with a real-time budget (~3% of move budget). Includes root-move selection fix for accurate DTM move choice.
 - **Policy-assisted move ordering**: NNUE policy logits boost move ordering in search. Gated by `policyOrderingMinDepth` (default 3) because policy evaluation (`209×256` MACs) costs ~5.8× more than leaf value evaluation.
+
+### Hybrid MCαβ (`tools/common/mcab.hpp`)
+
+- **Pure AB must not pay for it.** The hybrid is strictly additive: `benchmarks/bench_mcab.cpp` runs the exact fixed workload of `bench_fixed_depth.cpp` inside a binary that *includes* `mcab.hpp`. Node count is bit-identical (8,293,935); throughput sits inside CPU noise (1.32–1.37 M nodes/s across runs of both binaries).
+- **`searchLeaf` must reset `stopped`/`deadline` per call.** `deadline` is a default-constructed `time_point` (the epoch), so a freshly built engine aborts on its very first time check, and a stale `stopped=true` from an earlier timed-out `chooseMove` sticks. Either way every leaf returned 0 → Q=0.5 across the whole tree, silently, with nothing crashing. Locked in by the regression block in `tests/test_search_leaf_smoke.cpp` (which clears the TT first — otherwise a TT hit satisfies "searched something" in one node).
+- **The leaf time cap has to be propagated into `searchLeaf`.** The simulation loop only checks the clock *between* simulations, and one depth-4 leaf costs ~40ms in a midgame position: a 60ms budget measured ~110ms. `evaluateLeaf` now passes the remaining time down, and discards leaves that were truncated (counted in `McabStats::leafTruncated`) instead of feeding a partial score into Q.
+- **Adaptive leaf depth keys on the parent's `totalN`, not the edge's `N`.** A leaf is evaluated exactly once, at creation, when the edge leading to it still has `N==0` — keying on the edge made the feature silently inert. This is the reading of Section 9 of the plan ("scales with N of the parent node"), and the log₄ step (+1 ply per 4× visits) is uncalibrated.
+- **Equivalence mode isolates each child (TT cleared per child).** The real path shares the TT across neighbouring leaves on purpose; equivalence mode exists only to be compared against a yardstick that scores each move with a fresh engine. With a shared TT, siblings searched later inherit fail-soft bounds and score systematically higher — measured up to +105 on a single move, enough to swap two close moves and make the benchmark cry regression where there is none.
+- **The hybrid needs a real node budget to be worth anything.** At 60ms/move with `leafDepth=4`, the whole budget buys 1–3 MCTS nodes; at `nodeBudget=500`/`leafDepth=3` a move costs ~4,600 AB nodes per MCTS node and ~1.4MB of tree. Any strength claim must come from `run_arena.py` at a time control where the tree actually grows.
 
 ### NNUE Architecture (`nnue.hpp`)
 
@@ -99,6 +112,7 @@ The following parameters are functional initial values awaiting GA / SPSA tuning
 - `RFP_MARGIN_*`, `LMP_COUNT_*`
 - `robustnessWeight` (`evalSimple`)
 - `POLICY_ORDER_SCALE` (400) and `policyOrderingMinDepth` (3)
+- Every MCαβ parameter in `mcab::McabParams` — `cPuct` (1.5), `fpuReduction` (0.1), `scoreScale` (200, borrowed from `NNUE_EVAL_SCALE`), `nodeBudget` (20000), `leafDepth` (4), `leafDepthMax` (8), and the log₄ growth rate of `effectiveLeafDepth`. All are plan defaults, none measured. `tune_spsa --mcab-tuning` exposes the first five as GA genes.
 
 ---
 
@@ -112,3 +126,5 @@ The following parameters are functional initial values awaiting GA / SPSA tuning
 - **2026-08**: Fixed NNUE perspective symmetry bug (row reflection for side 1).
 - **2026-08**: Policy-assisted move ordering integrated and set to default ON with depth floor (`policyOrderingMinDepth = 3`).
 - **2026-08**: Added SPSA hybrid mode (`--mode hybrid`), CSV logging, and `plot_spsa.py` visualization.
+- **2026-08-13**: Hybrid MCαβ search (`tools/common/mcab.hpp`) implemented end to end and wired into arena, self-play, and the GA tuner — **off by default in all three**, so pure alpha-beta remains the shipped behaviour. Compile-time SFINAE dispatch (`hasMcabSupport`) keeps `arena.exe` compiling against git refs that predate the feature. New: `tests/test_mcab_core.cpp`, `tests/test_mcab_dispatch.cpp`, `tests/test_mcab_phase9.cpp`, `tests/test_search_leaf_smoke.cpp`, `benchmarks/bench_mcab.cpp`, `benchmarks/bench_mcab_equivalence.cpp` (all registered in `build/build_tests.*` and `build/build_bench.*`).
+- **2026-08-13**: Fixed `Negamax::searchLeaf` not resetting `stopped`/`deadline`, which made every MCαβ leaf evaluate to 0 (Q=0.5) without any visible failure. Added `Negamax::searchWasStopped()` so the hybrid can discard time-truncated leaves.

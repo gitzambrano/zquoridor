@@ -14,6 +14,7 @@ Negamax + alpha-beta search powered by a Quantization-Aware Trained (QAT) neural
 - **Policy-Assisted & CAT Move Ordering**: Killer moves, history heuristic, Corridor Attention Table (CAT wall heat map), and NNUE policy head logits (gated by depth floor `policyOrderingMinDepth`).
 - **Pruning & Reductions**: Late Move Reductions (LMR), Reverse Futility Pruning (RFP), and Late Move Pruning (LMP) at shallow depths. All heuristics include runtime toggles.
 - **Wall Quiescence Search**: Extends search past nominal depth for critical-looking wall placements.
+- **Optional MCαβ Hybrid Search**: Best-first PUCT tree whose leaves are evaluated by a real shallow alpha-beta search instead of a random rollout, with minimax-hard backup (`tools/common/mcab.hpp`). **Off by default** — arena, self-play, and the tuner all run pure alpha-beta unless the hybrid is explicitly enabled, and enabling it costs the pure path nothing.
 - **Exact Endgame Solver**: Exact retrograde DP pawn-race solver over 81×81×2 states when both players run out of walls (`wallsLeft==(0,0)`), with a real-time budget.
 - **NNUE Evaluation & Policy**: 354-feature network (pawn cells, wall bitboards, bucketed BFS distances, and remaining walls) with SCReLU activation, outputting win probability and move ordering logits.
 - **Fast Monte Carlo Self-Play Generator**: Multi-threaded C++ self-play generator with standard epsilon-greedy and AlphaZero-style Monte Carlo policy-temperature sampling (`--mc-mode`) for rapid opening generation. Stack-allocated to ensure zero heap corruption.
@@ -86,6 +87,22 @@ python3 quantize_nnue.py ../data/nnue/nnue_weights.bin ../data/nnue/nnue_weights
 python3 tools/arena/run_arena.py --ref1 "" --ref2 main --games 200 --time 500 --threads 14
 ```
 
+### MCαβ Hybrid (optional, off by default)
+
+Requires NNUE (the PUCT priors come from the policy head). Add `--e1-mcab` / `--e2-mcab` to
+enable it per engine, or `--mcab` for both; `--mcab-nodes` and `--mcab-leaf-depth` set the
+budget. A `--ref` older than the feature compiles fine and plays pure alpha-beta, with a
+one-line warning.
+
+```bash
+python3 tools/arena/run_arena.py --ref1 "" --ref2 main --e1-mcab --mcab-nodes 2000 --mcab-leaf-depth 3 --games 200 --time 500
+```
+
+Self-play (`bin/selfplay --mcab ...`, with root Dirichlet noise on by default there) and the
+GA tuner (`bin/tune_spsa --mcab-tuning ...`, which also tunes `mcabCPuct`/`mcabLeafDepth`/
+`mcabFpuReduction`/`mcabScoreScale`/`mcabNodeBudget`) take the same switch. See
+`bin/selfplay --help` and `bin/tune_spsa --help` for the full flag list.
+
 ### Web GUI
 ```bash
 cd gui_web && python3 -m http.server 8000   # open http://localhost:8000/index.html
@@ -124,6 +141,7 @@ Full flag list: `bin/selfplay --help`.
 | `src/search.hpp` | Negamax, alpha-beta, transposition table, move ordering, quiescence |
 | `src/endgame_race.hpp` | Exact retrograde DP pawn-race endgame solver |
 | `src/nnue.hpp` | 354-feature NNUE network, incremental accumulator, inference |
+| `tools/common/mcab.hpp` | Optional MCαβ hybrid search (PUCT tree + alpha-beta leaves), off by default |
 | `tools/` | CLI tools & orchestrators (`selfplay`, `arena`, `spsa`, `qtp`, `path_clash_bot_arena`) |
 | `benchmarks/` | Performance benchmarks (`main.cpp`, `bench_*.cpp`) |
 | `tests/` | Correctness and NNUE parity test suite |

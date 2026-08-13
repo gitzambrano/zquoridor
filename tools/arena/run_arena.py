@@ -263,7 +263,7 @@ def resolve_weights_path(weights_dir, engine_source_dir, engine_label):
 
 import multiprocessing
 
-def worker_process(exe_path, worker_games, time_ms, random_plies, seed, report_games, bin_path, invert_colors, progress_queue, e1_nnue="", e2_nnue="", heuristic=False, e1_heuristic=False, e2_heuristic=False, policy_order=False, e1_policy_order=False, e2_policy_order=False, e1_policy_min_depth=3, e2_policy_min_depth=3):
+def worker_process(exe_path, worker_games, time_ms, random_plies, seed, report_games, bin_path, invert_colors, progress_queue, e1_nnue="", e2_nnue="", heuristic=False, e1_heuristic=False, e2_heuristic=False, policy_order=False, e1_policy_order=False, e2_policy_order=False, e1_policy_min_depth=3, e2_policy_min_depth=3, e1_mcab=False, e2_mcab=False, mcab_nodes=None, mcab_leaf_depth=None):
     cmd = [
         exe_path,
         "--games", str(worker_games),
@@ -301,6 +301,21 @@ def worker_process(exe_path, worker_games, time_ms, random_plies, seed, report_g
         cmd.extend(["--e2-policy-order", "--e2-policy-order-min-depth", str(e2_policy_min_depth)])
     else:
         cmd.append("--e2-no-policy-order")
+
+    # Hibrido MCab (plan-hybrid-mc-ab.md, Fase 5). Default DESLIGADO nas duas
+    # engines em arena.cpp (E1/E2_MCAB_ENABLED_DEFAULT=false), entao aqui basta
+    # mandar a flag quando ligado -- nao existe "--eX-no-mcab" a mandar.
+    # IMPORTANTE: um --refX anterior a esta feature nao tem searchLeaf; o
+    # arena compila mesmo assim (dispatch SFINAE em tools/common/mcab.hpp) e
+    # imprime um aviso 1x, rodando AB puro daquele lado.
+    if e1_mcab:
+        cmd.append("--e1-mcab")
+    if e2_mcab:
+        cmd.append("--e2-mcab")
+    if mcab_nodes is not None:
+        cmd.extend(["--mcab-nodes", str(mcab_nodes)])
+    if mcab_leaf_depth is not None:
+        cmd.extend(["--mcab-leaf-depth", str(mcab_leaf_depth)])
 
     # cwd=PROJECT_ROOT: arena.exe agora tenta carregar o caminho default de
     # pesos NNUE (data/nnue/nnue_weights_int8.bin, RELATIVO) quando
@@ -379,6 +394,11 @@ def main():
     parser.add_argument("--policy-order-min-depth", type=int, default=None, help="Piso de profundidade da ordenacao por politica nas duas engines (padrao: 3 -- ver E1_POLICY_ORDER_MIN_DEPTH/E2_POLICY_ORDER_MIN_DEPTH)")
     parser.add_argument("--e1-policy-order-min-depth", type=int, default=E1_POLICY_ORDER_MIN_DEPTH, help=f"Piso de profundidade so no Engine 1 (padrao: {E1_POLICY_ORDER_MIN_DEPTH})")
     parser.add_argument("--e2-policy-order-min-depth", type=int, default=E2_POLICY_ORDER_MIN_DEPTH, help=f"Piso de profundidade so no Engine 2 (padrao: {E2_POLICY_ORDER_MIN_DEPTH})")
+    parser.add_argument("--mcab", action="store_true", default=False, help="Liga o hibrido MCTS+alpha-beta (MCab) nas DUAS engines (plan-hybrid-mc-ab.md). Sem isto, as duas rodam AB puro, como sempre")
+    parser.add_argument("--e1-mcab", dest="e1_mcab", action="store_true", default=False, help="Liga o hibrido MCab so no Engine 1 (--ref1). Se o ref for anterior a feature, o arena avisa e roda AB puro nesse lado")
+    parser.add_argument("--e2-mcab", dest="e2_mcab", action="store_true", default=False, help="Liga o hibrido MCab so no Engine 2 (--ref2)")
+    parser.add_argument("--mcab-nodes", type=int, default=None, help="Orcamento de nos MCTS por lance nas engines com MCab ligado (padrao do binario: 20000)")
+    parser.add_argument("--mcab-leaf-depth", type=int, default=None, help="Profundidade da busca AB em cada folha do MCab (padrao do binario: 4)")
     
     args = parser.parse_args()
     # --policy-order liga as duas engines, igual --heuristic; --e1-.../--e2-...
@@ -387,6 +407,10 @@ def main():
     if args.policy_order:
         args.e1_policy_order = True
         args.e2_policy_order = True
+    # --mcab liga as duas engines, mesmo padrao de --heuristic/--policy-order.
+    if args.mcab:
+        args.e1_mcab = True
+        args.e2_mcab = True
     # --policy-order-min-depth (sem prefixo e1/e2) sobrepoe as duas de uma vez.
     if args.policy_order_min_depth is not None:
         args.e1_policy_order_min_depth = args.policy_order_min_depth
@@ -487,7 +511,7 @@ def main():
     for worker_games, worker_seed, worker_bin in tasks:
         p = multiprocessing.Process(
             target=worker_process,
-            args=(cand_exe, worker_games, args.time, args.random_plies, worker_seed, worker_report, worker_bin, args.invert_colors, queue, args.e1_nnue, args.e2_nnue, args.heuristic, args.e1_heuristic, args.e2_heuristic, False, args.e1_policy_order, args.e2_policy_order, args.e1_policy_order_min_depth, args.e2_policy_order_min_depth)
+            args=(cand_exe, worker_games, args.time, args.random_plies, worker_seed, worker_report, worker_bin, args.invert_colors, queue, args.e1_nnue, args.e2_nnue, args.heuristic, args.e1_heuristic, args.e2_heuristic, False, args.e1_policy_order, args.e2_policy_order, args.e1_policy_order_min_depth, args.e2_policy_order_min_depth, args.e1_mcab, args.e2_mcab, args.mcab_nodes, args.mcab_leaf_depth)
         )
         p.start()
         processes.append(p)

@@ -26,6 +26,7 @@
 #pragma once
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <vector>
 #include <random>
@@ -37,6 +38,11 @@
 #include <memory>
 #include "rules.hpp"
 #include "search.hpp"
+// Modulo hibrido MCTS+alpha-beta (MCab, plan-hybrid-mc-ab.md, Fase 6) -- fica
+// FORA da arvore versionada-por-ref (Secao 4.4 do plano): e sempre a versao
+// do HEAD atual de tools/, igual a este proprio arquivo. Caminho relativo a
+// partir de tools/selfplay/, mesmo padrao de tools/arena/arena.cpp.
+#include "../common/mcab.hpp"
 
 namespace qr {
 
@@ -242,6 +248,17 @@ struct SelfPlayConfig {
     // epsilonMidgame (campo antigo, acima) é reaproveitado como ruído
     // residual do modo MC após a fase 2 -- não duplicamos o conceito; dá
     // pra tunar os dois modos com os mesmos --epsilon-midgame.
+
+    // =====================================================================
+    // MCab (híbrido MCTS+alpha-beta, plan-hybrid-mc-ab.md, Fase 6) -- só
+    // afeta o(s) lance(s) escolhido(s) pela busca "de verdade" (o ramo
+    // engine.chooseMove(...) de cada modo acima, agora trocado por
+    // mcabRunner.choose(...), ver playOneGame). Default = McabParams{}
+    // default (enabled=false), ou seja, AB puro, byte-compatível com o
+    // comportamento anterior a esta fase. NÃO afeta chooseShallowRunnerUp
+    // nem sampleMoveByPolicyTemperature -- esses caminhos continuam
+    // exatamente como estão (ver instruções da Fase 6).
+    mcab::McabParams mcabParams;
 };
 
 struct SelfPlayStats {
@@ -251,6 +268,15 @@ struct SelfPlayStats {
     std::atomic<uint64_t> positionsWritten{0};
     std::atomic<uint64_t> totalNodes{0};
 };
+
+// Alias de instanciação do McabRunner (Fase 6 do plano) para a engine única
+// deste binário (sem o truque de dual-namespace qr_e1/qr_e2 do arena.cpp --
+// aqui só existe `qr::Negamax`). McabRunner::choose() cai sozinho em
+// eng.chooseMove(...) quando params().enabled == false (o default), então
+// os call sites em playOneGame podem chamá-lo incondicionalmente sem custo
+// extra perceptível no caminho AB puro.
+using McabRunnerT = mcab::McabRunner<Negamax, State, Move, MoveList, AccPair,
+                                      RepetitionTable, SearchStats>;
 
 // Amostra um lance de uma distribuição softmax(logit/temperatura) sobre os
 // logits crus da cabeça de política da NNUE (policyOut, já calculado pelo
@@ -347,6 +373,30 @@ inline std::vector<TrainingSample> playOneGame(Negamax& engine0, Negamax& engine
     RepetitionTable reptbl;
     bool isDraw = false;
 
+    // MCab (Fase 6 do plano): UMA instância de McabRunner por PARTIDA (não
+    // por lance), viva pela função inteira -- necessário para o reuso de
+    // subárvore entre lances (Seção 8 do plano) funcionar. Compartilhada
+    // entre as duas cores (engine0/engine1 abaixo): a árvore rastreia a
+    // sequência REAL de posições jogadas nesta partida (s -> s' -> s'' ...),
+    // independente de qual objeto Negamax (TT) gera cada folha -- mesmo
+    // princípio do runner único por engine em arena.cpp (lá há 2 runners
+    // porque há 2 tipos de engine distintos por ref; aqui há só 1 tipo).
+    McabRunnerT mcabRunner;
+    mcabRunner.setParams(cfg.mcabParams);
+    mcabRunner.resetTree();
+    // Semente de ruído de raiz (rootNoiseSeed): precisa VARIAR por
+    // thread/partida, senão todas as threads/partidas gerariam a MESMA
+    // sequência de ruído de Dirichlet nos priors da raiz (McabParams
+    // nasce com uma semente fixa, 0x9E3779B9) e a diversidade de abertura
+    // que o ruído existe para dar desapareceria -- todas as partidas
+    // convergiriam para as mesmas primeiras jogadas sempre que
+    // mcabRootNoiseEnabled estiver ligado. Derivada de `rng` (já é o RNG
+    // por-thread desta partida, semeado em runSelfPlay como
+    // cfg.seed + 1000003*threadIdx -- ver worker()), então cada chamada de
+    // playOneGame consome um valor diferente e imprevisível da mesma
+    // sequência já usada para o resto das decisões aleatórias da partida.
+    mcabRunner.seedNoise((uint32_t)rng());
+
     for (; ply < cfg.maxPlies; ply++) {
         if (winner(s) != -1) break;
 
@@ -420,7 +470,7 @@ inline std::vector<TrainingSample> playOneGame(Negamax& engine0, Negamax& engine
                 chosen = chooseShallowRunnerUp(engine, s, moves, reptbl, rng);
             } else {
                 SearchStats st;
-                chosen = engine.chooseMove(s, cfg.maxDepth, cfg.timeBudgetMs, st, reptbl);
+                chosen = mcabRunner.choose(engine, s, cfg.maxDepth, cfg.timeBudgetMs, st, reptbl);
                 nodesOut += st.nodes;
             }
         } else {
@@ -449,7 +499,7 @@ inline std::vector<TrainingSample> playOneGame(Negamax& engine0, Negamax& engine
                 }
             } else {
                 SearchStats st;
-                chosen = engine.chooseMove(s, cfg.maxDepth, cfg.timeBudgetMs, st, reptbl);
+                chosen = mcabRunner.choose(engine, s, cfg.maxDepth, cfg.timeBudgetMs, st, reptbl);
                 nodesOut += st.nodes;
             }
         }
@@ -549,6 +599,27 @@ inline void runSelfPlay(const SelfPlayConfig& cfg, const std::string& outputPath
         }
     } else if (cfg.forceHeuristic) {
         std::fprintf(stderr, "[selfplay] avaliacao heuristica forcada via --heuristic\n");
+    }
+
+    // MCab (Fase 6 do plano, Secao 2): o hibrido depende da cabeca de
+    // politica da NNUE para os priors do PUCT -- em modo Heuristico nao ha
+    // politica treinada nenhuma, e MCABSearch::chooseMoveMCAB tem um
+    // `assert(engine.getEvalMode() == Eng::EvalMode::NNUE, ...)` interno
+    // (mcab.hpp) que so dispara em build de debug (NDEBUG remove asserts em
+    // release). Checagem explicita aqui cobre os DOIS jeitos de acabar em
+    // heuristico: --heuristic explicito (cfg.forceHeuristic) OU fallback
+    // automatico por falha ao carregar os pesos NNUE (useNNUE==false acima)
+    // -- em qualquer um dos dois casos, se MCAB foi pedido, e um erro do
+    // usuario, nao uma condicao silenciosa: erro claro + saida != 0 antes
+    // de abrir o arquivo de saida (evita gerar um .bin vazio/parcial).
+    if (cfg.mcabParams.enabled && !useNNUE) {
+        std::fprintf(stderr,
+            "[selfplay] ERRO: --mcab requer avaliacao NNUE ativa (Secao 2 do\n"
+            "  plano MCab), mas esta execucao esta em modo heuristico (por\n"
+            "  --heuristic ou por falha ao carregar os pesos NNUE, ver aviso\n"
+            "  acima). Remova --mcab, remova --heuristic, ou corrija o\n"
+            "  caminho de --nnue-weights.\n");
+        std::exit(1);
     }
 
     FILE* f = std::fopen(outputPath.c_str(), "wb");

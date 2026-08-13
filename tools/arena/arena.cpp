@@ -50,6 +50,27 @@
 #include ENGINE2_SEARCH_HPP
 #undef qr
 
+// Modulo hibrido MCTS+alpha-beta (MCab, plan-hybrid-mc-ab.md, Fase 5) --
+// fica FORA da arvore versionada-por-ref (Secao 4.4): e sempre a versao do
+// HEAD atual de tools/, nunca a de um --ref1/--ref2 antigo, entao o
+// #include abaixo nao pode quebrar a compilacao mesmo contra um worktree
+// anterior a este plano (mecanismo SFINAE de hasMcabSupport cuida disso).
+#include "../common/mcab.hpp"
+
+// Aliases de instanciacao do McabRunner para cada engine (Secao 4.1 do
+// plano) -- um McabRunner por engine, vivo pela partida inteira (criado em
+// playArenaGame junto de eng1/eng2) para permitir o reuso de subarvore
+// entre lances (Secao 8). McabRunner::choose() cai sozinho em
+// eng.chooseMove(...) quando o ref nao suporta MCAB (McabRunner::supported
+// == false, resolvido em tempo de compilacao) OU quando params().enabled
+// == false, entao os call sites podem chamar choose() incondicionalmente.
+using McabRunner1 = mcab::McabRunner<qr_e1::Negamax, qr_e1::State, qr_e1::Move,
+                                      qr_e1::MoveList, qr_e1::AccPair,
+                                      qr_e1::RepetitionTable, qr_e1::SearchStats>;
+using McabRunner2 = mcab::McabRunner<qr_e2::Negamax, qr_e2::State, qr_e2::Move,
+                                      qr_e2::MoveList, qr_e2::AccPair,
+                                      qr_e2::RepetitionTable, qr_e2::SearchStats>;
+
 // =============================================================================
 // CONFIG DEFAULTS -- edite aqui para mudar o comportamento padrao sem
 // precisar passar flag nenhuma. Cada constante tem uma flag equivalente
@@ -79,6 +100,85 @@ constexpr bool INVERT_COLORS_DEFAULT = true;
 // precisar editar/recompilar.
 constexpr bool E1_FORCE_HEURISTIC_DEFAULT = false;
 constexpr bool E2_FORCE_HEURISTIC_DEFAULT = false;
+
+// Modulo hibrido MCTS+alpha-beta (MCab, plan-hybrid-mc-ab.md, Secao 10.1) --
+// AB puro continua sendo o default (E{1,2}_MCAB_ENABLED_DEFAULT=false);
+// ligar exige --e1-mcab/--e2-mcab/--mcab (ou mudar as constantes abaixo).
+// Nenhuma flag de argv abaixo tem valor hardcoded so no parser -- toda
+// flag tem a constante nomeada correspondente aqui (regra da Secao 10.1).
+constexpr bool E1_MCAB_ENABLED_DEFAULT = false;
+constexpr bool E2_MCAB_ENABLED_DEFAULT = false;
+constexpr int E1_MCAB_NODE_BUDGET_DEFAULT = 20000;
+constexpr int E2_MCAB_NODE_BUDGET_DEFAULT = 20000;
+constexpr int E1_MCAB_LEAF_DEPTH_DEFAULT = 4;
+constexpr int E2_MCAB_LEAF_DEPTH_DEFAULT = 4;
+constexpr int E1_MCAB_LEAF_DEPTH_MAX_DEFAULT = 8;
+constexpr int E2_MCAB_LEAF_DEPTH_MAX_DEFAULT = 8;
+constexpr bool E1_MCAB_ADAPTIVE_LEAF_DEPTH_DEFAULT = false;
+constexpr bool E2_MCAB_ADAPTIVE_LEAF_DEPTH_DEFAULT = false;
+constexpr double E1_MCAB_CPUCT_DEFAULT = 1.5;
+constexpr double E2_MCAB_CPUCT_DEFAULT = 1.5;
+constexpr double E1_MCAB_FPU_REDUCTION_DEFAULT = 0.1;
+constexpr double E2_MCAB_FPU_REDUCTION_DEFAULT = 0.1;
+constexpr double E1_MCAB_SCORE_SCALE_DEFAULT = 200.0;  // = NNUE_EVAL_SCALE
+constexpr double E2_MCAB_SCORE_SCALE_DEFAULT = 200.0;
+constexpr mcab::RootSelectMode E1_MCAB_ROOT_SELECT_MODE_DEFAULT = mcab::RootSelectMode::MaxVisits;
+constexpr mcab::RootSelectMode E2_MCAB_ROOT_SELECT_MODE_DEFAULT = mcab::RootSelectMode::MaxVisits;
+constexpr mcab::BackupMode E1_MCAB_BACKUP_MODE_DEFAULT = mcab::BackupMode::MinimaxHard;
+constexpr mcab::BackupMode E2_MCAB_BACKUP_MODE_DEFAULT = mcab::BackupMode::MinimaxHard;
+constexpr bool E1_MCAB_TREE_REUSE_DEFAULT = true;
+constexpr bool E2_MCAB_TREE_REUSE_DEFAULT = true;
+constexpr bool E1_MCAB_CLEAR_TT_PER_MOVE_DEFAULT = false;
+constexpr bool E2_MCAB_CLEAR_TT_PER_MOVE_DEFAULT = false;
+// Ruido de Dirichlet na raiz: so serve para diversidade de self-play (Secao
+// 2/9 do plano); arena de forca nunca liga isto -- sem flag de CLI
+// correspondente aqui de proposito, mas a constante fica documentada.
+constexpr bool E1_MCAB_ROOT_NOISE_ENABLED_DEFAULT = false;
+constexpr bool E2_MCAB_ROOT_NOISE_ENABLED_DEFAULT = false;
+constexpr double E1_MCAB_ROOT_NOISE_ALPHA_DEFAULT = 0.3;
+constexpr double E2_MCAB_ROOT_NOISE_ALPHA_DEFAULT = 0.3;
+constexpr double E1_MCAB_ROOT_NOISE_EPSILON_DEFAULT = 0.25;
+constexpr double E2_MCAB_ROOT_NOISE_EPSILON_DEFAULT = 0.25;
+constexpr int E1_MCAB_MAX_TREE_DEPTH_DEFAULT = 48;
+constexpr int E2_MCAB_MAX_TREE_DEPTH_DEFAULT = 48;
+// Atalho da Secao 6: forca nodeBudget=0 (modo equivalencia) quando ligado.
+constexpr bool E1_MCAB_EQUIV_MODE_DEFAULT = false;
+constexpr bool E2_MCAB_EQUIV_MODE_DEFAULT = false;
+
+static bool g_e1McabEnabled = E1_MCAB_ENABLED_DEFAULT;
+static bool g_e2McabEnabled = E2_MCAB_ENABLED_DEFAULT;
+static int g_e1McabNodeBudget = E1_MCAB_NODE_BUDGET_DEFAULT;
+static int g_e2McabNodeBudget = E2_MCAB_NODE_BUDGET_DEFAULT;
+static int g_e1McabLeafDepth = E1_MCAB_LEAF_DEPTH_DEFAULT;
+static int g_e2McabLeafDepth = E2_MCAB_LEAF_DEPTH_DEFAULT;
+static int g_e1McabLeafDepthMax = E1_MCAB_LEAF_DEPTH_MAX_DEFAULT;
+static int g_e2McabLeafDepthMax = E2_MCAB_LEAF_DEPTH_MAX_DEFAULT;
+static bool g_e1McabAdaptiveLeafDepth = E1_MCAB_ADAPTIVE_LEAF_DEPTH_DEFAULT;
+static bool g_e2McabAdaptiveLeafDepth = E2_MCAB_ADAPTIVE_LEAF_DEPTH_DEFAULT;
+static double g_e1McabCPuct = E1_MCAB_CPUCT_DEFAULT;
+static double g_e2McabCPuct = E2_MCAB_CPUCT_DEFAULT;
+static double g_e1McabFpuReduction = E1_MCAB_FPU_REDUCTION_DEFAULT;
+static double g_e2McabFpuReduction = E2_MCAB_FPU_REDUCTION_DEFAULT;
+static double g_e1McabScoreScale = E1_MCAB_SCORE_SCALE_DEFAULT;
+static double g_e2McabScoreScale = E2_MCAB_SCORE_SCALE_DEFAULT;
+static mcab::RootSelectMode g_e1McabRootSelectMode = E1_MCAB_ROOT_SELECT_MODE_DEFAULT;
+static mcab::RootSelectMode g_e2McabRootSelectMode = E2_MCAB_ROOT_SELECT_MODE_DEFAULT;
+static mcab::BackupMode g_e1McabBackupMode = E1_MCAB_BACKUP_MODE_DEFAULT;
+static mcab::BackupMode g_e2McabBackupMode = E2_MCAB_BACKUP_MODE_DEFAULT;
+static bool g_e1McabTreeReuse = E1_MCAB_TREE_REUSE_DEFAULT;
+static bool g_e2McabTreeReuse = E2_MCAB_TREE_REUSE_DEFAULT;
+static bool g_e1McabClearTTPerMove = E1_MCAB_CLEAR_TT_PER_MOVE_DEFAULT;
+static bool g_e2McabClearTTPerMove = E2_MCAB_CLEAR_TT_PER_MOVE_DEFAULT;
+static bool g_e1McabRootNoiseEnabled = E1_MCAB_ROOT_NOISE_ENABLED_DEFAULT;
+static bool g_e2McabRootNoiseEnabled = E2_MCAB_ROOT_NOISE_ENABLED_DEFAULT;
+static double g_e1McabRootNoiseAlpha = E1_MCAB_ROOT_NOISE_ALPHA_DEFAULT;
+static double g_e2McabRootNoiseAlpha = E2_MCAB_ROOT_NOISE_ALPHA_DEFAULT;
+static double g_e1McabRootNoiseEpsilon = E1_MCAB_ROOT_NOISE_EPSILON_DEFAULT;
+static double g_e2McabRootNoiseEpsilon = E2_MCAB_ROOT_NOISE_EPSILON_DEFAULT;
+static int g_e1McabMaxTreeDepth = E1_MCAB_MAX_TREE_DEPTH_DEFAULT;
+static int g_e2McabMaxTreeDepth = E2_MCAB_MAX_TREE_DEPTH_DEFAULT;
+static bool g_e1McabEquivMode = E1_MCAB_EQUIV_MODE_DEFAULT;
+static bool g_e2McabEquivMode = E2_MCAB_EQUIV_MODE_DEFAULT;
 
 // Struct de amostra de treino local (independente das duas engines) --
 // layout idêntico ao TrainingSample de selfplay.hpp/arena.cpp original.
@@ -238,6 +338,54 @@ int playArenaGame(int engine1PlayerIdx, int timeMs, int randomPlies, std::mt1993
     qr_e2::Negamax eng2;
     if (g_e1UseNnue) trySetEvalModeNnue(eng1, 0);
     if (g_e2UseNnue) trySetEvalModeNnue(eng2, 0);
+
+    // Runners MCab (Secao 5/8 do plano) -- vivem pela partida inteira (mesmo
+    // escopo que eng1/eng2) para o reuso de subarvore entre lances
+    // funcionar; resetTree() no inicio de cada partida nova para nao
+    // vazar a arvore do jogo anterior para este.
+    McabRunner1 mcabRunner1;
+    McabRunner2 mcabRunner2;
+    {
+        mcab::McabParams p1;
+        p1.enabled = g_e1McabEnabled;
+        p1.nodeBudget = g_e1McabEquivMode ? 0 : g_e1McabNodeBudget;
+        p1.leafDepth = g_e1McabLeafDepth;
+        p1.leafDepthMax = g_e1McabLeafDepthMax;
+        p1.adaptiveLeafDepth = g_e1McabAdaptiveLeafDepth;
+        p1.cPuct = g_e1McabCPuct;
+        p1.fpuReduction = g_e1McabFpuReduction;
+        p1.scoreScale = g_e1McabScoreScale;
+        p1.rootSelectMode = g_e1McabRootSelectMode;
+        p1.backupMode = g_e1McabBackupMode;
+        p1.treeReuse = g_e1McabTreeReuse;
+        p1.clearTTPerMove = g_e1McabClearTTPerMove;
+        p1.rootNoiseEnabled = g_e1McabRootNoiseEnabled;
+        p1.rootNoiseAlpha = g_e1McabRootNoiseAlpha;
+        p1.rootNoiseEpsilon = g_e1McabRootNoiseEpsilon;
+        p1.maxTreeDepth = g_e1McabMaxTreeDepth;
+        mcabRunner1.setParams(p1);
+
+        mcab::McabParams p2;
+        p2.enabled = g_e2McabEnabled;
+        p2.nodeBudget = g_e2McabEquivMode ? 0 : g_e2McabNodeBudget;
+        p2.leafDepth = g_e2McabLeafDepth;
+        p2.leafDepthMax = g_e2McabLeafDepthMax;
+        p2.adaptiveLeafDepth = g_e2McabAdaptiveLeafDepth;
+        p2.cPuct = g_e2McabCPuct;
+        p2.fpuReduction = g_e2McabFpuReduction;
+        p2.scoreScale = g_e2McabScoreScale;
+        p2.rootSelectMode = g_e2McabRootSelectMode;
+        p2.backupMode = g_e2McabBackupMode;
+        p2.treeReuse = g_e2McabTreeReuse;
+        p2.clearTTPerMove = g_e2McabClearTTPerMove;
+        p2.rootNoiseEnabled = g_e2McabRootNoiseEnabled;
+        p2.rootNoiseAlpha = g_e2McabRootNoiseAlpha;
+        p2.rootNoiseEpsilon = g_e2McabRootNoiseEpsilon;
+        p2.maxTreeDepth = g_e2McabMaxTreeDepth;
+        mcabRunner2.setParams(p2);
+    }
+    mcabRunner1.resetTree();
+    mcabRunner2.resetTree();
     // Só faz sentido (e só tem efeito real dentro de Negamax, ver
     // policyOrderingEnabled em search.hpp) quando a engine correspondente
     // está em NNUE -- gate aqui evita uma chamada supérflua em heurística.
@@ -294,7 +442,7 @@ int playArenaGame(int engine1PlayerIdx, int timeMs, int randomPlies, std::mt1993
         if (currentTurn == engine1PlayerIdx) {
             qr_e1::SearchStats st;
             auto t0 = std::chrono::high_resolution_clock::now();
-            mChosen = eng1.chooseMove(s1, 40, timeMs, st, hist1);
+            mChosen = mcabRunner1.choose(eng1, s1, 40, timeMs, st, hist1);
             auto t1 = std::chrono::high_resolution_clock::now();
             eng1TimeOut += std::chrono::duration<double>(t1 - t0).count();
             eng1NodesOut += st.nodes;
@@ -302,7 +450,7 @@ int playArenaGame(int engine1PlayerIdx, int timeMs, int randomPlies, std::mt1993
         } else {
             qr_e2::SearchStats st;
             auto t0 = std::chrono::high_resolution_clock::now();
-            qr_e2::Move m2 = eng2.chooseMove(s2, 40, timeMs, st, hist2);
+            qr_e2::Move m2 = mcabRunner2.choose(eng2, s2, 40, timeMs, st, hist2);
             auto t1 = std::chrono::high_resolution_clock::now();
             eng2TimeOut += std::chrono::duration<double>(t1 - t0).count();
             eng2NodesOut += st.nodes;
@@ -376,6 +524,26 @@ int main(int argc, char* argv[]) {
     bool e1PolicyOrder = E1_POLICY_ORDERING_DEFAULT, e2PolicyOrder = E2_POLICY_ORDERING_DEFAULT;
     int e1PolicyMinDepth = E1_POLICY_ORDER_MIN_DEPTH_DEFAULT, e2PolicyMinDepth = E2_POLICY_ORDER_MIN_DEPTH_DEFAULT;
 
+    bool e1McabEnabled = E1_MCAB_ENABLED_DEFAULT, e2McabEnabled = E2_MCAB_ENABLED_DEFAULT;
+    int e1McabNodeBudget = E1_MCAB_NODE_BUDGET_DEFAULT, e2McabNodeBudget = E2_MCAB_NODE_BUDGET_DEFAULT;
+    int e1McabLeafDepth = E1_MCAB_LEAF_DEPTH_DEFAULT, e2McabLeafDepth = E2_MCAB_LEAF_DEPTH_DEFAULT;
+    int e1McabLeafDepthMax = E1_MCAB_LEAF_DEPTH_MAX_DEFAULT, e2McabLeafDepthMax = E2_MCAB_LEAF_DEPTH_MAX_DEFAULT;
+    bool e1McabAdaptiveLeafDepth = E1_MCAB_ADAPTIVE_LEAF_DEPTH_DEFAULT, e2McabAdaptiveLeafDepth = E2_MCAB_ADAPTIVE_LEAF_DEPTH_DEFAULT;
+    double e1McabCPuct = E1_MCAB_CPUCT_DEFAULT, e2McabCPuct = E2_MCAB_CPUCT_DEFAULT;
+    double e1McabFpu = E1_MCAB_FPU_REDUCTION_DEFAULT, e2McabFpu = E2_MCAB_FPU_REDUCTION_DEFAULT;
+    double e1McabScoreScale = E1_MCAB_SCORE_SCALE_DEFAULT, e2McabScoreScale = E2_MCAB_SCORE_SCALE_DEFAULT;
+    mcab::RootSelectMode e1McabRootSelect = E1_MCAB_ROOT_SELECT_MODE_DEFAULT, e2McabRootSelect = E2_MCAB_ROOT_SELECT_MODE_DEFAULT;
+    bool e1McabTreeReuse = E1_MCAB_TREE_REUSE_DEFAULT, e2McabTreeReuse = E2_MCAB_TREE_REUSE_DEFAULT;
+    bool e1McabClearTTPerMove = E1_MCAB_CLEAR_TT_PER_MOVE_DEFAULT, e2McabClearTTPerMove = E2_MCAB_CLEAR_TT_PER_MOVE_DEFAULT;
+    int e1McabMaxTreeDepth = E1_MCAB_MAX_TREE_DEPTH_DEFAULT, e2McabMaxTreeDepth = E2_MCAB_MAX_TREE_DEPTH_DEFAULT;
+    bool e1McabEquivMode = E1_MCAB_EQUIV_MODE_DEFAULT, e2McabEquivMode = E2_MCAB_EQUIV_MODE_DEFAULT;
+
+    auto parseRootSelectMode = [](const char* s) -> mcab::RootSelectMode {
+        if (std::strcmp(s, "q") == 0) return mcab::RootSelectMode::MaxQ;
+        if (std::strcmp(s, "visits-then-q") == 0) return mcab::RootSelectMode::MaxVisitsThenQ;
+        return mcab::RootSelectMode::MaxVisits;  // "visits" ou qualquer outro valor -- default seguro
+    };
+
     for (int i = 1; i < argc; i++) {
         if (std::strcmp(argv[i], "--games") == 0 && i + 1 < argc) totalGames = std::atoi(argv[++i]);
         else if (std::strcmp(argv[i], "--time") == 0 && i + 1 < argc) timeMs = std::atoi(argv[++i]);
@@ -400,8 +568,72 @@ int main(int argc, char* argv[]) {
         }
         else if (std::strcmp(argv[i], "--e1-policy-order-min-depth") == 0 && i + 1 < argc) e1PolicyMinDepth = std::atoi(argv[++i]);
         else if (std::strcmp(argv[i], "--e2-policy-order-min-depth") == 0 && i + 1 < argc) e2PolicyMinDepth = std::atoi(argv[++i]);
+        // Modulo hibrido MCTS+alpha-beta (MCab, plan-hybrid-mc-ab.md, Secao 10).
+        else if (std::strcmp(argv[i], "--mcab") == 0) { e1McabEnabled = true; e2McabEnabled = true; }
+        else if (std::strcmp(argv[i], "--e1-mcab") == 0) e1McabEnabled = true;
+        else if (std::strcmp(argv[i], "--e2-mcab") == 0) e2McabEnabled = true;
+        else if (std::strcmp(argv[i], "--mcab-nodes") == 0 && i + 1 < argc) {
+            int n = std::atoi(argv[++i]); e1McabNodeBudget = n; e2McabNodeBudget = n;
+        }
+        else if (std::strcmp(argv[i], "--e1-mcab-nodes") == 0 && i + 1 < argc) e1McabNodeBudget = std::atoi(argv[++i]);
+        else if (std::strcmp(argv[i], "--e2-mcab-nodes") == 0 && i + 1 < argc) e2McabNodeBudget = std::atoi(argv[++i]);
+        else if (std::strcmp(argv[i], "--mcab-leaf-depth") == 0 && i + 1 < argc) {
+            int d = std::atoi(argv[++i]); e1McabLeafDepth = d; e2McabLeafDepth = d;
+        }
+        else if (std::strcmp(argv[i], "--e1-mcab-leaf-depth") == 0 && i + 1 < argc) e1McabLeafDepth = std::atoi(argv[++i]);
+        else if (std::strcmp(argv[i], "--e2-mcab-leaf-depth") == 0 && i + 1 < argc) e2McabLeafDepth = std::atoi(argv[++i]);
+        else if (std::strcmp(argv[i], "--e1-mcab-leaf-depth-max") == 0 && i + 1 < argc) e1McabLeafDepthMax = std::atoi(argv[++i]);
+        else if (std::strcmp(argv[i], "--e2-mcab-leaf-depth-max") == 0 && i + 1 < argc) e2McabLeafDepthMax = std::atoi(argv[++i]);
+        else if (std::strcmp(argv[i], "--e1-mcab-adaptive-leaf-depth") == 0) e1McabAdaptiveLeafDepth = true;
+        else if (std::strcmp(argv[i], "--e2-mcab-adaptive-leaf-depth") == 0) e2McabAdaptiveLeafDepth = true;
+        else if (std::strcmp(argv[i], "--mcab-cpuct") == 0 && i + 1 < argc) {
+            double v = std::atof(argv[++i]); e1McabCPuct = v; e2McabCPuct = v;
+        }
+        else if (std::strcmp(argv[i], "--e1-mcab-cpuct") == 0 && i + 1 < argc) e1McabCPuct = std::atof(argv[++i]);
+        else if (std::strcmp(argv[i], "--e2-mcab-cpuct") == 0 && i + 1 < argc) e2McabCPuct = std::atof(argv[++i]);
+        else if (std::strcmp(argv[i], "--e1-mcab-fpu") == 0 && i + 1 < argc) e1McabFpu = std::atof(argv[++i]);
+        else if (std::strcmp(argv[i], "--e2-mcab-fpu") == 0 && i + 1 < argc) e2McabFpu = std::atof(argv[++i]);
+        else if (std::strcmp(argv[i], "--e1-mcab-score-scale") == 0 && i + 1 < argc) e1McabScoreScale = std::atof(argv[++i]);
+        else if (std::strcmp(argv[i], "--e2-mcab-score-scale") == 0 && i + 1 < argc) e2McabScoreScale = std::atof(argv[++i]);
+        else if (std::strcmp(argv[i], "--e1-mcab-root-select") == 0 && i + 1 < argc) e1McabRootSelect = parseRootSelectMode(argv[++i]);
+        else if (std::strcmp(argv[i], "--e2-mcab-root-select") == 0 && i + 1 < argc) e2McabRootSelect = parseRootSelectMode(argv[++i]);
+        else if (std::strcmp(argv[i], "--e1-mcab-no-tree-reuse") == 0) e1McabTreeReuse = false;
+        else if (std::strcmp(argv[i], "--e2-mcab-no-tree-reuse") == 0) e2McabTreeReuse = false;
+        else if (std::strcmp(argv[i], "--e1-mcab-clear-tt-per-move") == 0) e1McabClearTTPerMove = true;
+        else if (std::strcmp(argv[i], "--e2-mcab-clear-tt-per-move") == 0) e2McabClearTTPerMove = true;
+        else if (std::strcmp(argv[i], "--e1-mcab-max-tree-depth") == 0 && i + 1 < argc) e1McabMaxTreeDepth = std::atoi(argv[++i]);
+        else if (std::strcmp(argv[i], "--e2-mcab-max-tree-depth") == 0 && i + 1 < argc) e2McabMaxTreeDepth = std::atoi(argv[++i]);
+        else if (std::strcmp(argv[i], "--e1-mcab-equiv-mode") == 0) e1McabEquivMode = true;
+        else if (std::strcmp(argv[i], "--e2-mcab-equiv-mode") == 0) e2McabEquivMode = true;
         else if (std::strcmp(argv[i], "--no-invert") == 0) invertColors = false;
     }
+
+    g_e1McabEnabled = e1McabEnabled;
+    g_e2McabEnabled = e2McabEnabled;
+    g_e1McabNodeBudget = e1McabNodeBudget;
+    g_e2McabNodeBudget = e2McabNodeBudget;
+    g_e1McabLeafDepth = e1McabLeafDepth;
+    g_e2McabLeafDepth = e2McabLeafDepth;
+    g_e1McabLeafDepthMax = e1McabLeafDepthMax;
+    g_e2McabLeafDepthMax = e2McabLeafDepthMax;
+    g_e1McabAdaptiveLeafDepth = e1McabAdaptiveLeafDepth;
+    g_e2McabAdaptiveLeafDepth = e2McabAdaptiveLeafDepth;
+    g_e1McabCPuct = e1McabCPuct;
+    g_e2McabCPuct = e2McabCPuct;
+    g_e1McabFpuReduction = e1McabFpu;
+    g_e2McabFpuReduction = e2McabFpu;
+    g_e1McabScoreScale = e1McabScoreScale;
+    g_e2McabScoreScale = e2McabScoreScale;
+    g_e1McabRootSelectMode = e1McabRootSelect;
+    g_e2McabRootSelectMode = e2McabRootSelect;
+    g_e1McabTreeReuse = e1McabTreeReuse;
+    g_e2McabTreeReuse = e2McabTreeReuse;
+    g_e1McabClearTTPerMove = e1McabClearTTPerMove;
+    g_e2McabClearTTPerMove = e2McabClearTTPerMove;
+    g_e1McabMaxTreeDepth = e1McabMaxTreeDepth;
+    g_e2McabMaxTreeDepth = e2McabMaxTreeDepth;
+    g_e1McabEquivMode = e1McabEquivMode;
+    g_e2McabEquivMode = e2McabEquivMode;
 
     g_e1UsePolicyOrdering = e1PolicyOrder;
     g_e2UsePolicyOrdering = e2PolicyOrder;
@@ -478,6 +710,42 @@ int main(int argc, char* argv[]) {
         }
     }
 
+    // MCab (plan-hybrid-mc-ab.md, Secao 2) exige evalMode == NNUE -- depende
+    // da cabeca de politica para os priors do PUCT. Se o usuario ligou MCAB
+    // para um lado que ficou heuristico (sem pesos NNUE, ref antigo sem
+    // NNUE, ou --eX-heuristic explicito), desliga MCAB para aquele lado em
+    // vez de deixar cair no assert() de McabSearch::chooseMoveMCAB.
+    if (g_e1McabEnabled && !g_e1UseNnue) {
+        std::fprintf(stderr, "[arena] aviso: --e1-mcab pedido mas Engine 1 nao esta em NNUE -- MCAB requer NNUE (Secao 2), desligando para Engine 1\n");
+        g_e1McabEnabled = false;
+    }
+    if (g_e2McabEnabled && !g_e2UseNnue) {
+        std::fprintf(stderr, "[arena] aviso: --e2-mcab pedido mas Engine 2 nao esta em NNUE -- MCAB requer NNUE (Secao 2), desligando para Engine 2\n");
+        g_e2McabEnabled = false;
+    }
+
+    // Aviso 1x quando o ref daquela engine nao suporta MCAB (compilado antes
+    // de searchLeaf/resetOrderingState virarem publicos, Secao 4.4) -- mesmo
+    // padrao do aviso de policy-ordering acima: a flag e aceita, mas nao tem
+    // efeito, e a partida roda normalmente com AB puro para aquele lado.
+    if (g_e1McabEnabled) {
+        if (!McabRunner1::supported) {
+            std::fprintf(stderr, "[arena] Engine 1: ref nao suporta MCAB (compilado antes da feature), rodando AB puro\n");
+        } else {
+            std::fprintf(stderr, "[arena] Engine 1: MCAB LIGADO (nodes=%d, leaf-depth=%d, cpuct=%.2f%s)\n",
+                          g_e1McabEquivMode ? 0 : g_e1McabNodeBudget, g_e1McabLeafDepth, g_e1McabCPuct,
+                          g_e1McabEquivMode ? ", modo equivalencia" : "");
+        }
+    }
+    if (g_e2McabEnabled) {
+        if (!McabRunner2::supported) {
+            std::fprintf(stderr, "[arena] Engine 2: ref nao suporta MCAB (compilado antes da feature), rodando AB puro\n");
+        } else {
+            std::fprintf(stderr, "[arena] Engine 2: MCAB LIGADO (nodes=%d, leaf-depth=%d, cpuct=%.2f%s)\n",
+                          g_e2McabEquivMode ? 0 : g_e2McabNodeBudget, g_e2McabLeafDepth, g_e2McabCPuct,
+                          g_e2McabEquivMode ? ", modo equivalencia" : "");
+        }
+    }
 
     if (totalGames % 2 != 0) totalGames++;
     int totalPairs = totalGames / 2;

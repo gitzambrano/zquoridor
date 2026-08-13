@@ -15,32 +15,46 @@ mkdir -p "$BIN"
 
 FLAGS=(-O2 -std=c++17)
 
-echo "[1/8] test_rules_sanity"
+echo "[1/13] test_rules_sanity"
 g++ "${FLAGS[@]}" -I"$SRC" -o "$BIN/test_rules_sanity" "$TESTS/test_rules_sanity.cpp"
 
-echo "[2/8] test_search_staging"
+echo "[2/13] test_search_staging"
 g++ "${FLAGS[@]}" -I"$SRC" -o "$BIN/test_search_staging" "$TESTS/test_search_staging.cpp"
 
-echo "[3/8] test_move_ordering"
+echo "[3/13] test_move_ordering"
 g++ "${FLAGS[@]}" -I"$SRC" -o "$BIN/test_move_ordering" "$TESTS/test_move_ordering.cpp"
 
-echo "[4/8] test_endgame_race"
+echo "[4/13] test_endgame_race"
 g++ "${FLAGS[@]}" -I"$SRC" -o "$BIN/test_endgame_race" "$TESTS/test_endgame_race.cpp"
 
-echo "[5/8] test_lmr_pvs"
+echo "[5/13] test_lmr_pvs"
 g++ "${FLAGS[@]}" -I"$SRC" -o "$BIN/test_lmr_pvs" "$TESTS/test_lmr_pvs.cpp"
 
-echo "[6/8] nnue_verify  (paridade C++ vs Python, precisa -pthread)"
+echo "[6/13] nnue_verify  (paridade C++ vs Python, precisa -pthread)"
 g++ "${FLAGS[@]}" -pthread -I"$SRC" -o "$BIN/nnue_verify" "$TESTS/nnue_verify.cpp"
 
-echo "[7/8] nnue_incremental_check  (acumulador incremental vs rebuild do zero)"
+echo "[7/13] nnue_incremental_check  (acumulador incremental vs rebuild do zero)"
 g++ "${FLAGS[@]}" -pthread -I"$SRC" -o "$BIN/nnue_incremental_check" "$TESTS/nnue_incremental_check.cpp"
 
-echo "[8/9] nnue_sign_check  (sanidade de sinal/perspectiva do NNUE vs evalSimple)"
+echo "[8/13] nnue_sign_check  (sanidade de sinal/perspectiva do NNUE vs evalSimple)"
 g++ "${FLAGS[@]}" -pthread -I"$SRC" -o "$BIN/nnue_sign_check" "$TESTS/nnue_sign_check.cpp"
 
-echo "[9/9] lazy_acc_parity  (Item 3: update preguicoso por perspectiva vs rebuild do zero)"
+echo "[9/13] lazy_acc_parity  (Item 3: update preguicoso por perspectiva vs rebuild do zero)"
 g++ "${FLAGS[@]}" -pthread -I"$SRC" -o "$BIN/lazy_acc_parity" "$TESTS/lazy_acc_parity.cpp"
+
+# [10..13] Híbrido MCαβ (plan-hybrid-mc-ab.md). Não precisam de -I extra:
+# os .cpp incluem "../tools/common/mcab.hpp" relativo a si mesmos.
+echo "[10/13] test_search_leaf_smoke  (Fase 0: searchLeaf/resetOrderingState)"
+g++ "${FLAGS[@]}" -I"$SRC" -o "$BIN/test_search_leaf_smoke" "$TESTS/test_search_leaf_smoke.cpp"
+
+echo "[11/13] test_mcab_core  (scoreToQ, budget do pool, sinal do backup, modo equivalência)"
+g++ "${FLAGS[@]}" -I"$SRC" -o "$BIN/test_mcab_core" "$TESTS/test_mcab_core.cpp"
+
+echo "[12/13] test_mcab_dispatch  (SFINAE: refs antigas sem searchLeaf caem no AB puro)"
+g++ "${FLAGS[@]}" -I"$SRC" -o "$BIN/test_mcab_dispatch" "$TESTS/test_mcab_dispatch.cpp"
+
+echo "[13/13] test_mcab_phase9  (reuso de árvore, ruído Dirichlet, leaf depth adaptativa, teto de tempo)"
+g++ "${FLAGS[@]}" -I"$SRC" -o "$BIN/test_mcab_phase9" "$TESTS/test_mcab_phase9.cpp"
 
 echo
 echo "OK -- binários em $BIN"
@@ -53,3 +67,6 @@ echo "  nnue_sign_check <pesos_int8.bin>: imprime eval NNUE vs evalSimple em 4"
 echo "    posicoes de referencia (checagem manual de sinal/perspectiva)."
 echo "  lazy_acc_parity <pesos_int8.bin>: compara AccPair (makeChildAccPair,"
 echo "    Item 3) vs rebuild do zero em 80 partidas aleatorias -- deve dar 0 mismatches."
+echo "  test_search_leaf_smoke / test_mcab_core / test_mcab_dispatch / test_mcab_phase9:"
+echo "    sem argumentos. Rodar a partir da RAIZ do repo (carregam"
+echo "    data/nnue/nnue_weights_int8.bin)."

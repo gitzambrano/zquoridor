@@ -35,8 +35,28 @@
 #include "rules.hpp"
 #include "search.hpp"
 #include "nnue.hpp"
+#include "../common/mcab.hpp"
 
 using namespace qr;
+
+// Fase 7 (plan-hybrid-mc-ab.md, Seções 10.1/11): constante default + var
+// global controlando se a função de FITNESS do tuner roda via o híbrido
+// MCAB (chooseMoveAuto/McabRunner com params.enabled=true) ou via AB puro
+// (Negamax::chooseMove de 4 argumentos, comportamento hoje). Default
+// `false` -- rodar o binário sem `--mcab-tuning` continua 100% idêntico ao
+// comportamento anterior a esta fase (Seção 0 do plano). Declarada aqui,
+// perto do topo, porque sanitize() (abaixo) já precisa dela para
+// canonicalizar os genes MCAB quando o modo está desligado.
+constexpr bool MCAB_TUNING_MODE_DEFAULT = false;
+static bool g_mcabTuningMode = MCAB_TUNING_MODE_DEFAULT;
+
+// Alias único do runner MCAB usado por esta ferramenta -- namespace aqui é
+// só `qr` (sem o truque de rename e1/e2 do arena.cpp), então a instanciação
+// é direta. Uma instância vive por ENGINE POR PARTIDA (não por lance!): o
+// reuso de subárvore (Seção 8 do plano) depende de a mesma McabRunner ver
+// todos os lances consecutivos daquele lado.
+using McabRunnerT = mcab::McabRunner<qr::Negamax, qr::State, qr::Move, qr::MoveList,
+                                      qr::AccPair, qr::RepetitionTable, qr::SearchStats>;
 
 enum ParamId {
     P_CONTEMPT,
@@ -53,6 +73,15 @@ enum ParamId {
     P_POLICY_ENABLED,
     P_QUIESCENCE,
     P_LMR_PVS,
+    // Fase 7 (plan-hybrid-mc-ab.md, Seção 9/11): candidatos "óbvios de
+    // primeira rodada de tuning" do híbrido MCAB. Só entram de fato na
+    // rodada de mutação/crossover quando g_mcabTuningMode==true -- ver
+    // canonicalização em sanitize() logo abaixo.
+    P_MCAB_CPUCT,
+    P_MCAB_LEAF_DEPTH,
+    P_MCAB_FPU_REDUCTION,
+    P_MCAB_SCORE_SCALE,
+    P_MCAB_NODE_BUDGET,
     NPARAM
 };
 
@@ -63,6 +92,14 @@ struct ParamDef {
     ParamKind kind;
     double lo, hi, init;
     double mutationSigma; // fração da faixa
+    // Fase 7: true para os genes mcab*. Fora do subset ATIVO por padrão --
+    // canonicalizados ao valor de `init` em sanitize() enquanto
+    // g_mcabTuningMode==false (mesmo princípio da canonicalização
+    // epistática já usada para policyOrderScale/qsCriticalBfsDelta/etc.
+    // logo abaixo). Default `false` via inicializador de membro: as
+    // entradas de PARAM_DEFS existentes (6 campos posicionais) não
+    // precisam ser tocadas.
+    bool mcabGroup = false;
 };
 
 static const ParamDef PARAM_DEFS[NPARAM] = {
@@ -80,6 +117,12 @@ static const ParamDef PARAM_DEFS[NPARAM] = {
     {"policyOrderingEnabled", ParamKind::Boolean,     0, 1,     1,                  0.30},
     {"quiescenceEnabled",     ParamKind::Boolean,     0, 1,     1,                  0.30},
     {"lmrPvsEnabled",         ParamKind::Boolean,     0, 1,     1,                  0.30},
+    // Fase 7 -- ranges/inits da tabela da Seção 9 do plano.
+    {"mcabCPuct",             ParamKind::Real,      0.5, 5.0,     1.5,   0.15, true},
+    {"mcabLeafDepth",         ParamKind::Integer,      1, 20,      4,    0.20, true},
+    {"mcabFpuReduction",      ParamKind::Real,       0.0, 1.0,     0.1,  0.20, true},
+    {"mcabScoreScale",        ParamKind::Real,      50.0, 600.0, 200.0,  0.15, true},
+    {"mcabNodeBudget",        ParamKind::Integer,      0, 200000, 20000, 0.20, true},
 };
 
 struct Individual {
@@ -92,7 +135,14 @@ static double clampValue(double x, int i) {
     return std::max(PARAM_DEFS[i].lo, std::min(PARAM_DEFS[i].hi, x));
 }
 
-static void applyParams(Negamax& e, const Individual& ind) {
+// Fase 7: `mcabOut`, se não-nulo, é preenchido a partir dos genes mcab* do
+// indivíduo (Seção 9 da tabela do plano). Default `nullptr` -- todo call
+// site existente antes desta fase (applyParams(e, ind)) continua
+// compilando e se comportando exatamente igual, sem tocar em McabParams
+// nenhum. `enabled` é derivado de g_mcabTuningMode (não de um gene do
+// indivíduo): é o modo de fitness do tuner que decide se o híbrido roda,
+// não algo que o GA aprende a ligar/desligar por conta própria.
+static void applyParams(Negamax& e, const Individual& ind, mcab::McabParams* mcabOut = nullptr) {
     e.setContempt((int)std::lround(ind.x[P_CONTEMPT]));
     e.setPolicyOrderScale((long long)std::lround(ind.x[P_POLICY_SCALE]));
     e.setCatScoreScale((long long)std::lround(ind.x[P_CAT_SCALE]));
@@ -107,6 +157,15 @@ static void applyParams(Negamax& e, const Individual& ind) {
     e.setPolicyOrderingMinDepth((int)std::lround(ind.x[P_POLICY_MIN_DEPTH]));
     e.setQuiescenceEnabled(ind.x[P_QUIESCENCE] >= 0.5);
     e.setLmrPvsEnabled(ind.x[P_LMR_PVS] >= 0.5);
+
+    if (mcabOut) {
+        mcabOut->enabled = g_mcabTuningMode;
+        mcabOut->cPuct = ind.x[P_MCAB_CPUCT];
+        mcabOut->leafDepth = (int)std::lround(ind.x[P_MCAB_LEAF_DEPTH]);
+        mcabOut->fpuReduction = ind.x[P_MCAB_FPU_REDUCTION];
+        mcabOut->scoreScale = ind.x[P_MCAB_SCORE_SCALE];
+        mcabOut->nodeBudget = (int)std::lround(ind.x[P_MCAB_NODE_BUDGET]);
+    }
 }
 
 static void sanitize(Individual& a) {
@@ -153,6 +212,22 @@ static void sanitize(Individual& a) {
         a.x[P_LMR_DIVISOR] = PARAM_DEFS[P_LMR_DIVISOR].init;
         a.x[P_CAT_HOT] = PARAM_DEFS[P_CAT_HOT].init;
         a.x[P_CAT_COLD] = PARAM_DEFS[P_CAT_COLD].init;
+    }
+
+    // Fase 7 (plan-hybrid-mc-ab.md, Seção 11): mesmo princípio de
+    // canonicalização de genes epistáticos acima, mas o "gate" aqui é a
+    // flag GLOBAL g_mcabTuningMode (--mcab-tuning), não um gene do próprio
+    // indivíduo -- todo indivíduo da população compartilha o mesmo gate.
+    // Com o modo desligado (default), playGame() nunca lê McabParams (usa
+    // Negamax::chooseMove de 4 argumentos direto, Seção 0 do plano), então
+    // os genes mcab* não afetam o fenótipo -- fixamos todos em `init` pra
+    // não gastar diversidade da população distinguindo dimensões fantasma
+    // (mesmo raciocínio do bloco de policyOrderScale/qsCriticalBfsDelta/
+    // lmr* logo acima).
+    if (!g_mcabTuningMode) {
+        for (int i = 0; i < NPARAM; ++i) {
+            if (PARAM_DEFS[i].mcabGroup) a.x[i] = PARAM_DEFS[i].init;
+        }
     }
 }
 
@@ -252,14 +327,24 @@ static void applyExternalOverrides(Negamax& e) {
     if (!g_policyOrder) e.setPolicyOrderingEnabled(false);
 }
 
-static int playGame(Negamax& a, Negamax& b, std::mt19937& rng) {
+// Fase 7: `runnerA`/`runnerB` são mantidas pelo CHAMADOR, uma por engine,
+// vivas pela PARTIDA inteira (não recriadas a cada lance) -- é o que
+// permite reuso de subárvore entre lances (Seção 8 do plano) quando
+// g_mcabTuningMode==true. `gameHist` é alimentada com as posições
+// realmente jogadas, lance a lance, exatamente como `realHistory`/
+// `hist1`/`hist2` em tools/arena/arena.cpp (não editado por esta fase --
+// só consultado como referência de padrão).
+static int playGame(Negamax& a, Negamax& b, McabRunnerT& runnerA, McabRunnerT& runnerB,
+                     std::mt19937& rng) {
     State s = initialState();
+    RepetitionTable gameHist;
 
     for (int i = 0; i < g_openingPlies; ++i) {
         if (winner(s) != -1) return winner(s);
         auto moves = legalMoves(s);
         if (moves.empty()) return -1;
         s = applyMove(s, moves[rng() % moves.size()]);
+        gameHist.push(s.hash);
     }
 
     for (int ply = 0; ply < g_maxPlies; ++ply) {
@@ -267,8 +352,32 @@ static int playGame(Negamax& a, Negamax& b, std::mt19937& rng) {
         if (w != -1) return w;
         Negamax& e = (s.turn == 0) ? a : b;
         SearchStats st;
-        Move m = e.chooseMove(s, g_depth, g_timeMs, st);
+        Move m;
+        if (g_mcabTuningMode) {
+            McabRunnerT& runner = (s.turn == 0) ? runnerA : runnerB;
+            m = runner.choose(e, s, g_depth, g_timeMs, st, gameHist);
+        } else {
+            // REGRESSÃO (Seção 0 do plano): com g_mcabTuningMode==false o
+            // caminho tem que ficar BIT-A-BIT o mesmo de antes desta fase
+            // -- chooseMove de 4 argumentos (sem RepetitionTable). Não dá
+            // pra usar runner.choose()/chooseMoveAuto aqui mesmo com
+            // params.enabled=false: por dentro, McabRunner::choose() cai
+            // no fallback "eng.chooseMove(root, maxDepthCap, timeBudgetMs,
+            // stats, hist)" -- a sobrecarga de 5 argumentos, que passa
+            // `gameHist` (histórico real da partida) pro reptbl da busca.
+            // chooseMove(5 args) faz `reptbl = gameHistory; reptbl.markRoot()`
+            // e habilita detecção de empate por repetição usando esse
+            // histórico -- diferente de chooseMove(4 args), que usa uma
+            // RepetitionTable vazia internamente (ver search.hpp). As duas
+            // sobrecargas produzem buscas/resultados diferentes sempre que
+            // uma posição já visitada nesta partida reaparecer. Por isso o
+            // `if` explícito aqui: preserva o comportamento antigo por
+            // construção, não por coincidência dos valores default de
+            // McabParams.
+            m = e.chooseMove(s, g_depth, g_timeMs, st);
+        }
         s = applyMove(s, m);
+        gameHist.push(s.hash);
     }
     return -1;
 }
@@ -280,17 +389,27 @@ static double antithetic(const Individual& A, const Individual& B, unsigned seed
     std::mt19937 rng(seed);
     Negamax a1, b1;
     configureEngine(a1); configureEngine(b1);
-    applyParams(a1, A); applyParams(b1, B);
+    mcab::McabParams mcabA1, mcabB1;
+    applyParams(a1, A, &mcabA1); applyParams(b1, B, &mcabB1);
     applyExternalOverrides(a1); applyExternalOverrides(b1);
+    // Fase 7: uma McabRunnerT por ENGINE, viva por toda a chamada a
+    // playGame() (Seção 8 -- reuso de subárvore entre lances). Ignoradas
+    // por completo quando g_mcabTuningMode==false (playGame() nem as
+    // consulta nesse caso).
+    McabRunnerT runnerA1, runnerB1;
+    runnerA1.setParams(mcabA1); runnerB1.setParams(mcabB1);
 
-    int r1 = playGame(a1, b1, rng);
+    int r1 = playGame(a1, b1, runnerA1, runnerB1, rng);
     double score = (r1 == 0) ? 1.0 : (r1 == 1 ? 0.0 : 0.5);
 
     Negamax a2, b2;
     configureEngine(a2); configureEngine(b2);
-    applyParams(a2, A); applyParams(b2, B);
+    mcab::McabParams mcabA2, mcabB2;
+    applyParams(a2, A, &mcabA2); applyParams(b2, B, &mcabB2);
     applyExternalOverrides(a2); applyExternalOverrides(b2);
-    int r2 = playGame(b2, a2, rng); // B é jogador 0, A jogador 1
+    McabRunnerT runnerA2, runnerB2;
+    runnerA2.setParams(mcabA2); runnerB2.setParams(mcabB2);
+    int r2 = playGame(b2, a2, runnerB2, runnerA2, rng); // B é jogador 0, A jogador 1
     double score2 = (r2 == 1) ? 1.0 : (r2 == 0 ? 0.0 : 0.5);
 
     return 0.5 * (score + score2);
@@ -444,6 +563,11 @@ static void printUsage(const char* p) {
     std::printf("  --no-policy-order      override explicito: forca policy ordering\n");
     std::printf("                         desligado em TODA a rodada, por cima do gene\n");
     std::printf("                         policyOrderingEnabled de cada individuo\n");
+    std::printf("  --mcab-tuning          fitness roda via hibrido MCTS+AB (McabRunner)\n");
+    std::printf("                         em vez de AB puro; liga os genes mcab*\n");
+    std::printf("                         (Fase 7, plan-hybrid-mc-ab.md); requer NNUE\n");
+    std::printf("                         (default: %s)\n", MCAB_TUNING_MODE_DEFAULT ? "ligado" : "desligado");
+    std::printf("  --no-mcab-tuning       override explicito: forca modo AB puro\n");
     std::printf("  --checkpoint PATH      (default ga_checkpoint.txt)\n");
     std::printf("  --history PATH         (default ga_history.csv)\n");
     std::printf("  --result PATH          (default ga_result.txt)\n");
@@ -491,6 +615,8 @@ int main(int argc, char** argv) {
         else if (a == "--nnue-weights") nnuePath = next();
         else if (a == "--heuristic") g_useNNUE = false;
         else if (a == "--no-policy-order") g_policyOrder = false;
+        else if (a == "--mcab-tuning") g_mcabTuningMode = true;
+        else if (a == "--no-mcab-tuning") g_mcabTuningMode = false;
         else { std::fprintf(stderr, "flag desconhecida: %s\n", a.c_str()); return 1; }
     }
 
@@ -500,6 +626,19 @@ int main(int argc, char** argv) {
     eliteFraction = std::clamp(eliteFraction, 0.05, 0.5);
     mutationRate = std::clamp(mutationRate, 0.01, 1.0);
     immigrantFraction = std::clamp(immigrantFraction, 0.0, 0.5);
+
+    // Fase 7 / Seção 2 do plano: MCAB depende da cabeça de política
+    // treinada (forwardPolicyQuant) para os priors do PUCT -- em modo
+    // Heurístico não há política treinada, então --mcab-tuning viraria
+    // UCT cego, que não é o objetivo (McabSearch::chooseMoveMCAB já tem um
+    // assert/fallback defensivo pra isso em runtime, mas aqui é melhor
+    // falhar cedo e alto, antes de gastar qualquer geração do GA).
+    if (g_mcabTuningMode && !g_useNNUE) {
+        std::fprintf(stderr,
+            "ERRO: --mcab-tuning requer modo NNUE (nao compativel com --heuristic) -- "
+            "Secao 2 de plan-hybrid-mc-ab.md.\n");
+        return 1;
+    }
 
     if (g_useNNUE) {
         if (!loadWeightsQuant(nnuePath)) {

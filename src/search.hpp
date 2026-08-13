@@ -293,6 +293,78 @@ public:
     uint64_t xDistCacheHits() const { return xdistCache.hits(); }
     uint64_t xDistCacheMisses() const { return xdistCache.misses(); }
 
+    // True se a ÚLTIMA busca desta engine abortou por estouro de tempo
+    // (`deadline`). Usado por mcab.hpp para descartar folhas truncadas: um
+    // searchLeaf abortado devolve um score parcial que não vale como
+    // avaliação, e engoli-lo silenciosamente envenenaria o Q daquele nó.
+    // Somente leitura -- não altera nada do caminho de AB puro.
+    bool searchWasStopped() const { return stopped; }
+
+    // Movido de private: para public: (corpo idêntico, sem nenhuma
+    // alteração de comportamento) -- ver mcab.hpp: MCABSearch chama isto
+    // 1x por chooseMoveMCAB(), do mesmo jeito que chooseMove() já faz 1x
+    // por busca (não por nó), para permitir reuso de TT entre folhas
+    // vizinhas na árvore MCTS sem custo extra de bookkeeping.
+    void resetOrderingState() {
+        std::memset(killerValid, 0, sizeof(killerValid));
+        std::memset(history, 0, sizeof(history));
+    }
+
+    // Avaliador de folha para o módulo híbrido MCTS+AB (mcab.hpp). Roda uma
+    // busca AB completa (mesmo negamax(), mesmas extensões de quiescência de
+    // muro, LMR/PVS, TT, killers/history desta instância) a partir de uma
+    // posição arbitrária `s`, até `depth` plies. NÃO reseta TT/killers/history
+    // entre chamadas -- o chamador (MCABSearch) controla isso 1x por
+    // chooseMoveMCAB() via resetOrderingState()/clearTT(), do mesmo jeito que
+    // chooseMove() já faz 1x por busca, não por nó. Isso é o que permite reuso
+    // de TT entre folhas vizinhas na árvore MCTS sem custo extra de
+    // bookkeeping.
+    //
+    // seedAcc, se não-nulo, é usado como acumulador NNUE já pronto (construído
+    // incrementalmente pelo chamador via makeChildAccPair ao longo do caminho
+    // da raiz até `s`) -- evita o rebuild completo (~330 features,
+    // buildAccPairRoot) a cada folha. Se nulo, cai no comportamento antigo
+    // (buildAccPairRoot local), usado só por quem chamar isto fora de um
+    // contexto de árvore incremental.
+    // timeBudgetMs > 0 impõe um teto de tempo a ESTA folha; 0 (default) usa
+    // o mesmo "sem limite prático" de searchShallow. Prefira 0: o orçamento
+    // de tempo do híbrido é controlado no laço de simulações do MCABSearch,
+    // e um corte por tempo DENTRO da folha tornaria o valor devolvido
+    // dependente da carga da máquina -- ou seja, não reproduzível entre
+    // rodadas, justamente o que os benchmarks de equivalência precisam.
+    int searchLeaf(const State& s, int depth, SearchStats& stats,
+                    RepetitionTable& reptbl, AccPair* seedAcc = nullptr,
+                    int timeBudgetMs = 0) {
+        // Mesmo preâmbulo de estado por-busca de searchShallow/chooseMove.
+        // NÃO é opcional: `deadline` é um time_point default-construído
+        // (epoch) até alguém atribuí-lo, então uma searchLeaf que pulasse
+        // esta linha veria `now() >= deadline` já na primeira checagem de
+        // tempo do negamax (que roda em stats.nodes==0), marcaria
+        // `stopped=true` e devolveria 0 -- toda folha valendo 0, Q=0.5 em
+        // toda a árvore MCTS. Bug real, pego pelo bench_mcab_equivalence da
+        // Fase 3; o corpo especificado na Seção 3.2 do plano estava
+        // incompleto neste ponto.
+        stopped = false;
+        deadline = timeBudgetMs > 0
+                        ? std::chrono::steady_clock::now() + std::chrono::milliseconds(timeBudgetMs)
+                        : std::chrono::steady_clock::now() + std::chrono::hours(1);
+        g_raceExactBudgetUs = 1e18;  // só chooseMove() aplica o orçamento (ver nota lá)
+
+        AccPair local;
+        AccPair* accForSearch = nullptr;
+        if (evalMode == EvalMode::NNUE) {
+            if (seedAcc) {
+                local = *seedAcc;
+            } else {
+                local = buildAccPairRoot(s, &xdistCache);
+            }
+            nnueAccStack[0] = local;
+            accForSearch = &nnueAccStack[0];
+        }
+        rootDepth = depth;
+        return negamax(s, depth, -SCORE_INF, SCORE_INF, stats, reptbl, accForSearch);
+    }
+
     int searchShallow(const State& s, int depth, SearchStats& stats) {
         stopped = false;
         rootDepth = depth;
@@ -515,11 +587,6 @@ private:
     // lance] (moveToPolicyIndex, rules.hpp), incrementada por depth^2 a
     // cada beta-cutoff.
     int history[2][NUM_MOVE_INDICES] = {};
-
-    void resetOrderingState() {
-        std::memset(killerValid, 0, sizeof(killerValid));
-        std::memset(history, 0, sizeof(history));
-    }
 
     TTEntry& probe(uint64_t hash) { return tt[hash & (TT_SIZE - 1)]; }
 

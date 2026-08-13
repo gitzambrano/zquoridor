@@ -20,36 +20,54 @@ if not exist "%BIN%" mkdir "%BIN%"
 
 set FLAGS=-O2 -std=c++17
 
-echo [1/8] test_rules_sanity.exe
+echo [1/12] test_rules_sanity.exe
 g++ %FLAGS% -I"%SRC%" -o "%BIN%\test_rules_sanity.exe" "%TESTE%\test_rules_sanity.cpp"
 if errorlevel 1 goto :erro
 
-echo [2/8] test_search_staging.exe
+echo [2/12] test_search_staging.exe
 g++ %FLAGS% -I"%SRC%" -o "%BIN%\test_search_staging.exe" "%TESTE%\test_search_staging.cpp"
 if errorlevel 1 goto :erro
 
-echo [3/8] test_move_ordering.exe
+echo [3/12] test_move_ordering.exe
 g++ %FLAGS% -I"%SRC%" -o "%BIN%\test_move_ordering.exe" "%TESTE%\test_move_ordering.cpp"
 if errorlevel 1 goto :erro
 
-echo [4/8] test_endgame_race.exe
+echo [4/12] test_endgame_race.exe
 g++ %FLAGS% -I"%SRC%" -o "%BIN%\test_endgame_race.exe" "%TESTE%\test_endgame_race.cpp"
 if errorlevel 1 goto :erro
 
-echo [5/8] test_lmr_pvs.exe
+echo [5/12] test_lmr_pvs.exe
 g++ %FLAGS% -I"%SRC%" -o "%BIN%\test_lmr_pvs.exe" "%TESTE%\test_lmr_pvs.cpp"
 if errorlevel 1 goto :erro
 
-echo [6/8] nnue_verify.exe  (paridade C++ vs Python, precisa -pthread)
+echo [6/12] nnue_verify.exe  (paridade C++ vs Python, precisa -pthread)
 g++ %FLAGS% -pthread -I"%SRC%" -o "%BIN%\nnue_verify.exe" "%TESTE%\nnue_verify.cpp"
 if errorlevel 1 goto :erro
 
-echo [7/8] nnue_incremental_check.exe  (acumulador incremental vs rebuild do zero)
+echo [7/12] nnue_incremental_check.exe  (acumulador incremental vs rebuild do zero)
 g++ %FLAGS% -pthread -I"%SRC%" -o "%BIN%\nnue_incremental_check.exe" "%TESTE%\nnue_incremental_check.cpp"
 if errorlevel 1 goto :erro
 
-echo [8/8] nnue_sign_check.exe  (sanidade de sinal/perspectiva do NNUE vs evalSimple)
+echo [8/12] nnue_sign_check.exe  (sanidade de sinal/perspectiva do NNUE vs evalSimple)
 g++ %FLAGS% -pthread -I"%SRC%" -o "%BIN%\nnue_sign_check.exe" "%TESTE%\nnue_sign_check.cpp"
+if errorlevel 1 goto :erro
+
+REM [9..12] Hibrido MCab (plan-hybrid-mc-ab.md). Nao precisam de -I extra:
+REM os .cpp incluem "../tools/common/mcab.hpp" relativo a si mesmos.
+echo [9/12] test_search_leaf_smoke.exe  (Fase 0: searchLeaf/resetOrderingState)
+g++ %FLAGS% -I"%SRC%" -o "%BIN%\test_search_leaf_smoke.exe" "%TESTE%\test_search_leaf_smoke.cpp"
+if errorlevel 1 goto :erro
+
+echo [10/12] test_mcab_core.exe  (scoreToQ, budget do pool, sinal do backup, modo equivalencia)
+g++ %FLAGS% -I"%SRC%" -o "%BIN%\test_mcab_core.exe" "%TESTE%\test_mcab_core.cpp"
+if errorlevel 1 goto :erro
+
+echo [11/12] test_mcab_dispatch.exe  (SFINAE: refs antigas sem searchLeaf caem no AB puro)
+g++ %FLAGS% -I"%SRC%" -o "%BIN%\test_mcab_dispatch.exe" "%TESTE%\test_mcab_dispatch.cpp"
+if errorlevel 1 goto :erro
+
+echo [12/12] test_mcab_phase9.exe  (reuso de arvore, ruido Dirichlet, leaf depth adaptativa, teto de tempo)
+g++ %FLAGS% -I"%SRC%" -o "%BIN%\test_mcab_phase9.exe" "%TESTE%\test_mcab_phase9.cpp"
 if errorlevel 1 goto :erro
 
 echo.
@@ -61,6 +79,9 @@ echo   nnue_incremental_check.exe ^<pesos_int8.bin^>: acumulador incremental vs 
 echo     deve dar 0 divergencias em 30 partidas aleatorias.
 echo   nnue_sign_check.exe ^<pesos_int8.bin^>: eval NNUE vs evalSimple em 4 posicoes
 echo     de referencia (checagem manual de sinal/perspectiva).
+echo   test_search_leaf_smoke / test_mcab_core / test_mcab_dispatch / test_mcab_phase9:
+echo     sem argumentos. Rodar a partir da RAIZ do repo (carregam
+echo     data\nnue\nnue_weights_int8.bin).
 exit /b 0
 
 :erro
