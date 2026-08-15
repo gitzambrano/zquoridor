@@ -23,11 +23,11 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 #     GIT_REF2 = "HEAD~3"      -> 3 commits atrás
 #     GIT_REF2 = "minha-branch"-> Outra branch
 GIT_REF1 = None               # None = versão local não comitada (ou passe string de ref git)
-GIT_REF2 = 'main'             # Ref Git base para o confronto (ex: 'main', 'v1.0', 'HEAD')
+GIT_REF2 = None             # Ref Git base para o confronto (ex: 'main', 'v1.0', 'HEAD')
 
 INVERT_COLORS = True          # Se True, joga cada abertura 2x invertendo as cores (par). Se False, joga apenas 1x por abertura.
 CREATE_BIN = True             # Se True, salva os dados das partidas em data/arena/ no formato .bin de treino
-GAMES = 10                  # Quantidade total de jogos
+GAMES = 1000                  # Quantidade total de jogos
 REPORT_GAMES = 50             # Atualiza e imprime o relatório parcial a cada N jogos concluídos (default 50)
 TIME_MS = 200                 # Tempo de pensamento por lance em milissegundos
 THREADS = 14                  # Número de núcleos / processos em paralelo (default 14)
@@ -110,6 +110,8 @@ E1_MCAB_SCORE_SCALE = None         # produção: 200.0 -- escala do sigmoide sco
 E2_MCAB_SCORE_SCALE = None         # em scoreToQ (= NNUE_EVAL_SCALE)
 E1_MCAB_ROOT_SELECT = None         # produção: "visits" | "q" | "visits-then-q"
 E2_MCAB_ROOT_SELECT = None
+E1_MCAB_BACKUP = None              # produção: "avg"; modo antigo: "minimax"
+E2_MCAB_BACKUP = None
 E1_MCAB_TREE_REUSE = None          # produção: ligado -- reusa a subárvore do lance
 E2_MCAB_TREE_REUSE = None          # anterior. False desliga
 E1_MCAB_CLEAR_TT_PER_MOVE = None   # produção: desligado -- True limpa a TT do
@@ -162,6 +164,7 @@ MCAB_VALUE_KNOBS = [
     ("mcab-score-scale",    "mcab_score_scale",    E1_MCAB_SCORE_SCALE,    E2_MCAB_SCORE_SCALE,    float),
     ("mcab-max-tree-depth", "mcab_max_tree_depth", E1_MCAB_MAX_TREE_DEPTH, E2_MCAB_MAX_TREE_DEPTH, int),
     ("mcab-root-select",    "mcab_root_select",    E1_MCAB_ROOT_SELECT,    E2_MCAB_ROOT_SELECT,    str),
+    ("mcab-backup",         "mcab_backup",         E1_MCAB_BACKUP,         E2_MCAB_BACKUP,         str),
     ("contempt",               "contempt",               E1_CONTEMPT,               E2_CONTEMPT,               int),
     ("policy-order-scale",     "policy_order_scale",     E1_POLICY_ORDER_SCALE,     E2_POLICY_ORDER_SCALE,     int),
     ("cat-score-scale",        "cat_score_scale",        E1_CAT_SCORE_SCALE,        E2_CAT_SCORE_SCALE,        int),
@@ -548,6 +551,8 @@ def main():
                        "help": f"{flag} {rotulo} (vazio = valor de producao; ver a constante correspondente no topo do arquivo)"}
             if flag == "mcab-root-select":
                 kwargs["choices"] = ["visits", "q", "visits-then-q"]
+            elif flag == "mcab-backup":
+                kwargs["choices"] = ["minimax", "avg"]
             else:
                 kwargs["type"] = tipo
             parser.add_argument(f"--{lado}{flag}", **kwargs)

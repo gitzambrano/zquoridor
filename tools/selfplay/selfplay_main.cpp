@@ -59,6 +59,7 @@ constexpr double MCAB_ROOT_NOISE_ALPHA_OVERRIDE       = mcab::UNSET_REAL;  // pr
 constexpr double MCAB_ROOT_NOISE_EPSILON_OVERRIDE     = mcab::UNSET_REAL;  // producao: 0.25
 constexpr int    MCAB_MAX_TREE_DEPTH_OVERRIDE         = mcab::UNSET_INT;   // producao: 48
 constexpr const char* MCAB_ROOT_SELECT_OVERRIDE       = "";                // producao: "visits" (MaxVisits)
+constexpr const char* MCAB_BACKUP_MODE_OVERRIDE        = "";                // producao: "avg"; experimento: "minimax"
 constexpr mcab::Tri MCAB_CLEAR_TT_PER_MOVE_OVERRIDE   = mcab::Tri::Unset;  // producao: desligado
 
 // Valores de producao, resolvidos uma vez (McabParams default-construido).
@@ -78,6 +79,7 @@ static double g_mcabRootNoiseAlpha    = mcab::resolve(MCAB_ROOT_NOISE_ALPHA_OVER
 static double g_mcabRootNoiseEpsilon  = mcab::resolve(MCAB_ROOT_NOISE_EPSILON_OVERRIDE, MCAB_PROD.rootNoiseEpsilon);
 static int    g_mcabMaxTreeDepth      = mcab::resolve(MCAB_MAX_TREE_DEPTH_OVERRIDE, MCAB_PROD.maxTreeDepth);
 static mcab::RootSelectMode g_mcabRootSelectMode = mcab::resolveRootSelect(MCAB_ROOT_SELECT_OVERRIDE, MCAB_PROD.rootSelectMode);
+static mcab::BackupMode g_mcabBackupMode = mcab::resolveBackupMode(MCAB_BACKUP_MODE_OVERRIDE, MCAB_PROD.backupMode);
 static bool   g_mcabClearTTPerMove    = mcab::resolve(MCAB_CLEAR_TT_PER_MOVE_OVERRIDE, MCAB_PROD.clearTTPerMove);
 
 // =============================================================================
@@ -191,6 +193,7 @@ static void printUsage(const char* prog) {
         "                      incremental da arvore MCab (default %d)\n"
         "  --mcab-root-select M        criterio de escolha na raiz:\n"
         "                      visits | q | visits-then-q (producao: visits)\n"
+        "  --mcab-backup M       agregacao: minimax | avg (producao: avg)\n"
         "  --mcab-clear-tt-per-move    limpa a TT do alpha-beta a cada lance\n"
         "                      (producao: desligado)\n"
         "  --separate-tt        cada cor usa sua propria TT/engine, isolada\n"
@@ -268,6 +271,7 @@ int main(int argc, char** argv) {
         // Um valor invalido cai no de PRODUCAO (nao vira MaxVisits calado):
         // um typo em "visits-then-q" nao deve parecer que funcionou.
         else if (a == "--mcab-root-select")          g_mcabRootSelectMode    = mcab::resolveRootSelect(next("--mcab-root-select").c_str(), MCAB_PROD.rootSelectMode);
+        else if (a == "--mcab-backup")               g_mcabBackupMode         = mcab::resolveBackupMode(next("--mcab-backup").c_str(), MCAB_PROD.backupMode);
         else if (a == "--mcab-clear-tt-per-move")    g_mcabClearTTPerMove    = true;
         else if (a == "--mcab-root-noise")           g_mcabRootNoiseEnabled  = true;
         else if (a == "--separate-tt")     cfg.sharedTT              = false;
@@ -322,6 +326,7 @@ int main(int argc, char** argv) {
     cfg.mcabParams.rootNoiseEpsilon  = g_mcabRootNoiseEpsilon;
     cfg.mcabParams.maxTreeDepth      = g_mcabMaxTreeDepth;
     cfg.mcabParams.rootSelectMode    = g_mcabRootSelectMode;
+    cfg.mcabParams.backupMode        = g_mcabBackupMode;
     cfg.mcabParams.clearTTPerMove    = g_mcabClearTTPerMove;
     cfg.tuning                       = g_tuning;
     // rootNoiseSeed fica no default de McabParams (0x9E3779B9) aqui -- é
@@ -365,11 +370,12 @@ int main(int argc, char** argv) {
                     cfg.epsilonMidgame);
     }
     if (cfg.mcabParams.enabled) {
-        std::printf("MCTS hibrido: LIGADO | nodes=%d leaf-depth=%d cpuct=%.2f fpu=%.2f score-scale=%.1f"
+        std::printf("MCTS hibrido: LIGADO | nodes=%d leaf-depth=%d cpuct=%.2f fpu=%.2f score-scale=%.1f backup=%s"
                     " | tree-reuse=%s root-noise=%s(alpha=%.2f eps=%.2f) max-tree-depth=%d"
                     " root-select=%s clear-tt-per-move=%s\n",
                     cfg.mcabParams.nodeBudget, cfg.mcabParams.leafDepth, cfg.mcabParams.cPuct,
                     cfg.mcabParams.fpuReduction, cfg.mcabParams.scoreScale,
+                    mcab::backupModeName(cfg.mcabParams.backupMode),
                     cfg.mcabParams.treeReuse ? "on" : "off",
                     cfg.mcabParams.rootNoiseEnabled ? "on" : "off",
                     cfg.mcabParams.rootNoiseAlpha, cfg.mcabParams.rootNoiseEpsilon,

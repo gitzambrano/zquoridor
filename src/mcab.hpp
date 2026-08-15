@@ -91,7 +91,7 @@ constexpr int MCAB_WIN_SCORE = 1'000'000;
 // a lista de campos.
 // =========================================================================
 enum class RootSelectMode { MaxVisits, MaxQ, MaxVisitsThenQ };
-enum class BackupMode { MinimaxHard, AvgBlend };  // AvgBlend reservado (não implementado na Fase 1)
+enum class BackupMode { MinimaxHard, AvgBlend };
 
 // -------------------------------------------------------------------------
 // "Campo vazio" para os blocos de CONFIG no topo das ferramentas.
@@ -136,6 +136,20 @@ inline const char* rootSelectName(RootSelectMode m) {
     }
 }
 
+// String form used by the arena/self-play command lines and config blocks.
+inline BackupMode resolveBackupMode(const char* s, BackupMode prod) {
+    if (s == nullptr || s[0] == '\0') return prod;
+    if (std::strcmp(s, "minimax") == 0 || std::strcmp(s, "hard") == 0)
+        return BackupMode::MinimaxHard;
+    if (std::strcmp(s, "avg") == 0 || std::strcmp(s, "mean") == 0)
+        return BackupMode::AvgBlend;
+    return prod;
+}
+
+inline const char* backupModeName(BackupMode m) {
+    return m == BackupMode::AvgBlend ? "avg" : "minimax";
+}
+
 // Estes são os valores de PRODUÇÃO: é aqui que mora o default de verdade.
 // Os blocos de CONFIG no topo de arena.cpp e selfplay_main.cpp são só listas
 // de override -- campo vazio (mcab::UNSET_*/Tri::Unset) cai no valor daqui.
@@ -164,7 +178,7 @@ struct McabParams {
     double fpuReduction = 0.0;
     double scoreScale = 200.0;           // = NNUE_EVAL_SCALE
     RootSelectMode rootSelectMode = RootSelectMode::MaxVisits;
-    BackupMode backupMode = BackupMode::MinimaxHard;
+    BackupMode backupMode = BackupMode::AvgBlend;
     bool treeReuse = true;               // reuso de subárvore entre lances (Seção 8)
     bool clearTTPerMove = false;
     bool rootNoiseEnabled = false;       // ruído de Dirichlet nos priors da raiz (Seção 9) -- só self-play
@@ -251,7 +265,7 @@ struct MCABNode {
     MoveListT moves;               // gerado 1x na expansão (legalMoves(state))
     std::vector<float> P;         // prior por lance, mesmo índice de `moves`
     std::vector<float> N;         // visitas por aresta
-    std::vector<float> W;         // soma de valor por aresta (Q = W/N)
+    std::vector<float> W;         // soma (AvgBlend) or backed value (MinimaxHard)
     std::vector<int32_t> child;   // índice no pool, -1 = não expandido
     int totalN = 0;
     bool noised = false;          // ruído de Dirichlet já aplicado a `P` (Seção 9) -- evita
@@ -680,25 +694,43 @@ private:
     // Seção 5.1 -- Seleção PUCT
     // ---------------------------------------------------------------
     // score(a) = Q(s,a) + c_puct * P(s,a) * sqrt(N(s)) / (1 + N(s,a))
-    // Q(s,a) = W(s,a)/N(s,a) se N(s,a) > 0; senão FPU = Q(pai) - fpuReduction,
-    // onde Q(pai) = soma(W)/totalN do próprio nó `s` (0.5 neutro se totalN==0).
+    // Q(s,a) is W/N for AvgBlend and the hard-backed W value for MinimaxHard.
+    // Unvisited edges use FPU = Q(pai) - fpuReduction.
+    double edgeQ(const NodeT& node, size_t edge) const {
+        if (params.backupMode == BackupMode::AvgBlend)
+            return (double)node.W[edge] / (double)node.N[edge];
+        return (double)node.W[edge];
+    }
+
+    double nodeQ(const NodeT& node) const {
+        if (params.backupMode == BackupMode::AvgBlend) {
+            if (node.totalN <= 0) return 0.5;
+            double sumW = 0.0;
+            for (float w : node.W) sumW += w;
+            return sumW / (double)node.totalN;
+        }
+        double best = 0.5;
+        bool visited = false;
+        for (size_t i = 0; i < node.N.size(); i++) {
+            if (node.N[i] <= 0.f) continue;
+            best = std::max(best, edgeQ(node, i));
+            visited = true;
+        }
+        return visited ? best : 0.5;
+    }
+
     int selectChildPUCT(const NodeT& node) const {
         size_t nm = node.moves.size();
         if (nm == 0) return -1;
 
-        double parentQ = 0.5;
-        if (node.totalN > 0) {
-            double sumW = 0.0;
-            for (size_t i = 0; i < nm; i++) sumW += node.W[i];
-            parentQ = sumW / (double)node.totalN;
-        }
+        double parentQ = nodeQ(node);
         double fpu = parentQ - params.fpuReduction;
 
         double sqrtN = std::sqrt((double)std::max(0, node.totalN));
         int best = -1;
         double bestScore = -std::numeric_limits<double>::infinity();
         for (size_t i = 0; i < nm; i++) {
-            double q = node.N[i] > 0.0 ? (node.W[i] / node.N[i]) : fpu;
+            double q = node.N[i] > 0.0 ? edgeQ(node, i) : fpu;
             double u = params.cPuct * (double)node.P[i] * sqrtN / (1.0 + (double)node.N[i]);
             double score = q + u;
             if (score > bestScore) {
@@ -861,12 +893,17 @@ private:
     }
 
     // ---------------------------------------------------------------
-    // Seção 5.3 -- Backup (minimax hard)
+    // Seção 5.3 -- Backup
     // ---------------------------------------------------------------
     // `leafQ` é do ponto de vista do nó recém-avaliado (quem vai jogar
     // ali). Subindo a árvore, cada nível corresponde a uma troca de
     // mover -- inverte o sinal a cada passo (Q_pai = 1 - Q_filho, análogo
-    // a negamax) e atualiza N/W da aresta correspondente.
+    // a negamax) e atualiza N/W da aresta correspondente. MinimaxHard first
+    // updates the edge value, then recomputes the parent node's max value;
+    // that node value is what gets inverted for the next ancestor. This is
+    // the actual minimax backup, rather than taking a max over unrelated
+    // leaf samples on the same edge. AvgBlend keeps the standard Monte Carlo
+    // sum, so Q=W/N is the mean of all visits.
     void backup(const std::vector<PathEdge>& path, double leafQ, McabStats& mstats) {
         double v = leafQ;
         for (int i = (int)path.size() - 1; i >= 0; i--) {
@@ -874,8 +911,14 @@ private:
             NodeT& node = pool[path[i].nodeIdx];
             int e = path[i].edgeIdx;
             node.N[e] += 1.f;
-            node.W[e] += (float)v;
+            if (params.backupMode == BackupMode::AvgBlend) {
+                node.W[e] += (float)v;
+            } else {
+                node.W[e] = (float)v;
+            }
             node.totalN += 1;
+            if (params.backupMode == BackupMode::MinimaxHard)
+                v = nodeQ(node);
         }
         mstats.simulations++;
     }
@@ -888,7 +931,7 @@ private:
         assert(nm > 0 && "raiz não-terminal sem lances legais -- não deveria ocorrer em Quoridor");
         if (nm == 0) return MoveT{};
 
-        auto qOf = [&](size_t i) { return r.N[i] > 0.f ? (double)(r.W[i] / r.N[i]) : -1.0; };
+        auto qOf = [&](size_t i) { return r.N[i] > 0.f ? edgeQ(r, i) : -1.0; };
 
         size_t best = 0;
         for (size_t i = 1; i < nm; i++) {

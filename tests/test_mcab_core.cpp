@@ -299,6 +299,52 @@ void testFastLeafSkipsSearchLeaf() {
     printf("[testFastLeafSkipsSearchLeaf] OK\n");
 }
 
+// ---------------------------------------------------------------------
+// 8) Backup modes use distinct value aggregation. MinimaxHard propagates the
+// minimax value of each parent node; AvgBlend stores the visit sum used by Q=W/N.
+// ---------------------------------------------------------------------
+void testBackupModes() {
+    Negamax engHard, engAvg;
+    engHard.setEvalMode(Negamax::EvalMode::NNUE);
+    engAvg.setEvalMode(Negamax::EvalMode::NNUE);
+
+    State root = initialState();
+    RepetitionTable hist;
+    SearchStats hardStats, avgStats;
+    mcab::McabStats hardMstats, avgMstats;
+
+    Mcab hard;
+    hard.params.nodeBudget = 120;
+    hard.params.leafDepth = 0;
+    hard.params.treeReuse = true;
+    hard.params.backupMode = mcab::BackupMode::MinimaxHard;
+    hard.chooseMoveMCAB(engHard, root, 40, 0, hardStats, hist, &hardMstats);
+
+    Mcab avg;
+    avg.params.nodeBudget = 120;
+    avg.params.leafDepth = 0;
+    avg.params.treeReuse = true;
+    avg.params.backupMode = mcab::BackupMode::AvgBlend;
+    avg.chooseMoveMCAB(engAvg, root, 40, 0, avgStats, hist, &avgMstats);
+
+    const auto* hardRoot = hard.rootNodeForInspection();
+    const auto* avgRoot = avg.rootNodeForInspection();
+    assert(hardRoot != nullptr && avgRoot != nullptr);
+    assert(hardRoot->moves.size() == avgRoot->moves.size());
+
+    bool sawRepeatedVisit = false;
+    for (size_t i = 0; i < hardRoot->N.size(); i++) {
+        if (hardRoot->N[i] > 1.f) sawRepeatedVisit = true;
+        if (hardRoot->N[i] > 0.f)
+            assert(hardRoot->W[i] >= 0.f && hardRoot->W[i] <= 1.f);
+        if (avgRoot->N[i] > 0.f)
+            assert(avgRoot->W[i] >= 0.f && avgRoot->W[i] <= avgRoot->N[i] + 1e-5f);
+    }
+    assert(sawRepeatedVisit && "backup-mode test did not revisit a root edge");
+    printf("[testBackupModes] hard simulations=%lld avg simulations=%lld OK\n",
+           hardMstats.simulations, avgMstats.simulations);
+}
+
 int main() {
     testScoreToQMatchesWinProb();
     testPoolBudget();
@@ -308,6 +354,7 @@ int main() {
     testEmptyHandedDelegation();
     testMctsPathCacheWired();
     testFastLeafSkipsSearchLeaf();
+    testBackupModes();
     printf("\nTODOS OS TESTES DE test_mcab_core PASSARAM\n");
     return 0;
 }
