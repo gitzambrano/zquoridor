@@ -252,6 +252,53 @@ void testEmptyHandedDelegation() {
     printf("[testEmptyHandedDelegation] OK\n");
 }
 
+// ---------------------------------------------------------------------
+// 6) O caminho MCTS pega o cache de BFS da engine, não passa nullptr.
+//    searchLeaf/QS também tocam o mesmo cache, então hits/misses depois
+//    de uma busca não isolam este fio; o que trava a regressão é o
+//    ponteiro em si (e o teste de dispatch, que continua compilando
+//    contra engines sem pathCache()).
+// ---------------------------------------------------------------------
+void testMctsPathCacheWired() {
+    Negamax eng;
+    PlayerPathCacheTable* fromEngine = eng.pathCache();
+    PlayerPathCacheTable* fromMcab = mcab::mcabPathCache(eng, 0);
+    printf("[testMctsPathCacheWired] pathCache=%p mcabPathCache=%p\n",
+           (void*)fromEngine, (void*)fromMcab);
+    assert(fromEngine != nullptr);
+    assert(fromMcab == fromEngine);
+    printf("[testMctsPathCacheWired] OK\n");
+}
+
+// ---------------------------------------------------------------------
+// 7) leafDepth=0 não entra em searchLeaf/QS. SearchStats.nodes só é
+//    incrementado por negamax/quiescence, então tem que ficar 0; as
+//    avaliações de folha aparecem em McabStats.leafSearches.
+// ---------------------------------------------------------------------
+void testFastLeafSkipsSearchLeaf() {
+    Negamax eng;
+    eng.setEvalMode(Negamax::EvalMode::NNUE);
+
+    Mcab mc;
+    mc.params.nodeBudget = 80;
+    mc.params.leafDepth = 0;
+    mc.params.adaptiveLeafDepth = false;
+    mc.params.treeReuse = false;
+
+    State root = initialState();
+    SearchStats stats;
+    RepetitionTable hist;
+    mcab::McabStats mstats;
+    Move m = mc.chooseMoveMCAB(eng, root, 40, 0, stats, hist, &mstats);
+    (void)m;
+
+    printf("[testFastLeafSkipsSearchLeaf] leafSearches=%lld abNodes=%llu pool=%zu\n",
+           mstats.leafSearches, (unsigned long long)stats.nodes, mc.poolSize());
+    assert(mstats.leafSearches > 0 && "nenhuma folha avaliada");
+    assert(stats.nodes == 0 && "leafDepth=0 ainda passou por searchLeaf/QS");
+    printf("[testFastLeafSkipsSearchLeaf] OK\n");
+}
+
 int main() {
     testScoreToQMatchesWinProb();
     testPoolBudget();
@@ -259,6 +306,8 @@ int main() {
     testBackupSignTrivialWinOtherPlayer();
     testEquivModeSign();
     testEmptyHandedDelegation();
+    testMctsPathCacheWired();
+    testFastLeafSkipsSearchLeaf();
     printf("\nTODOS OS TESTES DE test_mcab_core PASSARAM\n");
     return 0;
 }

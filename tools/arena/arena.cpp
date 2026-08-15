@@ -505,19 +505,29 @@ int playArenaGame(int engine1PlayerIdx, int timeMs, int randomPlies, std::mt1993
 
         if (currentTurn == engine1PlayerIdx) {
             qr_e1::SearchStats st;
+            mcab::McabStats mcabStats;
             auto t0 = std::chrono::high_resolution_clock::now();
-            mChosen = mcabRunner1.choose(eng1, s1, 40, timeMs, st, hist1);
+            mChosen = mcabRunner1.choose(eng1, s1, 40, timeMs, st, hist1, &mcabStats);
             auto t1 = std::chrono::high_resolution_clock::now();
             eng1TimeOut += std::chrono::duration<double>(t1 - t0).count();
-            eng1NodesOut += st.nodes;
+            // leafDepth=0 evaluates MCTS leaves directly with NNUE, so the
+            // alpha-beta SearchStats counter is intentionally zero. Count
+            // expanded tree nodes while MCAB is active; otherwise retain the
+            // traditional alpha-beta node count.
+            eng1NodesOut += mcabRunner1.activeForThisEngine()
+                                ? (uint64_t)mcabStats.nodesExpanded
+                                : st.nodes;
             if (samplesOut) gameRecords.push_back({s1, mChosen, currentTurn, st.score});
         } else {
             qr_e2::SearchStats st;
+            mcab::McabStats mcabStats;
             auto t0 = std::chrono::high_resolution_clock::now();
-            qr_e2::Move m2 = mcabRunner2.choose(eng2, s2, 40, timeMs, st, hist2);
+            qr_e2::Move m2 = mcabRunner2.choose(eng2, s2, 40, timeMs, st, hist2, &mcabStats);
             auto t1 = std::chrono::high_resolution_clock::now();
             eng2TimeOut += std::chrono::duration<double>(t1 - t0).count();
-            eng2NodesOut += st.nodes;
+            eng2NodesOut += mcabRunner2.activeForThisEngine()
+                                ? (uint64_t)mcabStats.nodesExpanded
+                                : st.nodes;
             mChosen = qr_e1::Move{m2.isWall, m2.a, m2.b, m2.c};
             if (samplesOut) gameRecords.push_back({s1, mChosen, currentTurn, st.score});
         }

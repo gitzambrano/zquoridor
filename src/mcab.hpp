@@ -149,11 +149,12 @@ struct McabParams {
     // status.md antes de assumir que vale para o seu controle de tempo.
     bool enabled = true;
     int nodeBudget = 20000;              // 0/1 = modo equivalência, Seção 6
-    // 0 = folha avaliada só por NNUE + quiescência de muro, sem alpha-beta
-    // abaixo dela. Era 4 (valor do plano); a Fase 8 mediu 4 como catastrófico
-    // a 200ms/lance e 0 como o único ponto que bate o AB puro (-26 Elo em 1000
-    // partidas). Todo teste/benchmark que exercita folhas de AB de verdade
-    // fixa `leafDepth` explicitamente, então não dependem deste default.
+    // 0 = folha avaliada só por nnueEvalInt no acumulador incremental, sem
+    // searchLeaf e sem quiescência de muro. Era 4 (valor do plano); a Fase 8
+    // mediu 4 como catastrófico a 200ms/lance e 0 como o único ponto que
+    // bate o AB puro. Até 2026-08-14 o 0 ainda caía em searchLeaf→QS;
+    // o atalho de rede é o default de produção. Todo teste/benchmark que
+    // exercita folhas de AB de verdade fixa `leafDepth` explicitamente.
     int leafDepth = 0;
     int leafDepthMax = 8;                // teto p/ mcabAdaptiveLeafDepth (não usado na Fase 1)
     bool adaptiveLeafDepth = false;      // não implementado na Fase 1 (Seção 9 já documenta v1=false)
@@ -178,7 +179,7 @@ struct McabParams {
 struct McabStats {
     long long simulations = 0;
     long long nodesExpanded = 0;
-    long long leafSearches = 0;      // chamadas reais a engine.searchLeaf
+    long long leafSearches = 0;      // avaliações de folha (nnueEvalInt ou searchLeaf)
     long long leafDepthSum = 0;      // soma das profundidades usadas (média = /leafSearches)
     bool treeReused = false;         // esta chamada reaproveitou a subárvore do lance anterior (Seção 8)
     int reusedNodes = 0;             // tamanho do pool herdado após compactação
@@ -202,6 +203,40 @@ template <typename S>
 inline uint64_t mcabStateKey(const S&, ...) {
     return 0;
 }
+
+// Cache de BFS de distância (PlayerPathCacheTable em rules.hpp) usado ao
+// construir acumuladores NNUE no caminho da árvore. MCABSearch não nomeia
+// esse tipo -- Seção 4.2 -- então a detecção é por SFINAE, no mesmo
+// padrão de mcabStateKey: Negamax expõe pathCache(); engines de brinquedo
+// e refs antigos não, e nesses casos o ponteiro fica nullptr (rebuild de
+// BFS a cada ply, o comportamento anterior). nullptr converte para
+// qualquer T*, inclusive o `const void*` dos fakes em
+// tests/test_mcab_dispatch.cpp.
+template <typename E>
+inline auto mcabPathCache(E& engine, int) -> decltype(engine.pathCache()) {
+    return engine.pathCache();
+}
+template <typename E>
+inline decltype(nullptr) mcabPathCache(E&, ...) {
+    return nullptr;
+}
+
+// nnueEvalInt vive em qr:: e é encontrado por ADL a partir de AccPair.
+// Engines de brinquedo não o têm: evaluateLeaf cai em searchLeaf mesmo
+// com leafDepth==0, o que é o comportamento antigo e o único disponível.
+template <typename Acc, typename = void>
+struct hasNnueEvalInt : std::false_type {};
+template <typename Acc>
+struct hasNnueEvalInt<Acc, std::void_t<decltype(nnueEvalInt(std::declval<const Acc&>(), 0))>>
+    : std::true_type {};
+
+template <typename Acc, typename Cache>
+inline auto mcabResolvePending(Acc& ap, int side, Cache cache, int)
+    -> decltype(resolvePending(ap, side, cache), void()) {
+    resolvePending(ap, side, cache);
+}
+template <typename Acc, typename Cache>
+inline void mcabResolvePending(Acc&, int, Cache, ...) {}
 
 // =========================================================================
 // 4.3.2 -- Node pool linear (índices, não ponteiros)
@@ -346,7 +381,7 @@ public:
         }
         pool.reserve(pool.size() + (size_t)budget + 1);
 
-        mcabAccStack[0] = buildAccPairRoot(root, nullptr);
+        mcabAccStack[0] = buildAccPairRoot(root, mcabPathCache(engine, 0));
 
         // Passo 4 (Seção 5): expande a raiz se necessário.
         int wRoot = winner(root);
@@ -422,13 +457,11 @@ private:
     bool haveLeafDeadline = false;
 
     // NOTA: buildAccPairRoot/makeChildAccPair recebem um `PlayerPathCacheTable*`
-    // opcional (default nullptr) para cachear BFS de distância entre
-    // chamadas -- mesmo cache que Negamax::xdistCache usa internamente na
-    // busca AB. MCABSearch não nomeia esse tipo (ficaria acoplado a
-    // rules.hpp, quebrando a independência da Seção 4.2) e passa nullptr
-    // em todas as chamadas abaixo: cada BFS é recalculado do zero, custo
-    // aceito nesta Fase 1 (correção > performance; cache de BFS fica como
-    // otimização futura se o profiling da Fase 4 apontar necessidade).
+    // opcional para cachear BFS de distância entre chamadas -- o mesmo
+    // cache que Negamax::xdistCache usa internamente na busca AB.
+    // MCABSearch não nomeia esse tipo (Seção 4.2); o ponteiro vem de
+    // mcabPathCache(engine), que devolve engine.pathCache() quando o tipo
+    // o expõe e nullptr caso contrário.
 
     struct PathEdge {
         int nodeIdx;
@@ -555,7 +588,7 @@ private:
         MoveListT moves = legalMoves(root);
         if (moves.empty()) return MoveT{};
 
-        AccPairT rootAcc = buildAccPairRoot(root, nullptr);
+        AccPairT rootAcc = buildAccPairRoot(root, mcabPathCache(engine, 0));
 
         double bestQ = -std::numeric_limits<double>::infinity();
         int bestIdx = 0;
@@ -563,7 +596,7 @@ private:
             StateT childState = applyMove(root, moves[i]);
             AccPairT parentCopy = rootAcc;  // makeChildAccPair pode resolver pending em `parent`
             AccPairT seedAcc{};
-            makeChildAccPair(parentCopy, seedAcc, root, moves[i], nullptr);
+            makeChildAccPair(parentCopy, seedAcc, root, moves[i], mcabPathCache(engine, 0));
 
             double q;  // do ponto de vista de quem joga em `root` (root.turn)
             int w = winner(childState);
@@ -746,7 +779,8 @@ private:
                 pool[curIdx].child[e] = childIdx;  // reindexado -- `node` pode ter sido invalidada
             }
 
-            makeChildAccPair(mcabAccStack[depth], mcabAccStack[depth + 1], beforeState, mv, nullptr);
+            makeChildAccPair(mcabAccStack[depth], mcabAccStack[depth + 1], beforeState, mv,
+                             mcabPathCache(engine, 0));
             (void)parentSide;
 
             curIdx = childIdx;
@@ -771,14 +805,27 @@ private:
         return (int)pool.size() - 1;
     }
 
-    // Avalia um nó recém-expandido e não-terminal via searchLeaf (Seção
-    // 5.2) -- devolve Q do ponto de vista do PRÓPRIO nó (node.side), ou
-    // seja, de quem vai jogar a partir dele. O backup (Seção 5.3) é quem
-    // se encarrega de inverter a perspectiva subindo a árvore.
+    // Avalia um nó recém-expandido e não-terminal. Com leafDepth==0 (o
+    // default de produção) usa nnueEvalInt no acumulador já incremental
+    // -- sem searchLeaf e sem quiescência de muro. leafDepth>0 continua
+    // sendo uma busca AB real (Seção 5.2). Devolve Q do ponto de vista
+    // do PRÓPRIO nó (node.side). O backup (Seção 5.3) inverte a
+    // perspectiva subindo a árvore.
     double evaluateLeaf(Eng& engine, NodeT& node, int depthInTree, int branchVisits,
                          SearchStatsT& stats, McabStats& mstats) {
         if (node.moves.empty()) return 0.5;  // sem lances e não-terminal: não deveria ocorrer; neutro defensivo
         int leafDepth = effectiveLeafDepth(branchVisits);
+
+        if (leafDepth <= 0) {
+            if constexpr (hasNnueEvalInt<AccPairT>::value) {
+                AccPairT& ap = mcabAccStack[depthInTree];
+                mcabResolvePending(ap, node.side, mcabPathCache(engine, 0), 0);
+                int score = nnueEvalInt(ap, node.side);
+                mstats.leafSearches++;
+                mstats.leafDepthSum += 0;
+                return scoreToQ(score, params.scoreScale);
+            }
+        }
 
         // Teto de tempo herdado da chamada (ver comentário do loop de
         // simulações). 0 = sem teto, que é o caso de chooseMoveMCAB com

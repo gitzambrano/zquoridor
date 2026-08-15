@@ -292,6 +292,11 @@ public:
     void clearXDistCache() { xdistCache.clear(); }
     uint64_t xDistCacheHits() const { return xdistCache.hits(); }
     uint64_t xDistCacheMisses() const { return xdistCache.misses(); }
+    // Ponteiro para a mesma tabela que searchLeaf/quiescence já usam.
+    // MCABSearch pega isto por SFINAE (`mcabPathCache`) e passa a
+    // buildAccPairRoot/makeChildAccPair; um ref antigo sem este getter
+    // continua compilando e cai no rebuild de BFS (nullptr).
+    PlayerPathCacheTable* pathCache() { return &xdistCache; }
 
     // True se a ÚLTIMA busca desta engine abortou por estouro de tempo
     // (`deadline`). Usado por mcab.hpp para descartar folhas truncadas: um

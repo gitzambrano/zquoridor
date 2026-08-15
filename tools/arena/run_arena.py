@@ -23,11 +23,11 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 #     GIT_REF2 = "HEAD~3"      -> 3 commits atrás
 #     GIT_REF2 = "minha-branch"-> Outra branch
 GIT_REF1 = None               # None = versão local não comitada (ou passe string de ref git)
-GIT_REF2 = None             # Ref Git base para o confronto (ex: 'main', 'v1.0', 'HEAD')
+GIT_REF2 = 'main'             # Ref Git base para o confronto (ex: 'main', 'v1.0', 'HEAD')
 
 INVERT_COLORS = True          # Se True, joga cada abertura 2x invertendo as cores (par). Se False, joga apenas 1x por abertura.
 CREATE_BIN = True             # Se True, salva os dados das partidas em data/arena/ no formato .bin de treino
-GAMES = 1000                  # Quantidade total de jogos
+GAMES = 10                  # Quantidade total de jogos
 REPORT_GAMES = 50             # Atualiza e imprime o relatório parcial a cada N jogos concluídos (default 50)
 TIME_MS = 200                 # Tempo de pensamento por lance em milissegundos
 THREADS = 14                  # Número de núcleos / processos em paralelo (default 14)
@@ -91,7 +91,7 @@ E2_POLICY_ORDER_MIN_DEPTH = 3
 # em controles de tempo bem mais curtos a troca provavelmente inverte -- para
 # medir AB puro de um lado, use False (ou --e1-no-mcab/--e2-no-mcab).
 E1_MCAB = None                     # None = default do binário (LIGADO) | True | False
-E2_MCAB = False                     # idem
+E2_MCAB = None                     # idem
 E1_MCAB_NODES = None               # produção: 20000 nós de árvore por lance
 E2_MCAB_NODES = None               # (a 200ms quem limita é o tempo, não isto)
 E1_MCAB_LEAF_DEPTH = None          # produção: 0 -- plies de alpha-beta em cada folha.

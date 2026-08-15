@@ -6,22 +6,47 @@ Design decisions, rationale, important findings, and open items for Zquoridor. `
 
 ## Future Plans & Roadmap
 
-- **External Arena Integration**:
-  - Connect Zquoridor to [Claustrophobia Engine Arena](https://claustrophobia.dev/).
-  - Integrate engine with `path-clash-bot-arena` for automated match testing against other Quoridor bots.
-- **Generation 5 NNUE Dataset & Training**:
-  - Generate a massive Gen 5 self-play dataset using the fast Monte Carlo policy-temperature sampling mode (`--mc-mode`).
-  - Train and quantize the Gen 5 NNUE network (`train_nnue.py` + `quantize_nnue.py`) with updated policy-loss weights and dataset blending.
-- **Genetic Algorithm (GA) & SPSA Engine Parameter Tuning**:
-  - Implement and run GA / SPSA parameter optimization for uncalibrated search thresholds (`RFP_MARGIN_*`, `LMP_COUNT_*`, `QS_CRITICAL_*`, `robustnessWeight`, `POLICY_ORDER_SCALE`, `catScoreScale`).
-- **Hybrid MCTS + alpha-beta** — **shipped and on by default** (`src/mcab.hpp`), +46.9 ±23.5 Elo over pure alpha-beta at 200ms/move. See the design note below. What remains:
-  - Measure at other time controls (50/100/500/1000ms). 200ms is the ONLY one tested, and the hybrid runs at ~1/9 the nodes/s of pure AB, so the trade is expected to invert somewhere below 200ms. Until that curve exists, the default is only defensible at ~200ms.
-  - The WASM/browser build now runs the hybrid too (`mcab.hpp` moved to `src/`, `engine_wasm.cpp` includes it). Still unmeasured at GUI-typical thinking times, which are often well under 200ms — the same time-control question as above, and the browser is where it bites hardest.
-  - Sweep `nodeBudget` (fixed at 20000 throughout; at 200ms the binding constraint is time, not the budget) and re-check `adaptiveLeafDepth` now that it actually works.
-  - `tune_spsa --mcab-tuning` has never been run to convergence.
-  - Decide whether self-play data generation benefits from the hybrid (it is on by default there now, with root Dirichlet noise) — no A/B on resulting network strength yet.
-- **WASM Web Worker UI**:
-  - Move the WebAssembly engine execution in `gui_web/` to a background Web Worker so deep engine searches do not block the browser UI thread.
+### Where production stands
+
+The shipped search is the hybrid PUCT tree in `src/mcab.hpp`. It is on by default in arena, self-play, and the WASM GUI. The working point is `leafDepth=0`, `fpuReduction=0.0`, `cPuct=1.5`, `scoreScale=200`, and `rootSelectMode=MaxVisits`. At 200ms per move, over 800 games, that config is **+46.9 ±23.5 Elo** ahead of pure alpha-beta. The cost is roughly a nine-fold drop in alpha-beta nodes per second (about 359k down to 41k). Phase 8's honest reading still holds: what wins at this time control is the tree sitting on the policy/value net, not alpha-beta rollouts at the leaves. Pure alpha-beta is unchanged and bit-identical; `--no-mcab` selects it.
+
+The network in front of that search is **Generation 5** (`data/nnue/nnue_weights.bin` and the quantized `_int8.bin` companion), trained on the Gen 5 epsilon and montecarlo mix described in `train_nnue.py`. The hybrid is the production search in front of that net, not a second experiment waiting to ship.
+
+Two caveats matter for everything below. First, 200ms is still the only time control that has been measured, so the default is only known to be justified there. Second, alpha-beta nodes per second is the wrong success metric for this search. Quoridor's branching factor is around 130, and a 200ms tree was only about 3434 MCTS nodes with quiescence leaves, which is not enough for the root to visit every child even once. The numbers to watch are simulations per second and Elo.
+
+The MCTS path now shares Negamax's `PlayerPathCacheTable` (`xdistCache`) when building NNUE accumulators: `buildAccPairRoot` and `makeChildAccPair` receive `Negamax::pathCache()` through SFINAE (`mcab::mcabPathCache`), so a git ref that predates the getter still compiles and still rebuilds BFS from scratch.
+
+At `leafDepth=0`, leaves are `nnueEvalInt` on that accumulator. The tree no longer calls `searchLeaf` or wall quiescence for the production working point. Alpha-beta nodes per second at this setting will sit near zero by design; the metric that should go up is simulations per second. Whether skipping quiescence holds the +46.9 Elo still needs an arena match against the previous (QS-leaf) binary.
+
+### What to do next
+
+Work through the list in order. Each item is one change. Measure it with `run_arena.py` against current production at 200ms, with enough games to separate the result from zero, before starting the next. Combining items makes it impossible to tell which one moved Elo.
+
+1. **Done in code (2026-08-14): `leafDepth=0` leaves call `nnueEvalInt`, not `searchLeaf`.** Quiescence at every new MCTS node was the main source of the counted alpha-beta nodes and did not grow the PUCT tree. The fast path is locked by `testFastLeafSkipsSearchLeaf` (`SearchStats.nodes == 0` while `leafSearches > 0`). Equivalence mode still uses `searchLeaf`, so `bench_mcab_equivalence` is unchanged. What remains is the Elo gate: play this against the previous binary (QS leaves) at 200ms. If Elo holds or rises, this stays; if it falls, revert the fast path.
+
+2. **Done (2026-08-14): the MCTS path shares Negamax's BFS cache.** `buildAccPairRoot` and `makeChildAccPair` used to receive `nullptr` on every call. They now take `engine.pathCache()` via `mcab::mcabPathCache`, which is the same `PlayerPathCacheTable` quiescence already uses. Toy engines and older refs without the getter keep compiling and keep the old rebuild. This does not need an Elo gate: the cached value is a pure function of wall topology and pawn cell, so the search is identical and only cheaper.
+
+3. **Try mean backup instead of minimax-hard.** `BackupMode::AvgBlend` exists as an enum and has never been implemented. Huang's minimax-hard backup is a good fit for deep alpha-beta leaves; production leaves are noisy NNUE values, so a single lucky child can dominate its parent. The standard MCTS mean (`W += v`, `Q = W/N`) should sit behind the existing enum, off by default, and be measured hybrid-versus-hybrid.
+
+4. **Measure the time-control curve, then pick a switch.** Play the hybrid against `--no-mcab` at 50, 100, 500, and 1000ms, plus a budget typical of the browser GUI. The expected shape is that alpha-beta wins when the clock is short and the hybrid pulls away as the tree has time to grow. From that curve, a single rule is enough — for example alpha-beta below roughly 80–100ms, hybrid at 150–200ms and above — so the GUI is not running the 200ms config on a 50ms clock. `nodeBudget=20000` is not the binding constraint at 200ms; time is. Leave `adaptiveLeafDepth` off until this curve exists, because extra leaf plies already lost badly at 200ms.
+
+5. **Progressive widening.** Production expands every legal move at every node, which in Quoridor is about 130 children, four heap vectors, and a full PUCT scan on every descent ply. A better shape is to unprune the top *k* moves by policy first (`k ≈ c · N^α`, starting around 8–16 at the root) and widen as visits grow. Keep it behind a knob, default off, until Elo says otherwise. This is the main strength lever on the list: more visits land on moves the net actually ranks, and PUCT gets cheaper as a side effect. Lazily legalizing the tail of the move list can wait until the policy-top-*k* version has been measured.
+
+6. **Run the genetic algorithm on the MCTS working point.** `tune_spsa --mcab-tuning` already exists and has never been run to convergence. Pin `leafDepth` at 0; the tuner's current range is `0..20`, which will spend generations rediscovering that depth 2 dies. The genes that belong in the first run are `cPuct`, `scoreScale`, and `fpuReduction`, plus the widening constants once item 5 has landed. Dirichlet `alpha` and `epsilon` should be scored on self-play diversity, not on arena Elo. The old alpha-beta leftovers (`RFP_MARGIN_*`, `LMP_COUNT_*`, `QS_CRITICAL_*`, `POLICY_ORDER_SCALE`, `catScoreScale`) are secondary while production leaves skip alpha-beta. They still matter for `--no-mcab` and for `leafDepth>0`. `robustnessWeight` only touches `evalSimple`.
+
+7. **Train the next net on root visit distributions.** Hybrid self-play is already on, with Dirichlet noise at the root, but there has been no A/B on the network that comes out of it, and `--mc-mode` still generates openings without a tree. Once items 1–5 have made simulations cheap, generate a shard whose policy target is the visit distribution at the root, train on it, and play the new net against Gen 5. That is Generation 6, not another pass over Gen 5.
+
+8. **Reshape the tree only if a profiler still points here after 1–5.** The candidates are a structure-of-arrays edge arena instead of four `vector`s per node, stopping the `State` copy on every descent ply (`beforeState = node.state`), and checking the clock every 16–64 simulations instead of every one. These are throughput changes. They have no Elo theory of their own.
+
+### Later, and not on the critical path
+
+The WASM GUI should eventually move engine work in `gui_web/` onto a Web Worker so a search does not freeze the page. That is independent of playing strength, but the time-control switch in item 4 should land first; otherwise the worker will simply run the wrong algorithm at GUI clocks.
+
+Connecting to [Claustrophobia](https://claustrophobia.dev/) and `path-clash-bot-arena` is the way to publish results against other bots. Strength claims there should wait until items 1–6 have landed, otherwise the published engine is still the slow quiescence-leaf hybrid.
+
+### What not to do
+
+Raising `leafDepth` to 1–4 at 50–200ms has already been measured: the tree becomes smaller than the branching factor, and pure alpha-beta won by 76 to 338 Elo. Keeping quiescence in the leaf in order to inflate alpha-beta nodes per second does not grow the PUCT tree. Threads and virtual loss, before widening and a cheap leaf exist, would only parallelise expand-all-130. Generation 5 data generation is finished and should not return to the roadmap. While the shipped search is MCTS with `leafDepth=0`, the main GA run should not be a sweep of alpha-beta-only thresholds.
 
 ---
 
@@ -103,7 +128,7 @@ Code-level detail (function/class names, file-by-file) for developer reference.
   **Combined config vs pure AB: −46.9 ±23.5 Elo over 800 games** (41.2% / 54.9% / 5.4% draws), hybrid ahead — this is the number that matters, since the 1000-game `leafDepth=0` result above was measured with the old `fpuReduction=0.1` and the `fpuReduction` result was measured hybrid-vs-hybrid. The two gains turned out to be near-additive (26.2 + 24.4 predicted, 46.9 measured). Cost: 359k nodes/s → 41k.
 
   Only `fpuReduction=0.0` improved on the plan's defaults, and only after 800 games did it separate from zero. `cPuct=1.5`, `scoreScale=200` and `rootSelectMode=MaxVisits` survive the sweep — they were guesses that happen to be near a local optimum, not measured values, and every deviation tried was worse. Defaults now in force: `leafDepth=0`, `fpuReduction=0.0` (in `mcab.hpp`, `arena.cpp` and `selfplay_main.cpp`, and as the GA `init` in `tune_spsa.cpp`). Every test and benchmark that exercises real alpha-beta leaves sets `leafDepth` explicitly, so none of them depend on the changed default.
-- **The hybrid needs a real node budget to be worth anything.** At 60ms/move with `leafDepth=4`, the whole budget buys 1–3 MCTS nodes; at `nodeBudget=500`/`leafDepth=3` a move costs ~4,600 AB nodes per MCTS node and ~1.4MB of tree. Any strength claim must come from `run_arena.py` at a time control where the tree actually grows.
+- **The hybrid needs a real node budget to be worth anything.** At 60ms/move with `leafDepth=4`, the whole budget buys 1–3 MCTS nodes; at `nodeBudget=500`/`leafDepth=3` a move costs ~4,600 AB nodes per MCTS node and ~1.4MB of tree. Any strength claim must come from `run_arena.py` at a time control where the tree actually grows. Production leaves at `leafDepth=0` now call `nnueEvalInt` instead of wall quiescence, and the MCTS path shares Negamax's BFS-distance cache. What is left — mean backup, a time-control switch, progressive widening, and a real GA run — is the roadmap above.
 
 ### NNUE Architecture (`nnue.hpp`)
 
@@ -137,18 +162,19 @@ Practical implications of this table:
 
 ## Uncalibrated Parameters
 
-The following parameters are functional initial values awaiting GA / SPSA tuning:
+These are the knobs that are still waiting on a real GA/SPSA run for the engine as it ships today. Phase 8 already measured some of them; those should stay pinned so generations are not spent rediscovering the same defaults. The corresponding work item is roadmap step 6.
 
-- `QS_CRITICAL_BFS_DELTA`, `QS_CRITICAL_ROBUSTNESS_DROP_TO`
-- `RFP_MARGIN_*`, `LMP_COUNT_*`
-- `robustnessWeight` (`evalSimple`)
-- `POLICY_ORDER_SCALE` (400) and `policyOrderingMinDepth` (3)
-- `mcab::McabParams`: `leafDepth` (0) and `fpuReduction` (0.0) are **measured** at 200ms/move (see the sweep in the MCαβ note). `cPuct` (1.5), `scoreScale` (200, borrowed from `NNUE_EVAL_SCALE`) and `rootSelectMode` (MaxVisits) survived a sweep — every deviation tried was neutral or worse — but were never optimised, only defended. Still uncalibrated and untested: `nodeBudget` (20000), `leafDepthMax` (8), the log₄ growth rate of `effectiveLeafDepth`, and the Dirichlet noise `alpha`/`epsilon`. All measurements are at one time control (200ms) on one machine. `tune_spsa --mcab-tuning` exposes five of these as GA genes.
+The first run should be `--mcab-tuning` with `leafDepth` held at 0. `cPuct` (1.5), `scoreScale` (200), and `fpuReduction` (0.0) survived a one-at-a-time sweep at 200ms but have never been optimised together. `nodeBudget` (20000) is not binding at 200ms — time is — so it should only be swept after the time-control curve in roadmap step 4. Dirichlet `alpha` and `epsilon` belong on a self-play diversity metric, not on arena Elo. Progressive-widening `k` and `α` do not exist yet; they become genes when roadmap step 5 lands.
+
+Two results from the sweep should stay pinned until the time-control curve says otherwise: `leafDepth` (0) and `rootSelectMode` (MaxVisits). The tuner still exposes `mcabLeafDepth` as a `0..20` gene; if that range is left open, the population will rediscover that depth 2 dies. `leafDepthMax` (8) and the log₄ `adaptiveLeafDepth` schedule are untested, and extra leaf plies already lost at 200ms, so they should not enter the first run either.
+
+What remains are the alpha-beta leftovers, which are secondary while production leaves skip alpha-beta, but still matter for `--no-mcab` and for quiescence if step 1 keeps it: `QS_CRITICAL_BFS_DELTA`, `QS_CRITICAL_ROBUSTNESS_DROP_TO`, `RFP_MARGIN_*`, `LMP_COUNT_*`, `POLICY_ORDER_SCALE` (400), `policyOrderingMinDepth` (3), and `catScoreScale`. `robustnessWeight` only affects `evalSimple`.
 
 ---
 
 ## Changelog
 
+- **2026-08-15**: Arena NPS accounting now counts expanded MCTS tree nodes when the hybrid search is active. Previously it always read `SearchStats.nodes`, which stays zero for the production `leafDepth=0` NNUE fast path, causing progress and final reports to display `0 nps` despite the search running normally. Pure alpha-beta and older refs without MCAB keep their existing node counter.
 - **2026-08**: Fixed MinGW thread heap corruption in `selfplay.hpp` by replacing `thread_local std::vector` with stack-allocated `std::array`.
 - **2026-08**: Introduced Monte Carlo policy-temperature sampling mode (`--mc-mode`) in self-play generator for fast opening generation.
 - **2026-08**: Updated `TrainingSample` to 32 bytes packed carrying `evalNNUE` (network win probability) and CAT totals.
@@ -167,3 +193,5 @@ The following parameters are functional initial values awaiting GA / SPSA tuning
 - **2026-08-13**: Fixed: `--no-policy-order` (self-play) and `--e1-no-policy-order`/`--e2-no-policy-order` (arena) had no effect. Both call sites only called `setPolicyOrderingEnabled(true)` inside an `if (enabled)`, which was correct while the search default was OFF; after the default flipped to ON in 2026-08, the "off" branch silently left policy ordering enabled. The setter is now always called with the resolved value.
 - **2026-08-13**: `selfplay.exe` gained `--mcab-root-select`, `--mcab-clear-tt-per-move` and `--mcab-root-noise` (the explicit "on" counterpart of `--mcab-no-root-noise`), closing the gap with `arena.exe`'s knob set. Both banners now print `root-select` and `tree-reuse`/`clear-tt-per-move`, which were previously invisible in the logs. Added `mcab::rootSelectName()` as the inverse of `resolveRootSelect()`.
 - **2026-08-13**: Fixed three counting bugs in `run_arena.py` that made every match report a score computed from a different set of games than the one announced. (1) `--no-invert` and `--invert-colors` both declared a `default=` for the same dest; argparse keeps the first action's default and ignores the rest, so the effective default was `False` and the `INVERT_COLORS = True` constant never applied — matches ran without color inversion. Default now comes from `parser.set_defaults(invert_colors=INVERT_COLORS)`. (2) In the non-inverted path a worker could get an odd `--games`, which `arena.exe` rounds up (`totalGames++`), so it played one game more than Python counted — a 100-game match actually played 112, with the extra games landing outside the denominator. Worker game counts are now always even. (3) The final scoreboard was built from `PROGRESS_JSON` deltas, and each worker's tail (`worker_games % worker_report` games) is only ever reported in its `RESULT_JSON`, which was read only when `--report-games 0` — those games silently vanished from the score. `RESULT_JSON` (cumulative per worker) is now the authoritative source for the final report; `PROGRESS_JSON` only drives the live display. Verified with two identical engines: 10 requested → 10 played, 5–5.
+- **2026-08-14**: The hybrid MCTS path now passes Negamax's `PlayerPathCacheTable` (`xdistCache`) into `buildAccPairRoot` / `makeChildAccPair` instead of `nullptr`. Detection is SFINAE (`mcab::mcabPathCache` / `Negamax::pathCache()`), so older refs and the toy engines in `test_mcab_dispatch.cpp` still compile and still rebuild BFS. Search values are unchanged; only the repeated distance BFS on the tree path is avoided. Locked by `testMctsPathCacheWired` in `tests/test_mcab_core.cpp`.
+- **2026-08-14**: Production `leafDepth=0` leaves evaluate with `nnueEvalInt` on the incremental accumulator and no longer enter `searchLeaf` / wall quiescence. `leafDepth>0` and equivalence mode are unchanged. Locked by `testFastLeafSkipsSearchLeaf`. Elo vs the old QS leaf is still unmeasured.

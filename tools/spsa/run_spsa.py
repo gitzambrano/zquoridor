@@ -22,13 +22,13 @@ import sys
 GENERATIONS = 40
 POPULATION = 24
 GAMES_PER_MATCH = 14
-THREADS = 14  # avalia N individuos da populacao em paralelo (ver tune_spsa.cpp --help)
+THREADS = 10  # avalia N individuos da populacao em paralelo (ver tune_spsa.cpp --help)
 
 ELITE_FRACTION = 0.20
 MUTATION_RATE = 0.25
 IMMIGRANTS = 0.10
 
-SEED = 200809
+SEED = 120809
 TIME_BUDGET_SEC = None
 
 CHECKPOINT = "ga_checkpoint.txt"
