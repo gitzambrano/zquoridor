@@ -345,6 +345,36 @@ void testBackupModes() {
            hardMstats.simulations, avgMstats.simulations);
 }
 
+// ---------------------------------------------------------------------
+// 9) Progressive widening keeps the policy-best prefix active and leaves
+// the legal tail unpruned when the feature is disabled.
+// ---------------------------------------------------------------------
+void testProgressiveWidening() {
+    Negamax eng;
+    eng.setEvalMode(Negamax::EvalMode::NNUE);
+    State root = initialState();
+    RepetitionTable hist;
+    SearchStats stats;
+    mcab::McabStats mstats;
+
+    Mcab mcab;
+    mcab.params.nodeBudget = 120;
+    mcab.params.leafDepth = 0;
+    mcab.params.treeReuse = true;
+    mcab.params.progressiveWidening = true;
+    mcab.params.wideningInitialMoves = 4;
+    mcab.params.wideningCoefficient = 1.0;
+    mcab.params.wideningExponent = 0.5;
+    mcab.chooseMoveMCAB(eng, root, 40, 0, stats, hist, &mstats);
+
+    const auto* rootNode = mcab.rootNodeForInspection();
+    assert(rootNode != nullptr);
+    assert(rootNode->activeMoves >= 4);
+    assert(rootNode->activeMoves < (int)rootNode->candidateMoves.size());
+    printf("[testProgressiveWidening] active=%d candidates=%zu simulations=%lld OK\n",
+           rootNode->activeMoves, rootNode->candidateMoves.size(), mstats.simulations);
+}
+
 int main() {
     testScoreToQMatchesWinProb();
     testPoolBudget();
@@ -355,6 +385,7 @@ int main() {
     testMctsPathCacheWired();
     testFastLeafSkipsSearchLeaf();
     testBackupModes();
+    testProgressiveWidening();
     printf("\nTODOS OS TESTES DE test_mcab_core PASSARAM\n");
     return 0;
 }

@@ -162,6 +162,14 @@ constexpr bool E2_MCAB_EQUIV_MODE_DEFAULT = false;
 // "" = producao; valores aceitos: "minimax"/"hard" e "avg"/"mean".
 constexpr const char* E1_MCAB_BACKUP_MODE_OVERRIDE = ""; // producao: avg
 constexpr const char* E2_MCAB_BACKUP_MODE_OVERRIDE = ""; // producao: avg
+constexpr mcab::Tri E1_MCAB_PROGRESSIVE_WIDENING_OVERRIDE = mcab::Tri::Unset; // producao: desligado
+constexpr mcab::Tri E2_MCAB_PROGRESSIVE_WIDENING_OVERRIDE = mcab::Tri::Unset;
+constexpr int E1_MCAB_WIDENING_INITIAL_OVERRIDE = mcab::UNSET_INT; // producao: 16
+constexpr int E2_MCAB_WIDENING_INITIAL_OVERRIDE = mcab::UNSET_INT;
+constexpr double E1_MCAB_WIDENING_COEFFICIENT_OVERRIDE = mcab::UNSET_REAL; // producao: 2.0
+constexpr double E2_MCAB_WIDENING_COEFFICIENT_OVERRIDE = mcab::UNSET_REAL;
+constexpr double E1_MCAB_WIDENING_EXPONENT_OVERRIDE = mcab::UNSET_REAL; // producao: 0.5
+constexpr double E2_MCAB_WIDENING_EXPONENT_OVERRIDE = mcab::UNSET_REAL;
 
 // =============================================================================
 // PARAMETROS DE BUSCA (search.hpp) -- bloco de OVERRIDE, por engine
@@ -222,6 +230,14 @@ static mcab::RootSelectMode g_e1McabRootSelectMode = mcab::resolveRootSelect(E1_
 static mcab::RootSelectMode g_e2McabRootSelectMode = mcab::resolveRootSelect(E2_MCAB_ROOT_SELECT_OVERRIDE, MCAB_PROD.rootSelectMode);
 static mcab::BackupMode g_e1McabBackupMode = mcab::resolveBackupMode(E1_MCAB_BACKUP_MODE_OVERRIDE, MCAB_PROD.backupMode);
 static mcab::BackupMode g_e2McabBackupMode = mcab::resolveBackupMode(E2_MCAB_BACKUP_MODE_OVERRIDE, MCAB_PROD.backupMode);
+static bool g_e1McabProgressiveWidening = mcab::resolve(E1_MCAB_PROGRESSIVE_WIDENING_OVERRIDE, MCAB_PROD.progressiveWidening);
+static bool g_e2McabProgressiveWidening = mcab::resolve(E2_MCAB_PROGRESSIVE_WIDENING_OVERRIDE, MCAB_PROD.progressiveWidening);
+static int g_e1McabWideningInitial = mcab::resolve(E1_MCAB_WIDENING_INITIAL_OVERRIDE, MCAB_PROD.wideningInitialMoves);
+static int g_e2McabWideningInitial = mcab::resolve(E2_MCAB_WIDENING_INITIAL_OVERRIDE, MCAB_PROD.wideningInitialMoves);
+static double g_e1McabWideningCoefficient = mcab::resolve(E1_MCAB_WIDENING_COEFFICIENT_OVERRIDE, MCAB_PROD.wideningCoefficient);
+static double g_e2McabWideningCoefficient = mcab::resolve(E2_MCAB_WIDENING_COEFFICIENT_OVERRIDE, MCAB_PROD.wideningCoefficient);
+static double g_e1McabWideningExponent = mcab::resolve(E1_MCAB_WIDENING_EXPONENT_OVERRIDE, MCAB_PROD.wideningExponent);
+static double g_e2McabWideningExponent = mcab::resolve(E2_MCAB_WIDENING_EXPONENT_OVERRIDE, MCAB_PROD.wideningExponent);
 static bool g_e1McabTreeReuse = mcab::resolve(E1_MCAB_TREE_REUSE_OVERRIDE, MCAB_PROD.treeReuse);
 static bool g_e2McabTreeReuse = mcab::resolve(E2_MCAB_TREE_REUSE_OVERRIDE, MCAB_PROD.treeReuse);
 static bool g_e1McabClearTTPerMove = mcab::resolve(E1_MCAB_CLEAR_TT_PER_MOVE_OVERRIDE, MCAB_PROD.clearTTPerMove);
@@ -414,6 +430,10 @@ int playArenaGame(int engine1PlayerIdx, int timeMs, int randomPlies, std::mt1993
         p1.scoreScale = g_e1McabScoreScale;
         p1.rootSelectMode = g_e1McabRootSelectMode;
         p1.backupMode = g_e1McabBackupMode;
+        p1.progressiveWidening = g_e1McabProgressiveWidening;
+        p1.wideningInitialMoves = g_e1McabWideningInitial;
+        p1.wideningCoefficient = g_e1McabWideningCoefficient;
+        p1.wideningExponent = g_e1McabWideningExponent;
         p1.treeReuse = g_e1McabTreeReuse;
         p1.clearTTPerMove = g_e1McabClearTTPerMove;
         p1.rootNoiseEnabled = g_e1McabRootNoiseEnabled;
@@ -433,6 +453,10 @@ int playArenaGame(int engine1PlayerIdx, int timeMs, int randomPlies, std::mt1993
         p2.scoreScale = g_e2McabScoreScale;
         p2.rootSelectMode = g_e2McabRootSelectMode;
         p2.backupMode = g_e2McabBackupMode;
+        p2.progressiveWidening = g_e2McabProgressiveWidening;
+        p2.wideningInitialMoves = g_e2McabWideningInitial;
+        p2.wideningCoefficient = g_e2McabWideningCoefficient;
+        p2.wideningExponent = g_e2McabWideningExponent;
         p2.treeReuse = g_e2McabTreeReuse;
         p2.clearTTPerMove = g_e2McabClearTTPerMove;
         p2.rootNoiseEnabled = g_e2McabRootNoiseEnabled;
@@ -620,6 +644,14 @@ int main(int argc, char* argv[]) {
     mcab::RootSelectMode e2McabRootSelect = mcab::resolveRootSelect(E2_MCAB_ROOT_SELECT_OVERRIDE, MCAB_PROD.rootSelectMode);
     mcab::BackupMode e1McabBackupMode = mcab::resolveBackupMode(E1_MCAB_BACKUP_MODE_OVERRIDE, MCAB_PROD.backupMode);
     mcab::BackupMode e2McabBackupMode = mcab::resolveBackupMode(E2_MCAB_BACKUP_MODE_OVERRIDE, MCAB_PROD.backupMode);
+    bool e1McabProgressiveWidening = mcab::resolve(E1_MCAB_PROGRESSIVE_WIDENING_OVERRIDE, MCAB_PROD.progressiveWidening);
+    bool e2McabProgressiveWidening = mcab::resolve(E2_MCAB_PROGRESSIVE_WIDENING_OVERRIDE, MCAB_PROD.progressiveWidening);
+    int e1McabWideningInitial = mcab::resolve(E1_MCAB_WIDENING_INITIAL_OVERRIDE, MCAB_PROD.wideningInitialMoves);
+    int e2McabWideningInitial = mcab::resolve(E2_MCAB_WIDENING_INITIAL_OVERRIDE, MCAB_PROD.wideningInitialMoves);
+    double e1McabWideningCoefficient = mcab::resolve(E1_MCAB_WIDENING_COEFFICIENT_OVERRIDE, MCAB_PROD.wideningCoefficient);
+    double e2McabWideningCoefficient = mcab::resolve(E2_MCAB_WIDENING_COEFFICIENT_OVERRIDE, MCAB_PROD.wideningCoefficient);
+    double e1McabWideningExponent = mcab::resolve(E1_MCAB_WIDENING_EXPONENT_OVERRIDE, MCAB_PROD.wideningExponent);
+    double e2McabWideningExponent = mcab::resolve(E2_MCAB_WIDENING_EXPONENT_OVERRIDE, MCAB_PROD.wideningExponent);
     bool e1McabTreeReuse = mcab::resolve(E1_MCAB_TREE_REUSE_OVERRIDE, MCAB_PROD.treeReuse);
     bool e2McabTreeReuse = mcab::resolve(E2_MCAB_TREE_REUSE_OVERRIDE, MCAB_PROD.treeReuse);
     bool e1McabClearTTPerMove = mcab::resolve(E1_MCAB_CLEAR_TT_PER_MOVE_OVERRIDE, MCAB_PROD.clearTTPerMove);
@@ -707,6 +739,21 @@ int main(int argc, char* argv[]) {
         }
         else if (std::strcmp(argv[i], "--e1-mcab-backup") == 0 && i + 1 < argc) e1McabBackupMode = mcab::resolveBackupMode(argv[++i], MCAB_PROD.backupMode);
         else if (std::strcmp(argv[i], "--e2-mcab-backup") == 0 && i + 1 < argc) e2McabBackupMode = mcab::resolveBackupMode(argv[++i], MCAB_PROD.backupMode);
+        else if (std::strcmp(argv[i], "--mcab-progressive-widening") == 0) e1McabProgressiveWidening = e2McabProgressiveWidening = true;
+        else if (std::strcmp(argv[i], "--e1-mcab-progressive-widening") == 0) e1McabProgressiveWidening = true;
+        else if (std::strcmp(argv[i], "--e2-mcab-progressive-widening") == 0) e2McabProgressiveWidening = true;
+        else if (std::strcmp(argv[i], "--mcab-no-progressive-widening") == 0) e1McabProgressiveWidening = e2McabProgressiveWidening = false;
+        else if (std::strcmp(argv[i], "--e1-mcab-no-progressive-widening") == 0) e1McabProgressiveWidening = false;
+        else if (std::strcmp(argv[i], "--e2-mcab-no-progressive-widening") == 0) e2McabProgressiveWidening = false;
+        else if (std::strcmp(argv[i], "--mcab-widening-initial") == 0 && i + 1 < argc) e1McabWideningInitial = e2McabWideningInitial = std::atoi(argv[++i]);
+        else if (std::strcmp(argv[i], "--e1-mcab-widening-initial") == 0 && i + 1 < argc) e1McabWideningInitial = std::atoi(argv[++i]);
+        else if (std::strcmp(argv[i], "--e2-mcab-widening-initial") == 0 && i + 1 < argc) e2McabWideningInitial = std::atoi(argv[++i]);
+        else if (std::strcmp(argv[i], "--mcab-widening-coefficient") == 0 && i + 1 < argc) e1McabWideningCoefficient = e2McabWideningCoefficient = std::atof(argv[++i]);
+        else if (std::strcmp(argv[i], "--e1-mcab-widening-coefficient") == 0 && i + 1 < argc) e1McabWideningCoefficient = std::atof(argv[++i]);
+        else if (std::strcmp(argv[i], "--e2-mcab-widening-coefficient") == 0 && i + 1 < argc) e2McabWideningCoefficient = std::atof(argv[++i]);
+        else if (std::strcmp(argv[i], "--mcab-widening-exponent") == 0 && i + 1 < argc) e1McabWideningExponent = e2McabWideningExponent = std::atof(argv[++i]);
+        else if (std::strcmp(argv[i], "--e1-mcab-widening-exponent") == 0 && i + 1 < argc) e1McabWideningExponent = std::atof(argv[++i]);
+        else if (std::strcmp(argv[i], "--e2-mcab-widening-exponent") == 0 && i + 1 < argc) e2McabWideningExponent = std::atof(argv[++i]);
         else if (std::strcmp(argv[i], "--e1-mcab-fpu") == 0 && i + 1 < argc) e1McabFpu = std::atof(argv[++i]);
         else if (std::strcmp(argv[i], "--e2-mcab-fpu") == 0 && i + 1 < argc) e2McabFpu = std::atof(argv[++i]);
         else if (std::strcmp(argv[i], "--e1-mcab-score-scale") == 0 && i + 1 < argc) e1McabScoreScale = std::atof(argv[++i]);
@@ -760,6 +807,14 @@ int main(int argc, char* argv[]) {
     g_e2McabRootSelectMode = e2McabRootSelect;
     g_e1McabBackupMode = e1McabBackupMode;
     g_e2McabBackupMode = e2McabBackupMode;
+    g_e1McabProgressiveWidening = e1McabProgressiveWidening;
+    g_e2McabProgressiveWidening = e2McabProgressiveWidening;
+    g_e1McabWideningInitial = e1McabWideningInitial;
+    g_e2McabWideningInitial = e2McabWideningInitial;
+    g_e1McabWideningCoefficient = e1McabWideningCoefficient;
+    g_e2McabWideningCoefficient = e2McabWideningCoefficient;
+    g_e1McabWideningExponent = e1McabWideningExponent;
+    g_e2McabWideningExponent = e2McabWideningExponent;
     g_e1McabTreeReuse = e1McabTreeReuse;
     g_e2McabTreeReuse = e2McabTreeReuse;
     g_e1McabClearTTPerMove = e1McabClearTTPerMove;
@@ -866,10 +921,12 @@ int main(int argc, char* argv[]) {
         if (!McabRunner1::supported) {
             std::fprintf(stderr, "[arena] Engine 1: ref nao suporta o MCTS hibrido (compilado antes da feature), rodando alpha-beta puro\n");
         } else {
-            std::fprintf(stderr, "[arena] Engine 1: MCTS HIBRIDO (nodes=%d, leaf-depth=%d, cpuct=%.2f, fpu=%.2f, scale=%.0f, root-select=%s, backup=%s, tree-reuse=%s%s)\n",
+            std::fprintf(stderr, "[arena] Engine 1: MCTS HIBRIDO (nodes=%d, leaf-depth=%d, cpuct=%.2f, fpu=%.2f, scale=%.0f, root-select=%s, backup=%s, widening=%s(%d+%.2f*N^%.2f), tree-reuse=%s%s)\n",
                           g_e1McabEquivMode ? 0 : g_e1McabNodeBudget, g_e1McabLeafDepth, g_e1McabCPuct,
                           g_e1McabFpuReduction, g_e1McabScoreScale,
                           mcab::rootSelectName(g_e1McabRootSelectMode), mcab::backupModeName(g_e1McabBackupMode),
+                          g_e1McabProgressiveWidening ? "on" : "off", g_e1McabWideningInitial,
+                          g_e1McabWideningCoefficient, g_e1McabWideningExponent,
                           g_e1McabTreeReuse ? "on" : "off",
                           g_e1McabEquivMode ? ", modo equivalencia" : "");
         }
@@ -880,10 +937,12 @@ int main(int argc, char* argv[]) {
         if (!McabRunner2::supported) {
             std::fprintf(stderr, "[arena] Engine 2: ref nao suporta o MCTS hibrido (compilado antes da feature), rodando alpha-beta puro\n");
         } else {
-            std::fprintf(stderr, "[arena] Engine 2: MCTS HIBRIDO (nodes=%d, leaf-depth=%d, cpuct=%.2f, fpu=%.2f, scale=%.0f, root-select=%s, backup=%s, tree-reuse=%s%s)\n",
+            std::fprintf(stderr, "[arena] Engine 2: MCTS HIBRIDO (nodes=%d, leaf-depth=%d, cpuct=%.2f, fpu=%.2f, scale=%.0f, root-select=%s, backup=%s, widening=%s(%d+%.2f*N^%.2f), tree-reuse=%s%s)\n",
                           g_e2McabEquivMode ? 0 : g_e2McabNodeBudget, g_e2McabLeafDepth, g_e2McabCPuct,
                           g_e2McabFpuReduction, g_e2McabScoreScale,
                           mcab::rootSelectName(g_e2McabRootSelectMode), mcab::backupModeName(g_e2McabBackupMode),
+                          g_e2McabProgressiveWidening ? "on" : "off", g_e2McabWideningInitial,
+                          g_e2McabWideningCoefficient, g_e2McabWideningExponent,
                           g_e2McabTreeReuse ? "on" : "off",
                           g_e2McabEquivMode ? ", modo equivalencia" : "");
         }

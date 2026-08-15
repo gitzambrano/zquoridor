@@ -176,6 +176,10 @@ MCAB_ROOT_NOISE_ALPHA   = None  # produção: 0.3
 MCAB_ROOT_NOISE_EPSILON = None  # produção: 0.25
 MCAB_ROOT_SELECT  = None   # produção: "visits" | "q" | "visits-then-q"
 MCAB_CLEAR_TT_PER_MOVE = None   # produção: desligado (limpa a TT do AB a cada lance)
+MCAB_PROGRESSIVE_WIDENING = None # produção: desligado
+MCAB_WIDENING_INITIAL = None    # produção: 16
+MCAB_WIDENING_COEFFICIENT = None # produção: 2.0
+MCAB_WIDENING_EXPONENT = None   # produção: 0.5
 
 # =============================================================================
 # PARÂMETROS DE BUSCA (search.hpp) -- mesma regra: None = produção
@@ -349,6 +353,13 @@ def parse_args():
                     help="criterio de escolha do lance na raiz (producao: visits)")
     p.add_argument("--mcab-clear-tt-per-move", dest="mcab_clear_tt_per_move", action="store_true", default=None,
                     help="limpa a TT do alpha-beta a cada lance (producao: desligado)")
+    p.add_argument("--mcab-progressive-widening", dest="mcab_progressive_widening", action="store_true", default=None,
+                    help="liga progressive widening (producao: desligado)")
+    p.add_argument("--mcab-no-progressive-widening", dest="mcab_progressive_widening", action="store_false",
+                    help="desliga progressive widening")
+    p.add_argument("--mcab-widening-initial", type=int, default=None, help="prefixo inicial (producao: 16)")
+    p.add_argument("--mcab-widening-coefficient", type=float, default=None, help="coeficiente c (producao: 2.0)")
+    p.add_argument("--mcab-widening-exponent", type=float, default=None, help="expoente alpha (producao: 0.5)")
     # Parametros de busca (search.hpp). default=None em tudo => "nao manda
     # flag"; a constante do bloco CONFIG entra depois, na montagem do comando.
     for flag, dest, _const, tipo in SEARCH_TUNING_KNOBS:
@@ -461,6 +472,9 @@ def main():
         ("mcab_root_noise_alpha",   MCAB_ROOT_NOISE_ALPHA,   "--mcab-root-noise-alpha"),
         ("mcab_root_noise_epsilon", MCAB_ROOT_NOISE_EPSILON, "--mcab-root-noise-epsilon"),
         ("mcab_max_tree_depth",     MCAB_MAX_TREE_DEPTH,     "--mcab-max-tree-depth"),
+        ("mcab_widening_initial",   MCAB_WIDENING_INITIAL,   "--mcab-widening-initial"),
+        ("mcab_widening_coefficient", MCAB_WIDENING_COEFFICIENT, "--mcab-widening-coefficient"),
+        ("mcab_widening_exponent",  MCAB_WIDENING_EXPONENT,  "--mcab-widening-exponent"),
     ):
         v = mcab_val(attr, constante)
         if v is not None:
@@ -476,6 +490,10 @@ def main():
         cmd += ["--mcab-root-select", str(mcab_val("mcab_root_select", MCAB_ROOT_SELECT))]
     if mcab_val("mcab_clear_tt_per_move", MCAB_CLEAR_TT_PER_MOVE) is True:
         cmd += ["--mcab-clear-tt-per-move"]
+    if mcab_val("mcab_progressive_widening", MCAB_PROGRESSIVE_WIDENING) is True:
+        cmd += ["--mcab-progressive-widening"]
+    elif mcab_val("mcab_progressive_widening", MCAB_PROGRESSIVE_WIDENING) is False:
+        cmd += ["--mcab-no-progressive-widening"]
 
     # Parametros de busca (search.hpp): mesma regra -- CLI > CONFIG > producao.
     # Nada resolvido => nenhuma flag, e o binario fica no valor de producao.

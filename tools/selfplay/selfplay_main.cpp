@@ -60,6 +60,10 @@ constexpr double MCAB_ROOT_NOISE_EPSILON_OVERRIDE     = mcab::UNSET_REAL;  // pr
 constexpr int    MCAB_MAX_TREE_DEPTH_OVERRIDE         = mcab::UNSET_INT;   // producao: 48
 constexpr const char* MCAB_ROOT_SELECT_OVERRIDE       = "";                // producao: "visits" (MaxVisits)
 constexpr const char* MCAB_BACKUP_MODE_OVERRIDE        = "";                // producao: "avg"; experimento: "minimax"
+constexpr mcab::Tri MCAB_PROGRESSIVE_WIDENING_OVERRIDE = mcab::Tri::Unset;   // producao: desligado
+constexpr int MCAB_WIDENING_INITIAL_OVERRIDE           = mcab::UNSET_INT;    // producao: 16
+constexpr double MCAB_WIDENING_COEFFICIENT_OVERRIDE    = mcab::UNSET_REAL;  // producao: 2.0
+constexpr double MCAB_WIDENING_EXPONENT_OVERRIDE       = mcab::UNSET_REAL;  // producao: 0.5
 constexpr mcab::Tri MCAB_CLEAR_TT_PER_MOVE_OVERRIDE   = mcab::Tri::Unset;  // producao: desligado
 
 // Valores de producao, resolvidos uma vez (McabParams default-construido).
@@ -80,6 +84,10 @@ static double g_mcabRootNoiseEpsilon  = mcab::resolve(MCAB_ROOT_NOISE_EPSILON_OV
 static int    g_mcabMaxTreeDepth      = mcab::resolve(MCAB_MAX_TREE_DEPTH_OVERRIDE, MCAB_PROD.maxTreeDepth);
 static mcab::RootSelectMode g_mcabRootSelectMode = mcab::resolveRootSelect(MCAB_ROOT_SELECT_OVERRIDE, MCAB_PROD.rootSelectMode);
 static mcab::BackupMode g_mcabBackupMode = mcab::resolveBackupMode(MCAB_BACKUP_MODE_OVERRIDE, MCAB_PROD.backupMode);
+static bool g_mcabProgressiveWidening = mcab::resolve(MCAB_PROGRESSIVE_WIDENING_OVERRIDE, MCAB_PROD.progressiveWidening);
+static int g_mcabWideningInitial = mcab::resolve(MCAB_WIDENING_INITIAL_OVERRIDE, MCAB_PROD.wideningInitialMoves);
+static double g_mcabWideningCoefficient = mcab::resolve(MCAB_WIDENING_COEFFICIENT_OVERRIDE, MCAB_PROD.wideningCoefficient);
+static double g_mcabWideningExponent = mcab::resolve(MCAB_WIDENING_EXPONENT_OVERRIDE, MCAB_PROD.wideningExponent);
 static bool   g_mcabClearTTPerMove    = mcab::resolve(MCAB_CLEAR_TT_PER_MOVE_OVERRIDE, MCAB_PROD.clearTTPerMove);
 
 // =============================================================================
@@ -194,6 +202,11 @@ static void printUsage(const char* prog) {
         "  --mcab-root-select M        criterio de escolha na raiz:\n"
         "                      visits | q | visits-then-q (producao: visits)\n"
         "  --mcab-backup M       agregacao: minimax | avg (producao: avg)\n"
+        "  --mcab-progressive-widening  restringe os lances ao prefixo da politica\n"
+        "  --mcab-no-progressive-widening desliga progressive widening (default)\n"
+        "  --mcab-widening-initial N     prefixo inicial (default %d)\n"
+        "  --mcab-widening-coefficient X coeficiente c (default %.2f)\n"
+        "  --mcab-widening-exponent X    expoente alpha (default %.2f)\n"
         "  --mcab-clear-tt-per-move    limpa a TT do alpha-beta a cada lance\n"
         "                      (producao: desligado)\n"
         "  --separate-tt        cada cor usa sua propria TT/engine, isolada\n"
@@ -214,6 +227,7 @@ static void printUsage(const char* prog) {
         g_mcabNodeBudget, g_mcabLeafDepth, g_mcabLeafDepthMax,
         g_mcabCPuct, g_mcabFpuReduction, g_mcabScoreScale,
         g_mcabRootNoiseAlpha, g_mcabRootNoiseEpsilon, g_mcabMaxTreeDepth,
+        g_mcabWideningInitial, g_mcabWideningCoefficient, g_mcabWideningExponent,
         tuning::searchTuningUsage());
 }
 
@@ -272,6 +286,11 @@ int main(int argc, char** argv) {
         // um typo em "visits-then-q" nao deve parecer que funcionou.
         else if (a == "--mcab-root-select")          g_mcabRootSelectMode    = mcab::resolveRootSelect(next("--mcab-root-select").c_str(), MCAB_PROD.rootSelectMode);
         else if (a == "--mcab-backup")               g_mcabBackupMode         = mcab::resolveBackupMode(next("--mcab-backup").c_str(), MCAB_PROD.backupMode);
+        else if (a == "--mcab-progressive-widening") g_mcabProgressiveWidening = true;
+        else if (a == "--mcab-no-progressive-widening") g_mcabProgressiveWidening = false;
+        else if (a == "--mcab-widening-initial") g_mcabWideningInitial = std::atoi(next("--mcab-widening-initial").c_str());
+        else if (a == "--mcab-widening-coefficient") g_mcabWideningCoefficient = std::atof(next("--mcab-widening-coefficient").c_str());
+        else if (a == "--mcab-widening-exponent") g_mcabWideningExponent = std::atof(next("--mcab-widening-exponent").c_str());
         else if (a == "--mcab-clear-tt-per-move")    g_mcabClearTTPerMove    = true;
         else if (a == "--mcab-root-noise")           g_mcabRootNoiseEnabled  = true;
         else if (a == "--separate-tt")     cfg.sharedTT              = false;
@@ -327,6 +346,10 @@ int main(int argc, char** argv) {
     cfg.mcabParams.maxTreeDepth      = g_mcabMaxTreeDepth;
     cfg.mcabParams.rootSelectMode    = g_mcabRootSelectMode;
     cfg.mcabParams.backupMode        = g_mcabBackupMode;
+    cfg.mcabParams.progressiveWidening = g_mcabProgressiveWidening;
+    cfg.mcabParams.wideningInitialMoves = g_mcabWideningInitial;
+    cfg.mcabParams.wideningCoefficient = g_mcabWideningCoefficient;
+    cfg.mcabParams.wideningExponent = g_mcabWideningExponent;
     cfg.mcabParams.clearTTPerMove    = g_mcabClearTTPerMove;
     cfg.tuning                       = g_tuning;
     // rootNoiseSeed fica no default de McabParams (0x9E3779B9) aqui -- é

@@ -59,6 +59,7 @@
 #include <cmath>
 #include <cassert>
 #include <algorithm>
+#include <numeric>
 #include <limits>
 #include <chrono>
 #include <random>
@@ -83,6 +84,24 @@ inline double scoreToQ(int score, double scale) {
 // exp(-5000) tranquilo, ver Seção 4.3.1). Não precisa coincidir com
 // qr::SCORE_INF (ver nota de implementação no topo do arquivo).
 constexpr int MCAB_WIN_SCORE = 1'000'000;
+constexpr int MCAB_WALL_GRID = 8;
+
+template <typename StateT>
+inline bool mcabWallSlotAvailable(const StateT& s, int orientation, int r, int c) {
+    int slot = r * MCAB_WALL_GRID + c;
+    if (orientation == 0) {
+        if ((s.wallsH >> slot) & 1ull) return false;
+        if (c > 0 && ((s.wallsH >> (slot - 1)) & 1ull)) return false;
+        if (c + 1 < MCAB_WALL_GRID && ((s.wallsH >> (slot + 1)) & 1ull)) return false;
+        if ((s.wallsV >> slot) & 1ull) return false;
+    } else {
+        if ((s.wallsV >> slot) & 1ull) return false;
+        if (r > 0 && ((s.wallsV >> (slot - MCAB_WALL_GRID)) & 1ull)) return false;
+        if (r + 1 < MCAB_WALL_GRID && ((s.wallsV >> (slot + MCAB_WALL_GRID)) & 1ull)) return false;
+        if ((s.wallsH >> slot) & 1ull) return false;
+    }
+    return true;
+}
 
 // =========================================================================
 // Seção 9 -- Parâmetros ajustáveis (tabela completa), agrupados num struct
@@ -179,6 +198,10 @@ struct McabParams {
     double scoreScale = 200.0;           // = NNUE_EVAL_SCALE
     RootSelectMode rootSelectMode = RootSelectMode::MaxVisits;
     BackupMode backupMode = BackupMode::AvgBlend;
+    bool progressiveWidening = false;   // production default: off until an Elo gate
+    int wideningInitialMoves = 16;      // top policy moves available at N=0
+    double wideningCoefficient = 2.0;   // added coefficient in c*N^alpha
+    double wideningExponent = 0.5;      // exponent alpha in c*N^alpha
     bool treeReuse = true;               // reuso de subárvore entre lances (Seção 8)
     bool clearTTPerMove = false;
     bool rootNoiseEnabled = false;       // ruído de Dirichlet nos priors da raiz (Seção 9) -- só self-play
@@ -252,6 +275,67 @@ inline auto mcabResolvePending(Acc& ap, int side, Cache cache, int)
 template <typename Acc, typename Cache>
 inline void mcabResolvePending(Acc&, int, Cache, ...) {}
 
+// Lazy progressive-widening legalization. Current rules.hpp exposes the
+// staged one-wall predicate; older refs may not, so the fallback checks the
+// candidate against their complete legal-move list and preserves compatibility.
+template <typename StateT, typename MoveT>
+inline auto mcabSingleWallLegal(const StateT& s, int player, const MoveT& m, int)
+    -> decltype(isWallMoveLegal(s, player, (int)m.a, (int)m.b, (int)m.c), bool()) {
+    return isWallMoveLegal(s, player, (int)m.a, (int)m.b, (int)m.c);
+}
+
+template <typename MoveT>
+inline auto mcabMovesEqual(const MoveT& a, const MoveT& b, int) -> decltype((bool)(a == b)) {
+    return a == b;
+}
+template <typename MoveT>
+inline bool mcabMovesEqual(const MoveT& a, const MoveT& b, ...) {
+    return std::memcmp(&a, &b, sizeof(MoveT)) == 0;
+}
+
+template <typename StateT, typename MoveT>
+inline bool mcabSingleWallLegal(const StateT& s, int player, const MoveT& m, ...) {
+    auto legal = legalMoves(s);
+    for (const auto& candidate : legal) {
+        if (mcabMovesEqual(candidate, m, 0)) return true;
+    }
+    (void)player;
+    return false;
+}
+
+template <typename MoveT>
+inline auto mcabIsWall(const MoveT& m, int) -> decltype((bool)m.isWall) {
+    return (bool)m.isWall;
+}
+template <typename MoveT>
+inline bool mcabIsWall(const MoveT&, ...) {
+    return false;
+}
+
+template <typename MoveT, typename StateT, typename MoveListT>
+inline auto mcabEnumerateCandidates(const StateT& s, int side, MoveListT& out, int)
+    -> decltype(pawnStepMoves(s, side, out),
+                out.push_back(MoveT::wall(0, 0, 0)),
+                (bool)s.wallsH,
+                void()) {
+    pawnStepMoves(s, side, out);
+    if (s.wallsLeft[side] > 0) {
+        for (int orientation = 0; orientation < 2; orientation++) {
+            for (int r = 0; r < MCAB_WALL_GRID; r++) {
+                for (int c = 0; c < MCAB_WALL_GRID; c++) {
+                    if (mcabWallSlotAvailable(s, orientation, r, c))
+                        out.push_back(MoveT::wall(orientation, r, c));
+                }
+            }
+        }
+    }
+}
+
+template <typename MoveT, typename StateT, typename MoveListT>
+inline void mcabEnumerateCandidates(const StateT& s, int /*side*/, MoveListT& out, ...) {
+    out = legalMoves(s);
+}
+
 // =========================================================================
 // 4.3.2 -- Node pool linear (índices, não ponteiros)
 // =========================================================================
@@ -262,11 +346,16 @@ struct MCABNode {
     bool expanded = false;
     bool terminal = false;
     int terminalScore = 0;        // score (unidades NNUE_EVAL_SCALE); convertido via scoreToQ na hora de usar
-    MoveListT moves;               // gerado 1x na expansão (legalMoves(state))
+    MoveListT moves;               // currently active, already-legal moves
     std::vector<float> P;         // prior por lance, mesmo índice de `moves`
     std::vector<float> N;         // visitas por aresta
     std::vector<float> W;         // soma (AvgBlend) or backed value (MinimaxHard)
     std::vector<int32_t> child;   // índice no pool, -1 = não expandido
+    int activeMoves = 0;          // progressive-widening prefix currently unpruned
+    MoveListT candidateMoves;      // lazy mode: legal-slot candidates, not all legalized
+    std::vector<float> candidateP;
+    std::vector<size_t> activeCandidateIndices;
+    size_t nextCandidate = 0;
     int totalN = 0;
     bool noised = false;          // ruído de Dirichlet já aplicado a `P` (Seção 9) -- evita
                                   // recompor o ruído sobre si mesmo quando este nó vira raiz
@@ -299,7 +388,8 @@ public:
     size_t poolCapacity() const { return pool.capacity(); }
 
     // Memória aproximada da árvore (Seção 7): os nós em si mais os buffers
-    // por-aresta que cada nó aloca fora de linha (moves/P/N/W/child). Não
+    // por-aresta que cada nó aloca fora de linha (moves/P/N/W/child plus the
+    // lazy candidate priors). Não
     // conta a fragmentação do alocador -- é uma estimativa para o
     // benchmark de custo da Fase 4, não contabilidade exata.
     size_t approxTreeBytes() const {
@@ -309,6 +399,7 @@ public:
             bytes += n.N.capacity() * sizeof(float);
             bytes += n.W.capacity() * sizeof(float);
             bytes += n.child.capacity() * sizeof(int32_t);
+            bytes += n.candidateP.capacity() * sizeof(float);
         }
         return bytes;
     }
@@ -655,38 +746,140 @@ private:
     // assistida por política já usado em search.hpp). NÃO avalia o nó em
     // si (isso é feito em runSimulation logo depois de expandir, Seção 5
     // passo 5b) -- expandNode só monta a estrutura (moves/P/N/W/child).
+    int wideningLimit(int moveCount, int visits) const {
+        if (!params.progressiveWidening) return moveCount;
+        double raw = (double)params.wideningInitialMoves +
+                     params.wideningCoefficient *
+                         std::pow((double)std::max(0, visits), params.wideningExponent);
+        int limit = (int)std::ceil(raw);
+        limit = std::max(limit, params.wideningInitialMoves);
+        return std::min(moveCount, std::max(1, limit));
+    }
+
+    void activateWidening(NodeT& node, int desired) {
+        size_t oldSize = node.moves.size();
+        while ((int)node.moves.size() < desired &&
+               node.nextCandidate < node.candidateMoves.size()) {
+            size_t i = node.nextCandidate++;
+            const MoveT& candidate = node.candidateMoves[i];
+            bool legal = !mcabIsWall(candidate, 0) ||
+                         mcabSingleWallLegal(node.state, node.side, candidate, 0);
+            if (!legal) continue;
+
+            node.moves.push_back(candidate);
+            node.P.push_back(node.candidateP[i]);
+            node.N.push_back(0.f);
+            node.W.push_back(0.f);
+            node.child.push_back(-1);
+            node.activeCandidateIndices.push_back(i);
+        }
+
+        // candidateP is the softmax over the complete cheap candidate list.
+        // Recompute the active-prefix normalization from those raw priors;
+        // renormalizing node.P in place would compound the previous scale
+        // every time a new candidate is admitted.
+        if (node.moves.size() > oldSize && !node.noised) {
+            float activePriorSum = 0.f;
+            for (size_t candidateIndex : node.activeCandidateIndices)
+                activePriorSum += node.candidateP[candidateIndex];
+            if (activePriorSum > 0.f) {
+                for (size_t i = 0; i < node.P.size(); i++)
+                    node.P[i] = node.candidateP[node.activeCandidateIndices[i]] / activePriorSum;
+            }
+        }
+        node.activeMoves = (int)node.moves.size();
+    }
+
+    void updateWidening(NodeT& node) {
+        if (!params.progressiveWidening) {
+            node.activeMoves = (int)node.moves.size();
+            return;
+        }
+        int desired = wideningLimit((int)node.candidateMoves.size(), node.totalN);
+        activateWidening(node, desired);
+    }
+
     void expandNode(int idx, int depthInTree, McabStats& mstats) {
         NodeT& node = pool[idx];
-        node.moves = legalMoves(node.state);
-        size_t nm = node.moves.size();
-        node.P.assign(nm, 0.f);
-        node.N.assign(nm, 0.f);
-        node.W.assign(nm, 0.f);
-        node.child.assign(nm, -1);
 
-        if (nm > 0) {
-            std::array<float, PolicyDim> policyOut{};
-            forwardPolicyQuant(mcabAccStack[depthInTree].acc[node.side], policyOut);
+        if (!params.progressiveWidening) {
+            node.moves = legalMoves(node.state);
+            size_t nm = node.moves.size();
+            node.P.assign(nm, 0.f);
+            node.N.assign(nm, 0.f);
+            node.W.assign(nm, 0.f);
+            node.child.assign(nm, -1);
 
-            float maxLogit = -std::numeric_limits<float>::infinity();
-            std::vector<float> logits(nm);
-            for (size_t i = 0; i < nm; i++) {
-                logits[i] = policyLogitForMove(policyOut, node.moves[i], node.side);
-                maxLogit = std::max(maxLogit, logits[i]);
+            if (nm > 0) {
+                std::array<float, PolicyDim> policyOut{};
+                forwardPolicyQuant(mcabAccStack[depthInTree].acc[node.side], policyOut);
+                float maxLogit = -std::numeric_limits<float>::infinity();
+                std::vector<float> logits(nm);
+                for (size_t i = 0; i < nm; i++) {
+                    logits[i] = policyLogitForMove(policyOut, node.moves[i], node.side);
+                    maxLogit = std::max(maxLogit, logits[i]);
+                }
+                float sumExp = 0.f;
+                for (size_t i = 0; i < nm; i++) {
+                    node.P[i] = std::exp(logits[i] - maxLogit);
+                    sumExp += node.P[i];
+                }
+                if (sumExp > 0.f) {
+                    for (size_t i = 0; i < nm; i++) node.P[i] /= sumExp;
+                } else {
+                    for (size_t i = 0; i < nm; i++) node.P[i] = 1.f / (float)nm;
+                }
             }
-            float sumExp = 0.f;
-            for (size_t i = 0; i < nm; i++) {
-                node.P[i] = std::exp(logits[i] - maxLogit);
-                sumExp += node.P[i];
+            node.activeMoves = (int)nm;
+        } else {
+            // Cheap candidate enumeration: pawn moves are already legal;
+            // wall candidates only pay the local slot-overlap check here.
+            // The path-preserving legality test is deferred until a
+            // candidate enters the active prefix in activateWidening().
+            mcabEnumerateCandidates<MoveT>(node.state, node.side, node.candidateMoves, 0);
+
+            size_t nc = node.candidateMoves.size();
+            node.candidateP.assign(nc, 0.f);
+            if (nc > 0) {
+                std::array<float, PolicyDim> policyOut{};
+                forwardPolicyQuant(mcabAccStack[depthInTree].acc[node.side], policyOut);
+                std::vector<float> logits(nc);
+                for (size_t i = 0; i < nc; i++)
+                    logits[i] = policyLogitForMove(policyOut, node.candidateMoves[i], node.side);
+
+                std::vector<size_t> order(nc);
+                std::iota(order.begin(), order.end(), (size_t)0);
+                std::stable_sort(order.begin(), order.end(),
+                                 [&](size_t a, size_t b) { return logits[a] > logits[b]; });
+                MoveListT orderedCandidates;
+                std::vector<float> orderedLogits;
+                for (size_t i : order) {
+                    orderedCandidates.push_back(node.candidateMoves[i]);
+                    orderedLogits.push_back(logits[i]);
+                }
+                node.candidateMoves = std::move(orderedCandidates);
+                logits = std::move(orderedLogits);
+
+                float maxLogit = *std::max_element(logits.begin(), logits.end());
+                float sumExp = 0.f;
+                for (float logit : logits) sumExp += std::exp(logit - maxLogit);
+                node.candidateP.resize(nc);
+                for (size_t i = 0; i < nc; i++)
+                    node.candidateP[i] = sumExp > 0.f ? std::exp(logits[i] - maxLogit) / sumExp
+                                                      : 1.f / (float)nc;
             }
-            if (sumExp > 0.f) {
-                for (size_t i = 0; i < nm; i++) node.P[i] /= sumExp;
-            } else {
-                for (size_t i = 0; i < nm; i++) node.P[i] = 1.f / (float)nm;
-            }
+            node.moves = MoveListT{};
+            node.P.clear();
+            node.N.clear();
+            node.W.clear();
+            node.child.clear();
+            node.activeCandidateIndices.clear();
+            node.nextCandidate = 0;
+            node.activeMoves = 0;
         }
 
         node.expanded = true;
+        updateWidening(node);
         mstats.nodesExpanded++;
     }
 
@@ -720,7 +913,7 @@ private:
     }
 
     int selectChildPUCT(const NodeT& node) const {
-        size_t nm = node.moves.size();
+        size_t nm = (size_t)std::min(node.activeMoves, (int)node.moves.size());
         if (nm == 0) return -1;
 
         double parentQ = nodeQ(node);
@@ -754,6 +947,8 @@ private:
 
         while (true) {
             NodeT& node = pool[curIdx];
+
+            if (node.expanded) updateWidening(node);
 
             if (node.terminal) {
                 double leafQ = scoreToQ(node.terminalScore, params.scoreScale);
@@ -927,7 +1122,7 @@ private:
     // Seção 5 passo 6 -- escolha do lance final na raiz.
     // ---------------------------------------------------------------
     MoveT pickRootMove(const NodeT& r) const {
-        size_t nm = r.moves.size();
+        size_t nm = (size_t)std::min(r.activeMoves, (int)r.moves.size());
         assert(nm > 0 && "raiz não-terminal sem lances legais -- não deveria ocorrer em Quoridor");
         if (nm == 0) return MoveT{};
 
