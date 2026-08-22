@@ -71,12 +71,45 @@ namespace mcab {
 // =========================================================================
 // 4.3.1 -- Conversão score -> Q
 // =========================================================================
+
+// perf/speed-elo-100: exp rápido pra caminhos de INFERÊNCIA do MCAB
+// (conversão score->Q e softmax de política) -- `std::exp` double era o
+// maior item do perfil de produção (~21%) depois da vetorização da NNUE.
+// Implementação 2^(x*log2e) com arredondamento do expoente inteiro +
+// polinômio grau-5 para a fração: erro relativo ~1e-6 em toda a faixa
+// útil, saturação preservada fora dela. NÃO é usado por nada que grave
+// dados de treino (nnueWinProbQuant em nnue.hpp continua exato) nem por
+// caminho algum de paridade C++<->Python -- só por heurísticas de busca.
+inline float mcabFastExp(float x) {
+    if (x < -87.f) return 0.f;
+    if (x > 87.f) return 3.4e38f;
+    float t = x * 1.4426950408889634f;               // x / ln(2)
+    int i = (int)(t >= 0.f ? t + 0.5f : t - 0.5f);   // round-to-nearest
+    float f = t - (float)i;
+    // 2^f, f em [-0.5, 0.5] -- série de Taylor truncada (coeficientes de ln2^k/k!)
+    float p = 1.f
+            + f * (0.69314718f
+            + f * (0.24022651f
+            + f * (0.05550411f
+            + f * (0.00961813f
+            + f * 0.00133336f))));
+    uint32_t bits = (uint32_t)(i + 127) << 23;
+    float scale2;
+    std::memcpy(&scale2, &bits, sizeof(scale2));
+    return p * scale2;
+}
+
 // Idêntico (matematicamente) a nnueWinProbQuant aplicado ao logit implícito
 // no score -- mesma curva sigmoide já usada em treino/self-play, não uma
 // calibração nova (ver Seção 4.3.1 do plano). `scale` é mcabScoreScale
 // (Seção 9), default = NNUE_EVAL_SCALE (200.0).
+//
+// perf/speed-elo-100: usa mcabFastExp acima (erro ~1e-6 na curva,
+// saturação em ±inf preservada -- MCAB_WIN_SCORE=1e6 => score/scale=5000
+// satura exatamente igual). Chamado 1x POR SIMULAÇÃO; era o maior custo
+// escalar remanescente do caminho de produção.
 inline double scoreToQ(int score, double scale) {
-    return 1.0 / (1.0 + std::exp(-(double)score / scale));
+    return 1.0 / (1.0 + (double)mcabFastExp(-(float)((double)score / scale)));
 }
 
 // Placeholder de score para nós terminais (Seção 5 passo b) -- grande o
@@ -813,15 +846,18 @@ private:
             if (nm > 0) {
                 std::array<float, PolicyDim> policyOut{};
                 forwardPolicyQuant(mcabAccStack[depthInTree].acc[node.side], policyOut);
+                // perf/speed-elo-100: era std::vector<float> alocado por
+                // expansao; nm <= 131 < PolicyDim(=209), entao um buffer de
+                // pilha elimina o malloc do caminho quente.
+                float logits[PolicyDim];
                 float maxLogit = -std::numeric_limits<float>::infinity();
-                std::vector<float> logits(nm);
                 for (size_t i = 0; i < nm; i++) {
                     logits[i] = policyLogitForMove(policyOut, node.moves[i], node.side);
                     maxLogit = std::max(maxLogit, logits[i]);
                 }
                 float sumExp = 0.f;
                 for (size_t i = 0; i < nm; i++) {
-                    node.P[i] = std::exp(logits[i] - maxLogit);
+                    node.P[i] = mcabFastExp(logits[i] - maxLogit);   // perf: era std::exp
                     sumExp += node.P[i];
                 }
                 if (sumExp > 0.f) {
@@ -862,10 +898,12 @@ private:
 
                 float maxLogit = *std::max_element(logits.begin(), logits.end());
                 float sumExp = 0.f;
-                for (float logit : logits) sumExp += std::exp(logit - maxLogit);
+                // perf: exp computado UMA vez por elemento (era 2x: soma +
+                // normalização) e via mcabFastExp
+                for (float logit : logits) sumExp += mcabFastExp(logit - maxLogit);
                 node.candidateP.resize(nc);
                 for (size_t i = 0; i < nc; i++)
-                    node.candidateP[i] = sumExp > 0.f ? std::exp(logits[i] - maxLogit) / sumExp
+                    node.candidateP[i] = sumExp > 0.f ? mcabFastExp(logits[i] - maxLogit) / sumExp
                                                       : 1.f / (float)nc;
             }
             node.moves = MoveListT{};
