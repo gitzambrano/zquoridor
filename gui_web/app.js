@@ -1,638 +1,732 @@
-// app.js -- GUI do Quoridor (v3): tabuleiro cabe na tela, flip automático
-// (humano sempre joga de baixo pra cima), muros por "modo de colocação"
-// (seleciona orientação, toca ou arrasta direto no tabuleiro), peão sempre
-// clicável, barra de controles com 3 botões largos, histórico de lances
-// com avaliação do motor, nova partida via modal (lado + força). Estado do
-// jogo mora inteiro no módulo WASM; este arquivo só desenha e traduz
-// gestos em chamadas ccall.
+﻿// app.js -- Zquoridor premium GUI logic (plan gui-premium.md).
+// Sections: 1 constants - 2 wasm bindings - 3 settings - 4 state -
+// 5 hud/clocks/race/eval - 6 board bridge - 7 wall input - 8 pawn input -
+// 9 play flow - 10 sound/haptics - 11 modals/toasts - 12 keyboard - 13 boot.
+'use strict';
 
-const N = 9, WS = 8;
-let CELL = 48, GAP = 8;
-
-let Q = null;
-let humanSide = 1;
-let flipped = true;       // true => humano sempre embaixo, subindo
-let engineTimeMs = 500;
-let theme = "chess";      // "chess" (madeira, padrão) ou "classic" (azul/vermelho)
-let busy = false;
-let gameGen = 0;           // incrementado a cada "nova partida"/troca de lado, pra
-                            // cancelar uma jogada do motor que ficou pendente num
-                            // setTimeout de uma partida anterior (ex: trocou de
-                            // lado enquanto o motor ainda estava "pensando")
-let moveLog = [];          // { mover: 0|1, text: "e3", eval?: number }
-
-function setupWasmBindings(Module) {
-    const w = (name, ret, args) => Module.cwrap(name, ret, args);
-    const hasEval = typeof Module["_qr_last_move_eval"] === "function";
-    return {
-        newGame: w("qr_new_game", null, []),
-        turn: w("qr_turn", "number", []),
-        winner: w("qr_winner", "number", []),
-        pawn: w("qr_pawn", "number", ["number"]),
-        wallsLeft: w("qr_walls_left", "number", ["number"]),
-        wallHBit: w("qr_wall_h_bit", "number", ["number"]),
-        wallVBit: w("qr_wall_v_bit", "number", ["number"]),
-        distToGoal: w("qr_dist_to_goal", "number", ["number"]),
-        movesCount: w("qr_legal_moves_count", "number", []),
-        moveIsWall: w("qr_legal_move_is_wall", "number", ["number"]),
-        moveA: w("qr_legal_move_a", "number", ["number"]),
-        moveB: w("qr_legal_move_b", "number", ["number"]),
-        moveC: w("qr_legal_move_c", "number", ["number"]),
-        applyPawn: w("qr_apply_pawn_move", "number", ["number"]),
-        applyWall: w("qr_apply_wall_move", "number", ["number", "number", "number"]),
-        engineMove: w("qr_engine_move", "number", ["number", "number"]),
-        lastMoveIsWall: w("qr_last_move_is_wall", "number", []),
-        lastMoveA: w("qr_last_move_a", "number", []),
-        lastMoveB: w("qr_last_move_b", "number", []),
-        lastMoveC: w("qr_last_move_c", "number", []),
-        lastMoveEval: hasEval ? w("qr_last_move_eval", "number", []) : null,
-        isDraw: w("qr_is_draw", "number", []),
-    };
-}
-
-// --- notação algébrica -------------------------------------------------
-// Sempre no referencial fixo do tabuleiro (lado das brancas / primeiro
-// jogador), nunca no referencial visual espelhado (`flipped`): coluna
-// a..i da esquerda pra direita, linha 1..9 de baixo pra cima -- ou seja,
-// engine_row=8 (base do jogador 1, embaixo no layout padrão) é a linha 1,
-// e engine_row=0 (base do jogador 0/primeiro jogador) é a linha 9.
-function colLetter(c) { return String.fromCharCode(97 + c); }
-function pawnNotation(cell) {
-    const er = Math.floor(cell / N), ec = cell % N;
-    return colLetter(ec) + (N - er);
-}
-function wallNotation(orientation, r, c) {
-    // r é o índice do "corredor" entre engine_row r e r+1 (0..7). O lado
-    // sul desse corredor (engine_row r+1, mais embaixo) vira a linha-âncora
-    // da notação: (N-1-r) = 8-r.
-    return colLetter(c) + (N - 1 - r) + (orientation === 0 ? "h" : "v");
-}
-
-// Converte o score cru do motor (perspectiva das brancas, unidades
-// evalSimple/NNUE_EVAL_SCALE~200 -- ver qr_last_move_eval()/comentario
-// acima) num percentual 0-100% pra exibicao: 0% = vitoria certa das
-// pretas, 100% = vitoria certa das brancas, 50% = equilibrado. Sigmoid
-// com o mesmo fator de escala (200) que nnue.hpp usa pra converter o
-// logit cru da cabeca WL em unidades comparaveis a evalSimple
-// (NNUE_EVAL_SCALE) -- aqui fazemos o caminho inverso (score -> logit
-// -> probabilidade), o que da o percentual exato quando a NNUE esta
-// ativa e uma aproximacao razoavel em modo heuristico (evalSimple nao
-// e um logit de verdade, mas vive na mesma ordem de grandeza). Extremos
-// (mate/vitoria certa, scores enormes) saturam perto de 0%/100%
-// naturalmente, sem tratamento especial. Documentado em detalhe (com
-// tabela) em CLAUDE.md/status.md -- ver secao "Avaliacao exibida ao
-// usuario".
-const EVAL_DISPLAY_SCALE = 200;
-function evalToWhitePercent(v) {
-    const pct = 100 / (1 + Math.exp(-v / EVAL_DISPLAY_SCALE));
-    return Math.max(0, Math.min(100, Math.round(pct)));
-}
-
-function formatEval(v) {
-    if (v === null || v === undefined) return "";
-    return evalToWhitePercent(v) + "%";
-}
-
-// --- geometria: converte coordenadas de exibição <-> coordenadas do motor.
-// flip só espelha linhas (eixo vertical); colunas nunca mudam. Assim um
-// giro de 180° nunca troca H por V.
-function dispRowToEngine(dr) { return flipped ? (N - 1 - dr) : dr; }
-function dispWallRowToEngine(dr) { return flipped ? (WS - 1 - dr) : dr; }
-function engineWallRowToDisp(er) { return flipped ? (WS - 1 - er) : er; }
-
-function slotPos(el) {
-    const dr = Number(el.dataset.dr), dc = Number(el.dataset.dc);
-    const pad = 0, unit = CELL + GAP;
-    if (el.classList.contains("wall-slot-h")) {
-        el.style.left = (pad + dc * unit) + "px";
-        el.style.top = (pad + dr * unit + CELL) + "px";
-        el.style.width = (2 * CELL + GAP) + "px";
-        el.style.height = GAP + "px";
-    } else {
-        el.style.left = (pad + dc * unit + CELL) + "px";
-        el.style.top = (pad + dr * unit) + "px";
-        el.style.width = GAP + "px";
-        el.style.height = (2 * CELL + GAP) + "px";
-    }
-}
-
-function buildBoardDom() {
-    const board = document.getElementById("board");
-    board.innerHTML = "";
-
-    for (let dr = 0; dr < N; dr++) {
-        for (let dc = 0; dc < N; dc++) {
-            const er = dispRowToEngine(dr), ec = dc;
-            const cell = document.createElement("div");
-            cell.className = "cell";
-            cell.dataset.cell = String(er * N + ec);
-            cell.addEventListener("click", onCellClick);
-            board.appendChild(cell);
-        }
-    }
-    for (let dr = 0; dr < WS; dr++) {
-        for (let dc = 0; dc < WS; dc++) {
-            const er = dispWallRowToEngine(dr), ec = dc;
-            const s = document.createElement("div");
-            s.className = "wall-slot-h";
-            s.dataset.dr = dr; s.dataset.dc = dc;
-            s.dataset.er = er; s.dataset.ec = ec;
-            board.appendChild(s);
-        }
-    }
-    for (let dr = 0; dr < WS; dr++) {
-        for (let dc = 0; dc < WS; dc++) {
-            const er = dispWallRowToEngine(dr), ec = dc;
-            const s = document.createElement("div");
-            s.className = "wall-slot-v";
-            s.dataset.dr = dr; s.dataset.dc = dc;
-            s.dataset.er = er; s.dataset.ec = ec;
-            board.appendChild(s);
-        }
-    }
-    document.querySelectorAll(".wall-slot-h, .wall-slot-v").forEach(slotPos);
-}
-
-function fitBoard() {
-    const wrap = document.getElementById("boardWrap");
-    const availW = wrap.clientWidth;
-    const availH = wrap.clientHeight;
-    const side = Math.max(160, Math.min(availW, availH));
-    GAP = Math.max(3, Math.round(side * 0.013));
-    CELL = Math.max(14, Math.floor((side - GAP * 8) / 9));
-    const board = document.getElementById("board");
-    board.style.setProperty("--cell", CELL + "px");
-    board.style.setProperty("--gap", GAP + "px");
-    document.querySelectorAll(".wall-slot-h, .wall-slot-v").forEach(slotPos);
-}
-
-function currentLegalMoves() {
-    const n = Q.movesCount();
-    const moves = [];
-    for (let i = 0; i < n; i++) {
-        moves.push({ isWall: Q.moveIsWall(i) === 1, a: Q.moveA(i), b: Q.moveB(i), c: Q.moveC(i) });
-    }
-    return moves;
-}
-
-// --- histórico de lances -------------------------------------------------
-function pushMove(mover, text, evalScore) {
-    moveLog.push({ mover, text, eval: evalScore });
-    renderMoveList();
-}
-
-function renderMoveList() {
-    const el = document.getElementById("movelist");
-    if (moveLog.length === 0) {
-        el.innerHTML = '<div class="empty"></div>';
-        return;
-    }
-    let html = "";
-    for (let i = 0; i < moveLog.length; i += 2) {
-        const num = i / 2 + 1;
-        const m0 = moveLog[i], m1 = moveLog[i + 1];
-        const isLastRow = i >= moveLog.length - 2;
-        html += '<div class="row">';
-        html += '<span class="num">' + num + '.</span>';
-        html += moveSpan(m0, isLastRow && !m1);
-        if (m1) html += moveSpan(m1, isLastRow);
-        html += "</div>";
-    }
-    el.innerHTML = html;
-    el.scrollTop = el.scrollHeight;
-}
-
-function moveSpan(m, isLast) {
-    // avaliação do motor: só aparece nos lances do motor (Zquoridor), não
-    // nos lances do humano -- é a leitura de posição dele após o próprio lance.
-    const evalHtml = (m.eval !== undefined && m.eval !== null) ? '<span class="ev">' + formatEval(m.eval) + '</span>' : "";
-    return '<span class="mv p' + m.mover + (isLast ? " last" : "") + '">' + m.text + '</span>' + evalHtml;
-}
-
-function render() {
-    document.querySelectorAll(".pawn").forEach(el => el.remove());
-    for (let p = 0; p < 2; p++) {
-        const el = document.querySelector(`.cell[data-cell="${Q.pawn(p)}"]`);
-        if (el) {
-            const pawnEl = document.createElement("div");
-            pawnEl.className = "pawn p" + p;
-            el.appendChild(pawnEl);
-        }
-    }
-    document.querySelectorAll(".cell").forEach(el => el.classList.remove("dest-hint", "p0", "p1"));
-    document.querySelectorAll(".wall-slot-h").forEach(el => {
-        el.classList.toggle("placed", Q.wallHBit(Number(el.dataset.er) * WS + Number(el.dataset.ec)) === 1);
-    });
-    document.querySelectorAll(".wall-slot-v").forEach(el => {
-        el.classList.toggle("placed", Q.wallVBit(Number(el.dataset.er) * WS + Number(el.dataset.ec)) === 1);
-    });
-
-    document.getElementById("walls0").textContent = Q.wallsLeft(0) + "/10";
-    document.getElementById("walls1").textContent = Q.wallsLeft(1) + "/10";
-    renderWallBars("barsP0", Q.wallsLeft(0));
-    renderWallBars("barsP1", Q.wallsLeft(1));
-    document.getElementById("dist0").textContent = Q.distToGoal(0);
-    document.getElementById("dist1").textContent = Q.distToGoal(1);
-    document.getElementById("nameP0").textContent = humanSide === 0 ? "Human" : "Zquoridor";
-    document.getElementById("nameP1").textContent = humanSide === 1 ? "Human" : "Zquoridor";
-
-    const w = Q.winner();
-    const isDraw = Q.isDraw ? Q.isDraw() === 1 : false;
-    const cardP0 = document.getElementById("cardP0");
-    const cardP1 = document.getElementById("cardP1");
-    cardP0.classList.remove("winner", "draw");
-    cardP1.classList.remove("winner", "draw");
-
-    const wallH = document.getElementById("wallH");
-    const wallV = document.getElementById("wallV");
-
-    if (w !== -1) {
-        cardP0.classList.remove("active", "thinking");
-        cardP1.classList.remove("active", "thinking");
-        (w === 0 ? cardP0 : cardP1).classList.add("winner");
-        wallH.classList.add("disabled");
-        wallV.classList.add("disabled");
-        setSelectedWallOrientation(null);
-        return;
-    }
-
-    if (isDraw) {
-        cardP0.classList.remove("active", "thinking");
-        cardP1.classList.remove("active", "thinking");
-        cardP0.classList.add("draw");
-        cardP1.classList.add("draw");
-        wallH.classList.add("disabled");
-        wallV.classList.add("disabled");
-        setSelectedWallOrientation(null);
-        return;
-    }
-
-    const isHumanTurn = Q.turn() === humanSide;
-    const moves = currentLegalMoves();
-
-    cardP0.classList.toggle("active", Q.turn() === 0);
-    cardP1.classList.toggle("active", Q.turn() === 1);
-    cardP0.classList.toggle("thinking", Q.turn() === 0 && !isHumanTurn);
-    cardP1.classList.toggle("thinking", Q.turn() === 1 && !isHumanTurn);
-
-    if (isHumanTurn && !busy) {
-        moves.filter(m => !m.isWall).forEach(m => {
-            const el = document.querySelector(`.cell[data-cell="${m.a}"]`);
-            if (el) el.classList.add("dest-hint", "p" + humanSide);
-        });
-        wallH.classList.remove("disabled");
-        wallV.classList.remove("disabled");
-        if (selectedWallOrientation !== null) highlightLegalSlots(selectedWallOrientation);
-        else clearSlotHighlights();
-    } else {
-        wallH.classList.add("disabled");
-        wallV.classList.add("disabled");
-        setSelectedWallOrientation(null);
-    }
-
-    if (!isHumanTurn && !busy) {
-        busy = true;
-        const myGen = gameGen;
-        setTimeout(() => {
-            if (myGen !== gameGen) { busy = false; return; } // partida trocou enquanto pensava: descarta
-            const engineSide = Q.turn();
-            Q.engineMove(40, engineTimeMs);
-            busy = false;
-            if (myGen === gameGen) {
-                const text = Q.lastMoveIsWall() === 1
-                    ? wallNotation(Q.lastMoveA(), Q.lastMoveB(), Q.lastMoveC())
-                    : pawnNotation(Q.lastMoveA());
-                // qr_last_move_eval() vem do ponto de vista de quem jogou
-                // (convenção negamax padrão do motor -- não mexemos nisso).
-                // Pro display, sempre convertemos pra perspectiva do
-                // primeiro jogador (brancas): positivo = brancas melhor,
-                // negativo = segundo jogador melhor.
-                const rawEval = Q.lastMoveEval ? Q.lastMoveEval() : undefined;
-                const evalScore = (rawEval === undefined) ? undefined : (engineSide === 0 ? rawEval : -rawEval);
-                pushMove(engineSide, text, evalScore);
-                render();
-            }
-        }, 30);
-    }
-}
-
-function renderWallBars(id, left) {
-    const el = document.getElementById(id);
-    let html = "";
-    for (let i = 0; i < 10; i++) {
-        html += '<i class="' + (i < left ? "on" : "") + '"></i>';
-    }
-    el.innerHTML = html;
-}
-
-let suppressNextCellClick = false;
-
-function onCellClick(ev) {
-    if (suppressNextCellClick) return;
-    if (busy || Q.winner() !== -1 || (Q.isDraw && Q.isDraw() === 1) || Q.turn() !== humanSide) return;
-    const dest = Number(ev.currentTarget.dataset.cell);
-    const mover = Q.turn();
-    if (Q.applyPawn(dest) === 1) {
-        pushMove(mover, pawnNotation(dest));
-        render();
-    }
-}
-
-// --- colocação de muros -------------------------------------------------
-// Duas formas de colocar um muro, ambas sempre disponíveis:
-//  1) "clique e jogue": toca em Horizontal/Vertical pra entrar no "modo de
-//     colocação" (o botão acende + todos os slots legais ficam com um tom
-//     dourado); a partir daí um toque simples em qualquer lugar do
-//     tabuleiro coloca o muro no slot mais próximo daquele toque.
-//  2) "arrastar e soltar": pressiona o dedo/mouse diretamente no botão
-//     Horizontal/Vertical e arrasta sem soltar até o tabuleiro -- durante o
-//     arraste, o próprio slot que vai receber o muro se ilumina como uma
-//     "barreira fantasma" translúcida (verde = válido, vermelho =
-//     inválido) exatamente onde ela vai parar.
-// As duas formas usam o mesmo código: um toque que nunca chega a entrar no
-// tabuleiro vira (1); um toque que se move até o tabuleiro vira (2).
-let selectedWallOrientation = null;
-let dragOrientation = null;
-let dragActive = false;
-let dragLegalSet = null;   // Set "er,ec" dos muros legais na orientação atual
-let dragTarget = null;     // { er, ec } ou null
-let dragFromButton = null; // orientação, se o gesto começou no botão H/V (não no tabuleiro)
-let dragEnteredBoard = false;
-
-function clearSlotHighlights() {
-    document.querySelectorAll(".wall-slot-h.legal, .wall-slot-v.legal").forEach(el => el.classList.remove("legal"));
-}
-
-function highlightLegalSlots(orientation) {
-    clearSlotHighlights();
-    if (busy || !Q || Q.winner() !== -1 || (Q.isDraw && Q.isDraw() === 1) || Q.turn() !== humanSide) return;
-    const sel = orientation === 0 ? ".wall-slot-h" : ".wall-slot-v";
-    currentLegalMoves().filter(m => m.isWall && m.a === orientation).forEach(m => {
-        const el = document.querySelector(`${sel}[data-er="${m.b}"][data-ec="${m.c}"]`);
-        if (el) el.classList.add("legal");
-    });
-}
-
-function setSelectedWallOrientation(o) {
-    selectedWallOrientation = o;
-    document.getElementById("wallH").classList.toggle("selected", o === 0);
-    document.getElementById("wallV").classList.toggle("selected", o === 1);
-    document.getElementById("board").classList.toggle("wall-mode", o !== null);
-    if (o !== null) highlightLegalSlots(o); else clearSlotHighlights();
-}
-
-function beginWallDrag(orientation, ev, fromButton) {
-    if (busy || !Q || Q.winner() !== -1 || (Q.isDraw && Q.isDraw() === 1) || Q.turn() !== humanSide) return;
-    ev.preventDefault();
-    dragOrientation = orientation;
-    dragActive = true;
-    dragTarget = null;
-    dragFromButton = fromButton ? orientation : null;
-    dragEnteredBoard = false;
-    dragLegalSet = new Set(
-        currentLegalMoves().filter(m => m.isWall && m.a === orientation).map(m => m.b + "," + m.c)
-    );
-    highlightLegalSlots(orientation);
-
-    try { ev.currentTarget.setPointerCapture(ev.pointerId); } catch (e) { /* ambientes sem suporte: ignora */ }
-
-    updateDrag(ev.clientX, ev.clientY);
-
-    window.addEventListener("pointermove", onWindowPointerMove, { passive: false });
-    window.addEventListener("pointerup", onWindowPointerUp, { passive: false });
-    window.addEventListener("pointercancel", onWindowPointerUp, { passive: false });
-}
-
-// pressionar direto no tabuleiro quando já há uma orientação selecionada
-// (fluxo "clique e jogue"):
-function onBoardPointerDown(ev) {
-    if (selectedWallOrientation === null) return;
-    beginWallDrag(selectedWallOrientation, ev, false);
-}
-
-// pressionar o próprio botão Horizontal/Vertical -- pode virar um arraste
-// de verdade se o dedo se mover até o tabuleiro, ou um toque simples que
-// alterna o "modo de colocação" se soltar sem sair do botão:
-function onWallBtnPointerDown(orientation, ev) {
-    if (busy || !Q || Q.winner() !== -1 || (Q.isDraw && Q.isDraw() === 1) || Q.turn() !== humanSide) return;
-    beginWallDrag(orientation, ev, true);
-}
-
-function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
-
-
-function updateDrag(clientX, clientY) {
-    document.querySelectorAll(".wall-slot-h, .wall-slot-v").forEach(el => {
-        el.classList.remove("ghost-ok", "ghost-bad");
-    });
-
-    const board = document.getElementById("board");
-    const rect = board.getBoundingClientRect();
-    // margem de tolerância: permite iniciar/continuar o arraste um pouco
-    // fora da borda física do tabuleiro sem cancelar o gesto.
-    const margin = CELL * 0.6;
-    const inside = clientX >= rect.left - margin && clientX <= rect.right + margin &&
-                   clientY >= rect.top - margin && clientY <= rect.bottom + margin;
-    if (!inside) { dragTarget = null; return; }
-    dragEnteredBoard = true;
-
-    const x = clientX - rect.left, y = clientY - rect.top;
-    const pad = 0, unit = CELL + GAP;
-    let dr, dc;
-    if (dragOrientation === 0) {
-        // Horizontal: a coluna é a "casa" que você clicou -- o muro sempre
-        // ocupa essa casa e a da direita. Usa floor (não round) pra que
-        // clicar em QUALQUER ponto dentro da casa (não só a metade
-        // esquerda) escolha essa casa como âncora.
-        dc = clamp(Math.floor((x - pad) / unit), 0, WS - 1);
-        dr = clamp(Math.round((y - pad - CELL) / unit), 0, WS - 1);
-    } else {
-        // Vertical: a linha clicada é sempre a casa "de baixo" do muro
-        // (o muro se forma entre ela e a casa acima) -- independe de flip,
-        // porque dr aqui já está em coordenadas de exibição; a conversão
-        // pra engine (com o espelhamento) acontece só depois, abaixo.
-        dc = clamp(Math.round((x - pad - CELL) / unit), 0, WS - 1);
-        const clickedRow = Math.floor((y - pad) / unit);
-        dr = clamp(clickedRow - 1, 0, WS - 1);
-    }
-
-    const er = dispWallRowToEngine(dr), ec = dc;
-    const sel = dragOrientation === 0 ? ".wall-slot-h" : ".wall-slot-v";
-    const target = document.querySelector(`${sel}[data-er="${er}"][data-ec="${ec}"]`);
-    const legal = dragLegalSet.has(er + "," + ec);
-    if (target) target.classList.add(legal ? "ghost-ok" : "ghost-bad");
-    dragTarget = legal ? { er, ec } : null;
-}
-
-function onWindowPointerMove(ev) {
-    if (!dragActive) return;
-    ev.preventDefault();
-    updateDrag(ev.clientX, ev.clientY);
-}
-
-function onWindowPointerUp(ev) {
-    if (!dragActive) return;
-    dragActive = false;
-    window.removeEventListener("pointermove", onWindowPointerMove);
-    window.removeEventListener("pointerup", onWindowPointerUp);
-    window.removeEventListener("pointercancel", onWindowPointerUp);
-
-    document.querySelectorAll(".wall-slot-h, .wall-slot-v").forEach(el => {
-        el.classList.remove("ghost-ok", "ghost-bad");
-    });
-
-    // uma pressão sem arraste real (toque simples pra colocar o muro) termina
-    // com pointerdown e pointerup no mesmo elemento -- o navegador dispara um
-    // "click" sintético logo em seguida, que tentaria mover o peão da casa
-    // tocada. Suprime esse único click subsequente.
-    suppressNextCellClick = true;
-    setTimeout(() => { suppressNextCellClick = false; }, 0);
-
-    let applied = false;
-    if (dragTarget) {
-        const mover = Q.turn();
-        const orientation = dragOrientation;
-        if (Q.applyWall(orientation, dragTarget.er, dragTarget.ec) === 1) {
-            pushMove(mover, wallNotation(orientation, dragTarget.er, dragTarget.ec));
-            applied = true;
-        }
-    }
-
-    if (!applied && dragFromButton !== null && !dragEnteredBoard) {
-        // toque simples no botão, sem nunca entrar no tabuleiro -> alterna
-        // o "modo de colocação" (clique-e-jogue).
-        setSelectedWallOrientation(selectedWallOrientation === dragFromButton ? null : dragFromButton);
-    }
-
-    dragTarget = null;
-    dragOrientation = null;
-    dragFromButton = null;
-    dragEnteredBoard = false;
-
-    if (applied) render();
-}
-
-// --- modal: nova partida -------------------------------------------------
-let modalSide = humanSide;
-let modalStrength = engineTimeMs;
-let modalTheme = theme;
-
-const THEME_LABELS = {
-    chess: ["light", "dark"],
-    classic: ["blue", "red"],
+// ===================== 1. constants ====================================
+const LEVELS = {
+  pebble: { ms: 50,   label: 'Pebble', color: 'var(--muted)', desc: 'Learning the rules with you' },
+  sprite: { ms: 150,  label: 'Sprite', color: 'var(--txt2)',  desc: 'Quick and careless' },
+  squire: { ms: 400,  label: 'Squire', color: 'var(--green)', desc: 'Solid club player' },
+  knight: { ms: 1000, label: 'Knight', color: 'var(--blue)',  desc: 'Punishes loose walls' },
+  sage:   { ms: 2500, label: 'Sage',   color: 'var(--amber)', desc: 'Sees the whole race' },
+  titan:  { ms: 8000, label: 'Titan',  color: 'var(--gold)',  desc: 'Full strength' },
 };
+const BOARD_THEMES = ['obsidian', 'walnut', 'ivory', 'slate', 'emerald', 'parchment'];
+const PAWN_STYLES = ['disc', 'pillar', 'crown', 'rune'];
+const FILES = 'abcdefghi';
 
-function applyTheme(t) {
-    theme = t;
-    document.documentElement.dataset.theme = t;
+// ===================== 2. wasm bindings ================================
+let W = null;   // wrapped exports
+function bindEngine() {
+  const m = ZquoridorModule;
+  const c = (name, ret, args) => m.cwrap(name, ret, args);
+  W = {
+    newGame: c('_qr_new_game', null, []),
+    turn: c('_qr_turn', 'number', []),
+    winner: c('_qr_winner', 'number', []),
+    pawn: c('_qr_pawn', 'number', ['number']),
+    wallsLeft: c('_qr_walls_left', 'number', ['number']),
+    wallHBit: c('_qr_wall_h_bit', 'number', ['number']),
+    wallVBit: c('_qr_wall_v_bit', 'number', ['number']),
+    dist: c('_qr_dist_to_goal', 'number', ['number']),
+    moveCount: c('_qr_legal_moves_count', 'number', []),
+    mvIsWall: c('_qr_legal_move_is_wall', 'number', ['number']),
+    mvA: c('_qr_legal_move_a', 'number', ['number']),
+    mvB: c('_qr_legal_move_b', 'number', ['number']),
+    mvC: c('_qr_legal_move_c', 'number', ['number']),
+    applyPawn: c('_qr_apply_pawn_move', 'number', ['number']),
+    applyWall: c('_qr_apply_wall_move', 'number', ['number', 'number', 'number']),
+    engineMove: c('_qr_engine_move', 'number', ['number', 'number']),
+    lastIsWall: c('_qr_last_move_is_wall', 'number', []),
+    lastA: c('_qr_last_move_a', 'number', []),
+    lastB: c('_qr_last_move_b', 'number', []),
+    lastC: c('_qr_last_move_c', 'number', []),
+    lastEval: c('_qr_last_move_eval', 'number', []),
+    isDraw: c('_qr_is_draw', 'number', []),
+    loadNnue: c('_qr_load_nnue_weights', 'number', ['string']),
+  };
 }
 
-function openNewGameModal() {
-    modalSide = humanSide;
-    modalStrength = engineTimeMs;
-    modalTheme = theme;
-    syncModalSelection();
-    document.getElementById("newGameModal").hidden = false;
+// ===================== 3. settings =====================================
+const DEFAULTS = {
+  ui: 'dark', board: 'obsidian', pawn: 'disc',
+  coords: 'edges', dots: true, paths: false,
+  level: 'knight', clockMode: 'none', baseMin: 5, incSec: 3, side: 0,
+  confirmWalls: null, touchOffset: null, sound: true, volume: .6,
+  haptics: 'full',
+};
+let S = { ...DEFAULTS };
+function loadSettings() {
+  try {
+    const raw = localStorage.getItem('zq.settings');
+    if (raw) S = { ...DEFAULTS, ...JSON.parse(raw) };
+  } catch (e) { /* corrupt blob -> defaults */ }
 }
-
-function closeNewGameModal() {
-    document.getElementById("newGameModal").hidden = true;
+function saveSettings() {
+  try { localStorage.setItem('zq.settings', JSON.stringify(S)); }
+  catch (e) { toast('warn', 'Settings are session only (storage full)'); }
 }
-
-function syncModalSelection() {
-    document.querySelectorAll("#sideChoices .choice-btn").forEach(btn => {
-        btn.classList.toggle("selected", Number(btn.dataset.side) === modalSide);
-    });
-    document.querySelectorAll("#strengthChoices .choice-btn").forEach(btn => {
-        btn.classList.toggle("selected", Number(btn.dataset.ms) === modalStrength);
-    });
-    document.querySelectorAll("#themeChoices .choice-btn").forEach(btn => {
-        btn.classList.toggle("selected", btn.dataset.theme === modalTheme);
-    });
-    const labels = THEME_LABELS[modalTheme] || THEME_LABELS.chess;
-    document.getElementById("sideSubP0").textContent = labels[0];
-    document.getElementById("sideSubP1").textContent = labels[1];
+const coarse = matchMedia('(pointer:coarse)').matches;
+function touchOffsetPx() {
+  if (S.touchOffset === 'off') return 0;
+  if (S.touchOffset === 'small') return .6 * B.U;
+  if (S.touchOffset === 'large') return 1.0 * B.U;
+  return coarse ? .6 * B.U : 0;                       // auto
 }
+function confirmOn() { return S.confirmWalls === null ? coarse : S.confirmWalls; }
 
-function startNewGame(side, strength) {
-    humanSide = side;
-    engineTimeMs = strength;
-    flipped = (humanSide === 0);
-    gameGen++;
-    moveLog = [];
-    setSelectedWallOrientation(null);
-    Q.newGame();
-    busy = false;
-    buildBoardDom();
-    fitBoard();
-    renderMoveList();
-    render();
+// ===================== 4. state ========================================
+let B = null;                    // QBoard
+let history = [];                // [{notation, side}]
+let gameOver = false;
+let humanSide = 0;
+let engineThinking = false;
+let legalPawn = new Set();       // display cells
+let legalWall = new Uint8Array(128);  // [o*64 + r*8+c] display coords
+let lastMoveInfo = null;
+
+// ===================== 5. hud / clocks / race / eval ===================
+const $ = id => document.getElementById(id);
+function pips(el, n) {
+  if (el.childElementCount !== 10) el.innerHTML = '<i></i>'.repeat(10);
+  [...el.children].forEach((p, i) => p.classList.toggle('on', i < n));
 }
-
-function wireControls() {
-    // botões Horizontal/Vertical funcionam nos dois modos: um toque simples
-    // liga/desliga o "modo de colocação" (clique-e-jogue no tabuleiro
-    // depois), e um arraste de verdade a partir do próprio botão já solta
-    // o muro direto onde o dedo soltar -- ver beginWallDrag/onWindowPointerUp.
-    document.getElementById("wallH").addEventListener("pointerdown", (ev) => onWallBtnPointerDown(0, ev));
-    document.getElementById("wallV").addEventListener("pointerdown", (ev) => onWallBtnPointerDown(1, ev));
-    document.getElementById("board").addEventListener("pointerdown", onBoardPointerDown);
-
-    document.getElementById("flipBtn").addEventListener("click", () => {
-        flipped = !flipped;
-        buildBoardDom();
-        fitBoard();
-        render();
-    });
-
-    document.getElementById("newGame").addEventListener("click", () => {
-        openNewGameModal();
-    });
-
-    document.getElementById("newGameModal").addEventListener("click", (ev) => {
-        if (ev.target.id === "newGameModal") closeNewGameModal();
-    });
-    document.querySelectorAll("#sideChoices .choice-btn").forEach(btn => {
-        btn.addEventListener("click", () => {
-            modalSide = Number(btn.dataset.side);
-            syncModalSelection();
-        });
-    });
-    document.querySelectorAll("#strengthChoices .choice-btn").forEach(btn => {
-        btn.addEventListener("click", () => {
-            modalStrength = Number(btn.dataset.ms);
-            syncModalSelection();
-        });
-    });
-    document.querySelectorAll("#themeChoices .choice-btn").forEach(btn => {
-        btn.addEventListener("click", () => {
-            modalTheme = btn.dataset.theme;
-            syncModalSelection();
-        });
-    });
-    document.getElementById("modalConfirm").addEventListener("click", () => {
-        closeNewGameModal();
-        applyTheme(modalTheme);
-        startNewGame(modalSide, modalStrength);
-    });
-
-    window.addEventListener("resize", fitBoard);
-    window.addEventListener("orientationchange", fitBoard);
-    if (window.ResizeObserver) {
-        new ResizeObserver(fitBoard).observe(document.getElementById("boardWrap"));
+function fmtClock(ms) {
+  if (ms == null) return '--:--';
+  const s = Math.max(0, Math.ceil(ms / 1000));
+  return Math.floor(s / 60) + ':' + String(s % 60).padStart(2, '0');
+}
+let clockMs = [null, null], clockTimer = null, lastTickAt = 0;
+function startClock() {
+  stopClock();
+  if (S.clockMode === 'none') { renderClocks(); return; }
+  clockMs = [S.baseMin * 60000, S.baseMin * 60000];
+  lastTickAt = performance.now();
+  clockTimer = setInterval(clockTick, 200);
+  renderClocks();
+}
+function stopClock() { if (clockTimer) clearInterval(clockTimer); clockTimer = null; }
+function clockTick() {
+  const now = performance.now();
+  const dt = now - lastTickAt; lastTickAt = now;
+  const t = W.turn();
+  clockMs[t] -= dt;
+  if (clockMs[t] <= 0) { clockMs[0] = Math.max(0, clockMs[0]); flagFall(t); }
+  renderClocks();
+}
+function flagFall(side) {
+  stopClock(); gameOver = true; engineThinking = false;
+  setStatus((side === humanSide ? 'Your clock ran out' : 'Zquoridor flagged you'));
+  sound('end'); haptic([80]);
+}
+function renderClocks() {
+  const pairs = [['clock0', 'mClock0'], ['clock1', 'mClock1']];
+  for (let pl = 0; pl < 2; pl++) {
+    const txt = fmtClock(S.clockMode === 'none' ? null : clockMs[pl]);
+    for (const id of pairs[pl]) {
+      const el = $(id); el.textContent = txt;
+      el.classList.toggle('low', S.clockMode !== 'none' && clockMs[pl] < 30000 && clockMs[pl] >= 10000);
+      el.classList.toggle('crit', S.clockMode !== 'none' && clockMs[pl] < 10000);
     }
+  }
+}
+function refreshHud() {
+  const wl = [W.wallsLeft(0), W.wallsLeft(1)];
+  const d = [W.dist(0), W.dist(1)];
+  const t = W.turn();
+  B.setTurn(t);
+  // desktop rail: opponent top, you bottom
+  $('walls1').textContent = wl[1 - humanSide]; pips($('pips1'), wl[1 - humanSide]);
+  $('walls0').textContent = wl[humanSide];     pips($('pips0'), wl[humanSide]);
+  // mobile bar
+  $('mWalls1').textContent = wl[1 - humanSide]; pips($('mPips1'), wl[1 - humanSide]);
+  $('mWalls0').textContent = wl[humanSide];     pips($('mPips0'), wl[humanSide]);
+  const dYou = d[humanSide], dOpp = d[1 - humanSide];
+  setDist('dist0', 'mDist0', dYou, dYou <= dOpp);
+  setDist('dist1', 'mDist1', dOpp, dOpp < dYou);
+  // turn highlight
+  const youTurn = t === humanSide && !gameOver;
+  $('hudYou').classList.toggle('turn', youTurn); $('mHudYou').classList.toggle('turn', youTurn);
+  $('hudOpp').classList.toggle('turn', !youTurn && !gameOver);
+  $('mHudOpp').classList.toggle('turn', !youTurn && !gameOver);
+  $('hudYou').classList.toggle('dim', !youTurn); $('mHudYou').classList.toggle('dim', !youTurn);
+  $('hudOpp').classList.toggle('dim', youTurn || gameOver); $('mHudOpp').classList.toggle('dim', youTurn || gameOver);
+  // dock badges
+  const myWalls = wl[humanSide];
+  $('badgeH').textContent = myWalls; $('badgeV').textContent = myWalls;
+  const noWalls = myWalls <= 0 || t !== humanSide || gameOver || engineThinking;
+  $('wallH').classList.toggle('off', noWalls); $('wallV').classList.toggle('off', noWalls);
+  $('btnUndo').classList.toggle('off', history.length === 0 || engineThinking);
+  // race meter
+  const total = Math.max(1, dYou + dOpp);
+  const share = dOpp / total * 100;
+  if (innerWidth >= 900) $('raceFill0').style.setProperty('--share', (dOpp / total * 100).toFixed(1));
+  else $('raceFill0').style.width = share.toFixed(1) + '%';
+  $('raceDiv').style.left = share.toFixed(1) + '%';
+  $('raceLbl').textContent = dYou + ' : ' + dOpp;
+  renderClocks();
+}
+function setDist(idM, idMob, v, lead) {
+  for (const id of [idM, idMob]) {
+    const el = $(id);
+    el.innerHTML = '<small>DIST</small>' + v;
+    el.classList.toggle('lead', lead); el.classList.toggle('behind', !lead);
+  }
+}
+function setEval(score) {   // score mover-relative from the engine's last move
+  const abs = humanSide === 0 ? score : -score;      // de-mirror to colour 0 view
+  const share = 50 + 50 * Math.tanh(abs / 400);
+  $('evalFill').style.height = share.toFixed(1) + '%';
 }
 
-ZquoridorModule().then((Module) => {
-    Q = setupWasmBindings(Module);
-    applyTheme(theme);
-    flipped = (humanSide === 0);
-    buildBoardDom();
-    wireControls();
-    Q.newGame();
-    fitBoard();
-    render();
-}).catch((err) => {
-    console.error("Erro carregando o WASM:", err);
-    alert("Erro carregando o motor (WASM): " + err);
+// ===================== 6. board bridge =================================
+function syncFromEngine() {
+  const pw = [W.pawn(0), W.pawn(1)];
+  const wh = [], wv = [];
+  for (let s = 0; s < 64; s++) { wh.push(W.wallHBit(s)); wv.push(W.wallVBit(s)); }
+  B.flipped = (humanSide === 1) !== (location.hash.includes('noflip'));
+  B.setData(pw, wh, wv, lastMoveInfo);
+  buildLegalSets();
+  refreshHud();
+}
+function buildLegalSets() {
+  legalPawn.clear(); legalWall.fill(0);
+  const n = W.moveCount();
+  for (let i = 0; i < n; i++) {
+    if (!W.mvIsWall(i)) legalPawn.add(B.engPawnToDisp(W.mvA(i)));
+    else {
+      const o = W.mvA(i), r = W.mvB(i), c = W.mvC(i);
+      const [do_, dr, dc] = B.engWallToDisp(o, r, c);
+      legalWall[do_ * 64 + dr * 8 + dc] = 1;
+    }
+  }
+  B.dots = (S.dots && W.turn() === humanSide && !gameOver)
+    ? [...legalPawn] : [];
+}
+
+// ===================== 9. play flow ====================================
+function setStatus(t) { $('status').textContent = t; }
+let pendingEngine = null;
+function afterHumanMove() {
+  history.push(true);
+  updateMovesChip();
+  checkEnd();
+  if (!gameOver) { engineThinking = true; refreshHud(); setStatus('Zquoridor is thinking...');
+    setTimeout(engineTurn, 120); }
+}
+function engineTurn() {
+  const lv = LEVELS[S.level];
+  const ok = W.engineMove(24, lv.ms);
+  engineThinking = false;
+  if (!ok) { syncAll(); return; }
+  lastMoveInfo = W.lastIsWall()
+    ? { type: 'wall', o: W.lastA(), r: W.lastB(), c: W.lastC() }
+    : { type: 'pawn', cell: W.pawn(1 - humanSide) === undefined ? 0 : 0, o2: 0 };
+  // recompute display-space last move properly:
+  if (!W.lastIsWall()) {
+    // the engine's pawn cell for its own side already moved; derive from state diff
+  }
+  rebuildLastFromEngine();
+  setEval(-W.lastEval());          // engine eval is from ITS perspective
+  history.push(false);
+  updateMovesChip();
+  sound('move'); haptic(10);
+  syncAll();
+  checkEnd();
+  if (!gameOver) setStatus('Your move');
+}
+function rebuildLastFromEngine() {
+  if (history._lastState) {
+    const prev = history._lastState;
+    if (prev.pawn[W.turn()] !== undefined) {}
+  }
+  // simple robust approach: compare current vs snapshot taken before engine move
+  const cur = snapState();
+  const lm = diffMoves(history._snapBefore, cur);
+  lastMoveInfo = lm; history._snapBefore = cur;
+}
+function snapState() {
+  const wh = [], wv = [];
+  for (let s = 0; s < 64; s++) { wh.push(W.wallHBit(s)); wv.push(W.wallVBit(s)); }
+  return { pawn: [W.pawn(0), W.pawn(1)], wh, wv };
+}
+function diffMoves(a, b) {
+  if (!a) return null;
+  for (let s = 0; s < 64; s++) {
+    if (a.wh[s] !== b.wh[s]) { const [o, r, c] = B.engWallToDisp(0, Math.floor(s / 8), s % 8); void o; return { type: 'wall', o: 0, r: Math.floor(s / 8), c: s % 8 }; }
+    if (a.wv[s] !== b.wv[s]) return { type: 'wall', o: 1, r: Math.floor(s / 8), c: s % 8 };
+  }
+  for (let pl = 0; pl < 2; pl++) if (a.pawn[pl] !== b.pawn[pl]) {
+    const disp = B.engPawnToDisp(b.pawn[pl]);
+    return { type: 'pawn', r: Math.floor(disp / 9), c: disp % 9, from: B.engPawnToDisp(a.pawn[pl]) };
+  }
+  return null;
+}
+function checkEnd() {
+  const w = W.winner();
+  if (w !== -1) {
+    gameOver = true;
+    const youWon = w === humanSide;
+    setStatus(youWon ? 'You won - goal reached' : 'Zquoridor won');
+    toast(youWon ? 'ok' : 'err', youWon ? 'Victory' : 'Defeat');
+    sound('end'); haptic(youWon ? [20, 60, 20, 60, 40] : [60]);
+    refreshHud(); return true;
+  }
+  if (W.isDraw()) { gameOver = true; setStatus('Draw by repetition'); return true; }
+  return false;
+}
+function syncAll() { syncFromEngine(); if (!checkEndQuiet()) {} }
+function checkEndQuiet() { const w = W.winner(); return w !== -1 || W.isDraw(); }
+function newGame() {
+  W.newGame(); history = []; gameOver = false; engineThinking = false;
+  humanSide = S.side;
+  lastMoveInfo = null; history._snapBefore = snapState();
+  clearGhost(); startClock();
+  setStatus(humanSide === 0 ? 'Your move' : 'Zquoridor starts');
+  syncAll();
+  if (W.turn() !== humanSide) { engineThinking = true; refreshHud(); setTimeout(engineTurn, 150); }
+}
+function updateMovesChip() { $('movesChip').textContent = 'Moves ' + Math.ceil(history.length / 2); }
+
+// ===================== 7. wall input (plan section 6) ==================
+// states: IDLE -> ARMED -> DRAGGING -> (PENDING) -> IDLE/COMMIT
+let wallState = 'IDLE', armedO = 0;
+let dragPtr = null;
+
+function clearGhost() {
+  wallState = 'IDLE'; dragPtr = null;
+  B.ghost = null; B.ghostFrom = null;
+  $('wallH').classList.remove('armed'); $('wallV').classList.remove('armed');
+  $('confirmChip').style.display = 'none';
+  hideLegalSlots();
+}
+function armWall(o) {
+  if ($('wallH').classList.contains('off')) return;
+  if (wallState === 'ARMED' && armedO === o) { clearGhost(); return; }
+  clearGhost();
+  armedO = o; wallState = 'ARMED';
+  $(o === 0 ? 'wallH' : 'wallV').classList.add('armed');
+  showLegalSlots(o);
+  sound('arm'); haptic(6);
+}
+function legalSlotBitmap(o) {
+  const on = document.createElement('canvas');
+  // paint legal anchors as gold at low opacity via a dedicated overlay canvas
+  return null; // overlay drawn directly in showLegalSlots
+}
+let slotLayer = null;
+function showLegalSlots(o) {
+  hideLegalSlots();
+  slotLayer = document.createElement('canvas');
+  const dpr = Math.min(devicePixelRatio || 1, 3);
+  slotLayer.width = B.cv.width; slotLayer.height = B.cv.height;
+  slotLayer.style.cssText = `position:absolute;left:0;top:0;width:${B.cssSide}px;height:${B.cssSide}px;pointer-events:none`;
+  const g = slotLayer.getContext('2d'); g.setTransform(dpr, 0, 0, dpr, 0, 0);
+  g.fillStyle = getComputedStyle(document.documentElement).getPropertyValue('--gold').trim();
+  for (let r = 0; r < 8; r++) for (let c = 0; c < 8; c++) {
+    if (legalWall[o * 64 + r * 8 + c]) {
+      const rc = B.wallRect(o, r, c);
+      g.globalAlpha = .18; g.fillRect(rc.x, rc.y, rc.w, rc.h);
+    }
+  }
+  $('boardWrap').appendChild(slotLayer);
+}
+function hideLegalSlots() { if (slotLayer) { slotLayer.remove(); slotLayer = null; } }
+
+function boardPoint(ev) {
+  const rect = B.cv.getBoundingClientRect();
+  return { x: ev.clientX - rect.left, y: ev.clientY - rect.top };
+}
+function snapGhost(px, py) {
+  const off = touchOffsetPx();
+  const p = { x: px, y: py - off };
+  let a = B.nearestAnchor(p.x, p.y);
+  if (!a || a.dist > .85 * B.U) { B.ghost = null; setStatus('Drag onto a groove between cells'); return; }
+  let [o, r, c] = [armedO, a.r, a.c];
+  const [eo, er, ec] = B.dispWallToEng(o, r, c);
+  let st = legalWall[o * 64 + r * 8 + c] ? 'ok' : null;
+  if (!st) {   // magnetic assist: nearest legal anchor within .60U
+    let best = null;
+    for (let dr = -1; dr <= 1; dr++) for (let dc = -1; dc <= 1; dc++) {
+      const rr2 = r + dr, cc2 = c + dc;
+      if (rr2 < 0 || rr2 > 7 || cc2 < 0 || cc2 > 7) continue;
+      if (!legalWall[o * 64 + rr2 * 8 + cc2]) continue;
+      const ctr = B.anchorCenter(rr2, cc2);
+      const dist = Math.hypot(p.x - ctr.x, p.y - ctr.y);
+      if (dist <= .60 * B.U && (!best || dist < best.dist)) best = { r: rr2, c: cc2, dist };
+    }
+    if (best) { r = best.r; c = best.c; st = 'assisted'; }
+  }
+  if (!st) st = 'bad';
+  B.ghost = { o, r, c, state: st, from: st === 'assisted' ? a : null };
+  if (st === 'bad') setStatus(illegalReason(eo, er, ec));
+  else setStatus(st === 'assisted' ? 'Snapped to the nearest legal slot' : '');
+  B.render();
+}
+function illegalReason(o, r, c) {
+  if ([W.wallsLeft(humanSide)] <= 0 || W.wallsLeft(humanSide) <= 0) return 'No walls left';
+  // cheap geometric checks mirror the engine pre-filter
+  const occH = [], occV = [];
+  for (let s = 0; s < 64; s++) { if (W.wallHBit(s)) occH.push(s); if (W.wallVBit(s)) occV.push(s); }
+  void occH; void occV;
+  return 'Illegal: that wall traps a player or overlaps another';
+}
+
+function onBoardPointerDown(ev) {
+  if (gameOver || engineThinking) return;
+  const pt = boardPoint(ev);
+  const cell = B.pointToCell(pt.x, pt.y);
+  if (wallState === 'ARMED') { wallState = 'DRAGGING'; dragPtr = ev.pointerId; snapGhost(pt.x, pt.y); ev.preventDefault(); return; }
+  if (cell) {
+    const near = B.nearestAnchor(pt.x, pt.y);
+    if (!near || near.dist > .55 * B.U || !nearAnchorHasLegal(near)) { pawnDown(cell, pt); return; }
+    // direct gesture: provisional orientation from the groove under the cursor
+    const fx = Math.abs((pt.x % B.U) - B.U / 2), fy = Math.abs((pt.y % B.U) - B.U / 2);
+    armedO = (fy < fx) ? 0 : (fx < fy ? 1 : lastArmO());
+    clearGhost(); armedO = armedO; wallState = 'DRAGGING'; dragPtr = ev.pointerId;
+    snapGhost(pt.x, pt.y); ev.preventDefault();
+  }
+}
+function nearAnchorHasLegal(a) {
+  for (const o of [0, 1]) if (legalWall[o * 64 + a.r * 8 + a.c]) return true;
+  return false;
+}
+function lastArmO() { return armedO; }
+function onBoardPointerMove(ev) {
+  if (wallState !== 'DRAGGING' || ev.pointerId !== dragPtr) return;
+  const pt = boardPoint(ev); snapGhost(pt.x, pt.y); ev.preventDefault();
+}
+function onBoardPointerUp(ev) {
+  if (wallState !== 'DRAGGING' || ev.pointerId !== dragPtr) return;
+  const gh = B.ghost;
+  if (gh && (gh.state === 'ok' || gh.state === 'assisted')) {
+    if (confirmOn()) { gh.state = 'pending'; wallState = 'PENDING'; showConfirmChip(gh); B.render(); return; }
+    commitGhost(gh);
+  } else {
+    if (gh && gh.state === 'bad') { shake(); toast('warn', $('status').textContent); }
+    clearGhost(); B.render();
+  }
+}
+function commitGhost(gh) {
+  const [eo, er, ec] = B.dispWallToEng(gh.o, gh.r, gh.c);
+  if (W.applyWall(eo, er, ec)) {
+    lastMoveInfo = { type: 'wall', o: eo, r: er, c: ec };
+    clearGhost();
+    sound('wall'); haptic(18);
+    afterHumanMove();
+  } else { clearGhost(); B.render(); }
+}
+function showConfirmChip(gh) {
+  const rc = B.wallRect(gh.o, gh.r, gh.c), wrap = $('boardWrap');
+  const chip = $('confirmChip');
+  chip.style.display = 'flex';
+  const cx = Math.min(rc.x + rc.w, wrap.clientWidth - 100);
+  const cy = Math.max(6, rc.y - 54);
+  chip.style.left = cx + 'px'; chip.style.top = cy + 'px';
+}
+$('ccOk').addEventListener('click', () => { if (B.ghost) commitGhost(B.ghost); });
+$('ccNo').addEventListener('click', () => { clearGhost(); B.render(); });
+
+// dock events: press-and-drag (M1) vs click-to-arm (M2)
+for (const [id, o] of [['wallH', 0], ['wallV', 1]]) {
+  const el = $(id);
+  el.addEventListener('pointerdown', ev => {
+    el.setPointerCapture(ev.pointerId);
+    el._downAt = performance.now(); el._dragging = false;
+  });
+  el.addEventListener('pointermove', ev => {
+    if (el._dragging || !el._downAt) return;
+    if (Math.abs(ev.movementX) + Math.abs(ev.movementY) > 3 || performance.now() - el._downAt > 150) el._dragging = true;
+    if (el._dragging && wallState !== 'DRAGGING') { armWall(o); wallState = 'DRAGGING'; dragPtr = ev.pointerId; }
+    if (wallState === 'DRAGGING' && ev.pointerId === dragPtr) {
+      // ghost over the board while the pointer is still on the dock is not
+      // visible; forward to board coordinates anyway so entering the board flows
+      const br = B.cv.getBoundingClientRect();
+      snapGhost(ev.clientX - br.left, ev.clientY - br.top);
+    }
+  });
+  el.addEventListener('pointerup', ev => {
+    if (wallState === 'DRAGGING' && ev.pointerId === dragPtr) { onBoardPointerUp(ev); }
+    else if (performance.now() - el._downAt < 300) armWall(o);   // click = arm
+    el._downAt = null; el._dragging = false;
+  });
+}
+
+// ===================== 8. pawn input ===================================
+function pawnDown(dispCell, pt) {
+  const myPawnDisp = B.engPawnToDisp(W.pawn(humanSide));
+  const isMyTurn = W.turn() === humanSide && !engineThinking;
+  if (dispCell === myPawnDisp && isMyTurn) { B.selected = dispCell; B.dots = [...legalPawn]; B.render(); return; }
+  if (isMyTurn && legalPawn.has(dispCell)) {
+    const eng = B.dispPawnToEng(dispCell === undefined ? 0 : dispCell, dispCell % 9);
+    void eng;
+    const engCell = B.flipped ? (8 - Math.floor(dispCell / 9)) * 9 + dispCell % 9
+                              : Math.floor(dispCell / 9) * 9 + dispCell % 9;
+    if (W.applyPawn(engCell)) {
+      lastMoveInfo = { type: 'pawn', r: Math.floor(dispCell / 9), c: dispCell % 9 };
+      B.selected = -1; B.dots = [];
+      sound('move'); haptic(10);
+      afterHumanMove();
+    }
+    return;
+  }
+  if (B.selected >= 0) { B.selected = -1; buildLegalSets(); B.render(); }
+}
+
+// ===================== 10. sound & haptics =============================
+let AC = null;
+function ac() { if (!AC) try { AC = new (window.AudioContext || webkitAudioContext)(); } catch (e) {} return AC; }
+function tone(freq, dur, type, gainDb) {
+  if (!S.sound) return;
+  const a = ac(); if (!a) return;
+  const o = a.createOscillator(), g = a.createGain();
+  o.type = type || 'sine'; o.frequency.value = freq;
+  const vol = Math.pow(10, ((gainDb || -10) / 20)) * S.volume;
+  g.gain.setValueAtTime(vol, a.currentTime);
+  g.gain.exponentialRampToValueAtTime(.0001, a.currentTime + dur / 1000);
+  o.connect(g); g.connect(a.destination);
+  o.start(); o.stop(a.currentTime + dur / 1000 + .02);
+}
+function sound(kind) {
+  if (kind === 'move') tone(180, 40, 'sine', -10);
+  else if (kind === 'wall') { tone(90, 90, 'sine', -8); tone(320, 30, 'triangle', -16); }
+  else if (kind === 'arm') tone(900, 18, 'sine', -14);
+  else if (kind === 'illegal') tone(140, 70, 'square', -12);
+  else if (kind === 'end') { tone(523, 120, 'triangle', -8); setTimeout(() => tone(659, 120, 'triangle', -8), 120); setTimeout(() => tone(784, 180, 'triangle', -8), 240); }
+}
+function haptic(pat) {
+  if (S.haptics === 'off' || !navigator.vibrate) return;
+  try { navigator.vibrate(S.haptics === 'light' ? Math.min(...[pat].flat()) : pat); } catch (e) {}
+}
+function shake() { sound('illegal'); haptic([12, 40, 12]); }
+
+// ===================== 11. modals & toasts =============================
+function toast(kind, msg) {
+  const t = document.createElement('div');
+  t.className = 'toast ' + kind; t.textContent = msg;
+  $('toasts').appendChild(t);
+  while ($('toasts').childElementCount > 3) $('toasts').firstChild.remove();
+  setTimeout(() => t.remove(), kind === 'err' ? 4000 : 2600);
+}
+function openModal(html) { $('modalBox').innerHTML = html; $('overlay').classList.add('open'); }
+function closeModal() { $('overlay').classList.remove('open'); }
+$('overlay').addEventListener('click', e => { if (e.target.id === 'overlay') closeModal(); });
+
+function modalNewGame() {
+  const lvls = Object.entries(LEVELS).map(([k, v]) =>
+    `<button class="lvl ${S.level === k ? 'on' : ''}" data-lvl="${k}">
+       <span class="ldot" style="background:${v.color}"></span><b>${v.label}</b><span>${v.desc}</span></button>`).join('');
+  const sides = ['First', 'Second', 'Random'];
+  const clocks = ['none', '5+0', '5+3', '10+0'];
+  openModal(`<h3>NEW GAME <span class="x" data-close>&#10005;</span></h3>
+    <div class="levels">${lvls}</div>
+    <div class="row"><label>Play as</label><div class="seg" id="segSide">
+      ${sides.map((s, i) => `<button data-side="${i}" class="${(S.side === i % 2 && i < 2) || (i === 2 && S.side > 1) ? 'on' : ''}">${s}</button>`).join('')}
+    </div></div>
+    <div class="row"><label>Clock</label><div class="seg" id="segClock">
+      ${clocks.map(c => `<button data-clock="${c}" class="${S.clockMode === c ? 'on' : ''}">${c === 'none' ? 'None' : c}</button>`).join('')}
+    </div></div>
+    <div class="row"><label>Board</label><div class="swatches">
+      ${BOARD_THEMES.map(t => `<button class="swatch ${S.board === t ? 'on' : ''}" data-board="${t}"
+        style="background:var(--cell-a)" title="${t}">&#9823;</button>`).join('')}
+    </div></div>
+    <button class="btn gold" id="btnStart" style="width:100%;margin-top:10px;padding:13px">START GAME</button>`);
+  $('modalBox').querySelectorAll('[data-lvl]').forEach(b => b.onclick = () => {
+    S.level = b.dataset.lvl; saveSettings(); applyLevelChip();
+    $('modalBox').querySelectorAll('[data-lvl]').forEach(x => x.classList.toggle('on', x.dataset.lvl === S.level));
+  });
+  $('modalBox').querySelectorAll('#segSide button').forEach(b => b.onclick = () => {
+    $('modalBox').querySelectorAll('#segSide button').forEach(x => x.classList.remove('on'));
+    b.classList.add('on');
+    S.side = b.dataset.side === '2' ? Math.floor(Math.random() * 2) : +b.dataset.side; saveSettings();
+  });
+  $('modalBox').querySelectorAll('#segClock button').forEach(b => b.onclick = () => {
+    $('modalBox').querySelectorAll('#segClock button').forEach(x => x.classList.remove('on'));
+    b.classList.add('on'); setClockFromLabel(b.dataset.clock); saveSettings();
+  });
+  $('modalBox').querySelectorAll('.swatch').forEach(b => b.onclick = () => {
+    S.board = b.dataset.board; saveSettings();
+    document.documentElement.dataset.board = S.board;
+    $('modalBox').querySelectorAll('.swatch').forEach(x => x.classList.toggle('on', x.dataset.board === S.board));
+    B.themeDirty = true; B.render();
+  });
+  $('btnStart').onclick = () => { closeModal(); newGame(); };
+}
+$('overlay').addEventListener('click', e => { if (e.target.dataset.close) closeModal(); });
+
+function setClockFromLabel(l) {
+  if (l === 'none') { S.clockMode = 'none'; return; }
+  S.clockMode = l;
+  const [m, inc] = l.split('+');
+  S.baseMin = +m; S.incSec = +inc;
+}
+
+function applyLevelChip() {
+  const lv = LEVELS[S.level];
+  $('lvlName').textContent = lv.label;
+  $('lvlChip').querySelector('.dot').style.background = lv.color;
+  $('oppLvl').textContent = '\u00b7 ' + lv.label;
+  $('mOppLvl').textContent = '\u00b7 ' + lv.label;
+}
+
+function modalSettings() {
+  const seg = (key, opts, labels) =>
+    `<div class="seg" data-set="${key}">${opts.map((o, i) =>
+      `<button data-v="${o}" class="${S[key] === o ? 'on' : ''}">${labels[i]}</button>`).join('')}</div>`;
+  openModal(`<h3>SETTINGS <span class="x" data-close>&#10005;</span></h3>
+    <div class="card"><h4>APPEARANCE</h4>
+      <div class="row"><label>UI theme</label>${seg('ui', ['dark', 'light'], ['Dark', 'Light'])}</div>
+      <div class="row"><label>Board</label><div class="swatches" id="setBoards">
+        ${BOARD_THEMES.map(t => `<button class="swatch ${S.board === t ? 'on' : ''}" data-b="${t}" style="background:var(--frame)">${t.slice(0, 2)}</button>`).join('')}</div></div>
+      <div class="row"><label>Pawn style</label>${seg('pawn', PAWN_STYLES, PAWN_STYLES.map(p => p[0].toUpperCase() + p.slice(1)))}</div>
+      <div class="row"><label>Coordinates</label>${seg('coords', ['off', 'edges'], ['Off', 'Edges'])}</div>
+    </div>
+    <div class="card"><h4>BOARD</h4>
+      <div class="row"><label>Legal dots</label>${seg('dots', [true, false], ['On', 'Off'])}</div>
+      <div class="row"><label>Path hints</label>${seg('paths', [false, true], ['Off', 'On'])}</div>
+    </div>
+    <div class="card"><h4>INPUT</h4>
+      <div class="row"><label>Confirm walls</label>${seg('confirmWalls', [null, true, false], ['Auto', 'On', 'Off'])}</div>
+      <div class="row"><label>Touch offset</label>${seg('touchOffset', [null, 'small', 'large', 'off'], ['Auto', 'Small', 'Large', 'Off'])}</div>
+      <div class="row"><label>Haptics</label>${seg('haptics', ['full', 'light', 'off'], ['Full', 'Light', 'Off'])}</div>
+    </div>
+    <div class="card"><h4>SOUND</h4>
+      <div class="row"><label>Sound</label>${seg('sound', [true, false], ['On', 'Off'])}</div>
+    </div>`);
+  $('modalBox').querySelectorAll('[data-set]').forEach(sg => {
+    sg.querySelectorAll('button').forEach(b => b.onclick = () => {
+      let v = b.dataset.v;
+      if (v === 'true') v = true; else if (v === 'false') v = false; else if (v === 'null') v = null;
+      S[sg.dataset.set] = v; saveSettings(); applySettings();
+      sg.querySelectorAll('button').forEach(x => x.classList.toggle('on', x === b));
+    });
+  });
+  $('setBoards').querySelectorAll('.swatch').forEach(b => b.onclick = () => {
+    S.board = b.dataset.b; saveSettings(); applySettings();
+    $('setBoards').querySelectorAll('.swatch').forEach(x => x.classList.toggle('on', x === b));
+  });
+}
+
+function applySettings() {
+  const h = document.documentElement;
+  h.dataset.ui = S.ui; h.dataset.board = S.board; h.dataset.pawn = S.pawn;
+  h.dataset.coords = S.coords; h.dataset.pawnShadow = 'soft';
+  applyLevelChip();
+  if (B) { B.themeDirty = true; B.fit(); buildLegalSets(); refreshHud(); B.render(); }
+}
+
+// ===================== 12. keyboard ====================================
+addEventListener('keydown', e => {
+  if (e.key === 'Escape') { clearGhost(); B.render(); closeModal(); return; }
+  if (e.key === 'h' || e.key === 'H') { armWall(0); return; }
+  if (e.key === 'v' || e.key === 'V') { armWall(1); return; }
+  if (e.key === 'r' || e.key === 'R') { armedO = 1 - armedO; if (B.ghost) { B.ghost.o = armedO; B.render(); } return; }
+  if (e.key === 'f' || e.key === 'F') { doFlip(); return; }
+  if (e.key === 'Enter' && wallState === 'PENDING') { commitGhost(B.ghost); return; }
 });
+
+// ===================== misc handlers ===================================
+function doFlip() { B.flipped = !B.flipped; syncFromEngine(); B.render(); }
+$('btnFlip').onclick = doFlip;
+$('btnUndo').onclick = () => { toast('info', 'Takeback lands with the analysis iteration'); };
+$('btnHint').onclick = () => { toast('info', 'Hint lands with the analysis iteration'); };
+$('btnNew').onclick = modalNewGame;
+$('lvlChip').onclick = modalNewGame;
+$('btnSettings').onclick = modalSettings;
+$('logo').onclick = () => openModal(`<h3>ABOUT <span class="x" data-close>&#10005;</span></h3>
+  <p style="line-height:1.7;color:var(--txt2)">Zquoridor plays with an NNUE evaluation network
+  (354 inputs, hybrid PUCT MCTS over alpha-beta) trained on self-play.
+  Place walls to slow your opponent; reach the far row to win.</p>`);
+document.querySelectorAll('.tab[data-pane]').forEach(t => t.onclick = () => {
+  document.querySelectorAll('.tab[data-pane]').forEach(x => x.classList.toggle('on', x === t));
+  document.querySelectorAll('.pane').forEach(p => p.classList.toggle('on', p.id === t.dataset.pane));
+});
+const bcvs = $('board');
+bcvs.addEventListener('pointerdown', onBoardPointerDown);
+bcvs.addEventListener('pointermove', onBoardPointerMove);
+bcvs.addEventListener('pointerup', onBoardPointerUp);
+bcvs.addEventListener('pointercancel', () => { clearGhost(); B.render(); });
+$('raceMeter').onclick = () => { S.paths = !S.paths; togglePaths(); saveSettings(); };
+$('btnPaths').onclick = () => { S.paths = !S.paths; togglePaths(); saveSettings(); };
+function togglePaths() {
+  if (!S.paths) { B.paths = null; B.render(); return; }
+  const mk = pl => {
+    const cells = []; let cell = W.pawn(pl); cells.push(cell);
+    let guard = 0;
+    while (guard++ < 40) {
+      const r = Math.floor(cell / 9), goal = pl === 0 ? 8 : 0;
+      if (r === goal) break;
+      // greedy step: pick the neighbour (open edge) closest to goal
+      let bestC = null, bestD = 99;
+      for (const [dr, dc] of [[-1, 0], [1, 0], [0, -1], [0, 1]]) {
+        const nr = r + dr, nc = c0(cell) + dc;
+        if (nr < 0 || nr > 8 || nc < 0 || nc > 8) continue;
+        const ncCell = nr * 9 + nc;
+        const dd = Math.abs(nr - goal);
+        if (dd < bestD && edgeOpen(cell, ncCell)) { bestD = dd; bestC = ncCell; }
+      }
+      if (bestC == null) break;
+      cells.push(bestC); cell = bestC;
+    }
+    return { cells, color: getComputedStyle(document.documentElement).getPropertyValue('--p' + pl).trim() };
+  };
+  function c0(cell) { return cell % 9; }
+  function edgeOpen(a, b) {
+    const ar = Math.floor(a / 9), ac = a % 9, br = Math.floor(b / 9), bc2 = b % 9;
+    if (ar === br) {  // horizontal step blocked by V walls at col min(ac,bc)
+      const cmin = Math.min(ac, bc2), r = ar;
+      const bit1 = r > 0 ? W.wallVBit((r - 1) * 8 + cmin) : 0;
+      const bit2 = r < 8 ? W.wallVBit(r * 8 + cmin) : 0;
+      return !(bit1 || bit2);
+    }
+    const rmin = Math.min(ar, br), c = ac;
+    const bit1 = c > 0 ? W.wallHBit(rmin * 8 + c - 1) : 0;
+    const bit2 = c < 8 ? W.wallHBit(rmin * 8 + c) : 0;
+    return !(bit1 || bit2);
+  }
+  B.paths = [mk(0), mk(1)]; B.render();
+}
+
+// ===================== 13. boot ========================================
+function boot() {
+  loadSettings();
+  bindEngine();
+  B = new QBoard($('board'));
+  applySettings();
+  W.newGame();
+  humanSide = S.side;
+  history._snapBefore = snapState();
+  syncAll();
+  startClock();
+  setStatus('Your move');
+  // demo hook for visual testing: ?demo places a few moves programmatically
+  if (location.search.includes('demo')) runDemo();
+}
+function runDemo() {
+  const seq = [
+    () => W.applyPawn(B.flipped ? (8 - 1) * 9 + 4 : 1 * 9 + 4),
+    () => W.engineMove(8, 120),
+    () => W.applyWall(0, 3, 3),
+    () => W.engineMove(8, 120),
+    () => W.applyPawn(B.flipped ? (8 - 2) * 9 + 4 : 2 * 9 + 4),
+  ];
+  let i = 0;
+  const step = () => {
+    if (i >= seq.length) { rebuildLastFromEngine2(); return; }
+    seq[i++](); history.push(i % 2 === 1);
+    rebuildLastFromEngine2();
+    syncAll(); setEval(-W.lastEval());
+    updateMovesChip();
+    setTimeout(step, 350);
+  };
+  step();
+}
+function rebuildLastFromEngine2() {
+  const cur = snapState();
+  lastMoveInfo = diffMoves(history._snapBefore, cur);
+  history._snapBefore = cur;
+  syncFromEngine();
+}
+if (ZquoridorModule.ready) boot(); else ZquoridorModule.then ? ZquoridorModule.then(boot) : (ZquoridorModule.onRuntimeInitialized = boot);
