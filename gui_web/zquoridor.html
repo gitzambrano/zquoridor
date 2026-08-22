@@ -1527,13 +1527,15 @@ var ZquoridorModule=(()=>{var _scriptName=globalThis.document?.currentScript?.sr
      * --------------------------------------------------------------- */
     var THEMES = {
         wood: {
-            cellLight: '#e8cfa0', cellDark: '#c9a678', boardBg: '#4a331f',
-            frame: '#3a2717', gridLine: 'rgba(74,51,31,0.28)', grain: 0.55,
-            wall: '#8a5a2b', wallEdge: '#5c3a17', wallShadow: 'rgba(28,16,6,0.55)',
-            coord: '#f0dcb4', dot: 'rgba(40,26,12,0.42)', lastMove: 'rgba(214,178,52,0.42)',
-            pathP0: '#f4e7c2', pathP1: '#e0725f',
-            p0: '#f6ecd2', p0Edge: '#9c8144', p1: '#b8323f', p1Edge: '#5e1119',
-            goalGlow: 'rgba(230,201,110,0.55)', arrow: 'rgba(240,190,70,0.75)'
+            // Rich dark walnut: espresso frame, mid-brown cells with a
+            // subtle two-tone alternation, near-black chunky slabs.
+            cellLight: '#b8874f', cellDark: '#9d6f3c', boardBg: '#33200e',
+            frame: '#1d1003', gridLine: 'rgba(22,12,3,0.45)', grain: 0.7,
+            wall: '#33200e', wallEdge: '#140901', wallShadow: 'rgba(6,3,0,0.65)',
+            coord: '#eedbb6', dot: 'rgba(255,236,190,0.5)', lastMove: 'rgba(244,210,96,0.32)',
+            pathP0: '#fff4d4', pathP1: '#ff9d84',
+            p0: '#fbf4e2', p0Edge: '#8a6f35', p1: '#c53a48', p1Edge: '#550e18',
+            goalGlow: 'rgba(238,208,118,0.62)', arrow: 'rgba(246,196,76,0.82)'
         },
         classic: {
             cellLight: '#f0f0f4', cellDark: '#b9bcc8', boardBg: '#3a3d4a',
@@ -2594,11 +2596,11 @@ var ZquoridorModule=(()=>{var _scriptName=globalThis.document?.currentScript?.sr
         var lm = this.overlays.lastMove;
         if (!lm || !lm.isWall) return;
         var g = this._g, t = this.theme;
-        var q = this._slotRect(lm.a | 0, lm.b | 0, lm.c | 0);
+        var q = this._wallRect(lm.a | 0, lm.b | 0, lm.c | 0);
         ctx.save();
-        roundRectPath(ctx, q.x - 1.5, q.y - 1.5, q.w + 3, q.h + 3, Math.max(3, g.r));
-        ctx.strokeStyle = rgba(t.lastMove, 0.85);
-        ctx.lineWidth = 2;
+        roundRectPath(ctx, q.x - 2, q.y - 2, q.w + 4, q.h + 4, Math.max(3, g.r));
+        ctx.strokeStyle = rgba(t.lastMove, 0.9);
+        ctx.lineWidth = 2.4;
         ctx.stroke();
         ctx.restore();
     };
@@ -2741,14 +2743,26 @@ var ZquoridorModule=(()=>{var _scriptName=globalThis.document?.currentScript?.sr
         }
     };
 
+    // Slab footprint: the corridor rect grown so the wall overlaps onto
+    // both neighbouring cells -- walls are chunky pieces resting ON the
+    // board, not sticks inside the gap.
+    QBoard.prototype._wallRect = function (o, r, c) {
+        var g = this._g;
+        var q = this._slotRect(o, r, c);
+        if (!q) return null;
+        var ex = Math.max(2.5, g.cell * 0.19);          // growth per side
+        if (o === 0) return { x: q.x + ex * 0.25, y: q.y - ex, w: q.w - ex * 0.5, h: q.h + ex * 2 };
+        return { x: q.x - ex, y: q.y + ex * 0.25, w: q.w + ex * 2, h: q.h - ex * 0.5 };
+    };
+
     QBoard.prototype._paintWall = function (ctx, o, r, c, owner, alpha, glow, lift) {
         var g = this._g, t = this.theme;
-        var q = this._slotRect(o, r, c);
+        var q = this._wallRect(o, r, c);
         if (!q) return;
         lift = lift || 0;
         var y = q.y - lift;
-        var rad = Math.max(1.5, g.gap * 0.38);
-        var elev = Math.max(1.5, g.gap * 0.45) + lift;
+        var rad = Math.max(2, Math.min(q.w, q.h) * 0.28);
+        var elev = Math.max(2, Math.min(q.w, q.h) * 0.34) + lift;
 
         ctx.save();
         ctx.globalAlpha = clamp(alpha, 0, 1);
@@ -2832,9 +2846,9 @@ var ZquoridorModule=(()=>{var _scriptName=globalThis.document?.currentScript?.sr
         if (r < 0 || r >= WS || c < 0 || c >= WS) return;
         var legal = (gh.legal === undefined) ? this._wallLegal(o, r, c) : !!gh.legal;
         var g = this._g;
-        var q = this._slotRect(o, r, c);
+        var q = this._wallRect(o, r, c);
         if (!q) return;
-        var rad = Math.max(1.5, g.gap * 0.38);
+        var rad = Math.max(2, Math.min(q.w, q.h) * 0.28);
         var col = legal ? '#4a9c6a' : '#c0394a';
 
         ctx.save();
