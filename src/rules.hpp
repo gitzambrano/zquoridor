@@ -401,13 +401,25 @@ inline int pathRobustness(uint64_t wallsH, uint64_t wallsV, int startCell, int p
 // legalWallMoves, oppDistBefore/oppRobustBefore, logo depois) sem
 // recomputar nada.
 struct PlayerPathCache {
-    std::array<int, N * N> dist;
-    std::array<int, N * N> parent;
-    std::array<bool, N * N> reached{};
+    // Otimização (perf/speed-elo-100): encolhido de ~740B para ~190B.
+    // dist cabe em uint8_t (BFS 9x9 tem distância máxima 80); parent é
+    // célula 0..80 ou -1 (cabe em int8_t); reached virou bitmask de 81
+    // bits (2x uint64_t). Motivo: get()/put() da PlayerPathCacheTable
+    // copiam a struct INTEIRA por acesso -- a cópia cai ~4x e a tabela
+    // entre nós (65536 entradas) cai de ~48MB para ~12MB, melhorando muito
+    // a residência em cache. Mesma informação exata, mesma semântica.
+    std::array<uint8_t, N * N> dist;
+    std::array<int8_t, N * N> parent;
+    uint64_t reachedBits[2] = {};   // bit c = célula c alcançada (0..80)
     int goalCell = -1;
     int distToGoal = -1;
     bool valid = false;
 };
+
+// true se a célula `cell` (0..80) foi alcançada pela BFS que preencheu `d`
+inline bool cacheReached(const PlayerPathCache& d, int cell) {
+    return (d.reachedBits[cell >> 6] >> (cell & 63)) & 1ull;
+}
 
 // Preenche `out` a partir de UMA chamada a detail::runBFS. O reset de
 // `out.reached` (81 bools) é O(81), mas agora só é pago 1x por
@@ -419,15 +431,16 @@ struct PlayerPathCache {
 inline void computeDistFull(uint64_t wallsH, uint64_t wallsV, int startCell, int player, PlayerPathCache& out) {
     detail::runBFS(wallsH, wallsV, startCell, player);
     auto& e = detail::engine();
-    out.reached = {};
+    out.reachedBits[0] = 0;
+    out.reachedBits[1] = 0;
     out.goalCell = e.goalCell;
     out.distToGoal = e.distToGoal;
     out.valid = true;
     for (int i = 0; i < e.touchedCount; i++) {
         int cell = e.touched[i];
-        out.dist[cell] = e.dist[cell];
-        out.parent[cell] = e.parent[cell];
-        out.reached[cell] = true;
+        out.dist[cell] = (uint8_t)e.dist[cell];
+        out.parent[cell] = (int8_t)e.parent[cell];
+        out.reachedBits[cell >> 6] |= (1ull << (cell & 63));
     }
 }
 
@@ -469,7 +482,7 @@ inline int cachedPathRobustness(const PlayerPathCache& d, uint64_t wallsH, uint6
             if (!inBounds(nr, nc)) continue;
             int ncell = cellIdx(nr, nc);
             if (ncell == prevOnPath) continue;
-            if (!d.reached[ncell]) continue;
+            if (!cacheReached(d, ncell)) continue;
             if (edgeBlocked(wallsH, wallsV, r, c, nr, nc)) continue;
             if (d.dist[ncell] <= d.dist[cur] + 1) robustness++;
         }
@@ -932,6 +945,16 @@ struct RepetitionTable {
     static constexpr int MAX_HIST = 512;
     uint64_t hist[MAX_HIST];
     int size = 0;
+    // Otimização (perf/speed-elo-100): índice do primeiro histograma que
+    // ainda pode conter uma repetição da posição atual. Muros nunca são
+    // removidos, então duas posições com o MESMO wallsH/wallsV só podem
+    // estar separadas por lances de peão -- qualquer ocorrência de s.hash
+    // tem que estar DEPOIS do último lance de muro empilhado. Tudo antes
+    // de lastIrrev é impossível repetir e não precisa ser varrido.
+    int lastIrrev = 0;
+    // Pilha paralela para restaurar lastIrrev no pop() (o alpha-beta faz
+    // push/pop LIFO dentro da busca).
+    uint16_t irrevSaved[MAX_HIST];
     // Índice em `hist` onde termina o histórico REAL do jogo (copiado de
     // gameHistory) e começa o que foi empilhado hipoteticamente por ESTA
     // busca. Ver markRoot()/isRepetitionDraw() -- convenção igual à do
@@ -945,8 +968,26 @@ struct RepetitionTable {
     // padrão, não uma alteração da regra de fato.
     int rootSize = 0;
 
-    void push(uint64_t hash) { if (size < MAX_HIST) hist[size++] = hash; }
-    void pop()               { if (size > 0) --size; }
+    // `irreversible`: true quando o lance que gerou `hash` colocou um
+    // MURO -- tudo ANTERIOR ao índice desse muro nunca mais pode repetir
+    // (topologia congelada dali pra frente). Aponta pro ÍNDICE DO MURO e
+    // não pro seguinte porque a posição RESULTANTE do muro (o próprio
+    // slot) ainda tem exatamente a topologia atual e PODE se repetir via
+    // ciclos de peão (pego pelo teste diferencial
+    // tests/test_repetition_diff.cpp: ida-e-volta dos dois peões em 4
+    // plies recria a posição pós-muro). Default false mantém todos os
+    // call-sites antigos compilando e corretos (apenas conservadores:
+    // varrem mais).
+    void push(uint64_t hash, bool irreversible = false) {
+        if (size < MAX_HIST) {
+            irrevSaved[size] = (uint16_t)lastIrrev;
+            hist[size++] = hash;
+            if (irreversible) lastIrrev = size - 1;
+        }
+    }
+    void pop() {
+        if (size > 0) { --size; lastIrrev = irrevSaved[size]; }
+    }
     // Chamar 1x no início de cada busca (chooseMove), depois de copiar
     // gameHistory pra dentro do reptbl local, pra marcar onde termina o
     // histórico real e começa o hipotético.
@@ -961,10 +1002,21 @@ struct RepetitionTable {
     // true se `hash` (já empilhado por push() antes desta chamada, ou
     // seja, a ocorrência atual já está incluída na contagem) deve ser
     // tratado como empate por repetição agora.
+    //
+    // Otimização (perf/speed-elo-100), sem mudança de semântica: a
+    // varredura começa em lastIrrev -- posições anteriores ao último
+    // muro têm topologia diferente da atual e NUNCA batem o hash (muros
+    // só crescem; hash igual exige muros iguais). NÃO usamos salto de
+    // paridade (i -= 2): ele exigiria que entradas consecutivas do
+    // histórico difiram sempre de exatamente 1 ply, o que não é garantido
+    // -- ex.: arena.cpp empurra a posição ANTES do lance, então a raiz da
+    // busca entra como cópia de histórico sem estar no vetor, e duas
+    // entradas vizinhas podem ter o mesmo turno (pego pelo teste
+    // diferencial tests/test_repetition_diff.cpp).
     bool isRepetitionDraw(uint64_t hash) const {
         int total = 0;
         bool preRoot = false;
-        for (int i = 0; i < size; i++) {
+        for (int i = size - 1; i >= lastIrrev; i--) {
             if (hist[i] == hash) {
                 total++;
                 if (i < rootSize) preRoot = true;
@@ -972,7 +1024,7 @@ struct RepetitionTable {
         }
         return preRoot ? (total >= 3) : (total >= 2);
     }
-    void clear() { size = 0; rootSize = 0; }
+    void clear() { size = 0; rootSize = 0; lastIrrev = 0; }
 };
 
 } // namespace qr

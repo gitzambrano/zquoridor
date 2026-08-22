@@ -351,7 +351,7 @@ inline Move chooseShallowRunnerUp(Negamax& engine, const State& s, const MoveLis
     for (size_t i = 0; i < nMoves; i++) {
         const auto& m = moves[i];
         State ns = applyMove(s, m);
-        reptbl.push(ns.hash);
+        reptbl.push(ns.hash, m.isWall);
         // Busca rasa do ponto de vista do oponente, então negamos o score
         int score = -engine.searchShallow(ns, 2, dummyStats);
         reptbl.pop();
@@ -544,7 +544,7 @@ inline std::vector<TrainingSample> playOneGame(Negamax& engine0, Negamax& engine
         }
         samples.push_back(rec);
 
-        reptbl.push(s.hash);
+        reptbl.push(s.hash, chosen.isWall);
         s = applyMove(s, chosen);
     }
 

@@ -769,8 +769,11 @@ inline void updateAccumulatorForMoveQuant(AccumulatorQuant& acc, bool viewerIsMo
 // que podem ser negativas -- ver forwardValueQuant/forwardPolicyQuant).
 inline uint8_t screluQuant(int32_t x, int32_t QA) {
     int32_t c = x < 0 ? 0 : (x > QA ? QA : x);
-    int64_t sq = (int64_t)c * (int64_t)c;
-    return (uint8_t)(sq / QA);
+    // perf/speed-elo-100: era int64 -- divisão de 64 bits custa bem mais
+    // que a de 32 e o quadrado (max 255^2 = 65025) cabe em uint32 com
+    // folga. Mesmo quociente inteiro exato.
+    uint32_t sq = (uint32_t)c * (uint32_t)c;
+    return (uint8_t)(sq / (uint32_t)QA);
 }
 
 // Núcleo comum às duas cabeças quantizadas: só muda qual par (wv1,bv1,wv2,
@@ -783,15 +786,20 @@ inline float forwardValueHeadQuant(const AccumulatorQuant& acc,
                                     const std::array<int8_t, 32>& wv2,
                                     int32_t bv2) {
     auto& W = weightsQuant();
-    std::array<uint8_t, HIDDEN> a{};
+    alignas(32) std::array<uint8_t, HIDDEN> a;
     for (int i = 0; i < HIDDEN; i++) a[i] = screluQuant(acc.v[i], W.QA);
 
     // value1 (256->32): escala QA*QB
+    // perf/speed-elo-100: sem o branch por linha (impedia vetorizar); a
+    // ordem de acumulação POR j não muda -> mesmo inteiro exato. Linhas
+    // com ai==0 só somam zeros, que o vetorizado absorve mais barato do
+    // que o custo de predição errada do branch antigo.
     std::array<int32_t, 32> h{};
+    const int8_t* wv1f = &wv1[0][0];
     for (int i = 0; i < HIDDEN; i++) {
-        int32_t ai = a[i];
-        if (ai == 0) continue;
-        for (int j = 0; j < 32; j++) h[j] += ai * (int32_t)wv1[i][j];
+        const int32_t ai = a[i];
+        const int8_t* row = wv1f + (size_t)i * 32;
+        for (int j = 0; j < 32; j++) h[j] += ai * (int32_t)row[j];
     }
     // clippedRelu inteira: clamp(h+bv1, 0, QA*QB) -- mesma escala combinada
     int64_t QAQB = (int64_t)W.QA * (int64_t)W.QB;
@@ -838,19 +846,25 @@ inline float nnueWinProbQuant(const AccumulatorQuant& acc) {
 
 inline void forwardPolicyQuant(const AccumulatorQuant& acc, std::array<float, POLICY_OUT>& out) {
     auto& W = weightsQuant();
-    std::array<uint8_t, HIDDEN> a{};
+    alignas(32) std::array<uint8_t, HIDDEN> a;
     for (int i = 0; i < HIDDEN; i++) a[i] = screluQuant(acc.v[i], W.QA);
 
-    int64_t QAQB = (int64_t)W.QA * (int64_t)W.QB;
+    // perf/speed-elo-100: o laço quente era escalar com acumulador int64 e
+    // um branch `if (ai == 0) continue` que impedia vetorização automática
+    // -- sozinho, era ~60% do tempo do caminho MCAB+NNUE (perfilado com
+    // benchmarks/profile_mcab.cpp). Agora: acumulador int32 SEM branch --
+    // o limite superior da soma é 255*127*256 ~= 8.3M << INT32_MAX, então
+    // o inteiro acumulado é EXATAMENTE o mesmo do código antigo em int64,
+    // e a divisão final em double é idêntica bit a bit. O produto uint8 x
+    // int8 -> int32 agora autovetoriza (AVX2: vpmovzx/vpmovsx + pmulld).
+    const double qaqb = (double)((int64_t)W.QA * (int64_t)W.QB);
     for (int o = 0; o < POLICY_OUT; o++) {
-        int64_t s = W.bp[o];
-        auto& row = W.wp[o];
-        for (int i = 0; i < HIDDEN; i++) {
-            int32_t ai = a[i];
-            if (ai == 0) continue;
-            s += (int64_t)ai * (int64_t)row[i];
-        }
-        out[o] = (float)((double)s / (double)QAQB);   // des-escala final em ponto flutuante, ver forwardValueQuant
+        const int8_t* row = W.wp[o].data();
+        const uint8_t* av = a.data();
+        int32_t s = W.bp[o];
+        for (int i = 0; i < HIDDEN; i++)
+            s += (int32_t)av[i] * (int32_t)row[i];
+        out[o] = (float)((double)s / qaqb);   // des-escala final idêntica, ver forwardValueQuant
     }
 }
 

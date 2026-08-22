@@ -762,23 +762,29 @@ private:
         // separadamente via computeDistCached (mesma BFS, sem pagar a fórmula
         // evalSimple). Em ambos os casos sideCache/oppCache são necessários
         // para legalWallMoves e para o critério de muro crítico.
+        //
+        // Otimização (perf/speed-elo-100): no modo NNUE o stand-pat NÃO
+        // depende dos caches -- se ele já fecha beta (fail-high), retorna
+        // ANTES de pagar as 2 BFS que só alimentam legalWallMoves/critério
+        // de muro crítico, que não serão executadas de qualquer forma.
+        // Mesmo valor devolvido, zero mudança de comportamento; nos nós
+        // onde o fail-high ocorre (comum: quiescência roda no horizonte),
+        // economiza 2 BFS por nó. No modo Heurístico nada muda: evalSimpleW
+        // precisa das distâncias para o próprio score.
         int side = s.turn, opp = 1 - side;
         PlayerPathCache sideCache, oppCache;
         int standPat;
         if (curAcc) {
-            // NNUE: avaliação do acumulador já pronto; BFS dos dois caches
-            // são pagas aqui (não somam ao stand-pat -- são usadas só abaixo
-            // por legalWallMoves e oppDistBefore/oppRobustBefore). O xtable
-            // amortiza o custo quando a MESMA topologia+peão já foi vista.
+            standPat = nnueEvalInt(*curAcc, side);
+            if (standPat >= beta) return standPat;
             computeDistCached(s.wallsH, s.wallsV, s.pawn[side], side, &xdistCache, sideCache);
             computeDistCached(s.wallsH, s.wallsV, s.pawn[opp],  opp,  &xdistCache, oppCache);
-            standPat = nnueEvalInt(*curAcc, side);
         } else {
             // Heurístico: evalSimpleW preenche sideCache/oppCache como efeito
             // colateral (Prioridade 6 do plano-additional.md) -- 2 BFS fundidas.
             standPat = evalSimpleW(s, s.turn, weights, &sideCache, &oppCache, &xdistCache);
+            if (standPat >= beta) return standPat;
         }
-        if (standPat >= beta) return standPat;
         int localAlpha = alpha > standPat ? alpha : standPat;
         int best = standPat;
 
@@ -828,7 +834,7 @@ private:
                 childAcc = curAcc + 1;
                 makeChildAccPair(*curAcc, *childAcc, s, m, &xdistCache);
             }
-            reptbl.push(ns.hash);
+            reptbl.push(ns.hash, /*irreversible=*/true);  // quiescência só joga muros
             int score = -quiescence(ns, -beta, -localAlpha, qply + 1, stats, reptbl, !rootParity, childAcc);
             reptbl.pop();
             if (stopped) return 0;
@@ -1081,7 +1087,12 @@ private:
                 makeChildAccPair(*curAcc, *childAcc, s, m, &xdistCache);
             }
             State ns = applyMove(s, m);
-            reptbl.push(ns.hash);
+            // Prefetch da entrada da TT do filho (perf/speed-elo-100): o
+            // probe aleatorio em ~40MB de TT e um cache miss quase certo;
+            // antecipar a linha de memoria aqui esconde a latencia atras
+            // do trabalho que roda antes da recursao (push/reptbl etc).
+            __builtin_prefetch(&tt[(size_t)(ns.hash & (TT_SIZE - 1))], 1, 3);
+            reptbl.push(ns.hash, m.isWall);
             int score;
             if (!lmrPvsEnabled || moveIndex == 1) {
                 // 1º lance (normalmente o da TT, a aposta da ordenação de

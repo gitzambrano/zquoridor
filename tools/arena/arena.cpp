@@ -1,29 +1,29 @@
-// arena.cpp -- Arena de verdade entre DUAS engines distintas.
+﻿// arena.cpp -- Arena de verdade entre DUAS engines distintas.
 //
 // Por que este arquivo substituiu a versao antiga de arena.cpp (guardada
-// em teste/arena_singleengine_old.cpp): a versao antiga compilava UM único binário (a partir só do ref1) e
-// instanciava duas Negamax daquele MESMO binário -- ou seja, "Engine 2"
-// no run_arena.py nunca era de fato o código do --ref2: o worktree do
+// em teste/arena_singleengine_old.cpp): a versao antiga compilava UM Ãºnico binÃ¡rio (a partir sÃ³ do ref1) e
+// instanciava duas Negamax daquele MESMO binÃ¡rio -- ou seja, "Engine 2"
+// no run_arena.py nunca era de fato o cÃ³digo do --ref2: o worktree do
 // ref2 era criado e depois descartado sem nunca ser compilado. O
-// confronto rodava, na prática, o engine do ref1 contra ele mesmo,
-// disfarçado de A/B test.
+// confronto rodava, na prÃ¡tica, o engine do ref1 contra ele mesmo,
+// disfarÃ§ado de A/B test.
 //
 // Este arquivo resolve isso incluindo os headers (rules.hpp/search.hpp)
-// de CADA ref sob um namespace próprio (qr_e1 / qr_e2), via o truque de
-// pré-processador `#define qr qr_eN` antes do #include -- como tudo em
+// de CADA ref sob um namespace prÃ³prio (qr_e1 / qr_e2), via o truque de
+// prÃ©-processador `#define qr qr_eN` antes do #include -- como tudo em
 // rules.hpp/search.hpp/cat.hpp/endgame_race.hpp/dsu.hpp vive dentro de
 // `namespace qr { ... }`, a macro renomeia esse namespace no momento da
-// expansão, e os dois conjuntos de símbolos (Negamax, State, Move, TT,
+// expansÃ£o, e os dois conjuntos de sÃ­mbolos (Negamax, State, Move, TT,
 // etc.) convivem no mesmo processo sem colidir. Cada engine roda com o
-// código-fonte REAL do ref correspondente.
+// cÃ³digo-fonte REAL do ref correspondente.
 //
 // Ponte entre os dois "mundos": como State pode (em tese) ter layout
 // diferente entre refs, nunca fazemos cast entre qr_e1::State e
-// qr_e2::State. Mantemos DOIS estados paralelos (s1, s2), avançados pela
-// MESMA sequência lógica de lances (Move é um POD trivial e estável:
+// qr_e2::State. Mantemos DOIS estados paralelos (s1, s2), avanÃ§ados pela
+// MESMA sequÃªncia lÃ³gica de lances (Move Ã© um POD trivial e estÃ¡vel:
 // isWall/a/b/c), e usamos s1 como fonte-da-verdade para abertura
-// aleatória, detecção de vencedor e detecção de empate por repetição do
-// jogo real (exatamente o que arena.cpp fazia com seu único estado).
+// aleatÃ³ria, detecÃ§Ã£o de vencedor e detecÃ§Ã£o de empate por repetiÃ§Ã£o do
+// jogo real (exatamente o que arena.cpp fazia com seu Ãºnico estado).
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -78,6 +78,14 @@ using McabRunner1 = mcab::McabRunner<qr_e1::Negamax, qr_e1::State, qr_e1::Move,
 using McabRunner2 = mcab::McabRunner<qr_e2::Negamax, qr_e2::State, qr_e2::Move,
                                       qr_e2::MoveList, qr_e2::AccPair,
                                       qr_e2::RepetitionTable, qr_e2::SearchStats>;
+
+// Compat com refs antigos (perf/speed-elo-100): o RepetitionTable novo tem
+// push(hash, irreversible); refs anteriores so tem push(hash). O overload
+// int/long resolve em tempo de compilacao pra assinatura existente.
+template <class T>
+auto reptblPushCompat(T& t, uint64_t h, bool irrev, int) -> decltype(t.push(h, irrev), void()) { t.push(h, irrev); }
+template <class T>
+void reptblPushCompat(T& t, uint64_t h, bool, long) { t.push(h); }
 
 // =============================================================================
 // CONFIG DEFAULTS -- edite aqui para mudar o comportamento padrao sem
@@ -254,7 +262,7 @@ static bool g_e1McabEquivMode = E1_MCAB_EQUIV_MODE_DEFAULT;
 static bool g_e2McabEquivMode = E2_MCAB_EQUIV_MODE_DEFAULT;
 
 // Struct de amostra de treino local (independente das duas engines) --
-// layout idêntico ao TrainingSample de selfplay.hpp/arena.cpp original.
+// layout idÃªntico ao TrainingSample de selfplay.hpp/arena.cpp original.
 #pragma pack(push, 1)
 struct TrainingSample {
     uint8_t  ownPawn;
@@ -263,7 +271,7 @@ struct TrainingSample {
     uint64_t wallsV;
     int8_t   wallsLeftOwn;
     int8_t   wallsLeftOpp;
-    uint16_t evalNNUE;      // avaliação da própria NNUE (0..EV_SCALE, perspectiva brancas) -- ver nota completa em selfplay.hpp
+    uint16_t evalNNUE;      // avaliaÃ§Ã£o da prÃ³pria NNUE (0..EV_SCALE, perspectiva brancas) -- ver nota completa em selfplay.hpp
     int8_t   gameResult;
     uint16_t policyTarget;
     uint8_t  ownDist;
@@ -280,18 +288,18 @@ static inline qr_e2::Move toE2(const qr_e1::Move& m) {
 }
 
 // Mesma escala fixa de selfplay.hpp (TrainingSample::evalNNUE / EV_SCALE) --
-// duplicada aqui porque arena.cpp mantém sua própria cópia independente da
-// struct TrainingSample (ver comentário logo abaixo), sem incluir
+// duplicada aqui porque arena.cpp mantÃ©m sua prÃ³pria cÃ³pia independente da
+// struct TrainingSample (ver comentÃ¡rio logo abaixo), sem incluir
 // selfplay.hpp. Se um dos dois valores mudar, o outro precisa acompanhar.
 static constexpr uint16_t ARENA_EV_SCALE = 65535;
 
-// Helpers SFINAE para tentar calcular a avaliação da própria NNUE (cabeça
-// WL) se qr_eN tiver os símbolos necessários (buildAccumulatorQuant,
-// nnueWinProbQuant) -- refs Git antigos sem NNUE, ou execuções em que os
-// pesos não carregaram, caem no overload "..." e devolvem 0.5 (neutro),
-// igual ao que a NNUE zerada devolveria de qualquer forma. `mover` é a
-// perspectiva do lado que jogou nesta posição (rec.moverTurn); devolve a
-// probabilidade de vitória do MOVER (não das brancas -- a conversão pra
+// Helpers SFINAE para tentar calcular a avaliaÃ§Ã£o da prÃ³pria NNUE (cabeÃ§a
+// WL) se qr_eN tiver os sÃ­mbolos necessÃ¡rios (buildAccumulatorQuant,
+// nnueWinProbQuant) -- refs Git antigos sem NNUE, ou execuÃ§Ãµes em que os
+// pesos nÃ£o carregaram, caem no overload "..." e devolvem 0.5 (neutro),
+// igual ao que a NNUE zerada devolveria de qualquer forma. `mover` Ã© a
+// perspectiva do lado que jogou nesta posiÃ§Ã£o (rec.moverTurn); devolve a
+// probabilidade de vitÃ³ria do MOVER (nÃ£o das brancas -- a conversÃ£o pra
 // perspectiva absoluta de cor acontece no site de chamada, igual
 // selfplay.hpp).
 template <typename Dummy = void>
@@ -317,9 +325,9 @@ auto tryLoadWeightsE2(const std::string& path, int) -> decltype(qr_e2::loadWeigh
 inline bool tryLoadWeightsE2(const std::string&, ...) { return false; }
 
 // Mesmo truque SFINAE para defaultNnueWeightsPath(): refs antigos (antes
-// de NNUE virar default) não têm essa função em nnue.hpp, então o overload
-// "..." devolve string vazia (== "sem default disponível para este ref",
-// tratado abaixo como "essa engine fica heurística por não ter pesos").
+// de NNUE virar default) nÃ£o tÃªm essa funÃ§Ã£o em nnue.hpp, entÃ£o o overload
+// "..." devolve string vazia (== "sem default disponÃ­vel para este ref",
+// tratado abaixo como "essa engine fica heurÃ­stica por nÃ£o ter pesos").
 template <typename Dummy = void>
 auto tryDefaultPathE1(int) -> decltype(qr_e1::defaultNnueWeightsPath()) {
     return qr_e1::defaultNnueWeightsPath();
@@ -348,7 +356,7 @@ void trySetEvalModeNnue(Eng&, ...) {}
 // acontece hoje pra engines antigas sem NNUE nenhum. Ou seja: pode deixar
 // g_e1UsePolicyOrdering/g_e2UsePolicyOrdering = true apontando pra um ref
 // antigo sem a flag que o arena continua compilando e rodando normal --
-// só não terá efeito nenhum naquele engine (equivalente a nunca ter ligado).
+// sÃ³ nÃ£o terÃ¡ efeito nenhum naquele engine (equivalente a nunca ter ligado).
 template <typename Eng>
 auto trySetPolicyOrdering(Eng& eng, bool enabled, int) -> decltype(eng.setPolicyOrderingEnabled(enabled), void()) {
     eng.setPolicyOrderingEnabled(enabled);
@@ -381,8 +389,8 @@ constexpr bool hasPolicyOrdering(...) { return false; }
 static bool g_e1UseNnue = false;
 static bool g_e2UseNnue = false;
 // Liga/desliga a ordenacao assistida por politica (prompt_policy_ordering.md)
-// em cada engine -- só tem efeito quando a engine correspondente estiver
-// em NNUE (g_eXUseNnue==true); em heuristica é inofensivo (nao é sequer
+// em cada engine -- sÃ³ tem efeito quando a engine correspondente estiver
+// em NNUE (g_eXUseNnue==true); em heuristica Ã© inofensivo (nao Ã© sequer
 // chamado, ver playArenaGame abaixo). Default LIGADA desde 2026-08 (era
 // desligada) -- mesmo default de search.hpp/selfplay/wasm agora: "NNUE
 // default -> policy head default", mesmo sem nenhum parametro passado.
@@ -400,9 +408,9 @@ constexpr int E2_POLICY_ORDER_MIN_DEPTH_DEFAULT = 3;
 static int g_e1PolicyOrderMinDepth = E1_POLICY_ORDER_MIN_DEPTH_DEFAULT;
 static int g_e2PolicyOrderMinDepth = E2_POLICY_ORDER_MIN_DEPTH_DEFAULT;
 
-// Um jogo completo. engine1PlayerIdx define quem (0=brancas,1=pretas) é
-// o engine do ref1 nesta partida. Estado é mantido em paralelo nos dois
-// namespaces; s1 é a referência canônica para regras de fim de jogo.
+// Um jogo completo. engine1PlayerIdx define quem (0=brancas,1=pretas) Ã©
+// o engine do ref1 nesta partida. Estado Ã© mantido em paralelo nos dois
+// namespaces; s1 Ã© a referÃªncia canÃ´nica para regras de fim de jogo.
 int playArenaGame(int engine1PlayerIdx, int timeMs, int randomPlies, std::mt19937_64& rng,
                    uint64_t& eng1NodesOut, uint64_t& eng2NodesOut,
                    double& eng1TimeOut, double& eng2TimeOut,
@@ -467,9 +475,9 @@ int playArenaGame(int engine1PlayerIdx, int timeMs, int randomPlies, std::mt1993
     }
     mcabRunner1.resetTree();
     mcabRunner2.resetTree();
-    // Só faz sentido (e só tem efeito real dentro de Negamax, ver
+    // SÃ³ faz sentido (e sÃ³ tem efeito real dentro de Negamax, ver
     // policyOrderingEnabled em search.hpp) quando a engine correspondente
-    // está em NNUE -- gate aqui evita uma chamada supérflua em heurística.
+    // estÃ¡ em NNUE -- gate aqui evita uma chamada supÃ©rflua em heurÃ­stica.
     // Sempre chama o setter (nao so quando ligado): search.hpp passou a
     // nascer com policyOrderingEnabled=true, entao nao chamar nada no caso
     // "desligado" deixava --e1-no-policy-order/--no-policy-order sem efeito
@@ -491,7 +499,7 @@ int playArenaGame(int engine1PlayerIdx, int timeMs, int randomPlies, std::mt1993
     qr_e1::State s1 = qr_e1::initialState();
     qr_e2::State s2 = qr_e2::initialState();
 
-    // Abertura aleatória: gerada a partir do ref1 (fonte-da-verdade das
+    // Abertura aleatÃ³ria: gerada a partir do ref1 (fonte-da-verdade das
     // regras) e replicada lance-a-lance no estado do ref2.
     for (int ply = 0; ply < randomPlies; ply++) {
         if (qr_e1::winner(s1) != -1) break;
@@ -556,9 +564,12 @@ int playArenaGame(int engine1PlayerIdx, int timeMs, int randomPlies, std::mt1993
             if (samplesOut) gameRecords.push_back({s1, mChosen, currentTurn, st.score});
         }
 
-        realHistory.push(s1.hash);
-        hist1.push(s1.hash);
-        hist2.push(s2.hash);
+        // Compat com refs antigos: push(hash, irreversible) so existe no
+        // RepetitionTable novo (perf/speed-elo-100); refs anteriores so
+        // tem push(hash). O helper abaixo resolve por sobrecarga.
+        reptblPushCompat(realHistory, s1.hash, mChosen.isWall, 0);
+        reptblPushCompat(hist1, s1.hash, mChosen.isWall, 0);
+        reptblPushCompat(hist2, s2.hash, mChosen.isWall, 0);
         s1 = qr_e1::applyMove(s1, mChosen);
         s2 = qr_e2::applyMove(s2, toE2(mChosen));
     }
@@ -570,7 +581,7 @@ int playArenaGame(int engine1PlayerIdx, int timeMs, int randomPlies, std::mt1993
             int mover = rec.moverTurn, opp = 1 - rec.moverTurn;
             // Mesmo espelho de perspectiva de selfplay.hpp (nnue.hpp,
             // 2026-08) -- sem isso este --bin-file gerava dados em
-            // coordenada CRUA, incompatível com o que selfplay.hpp grava
+            // coordenada CRUA, incompatÃ­vel com o que selfplay.hpp grava
             // hoje (silenciosamente: mesmo dtype/tamanho de arquivo,
             // corrompe o treino se misturado).
             TrainingSample ts{};
@@ -829,14 +840,14 @@ int main(int argc, char* argv[]) {
     g_e1PolicyOrderMinDepth = e1PolicyMinDepth;
     g_e2PolicyOrderMinDepth = e2PolicyMinDepth;
 
-    // NNUE é o default das duas engines. Se --e1-nnue/--e2-nnue não foram
+    // NNUE Ã© o default das duas engines. Se --e1-nnue/--e2-nnue nÃ£o foram
     // passados explicitamente, tenta o caminho default de cada ref (via
     // SFINAE -- refs antigos sem NNUE devolvem string vazia e ficam
-    // heurísticos, sem erro). --heuristic desliga isso por completo nas
-    // duas (debug/histórico/comparação com a heurística antiga).
-    // --e1-heuristic/--e2-heuristic desligam só uma engine de cada vez --
-    // é o que permite medir a força de jogo NNUE vs heurística num mesmo
-    // confronto (--e1-heuristic sozinho: Engine 1 heurística, Engine 2
+    // heurÃ­sticos, sem erro). --heuristic desliga isso por completo nas
+    // duas (debug/histÃ³rico/comparaÃ§Ã£o com a heurÃ­stica antiga).
+    // --e1-heuristic/--e2-heuristic desligam sÃ³ uma engine de cada vez --
+    // Ã© o que permite medir a forÃ§a de jogo NNUE vs heurÃ­stica num mesmo
+    // confronto (--e1-heuristic sozinho: Engine 1 heurÃ­stica, Engine 2
     // NNUE default).
     if (!forceHeuristic) {
         if (!e1ForceHeuristic && e1NnuePath.empty()) e1NnuePath = tryDefaultPathE1(0);
