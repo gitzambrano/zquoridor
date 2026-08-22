@@ -8,6 +8,8 @@ Zquoridor is a 2-player Quoridor engine (9×9, 10 walls each; 4-player variant i
 
 **Language: comments, commit messages, and docs are in English.**
 
+**Writing style:** all prose (comments, docstrings, commit messages, CLI/UI strings, docs) follows the **writing-rules** skill, an adaptation of ASD-STE100 (Simplified Technical English). Canonical copy (tool-agnostic): `skills/writing-rules/SKILL.md`. Claude Code entry point: `.claude/skills/writing-rules/SKILL.md`. Read it before writing or reviewing any prose.
+
 ## Layout & build model
 
 Header-only engine core: `src/` contains pure C++ header files (`rules.hpp`, `dsu.hpp`, `cat.hpp`, `search.hpp`, `endgame_race.hpp`, `nnue.hpp`, `mcab.hpp`, `search_tuning.hpp`). Executables and tools are modularized in `tools/`, `benchmarks/`, and `tests/`. No complex build system — each binary is a single `g++` invocation over one translation unit, with `-Isrc` (and `-Itools/selfplay` for selfplay-aware components). `tests/*.cpp`, `gui_web/engine_wasm.cpp`, and `benchmarks/*.cpp` include the same headers.

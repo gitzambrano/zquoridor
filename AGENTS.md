@@ -10,6 +10,8 @@ Zquoridor is a 2-player Quoridor engine (9Ã—9, 10 walls each; the 4-player va
 
 **Language: comments, commit messages, and docs are in English.**
 
+**Writing style:** all prose (comments, docstrings, commit messages, CLI/UI strings, docs) follows the **writing-rules** skill, an adaptation of ASD-STE100 (Simplified Technical English). Canonical copy (tool-agnostic): `skills/writing-rules/SKILL.md`. Claude Code entry point: `.claude/skills/writing-rules/SKILL.md`. Read it before writing or reviewing any prose.
+
 ## Layout & build model
 
 Header-only engine core: `src/` contains pure C++ header files (`rules.hpp`, `dsu.hpp`, `cat.hpp`, `search.hpp`, `endgame_race.hpp`, `nnue.hpp`). Executables and tools are modularized in `tools/`, `benchmarks/`, and `tests/`. No build system â€” each binary is a single `g++` invocation over one translation unit, with `-Isrc` (and `-Itools/selfplay` for selfplay-aware components). `tests/*.cpp`, `gui_web/engine_wasm.cpp`, and `benchmarks/*.cpp` include the same headers.
@@ -106,6 +108,8 @@ Zquoridor is a 2-player Quoridor engine (9Ã—9, 10 walls each; the 4-player va
 `status.md` holds everything readme.md leaves out: a module/function reference (file-by-file, code symbol names), design decisions and rationale ("why is it built this way"), important findings (benchmarks, bugs found and fixed, regressions), uncalibrated values, and open items/future plans. Update it, not the readme, when you touch any of those. `plano-additional.md` (1162 lines, Portuguese) is the original detailed design doc, organized by numbered "Prioridades" that code comments reference directly (e.g. "Prioridade 4" = endgame race solver) â€” several document approaches that were **tried and rejected** and should not be re-attempted; read the relevant section before touching search or eval.
 
 **Language: comments, commit messages, and docs are in English.**
+
+**Writing style:** all prose (comments, docstrings, commit messages, CLI/UI strings, docs) follows the **writing-rules** skill, an adaptation of ASD-STE100 (Simplified Technical English). Canonical copy (tool-agnostic): `skills/writing-rules/SKILL.md`. Claude Code entry point: `.claude/skills/writing-rules/SKILL.md`. Read it before writing or reviewing any prose.
 
 ## Layout & build model
 
