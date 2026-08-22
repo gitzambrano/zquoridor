@@ -1,377 +1,1480 @@
 <!doctype html>
-<html lang="pt-br">
+<html lang="en" data-ui-theme="dark" data-board-theme="wood" data-pawn-style="disc">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
-<title>Quoridor — motor C++/WASM</title>
+<meta name="color-scheme" content="dark light">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="theme-color" content="#0d0d12">
+<meta name="description" content="Zquoridor — a Quoridor engine with NNUE evaluation and hybrid MCTS/alpha-beta search, running in WebAssembly.">
+<title>Zquoridor — NNUE Quoridor Engine</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Cinzel:wght@400;600;700&family=JetBrains+Mono:wght@300;400;500;600;700&display=swap">
 <style>
-  :root {
-    --bg: #2b2b31;
-    --panel: #38383f;
-    --panel-2: #424249;
-    --border: #4a4a53;
-    --text: #f3f4f6;
-    --text-dim: #a7a9b3;
-    /* tema padrão: "xadrez" (peças em tons de madeira, brancas x pretas) */
-    --p0: #d9b872;
-    --p0-deep: #a9843f;
-    --p0-light: #f0dfa8;
-    --p0-soft: rgba(217,184,114,.16);
-    --p1: #d6402c;
-    --p1-deep: #8f2417;
-    --p1-light: #f28468;
-    --p1-soft: rgba(214,64,44,.18);
-    --wall: #e9e4d7;
-    --wall-dim: #b6b0a2;
-    --active: #34d399;
-    --active-deep: #0f8f68;
-    --board-bg: #34363d;
-    --cell-bg: #34363d;
-    --cell-border: rgba(255,255,255,.16);
-    --wall-ghost-ok: rgba(52,211,153,.60);
-    --wall-ghost-bad: rgba(239,68,68,.60);
-    --gold: #e8c777;
-  }
-  /* tema alternativo: azul x vermelho (o esquema original) */
-  [data-theme="classic"] {
-    --p0: #3b82f6;
-    --p0-deep: #1d4ed8;
-    --p0-light: #9cc3fd;
-    --p0-soft: rgba(59,130,246,.16);
-    --p1: #ef4444;
-    --p1-deep: #b91c1c;
-    --p1-light: #f8b3b3;
-    --p1-soft: rgba(239,68,68,.16);
-    --wall: #f1f2f5;
-    --wall-dim: #c3c5cc;
-  }
-  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
-  html, body { height: 100%; overscroll-behavior: none; }
-  body {
-    margin: 0;
-    background: #000;
-    color: var(--text);
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-    display: flex;
-    justify-content: center;
-    height: 100dvh;
-    overflow: hidden;
-    user-select: none;
-  }
+/* ═════════════════════════════════════════════════════════════════════
+   ZQUORIDOR — design system
+   1. tokens   2. reset   3. primitives   4. header   5. play
+   6. analysis 7. editor  8. modals       9. responsive
+   ═══════════════════════════════════════════════════════════════════ */
 
-  .app {
-    width: 100%;
-    max-width: 620px;
-    height: 100%;
-    display: flex;
-    flex-direction: column;
-    padding: 10px 10px calc(10px + env(safe-area-inset-bottom));
-    gap: 6px;
-  }
+/* ── 1. TOKENS ─────────────────────────────────────────────────────── */
+:root {
+  /* surfaces */
+  --bg:    #0d0d12;
+  --surf:  #16161f;
+  --surf2: #1c1c28;
+  --surf3: #23232f;
+  --bor:   #252538;
+  --bor2:  #313148;
 
-  /* --- topo: cartões "premium" dos jogadores --- */
-  .players-row { display: flex; gap: 8px; flex: 0 0 auto; }
-  .player-card {
-    flex: 1;
-    position: relative;
-    background: linear-gradient(180deg, var(--panel-2), var(--panel));
-    border: 1px solid var(--border);
-    border-radius: 14px;
-    padding: 10px 12px;
-    display: flex;
-    flex-direction: column;
-    gap: 6px;
-    min-width: 0;
-    overflow: hidden;
-    box-shadow: 0 1px 0 rgba(255,255,255,.03) inset, 0 6px 14px rgba(0,0,0,.25);
-    transition: border-color .18s ease, box-shadow .18s ease, transform .15s ease;
-  }
-  .player-card::before {
-    content: ""; position: absolute; inset: 0 0 auto 0; height: 3px;
-    background: var(--accent, transparent); opacity: .85;
-  }
-  .player-card.p0 { --accent: linear-gradient(90deg, var(--p0-deep), var(--p0)); }
-  .player-card.p1 { --accent: linear-gradient(90deg, var(--p1-deep), var(--p1)); }
-  .player-card.active {
-    border-color: var(--active);
-    box-shadow: 0 0 0 1px var(--active), 0 6px 18px rgba(52,211,153,.18);
-    transform: translateY(-1px);
-  }
-  .player-card.thinking .name .dot { animation: qr-pulse 1.1s ease-in-out infinite; }
-  @keyframes qr-pulse { 0%,100% { opacity: 1; transform: scale(1); } 50% { opacity: .3; transform: scale(.65); } }
-  .player-card.winner {
-    border-color: var(--gold);
-    box-shadow: 0 0 0 1px var(--gold), 0 6px 18px rgba(232,199,119,.25);
-  }
-  .player-card.winner .name::after { content: "\1F3C6"; margin-left: 4px; font-size: .8em; }
-  .player-card.draw {
-    border-color: var(--text-dim);
-    box-shadow: 0 0 0 1px var(--text-dim), 0 6px 14px rgba(0,0,0,.15);
-  }
-  .player-card.draw .name::after { content: " 🤝"; margin-left: 4px; font-size: .8em; }
-  .player-card .name {
-    font-size: .84rem; font-weight: 700; letter-spacing: .01em; white-space: nowrap; overflow: hidden;
-    text-overflow: ellipsis; display: flex; align-items: center; gap: 7px;
-  }
-  .player-card .name .dot {
-    width: 9px; height: 9px; border-radius: 50%; flex: none;
-    box-shadow: 0 0 0 3px rgba(255,255,255,.05);
-  }
-  .player-card.p0 .name .dot { background: radial-gradient(circle at 35% 30%, var(--p0-light), var(--p0)); }
-  .player-card.p1 .name .dot { background: radial-gradient(circle at 35% 30%, var(--p1-light), var(--p1)); }
-  .player-card .meta {
-    display: flex; align-items: center; justify-content: space-between; gap: 6px;
-    font-size: .76rem; color: var(--text-dim);
-  }
-  .walls-pill {
-    display: inline-flex; align-items: center; gap: 5px; font-weight: 700; font-size: .8rem; color: var(--text);
-    background: rgba(255,255,255,.04); border-radius: 7px; padding: 3px 7px 3px 6px;
-  }
-  .walls-pill .bars { display: inline-flex; gap: 2px; }
-  .walls-pill .bars i {
-    display: block; width: 4px; height: 11px; border-radius: 2px; background: rgba(255,255,255,.12);
-  }
-  .player-card.p0 .walls-pill .bars i.on { background: linear-gradient(180deg, var(--p0-light), var(--p0)); }
-  .player-card.p1 .walls-pill .bars i.on { background: linear-gradient(180deg, var(--p1-light), var(--p1)); }
-  .dist-tag {
-    display: flex; flex-direction: column; align-items: center; justify-content: flex-start;
-    font-variant-numeric: tabular-nums; color: var(--text-dim);
-    background: rgba(255,255,255,.04); border-radius: 7px; padding: 2px 8px 3px;
-    line-height: 1.05;
-  }
-  .dist-tag .lbl { font-size: .56rem; text-transform: uppercase; letter-spacing: .04em; opacity: .75; }
-  .dist-tag b { color: var(--text); font-weight: 700; font-size: .95rem; }
+  /* accents */
+  --gold:  #c8a84b;
+  --gold2: #e6c96e;
+  --gold-soft: rgba(200,168,75,.13);
+  --gold-ring: rgba(200,168,75,.35);
 
-  /* --- tabuleiro --- */
-  .board-wrap { flex: 1 1 auto; min-height: 0; display: flex; align-items: center; justify-content: flex-end; position: relative; }
-  #board {
-    --cell: 48px; --gap: 8px; --unit: calc(var(--cell) + var(--gap));
-    display: grid;
-    grid-template-columns: repeat(9, var(--cell));
-    grid-template-rows: repeat(9, var(--cell));
-    gap: var(--gap);
-    background: #17181b;
-    padding: 0;
-    border-radius: 10px;
-    position: relative;
-    box-shadow: 0 8px 24px rgba(0,0,0,.55);
-  }
-  #board.wall-mode { cursor: crosshair; box-shadow: 0 8px 24px rgba(0,0,0,.55), 0 0 0 2px var(--active-deep); }
-  .cell {
-    background: linear-gradient(150deg, #3c3f48 0%, #33353d 100%);
-    border-radius: 5px;
-    box-shadow: inset 0 0 0 1px var(--cell-border);
-    position: relative;
-    display: flex; align-items: center; justify-content: center;
-    cursor: default;
-  }
-  .cell.dest-hint { cursor: pointer; }
-  .cell.dest-hint.p0 { box-shadow: inset 0 0 0 2px var(--p0-soft); background: linear-gradient(150deg, var(--p0-soft), #33353d 65%); }
-  .cell.dest-hint.p1 { box-shadow: inset 0 0 0 2px var(--p1-soft); background: linear-gradient(150deg, var(--p1-soft), #33353d 65%); }
-  .cell.dest-hint.p0::after { content: ""; width: 28%; height: 28%; border-radius: 50%; background: var(--p0); opacity: .38; }
-  .cell.dest-hint.p1::after { content: ""; width: 28%; height: 28%; border-radius: 50%; background: var(--p1); opacity: .38; }
-  .pawn {
-    width: 64%; height: 64%; border-radius: 50%;
-    box-shadow: 0 3px 6px rgba(0,0,0,.5), inset 0 -3px 6px rgba(0,0,0,.2);
-    transition: transform .15s ease;
-  }
-  .pawn.p0 { background: radial-gradient(circle at 35% 30%, var(--p0-light), var(--p0)); }
-  .pawn.p1 { background: radial-gradient(circle at 35% 30%, var(--p1-light), var(--p1)); }
+  /* text — --txt body, --txt2 secondary (>=4.5:1), --muted decorative */
+  --txt:   #e0e0f0;
+  --txt2:  #a9a9c6;
+  --muted: #565672;
 
-  .wall-slot-h, .wall-slot-v { position: absolute; background: transparent; z-index: 3; border-radius: 3px; pointer-events: none; transition: background .06s ease, box-shadow .06s ease; }
-  .wall-slot-h { width: calc(2 * var(--cell) + var(--gap)); height: var(--gap); }
-  .wall-slot-v { height: calc(2 * var(--cell) + var(--gap)); width: var(--gap); }
-  .wall-slot-h.placed, .wall-slot-v.placed { background: var(--wall) !important; box-shadow: 0 1px 3px rgba(0,0,0,.4); }
-  .wall-slot-h.legal, .wall-slot-v.legal { background: rgba(232,199,119,.22) !important; }
-  .wall-slot-h.ghost-ok, .wall-slot-v.ghost-ok {
-    background: rgba(215,217,222,.55) !important;
-    box-shadow: 0 0 0 2px rgba(52,211,153,.85), 0 0 10px rgba(52,211,153,.35);
-  }
-  .wall-slot-h.ghost-bad, .wall-slot-v.ghost-bad {
-    background: rgba(215,217,222,.22) !important;
-    box-shadow: 0 0 0 2px rgba(239,68,68,.85);
-  }
+  /* semantic */
+  --green: #4a9c6a;
+  --red:   #c0394a;
+  --blue:  #4a7cc0;
+  --green-soft: rgba(74,156,106,.15);
+  --red-soft:   rgba(192,57,74,.15);
 
-  /* --- barra de controles: 4 botões largos, texto sempre colado na base --- */
-  .controls { flex: 0 0 auto; display: flex; flex-direction: column; gap: 6px; margin-top: -8px; }
-  .toolbar { display: flex; gap: 8px; align-items: stretch; }
-  .tbtn {
-    flex: 1 1 0; min-width: 0;
-    display: flex; flex-direction: column; align-items: center; justify-content: flex-end;
-    height: 56px;
-    border-radius: 12px;
-    border: 1.5px solid var(--border);
-    background: linear-gradient(180deg, var(--panel-2), var(--panel));
-    color: var(--text);
-    font-size: .74rem; font-weight: 600;
-    cursor: pointer;
-    transition: background .12s ease, border-color .12s ease, transform .08s ease, box-shadow .12s ease;
-    touch-action: none;
-    padding: 4px 4px 6px;
-  }
-  .tbtn:active { transform: scale(.96); }
-  .tbtn .icon-wrap { flex: 1 1 auto; min-height: 0; display: flex; align-items: center; justify-content: center; }
-  .tbtn .tbtn-label { flex: 0 0 auto; line-height: 1; }
-  .tbtn .swatch { border-radius: 3px; background: var(--wall-dim); }
-  .tbtn.wall.h .swatch { width: 22px; height: 6px; }
-  .tbtn.wall.v .swatch { width: 6px; height: 22px; }
-  .tbtn.wall.selected {
-    border-color: var(--text-dim); background: linear-gradient(180deg, var(--panel-2), var(--border));
-    box-shadow: 0 0 0 1px rgba(255,255,255,.28) inset;
-  }
-  .tbtn.wall.selected .swatch { background: var(--text); }
-  .tbtn.wall:disabled, .tbtn.wall.disabled { opacity: .35; cursor: default; pointer-events: none; }
-  .tbtn.primary {
-    background: linear-gradient(180deg, var(--panel-2), var(--panel));
-    border-color: var(--border); color: var(--text);
-  }
-  .tbtn.primary .tbtn-label { font-weight: 800; }
+  /* players — p0 light/gold, p1 crimson */
+  --p0:       #d9b872;
+  --p0-deep:  #9a7a30;
+  --p0-light: #f3e4bb;
+  --p1:       #c0394a;
+  --p1-deep:  #7d2130;
+  --p1-light: #ec8a95;
 
-  /* --- histórico de lances --- */
-  .movelist {
-    flex: 0 0 auto;
-    background: var(--panel);
-    border: 1.5px solid var(--border);
-    border-radius: 10px;
-    padding: 6px 10px;
-    height: 116px;
-    overflow-y: auto;
-    font-size: .82rem;
-    font-variant-numeric: tabular-nums;
-  }
-  .movelist .row { display: flex; align-items: baseline; gap: 6px; padding: 2px 0; }
-  .movelist .num { color: var(--text-dim); flex: 0 0 auto; width: 20px; }
-  .movelist .mv { padding: 1px 6px; border-radius: 5px; color: var(--text-dim); }
-  .movelist .mv.p0 { color: var(--p0-light); }
-  .movelist .mv.p1 { color: var(--p1-light); }
-  .movelist .mv.last { background: var(--panel-2); font-weight: 700; color: var(--text); }
-  .movelist .ev { color: var(--gold); font-size: .74rem; margin-left: 3px; font-weight: 700; }
-  .movelist .empty { color: var(--text-dim); text-align: center; padding: 8px 0; }
+  /* move glyphs */
+  --g-best:    #6fb3e0;
+  --g-good:    #4a9c6a;
+  --g-inacc:   #d9b872;
+  --g-mistake: #e08a3c;
+  --g-blunder: #d2495c;
 
-  /* --- modal: nova partida --- */
-  .modal-overlay {
-    position: fixed; inset: 0; background: rgba(0,0,0,.6); backdrop-filter: blur(2px);
-    display: flex; align-items: center; justify-content: center; z-index: 1000; padding: 16px;
-  }
-  .modal-overlay[hidden] { display: none; }
-  .modal-card {
-    width: 100%; max-width: 380px; background: linear-gradient(180deg, var(--panel-2), var(--panel));
-    border: 1px solid var(--border); border-radius: 16px; padding: 18px;
-    box-shadow: 0 20px 50px rgba(0,0,0,.5);
-  }
-  .modal-card h2 { margin: 0 0 4px; font-size: 1.05rem; }
-  .modal-label { margin: 14px 0 8px; font-size: .78rem; color: var(--text-dim); font-weight: 600; text-transform: uppercase; letter-spacing: .04em; }
-  .modal-choices { display: flex; gap: 8px; }
-  .choice-btn {
-    flex: 1; display: flex; flex-direction: column; align-items: center; gap: 4px;
-    padding: 10px 6px; border-radius: 12px; border: 1.5px solid var(--border);
-    background: var(--panel); color: var(--text); font-size: .82rem; font-weight: 600; cursor: pointer;
-  }
-  .choice-btn .choice-dot { width: 16px; height: 16px; border-radius: 50%; }
-  .choice-btn.p0 .choice-dot { background: radial-gradient(circle at 35% 30%, var(--p0-light), var(--p0)); }
-  .choice-btn.p1 .choice-dot { background: radial-gradient(circle at 35% 30%, var(--p1-light), var(--p1)); }
-  .choice-btn .choice-sub { font-size: .68rem; color: var(--text-dim); font-weight: 500; }
-  .choice-btn.selected { border-color: var(--active); box-shadow: 0 0 0 1px var(--active) inset; background: rgba(52,211,153,.1); }
-  .modal-choices.strength .choice-btn { font-size: .95rem; padding: 10px 4px; }
-  .theme-swatch { display: flex; gap: 3px; }
-  .theme-swatch .sw { width: 14px; height: 14px; border-radius: 50%; box-shadow: inset 0 0 0 1px rgba(0,0,0,.25); }
-  .theme-btn[data-theme="chess"] .sw:first-child { background: radial-gradient(circle at 35% 30%, #f0dfa8, #d9b872); }
-  .theme-btn[data-theme="chess"] .sw:last-child { background: radial-gradient(circle at 35% 30%, #c9856a, #a1503c); }
-  .theme-btn[data-theme="classic"] .sw:first-child { background: radial-gradient(circle at 35% 30%, #9cc3fd, #3b82f6); }
-  .theme-btn[data-theme="classic"] .sw:last-child { background: radial-gradient(circle at 35% 30%, #f8b3b3, #ef4444); }
-  .modal-confirm {
-    margin-top: 18px; width: 100%; height: 46px; border-radius: 12px; border: none;
-    background: linear-gradient(180deg, var(--active), var(--active-deep)); color: #06231a;
-    font-weight: 800; font-size: .95rem; cursor: pointer;
-  }
-  .modal-confirm:active { transform: scale(.98); }
+  /* depth */
+  --sh1: 0 1px 2px rgba(0,0,0,.4);
+  --sh2: 0 4px 14px rgba(0,0,0,.42);
+  --sh3: 0 14px 40px rgba(0,0,0,.55);
+  --inset: inset 0 1px 0 rgba(255,255,255,.035);
+  --scrim: rgba(4,4,8,.78);
 
-  @media (max-width: 639px) {
-    .controls { margin-top: -10px; }
-    .movelist { height: 128px; }
+  /* type scale */
+  --ff-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+  --ff-disp: 'Cinzel', Georgia, 'Times New Roman', serif;
+  --f0: .625rem;   /* 10px — micro labels */
+  --f1: .6875rem;  /* 11px — dense meta  */
+  --f2: .75rem;    /* 12px — body        */
+  --f3: .8125rem;  /* 13px — emphasis    */
+  --f4: .9375rem;  /* 15px — sub-heading */
+  --f5: 1.125rem;  /* 18px — heading     */
+  --f6: 1.5rem;    /* 24px — display     */
+
+  /* spacing rhythm (4px base) */
+  --s1: 4px; --s2: 8px; --s3: 12px; --s4: 16px; --s5: 24px; --s6: 32px;
+
+  /* radii */
+  --r1: 6px; --r2: 9px; --r3: 14px; --r4: 20px;
+
+  /* motion */
+  --t-fast: .14s cubic-bezier(.4,0,.2,1);
+  --t-med:  .24s cubic-bezier(.4,0,.2,1);
+  --t-slow: .45s cubic-bezier(.4,0,.2,1);
+
+  --side-w: 320px;
+}
+
+[data-ui-theme="light"] {
+  --bg:    #f2efe7;
+  --surf:  #fffdf8;
+  --surf2: #f3efe4;
+  --surf3: #e9e4d6;
+  --bor:   #ddd6c5;
+  --bor2:  #cbc3ad;
+
+  --gold:  #8a6a17;
+  --gold2: #6d520c;
+  --gold-soft: rgba(138,106,23,.11);
+  --gold-ring: rgba(138,106,23,.30);
+
+  --txt:   #201d26;
+  --txt2:  #4d495c;
+  --muted: #8b8598;
+
+  --green: #23704a;
+  --red:   #a3162a;
+  --blue:  #2b5695;
+  --green-soft: rgba(35,112,74,.12);
+  --red-soft:   rgba(163,22,42,.12);
+
+  --p0:       #a9822c;
+  --p0-deep:  #6f5313;
+  --p0-light: #e2caa0;
+  --p1:       #a3162a;
+  --p1-deep:  #6d0a1a;
+  --p1-light: #e29aa4;
+
+  --g-best:    #1e6ea3;
+  --g-good:    #23704a;
+  --g-inacc:   #8a6a17;
+  --g-mistake: #a2540c;
+  --g-blunder: #a3162a;
+
+  --sh1: 0 1px 2px rgba(60,50,25,.10);
+  --sh2: 0 4px 14px rgba(60,50,25,.13);
+  --sh3: 0 14px 40px rgba(60,50,25,.20);
+  --inset: inset 0 1px 0 rgba(255,255,255,.7);
+  --scrim: rgba(40,34,20,.42);
+}
+
+/* ── Board palettes (six) ──────────────────────────────────────────────
+   Mirrors QBoard.THEMES so the settings swatches render without JS.     */
+[data-board-theme="wood"],    .cfg-opt[data-theme="wood"]    { --bt-bg:#3a2b1d; --bt-light:#e6cfa3; --bt-dark:#c4a374; --bt-wall:#f0e2c2; --bt-p0:#e8d29a; --bt-p1:#c0394a; }
+[data-board-theme="classic"], .cfg-opt[data-theme="classic"] { --bt-bg:#2f2f38; --bt-light:#eceadf; --bt-dark:#b9b6a8; --bt-wall:#fdfbf3; --bt-p0:#f0e6c8; --bt-p1:#b83545; }
+[data-board-theme="emerald"], .cfg-opt[data-theme="emerald"] { --bt-bg:#12291f; --bt-light:#d8e8d4; --bt-dark:#75a184; --bt-wall:#eff6ea; --bt-p0:#e9e2bd; --bt-p1:#b4394d; }
+[data-board-theme="ocean"],   .cfg-opt[data-theme="ocean"]   { --bt-bg:#101f30; --bt-light:#d4e2ee; --bt-dark:#6f95b8; --bt-wall:#eaf2f9; --bt-p0:#e6ddb4; --bt-p1:#c14257; }
+[data-board-theme="coral"],   .cfg-opt[data-theme="coral"]   { --bt-bg:#331f1e; --bt-light:#f3ddd2; --bt-dark:#d09b8c; --bt-wall:#fdeee5; --bt-p0:#f0dcae; --bt-p1:#a92b3c; }
+[data-board-theme="night"],   .cfg-opt[data-theme="night"]   { --bt-bg:#0a0a10; --bt-light:#3b3b52; --bt-dark:#23233a; --bt-wall:#8f8fb4; --bt-p0:#d9b872; --bt-p1:#c0394a; }
+
+/* ── 2. RESET ──────────────────────────────────────────────────────── */
+*, *::before, *::after { margin:0; padding:0; box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
+html, body {
+  width:100%; height:100%;
+  background:var(--bg); color:var(--txt);
+  font-family:var(--ff-mono); font-size:16px;
+  overflow-x:hidden; overscroll-behavior:none;
+}
+body { line-height:1.5; -webkit-font-smoothing:antialiased; text-rendering:optimizeLegibility; }
+img, canvas { display:block; max-width:100%; }
+button, select, input, textarea { font:inherit; color:inherit; }
+:focus { outline:none; }
+:focus-visible {
+  outline:2px solid var(--gold);
+  outline-offset:2px;
+  border-radius:var(--r1);
+}
+.vh { position:absolute!important; width:1px; height:1px; overflow:hidden; clip:rect(0 0 0 0); clip-path:inset(50%); white-space:nowrap; }
+
+::-webkit-scrollbar { width:6px; height:6px; }
+::-webkit-scrollbar-track { background:transparent; }
+::-webkit-scrollbar-thumb { background:var(--bor2); border-radius:3px; }
+::-webkit-scrollbar-thumb:hover { background:var(--muted); }
+* { scrollbar-width:thin; scrollbar-color:var(--bor2) transparent; }
+
+/* ── 3. PRIMITIVES ─────────────────────────────────────────────────── */
+#app {
+  display:flex; flex-direction:column;
+  height:100dvh; width:100%;
+  overflow:hidden;
+}
+
+.panel { display:none; flex:1; min-height:0; min-width:0; overflow:hidden; }
+.panel.active { display:flex; flex-direction:column; }
+
+.card {
+  background:var(--surf);
+  border:1px solid var(--bor);
+  border-radius:var(--r2);
+  box-shadow:var(--sh1), var(--inset);
+}
+
+.sec-label {
+  font-size:var(--f0);
+  letter-spacing:.14em;
+  text-transform:uppercase;
+  color:var(--txt2);
+  font-weight:500;
+  display:flex; align-items:center; gap:var(--s2);
+}
+.sec-label::after {
+  content:''; flex:1; height:1px;
+  background:linear-gradient(90deg, var(--bor), transparent);
+}
+
+/* Buttons */
+.btn {
+  display:inline-flex; align-items:center; justify-content:center; gap:5px;
+  min-width:38px; height:34px; padding:0 9px;
+  border:1px solid var(--bor2);
+  background:var(--surf2);
+  color:var(--txt);
+  font-family:var(--ff-mono);
+  font-size:var(--f1); font-weight:500;
+  letter-spacing:.05em; text-transform:uppercase;
+  border-radius:var(--r2);
+  cursor:pointer; user-select:none; white-space:nowrap; flex-shrink:0;
+  box-shadow:var(--sh1), var(--inset);
+  transition:color var(--t-fast), border-color var(--t-fast), background var(--t-fast), transform var(--t-fast), box-shadow var(--t-fast);
+}
+.btn:hover { border-color:var(--gold); color:var(--gold2); }
+.btn:active { transform:translateY(1px); box-shadow:none; background:var(--surf3); }
+.btn[disabled], .btn:disabled { opacity:.4; cursor:not-allowed; transform:none; }
+.btn[disabled]:hover { border-color:var(--bor2); color:var(--txt); }
+.btn.gld { border-color:var(--gold-ring); color:var(--gold2); }
+.btn.gld:hover { background:var(--gold); color:#100d05; border-color:var(--gold); }
+.btn.primary {
+  border-color:var(--gold);
+  background:linear-gradient(180deg, var(--gold2), var(--gold));
+  color:#141004; font-weight:600;
+}
+.btn.primary:hover { filter:brightness(1.08); color:#141004; }
+.btn.on, .btn[aria-pressed="true"] {
+  border-color:var(--gold); color:var(--gold2); background:var(--gold-soft);
+  box-shadow:inset 0 0 0 1px var(--gold-ring);
+}
+.btn.wide { padding:0 var(--s4); }
+.btn.icon { min-width:34px; padding:0 6px; font-size:var(--f3); text-transform:none; letter-spacing:0; }
+.btn.sm { height:28px; min-width:28px; padding:0 6px; font-size:var(--f0); }
+.btn.danger:hover { border-color:var(--red); color:var(--red); }
+
+/* Selects & fields */
+select, textarea, input[type=text] {
+  background:var(--surf2);
+  border:1px solid var(--bor2);
+  color:var(--txt);
+  border-radius:var(--r2);
+  font-family:var(--ff-mono);
+  font-size:var(--f1);
+  padding:0 var(--s2);
+  height:34px;
+  cursor:pointer;
+  box-shadow:var(--inset);
+  transition:border-color var(--t-fast);
+  max-width:100%;
+}
+select:hover, textarea:hover { border-color:var(--bor2); }
+select:focus, textarea:focus, input:focus { border-color:var(--gold); }
+textarea { height:auto; padding:var(--s2); resize:vertical; line-height:1.6; cursor:text; }
+.field { display:flex; flex-direction:column; gap:3px; min-width:0; }
+.field > .field-label {
+  font-size:var(--f0); letter-spacing:.1em; text-transform:uppercase; color:var(--txt2);
+}
+.field.inline { flex-direction:row; align-items:center; gap:var(--s2); }
+
+/* Status dot */
+.sdot {
+  width:9px; height:9px; border-radius:50%;
+  background:var(--muted); flex-shrink:0;
+  box-shadow:0 0 0 3px rgba(0,0,0,.18);
+  transition:background var(--t-med), box-shadow var(--t-med);
+}
+.sdot.think { background:var(--gold); box-shadow:0 0 0 3px var(--gold-soft); animation:pulse 1.1s ease-in-out infinite; }
+.sdot.ok    { background:var(--green); box-shadow:0 0 0 3px var(--green-soft); }
+.sdot.bad   { background:var(--red);   box-shadow:0 0 0 3px var(--red-soft); }
+@keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.28} }
+
+/* Player bars */
+.pbar {
+  display:flex; align-items:center; gap:var(--s2);
+  padding:var(--s2) var(--s3);
+  background:var(--surf);
+  border:1px solid var(--bor);
+  border-radius:var(--r2);
+  box-shadow:var(--sh1), var(--inset);
+  flex-shrink:0; width:100%; min-width:0;
+  transition:border-color var(--t-med), box-shadow var(--t-med);
+}
+.pbar.active-bar {
+  border-color:var(--gold);
+  box-shadow:0 0 0 1px var(--gold-ring), inset 0 0 18px var(--gold-soft);
+}
+.pdot {
+  width:13px; height:13px; border-radius:50%; flex-shrink:0;
+  border:1px solid rgba(0,0,0,.5);
+  box-shadow:0 1px 3px rgba(0,0,0,.5), inset 0 1px 0 rgba(255,255,255,.35);
+}
+.pdot.p0 { background:radial-gradient(circle at 34% 30%, var(--p0-light), var(--p0) 62%, var(--p0-deep)); }
+.pdot.p1 { background:radial-gradient(circle at 34% 30%, var(--p1-light), var(--p1) 62%, var(--p1-deep)); }
+.pname {
+  font-size:var(--f2); font-weight:600; color:var(--txt);
+  white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
+  max-width:11ch;
+}
+.pwalls { display:flex; align-items:center; gap:3px; flex-shrink:0; }
+.pwalls .pip {
+  display:block; width:5px; height:16px; border-radius:2px;
+  background:var(--surf2);
+  box-shadow:inset 0 0 0 1px var(--bor);
+  transition:opacity var(--t-med), transform var(--t-med), background var(--t-med);
+}
+.pwalls .pip.on.p0 { background:linear-gradient(180deg, var(--p0-light), var(--p0) 60%, var(--p0-deep)); box-shadow:0 1px 2px rgba(0,0,0,.45); }
+.pwalls .pip.on.p1 { background:linear-gradient(180deg, var(--p1-light), var(--p1) 60%, var(--p1-deep)); box-shadow:0 1px 2px rgba(0,0,0,.45); }
+.pwalls .pip.spent { opacity:.22; transform:scaleY(.55); box-shadow:none; }
+.pdist {
+  font-size:var(--f0); color:var(--txt2); white-space:nowrap; flex-shrink:0;
+  letter-spacing:.04em; font-variant-numeric:tabular-nums;
+}
+.pclock {
+  font-size:var(--f2); font-weight:700; color:var(--txt);
+  background:var(--surf2);
+  border:1px solid var(--bor2);
+  border-radius:var(--r1);
+  padding:2px var(--s2);
+  min-width:62px; text-align:center; flex-shrink:0;
+  letter-spacing:.06em; font-variant-numeric:tabular-nums;
+  display:none;
+}
+.pclock.on { display:block; }
+.pclock.active-clock { color:var(--gold2); border-color:var(--gold); background:var(--gold-soft); }
+.pclock.low-time { color:var(--p1-light); border-color:var(--red); background:var(--red-soft); animation:pulse 1s ease-in-out infinite; }
+
+/* Eval bar — ONE vertical bar, 0–100% scale with ticks and a boundary chip
+   carrying the number. Player 0 (gold) fills from the top. */
+.evalbar {
+  display:flex; flex-direction:column; align-items:stretch;
+  width:34px; flex-shrink:0; align-self:stretch;
+}
+.evalbar .ev-track {
+  position:relative; flex:1; min-height:120px;
+  border:1px solid var(--bor2);
+  border-radius:var(--r1);
+  overflow:visible;
+  background:linear-gradient(180deg, var(--p1-deep), var(--p1) 55%, var(--p1-light));
+  box-shadow:inset 0 0 12px rgba(0,0,0,.5);
+}
+.evalbar .ev-fill {
+  position:absolute; top:0; left:0; right:0; height:50%;
+  border-radius:var(--r1) var(--r1) 0 0;
+  background:linear-gradient(180deg, var(--p0-light), var(--p0) 70%, var(--p0-deep));
+  transition:height .45s cubic-bezier(.22,1,.36,1);
+  box-shadow:0 1px 0 rgba(0,0,0,.35);
+}
+.evalbar .ev-tick {
+  position:absolute; left:2px; right:2px; height:1px;
+  background:rgba(255,255,255,.14); pointer-events:none;
+}
+.evalbar .ev-chip {
+  position:absolute; left:50%; transform:translate(-50%, 50%);
+  bottom:50%;
+  padding:3px 6px; border-radius:var(--r1);
+  background:var(--surf); border:1px solid var(--gold);
+  box-shadow:0 2px 8px rgba(0,0,0,.55);
+  font-size:var(--f1); font-weight:700; color:var(--gold2);
+  font-variant-numeric:tabular-nums; line-height:1;
+  pointer-events:none; white-space:nowrap;
+  transition:bottom .45s cubic-bezier(.22,1,.36,1);
+  z-index:2;
+}
+.evalbar.off { display:none; }
+
+/* Move log */
+.movelog-wrap {
+  overflow-y:auto; overflow-x:hidden;
+  background:var(--surf);
+  border:1px solid var(--bor);
+  border-radius:var(--r2);
+  padding:var(--s2);
+  box-shadow:var(--inset);
+  min-height:64px;
+}
+.movelog { display:flex; flex-direction:column; gap:1px; }
+.ml-row {
+  display:grid; grid-template-columns:2.4em 1fr 1fr;
+  gap:var(--s1); align-items:center;
+  border-bottom:1px solid color-mix(in srgb, var(--bor) 55%, transparent);
+  padding:1px 0;
+}
+.ml-row:last-child { border-bottom:none; }
+.ml-num { color:var(--muted); font-size:var(--f1); font-variant-numeric:tabular-nums; }
+.ml-ply {
+  display:flex; align-items:baseline; gap:4px;
+  padding:2px var(--s1);
+  border-radius:var(--r1);
+  font-size:var(--f2); color:var(--txt);
+  cursor:pointer; min-width:0;
+  transition:background var(--t-fast), color var(--t-fast);
+}
+.ml-ply:hover { background:var(--surf3); color:var(--gold2); }
+.ml-ply.p0 { border-left:2px solid var(--p0); }
+.ml-ply.p1 { border-left:2px solid var(--p1); }
+.ml-ply.current { background:var(--gold-soft); color:var(--gold2); box-shadow:inset 0 0 0 1px var(--gold-ring); }
+.ml-eval { font-size:var(--f0); color:var(--txt2); margin-left:auto; font-variant-numeric:tabular-nums; }
+.ml-empty { font-size:var(--f1); color:var(--txt2); padding:var(--s2) 0; text-align:center; }
+
+.g-best, .g-good, .g-inacc, .g-mistake, .g-blunder { font-weight:700; font-size:var(--f1); }
+.g-best    { color:var(--g-best); }
+.g-good    { color:var(--g-good); }
+.g-inacc   { color:var(--g-inacc); }
+.g-mistake { color:var(--g-mistake); }
+.g-blunder { color:var(--g-blunder); }
+
+/* Engine lines */
+.eng-lines { display:flex; flex-direction:column; }
+.eng-line {
+  display:grid;
+  grid-template-columns:1.4em 4.6em 1fr auto;
+  gap:var(--s2); align-items:baseline;
+  padding:5px var(--s1);
+  border-bottom:1px solid color-mix(in srgb, var(--bor) 55%, transparent);
+  border-radius:var(--r1);
+  cursor:pointer;
+  transition:background var(--t-fast);
+}
+.eng-line:last-child { border-bottom:none; }
+.eng-line:hover { background:var(--surf2); }
+.line-rank { font-size:var(--f0); color:var(--muted); font-variant-numeric:tabular-nums; }
+.line-score { font-size:var(--f2); font-weight:600; color:var(--gold2); font-variant-numeric:tabular-nums; }
+.line-moves {
+  font-size:var(--f1); color:var(--txt2); line-height:1.5;
+  overflow:hidden; text-overflow:ellipsis; white-space:nowrap; min-width:0;
+}
+.line-visits { font-size:var(--f0); color:var(--muted); font-variant-numeric:tabular-nums; }
+.eng-line#an-line1 .line-score { color:var(--gold); }
+.eng-line#an-line1 .line-moves { color:var(--txt); }
+.an-thinking { animation:pulse 1.2s ease-in-out infinite; }
+
+/* Board holder */
+.board-holder {
+  position:relative;
+  flex:1; min-width:0;
+  display:flex; align-items:flex-start; justify-content:center;
+}
+.board-holder > canvas {
+  display:block; width:100%; height:auto;
+  aspect-ratio:1 / 1;
+  border-radius:var(--r2);
+  background:var(--bt-bg, var(--surf2));
+  box-shadow:var(--sh3);
+  touch-action:none;
+  cursor:pointer;
+}
+
+/* ── 4. HEADER ─────────────────────────────────────────────────────── */
+#header {
+  display:flex; align-items:stretch; gap:var(--s2);
+  background:var(--surf);
+  border-bottom:1px solid var(--bor);
+  box-shadow:0 1px 0 rgba(0,0,0,.35);
+  flex-shrink:0;
+  padding-right:var(--s2);
+}
+#logo {
+  display:flex; align-items:center; gap:7px;
+  font-family:var(--ff-disp); font-weight:700;
+  font-size:var(--f4); color:var(--gold);
+  letter-spacing:.13em;
+  padding:var(--s2) var(--s3);
+  background:none; border:none; cursor:pointer;
+  white-space:nowrap; user-select:none;
+  transition:color var(--t-fast);
+}
+#logo:hover { color:var(--gold2); }
+#logo .logo-mark {
+  display:inline-block; width:13px; height:13px;
+  border:2px solid currentColor; border-radius:3px;
+  position:relative;
+}
+#logo .logo-mark::after {
+  content:''; position:absolute; left:-4px; top:4px; width:17px; height:2px;
+  background:currentColor; border-radius:1px;
+}
+#tabs { display:flex; flex:1; min-width:0; }
+.tab {
+  flex:1; min-width:0;
+  display:flex; flex-direction:column; align-items:center; justify-content:center; gap:1px;
+  padding:var(--s2) var(--s1) 6px;
+  background:none; border:none;
+  border-bottom:2px solid transparent; margin-bottom:-1px;
+  font-family:var(--ff-mono); font-size:var(--f0); font-weight:500;
+  letter-spacing:.11em; text-transform:uppercase;
+  color:var(--txt2); cursor:pointer; user-select:none;
+  transition:color var(--t-fast), border-color var(--t-fast), background var(--t-fast);
+}
+.tab:hover { color:var(--gold2); background:var(--gold-soft); }
+.tab.active { color:var(--gold); border-bottom-color:var(--gold); }
+.tab .tab-i { font-size:var(--f4); line-height:1; }
+#header .hdr-actions { display:flex; align-items:center; gap:var(--s1); }
+#header .hdr-actions .btn { height:30px; min-width:30px; padding:0 7px; }
+
+/* ── 5. PLAY PANEL ─────────────────────────────────────────────────── */
+#play-panel { gap:var(--s3); padding:var(--s3); overflow-y:auto; }
+#pl-board-col {
+  display:flex; flex-direction:column; gap:var(--s2);
+  min-width:0; flex:1;
+  align-items:center;
+}
+#pl-board-wrap {
+  display:flex; align-items:stretch; gap:var(--s2);
+  width:100%; min-width:0;
+}
+#pl-side-col {
+  display:flex; flex-direction:column; gap:var(--s3);
+  width:100%; min-width:0;
+}
+#pl-status-row { display:flex; align-items:center; gap:var(--s2); min-height:1.6em; }
+#pl-status {
+  font-family:var(--ff-disp); font-size:var(--f2); color:var(--gold2);
+  letter-spacing:.03em; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+}
+#pl-controls { display:flex; flex-wrap:wrap; gap:var(--s1); align-items:center; }
+#pl-controls .ctl-group {
+  display:flex; gap:var(--s1); align-items:center;
+  padding:var(--s1); border:1px solid var(--bor); border-radius:var(--r2);
+  background:var(--surf); box-shadow:var(--inset);
+}
+#pl-controls select { height:30px; font-size:var(--f0); }
+
+/* Race meter — each player's share of the remaining path, filling from
+   opposite ends. Updates every ply with an eased transition. */
+#pl-race {
+  display:flex; height:12px; border-radius:7px; overflow:hidden;
+  border:1px solid var(--bor); background:var(--surf2); box-shadow:var(--inset);
+}
+#pl-race .race-half { flex:1; display:flex; }
+#pl-race .race-half:first-child { justify-content:flex-start; }
+#pl-race .race-half i {
+  display:block; height:100%; width:0%;
+  transition:width .45s cubic-bezier(.22,1,.36,1);
+}
+#pl-race .race-half:first-child i { background:linear-gradient(90deg, var(--p0-deep), var(--p0)); border-radius:6px 0 0 6px; }
+#pl-race .race-half:last-child i  { background:linear-gradient(90deg, var(--p1), var(--p1-deep)); border-radius:0 6px 6px 0; }
+/* Wall placement toolbar under the board — always visible, explicit count. */
+#pl-wallbar {
+  display:flex; align-items:center; gap:var(--s2);
+  padding:var(--s1) var(--s3);
+  background:var(--surf); border:1px solid var(--bor); border-radius:var(--r2);
+  box-shadow:var(--inset);
+  width:100%; min-width:0; flex-shrink:0;
+}
+.wallbar-label {
+  font-family:var(--ff-disp); font-size:var(--f1); color:var(--gold);
+  letter-spacing:.08em; text-transform:uppercase; flex-shrink:0;
+}
+#pl-wallbar .wall-btn {
+  width:52px; height:36px; display:flex; align-items:center; justify-content:center;
+  flex-shrink:0;
+}
+#pl-wallbar .wall-btn .wg {
+  display:inline-block; background:currentColor; border-radius:2px;
+}
+#pl-wallbar .wall-btn .wg-h { width:24px; height:6px; }
+#pl-wallbar .wall-btn .wg-v { width:6px; height:24px; }
+#pl-wallbar .wall-btn.selected {
+  border-color:var(--gold); color:var(--gold2);
+  box-shadow:0 0 0 1px var(--gold-ring), inset 0 0 12px var(--gold-soft);
+}
+.wallbar-sep { width:1px; height:22px; background:var(--bor); flex-shrink:0; }
+#pl-wall-count {
+  font-size:var(--f2); font-weight:700; color:var(--gold2);
+  font-variant-numeric:tabular-nums; white-space:nowrap; flex-shrink:0;
+}
+.wallbar-hint { font-size:var(--f0); color:var(--muted); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.pwalls-num {
+  font-size:var(--f1); font-weight:700; color:var(--txt);
+  font-variant-numeric:tabular-nums; flex-shrink:0;
+  min-width:2ch; text-align:right;
+}
+#pl-movelog-wrap { flex:1; max-height:210px; }
+#pl-engine-info {
+  font-size:var(--f0); color:var(--txt2); text-align:center;
+  letter-spacing:.06em; padding-bottom:var(--s1);
+}
+#pl-engine-info .tagline { color:var(--muted); }
+
+/* ── 6. ANALYSIS PANEL ─────────────────────────────────────────────── */
+#an-toolbar {
+  display:flex; gap:var(--s1); align-items:center;
+  padding:var(--s2) var(--s3);
+  border-bottom:1px solid var(--bor);
+  background:var(--surf);
+  flex-shrink:0; flex-wrap:wrap;
+}
+#an-toolbar .tb-group {
+  display:flex; gap:2px; align-items:center;
+  padding:2px; border:1px solid var(--bor); border-radius:var(--r2); background:var(--surf2);
+}
+#an-toolbar .tb-group .btn { height:28px; min-width:28px; padding:0 6px; border:none; background:none; box-shadow:none; }
+#an-toolbar .tb-group .btn:hover { background:var(--surf3); }
+#an-toolbar .tb-spacer { flex:1; }
+#an-toolbar select { height:28px; font-size:var(--f0); }
+#an-pv-count {
+  font-size:var(--f1); color:var(--gold2); min-width:1.4em; text-align:center;
+  font-variant-numeric:tabular-nums;
+}
+#an-content {
+  display:flex; flex:1; min-height:0; gap:var(--s3);
+  padding:var(--s3); overflow-y:auto;
+}
+#an-board-col { display:flex; flex-direction:column; gap:var(--s2); min-width:0; flex:1; }
+#an-board-wrap { display:flex; align-items:stretch; gap:var(--s2); min-width:0; }
+#an-side-col { display:flex; flex-direction:column; gap:var(--s3); width:100%; min-width:0; }
+#an-lines {
+  background:var(--surf); border:1px solid var(--bor); border-radius:var(--r2);
+  padding:var(--s1) var(--s2); box-shadow:var(--inset);
+}
+#an-status {
+  font-family:var(--ff-disp); font-size:var(--f1); color:var(--gold2);
+  min-height:1.4em; letter-spacing:.03em;
+}
+#an-movelog-wrap { max-height:190px; }
+#an-graph-wrap {
+  background:var(--surf); border:1px solid var(--bor); border-radius:var(--r2);
+  padding:var(--s2); box-shadow:var(--inset);
+  display:flex; flex-direction:column; gap:var(--s1);
+}
+#an-graph { width:100%; height:96px; display:block; border-radius:var(--r1); cursor:pointer; }
+#an-summary {
+  display:flex; flex-direction:column; gap:var(--s1);
+  font-size:var(--f1); color:var(--txt2);
+  background:var(--surf); border:1px solid var(--bor); border-radius:var(--r2);
+  padding:var(--s2) var(--s3); box-shadow:var(--inset);
+  min-height:2.4em;
+}
+#an-summary .sum-row { display:flex; justify-content:space-between; gap:var(--s2); }
+#an-summary .sum-row b { color:var(--txt); font-weight:600; }
+
+/* ── 7. EDITOR PANEL ───────────────────────────────────────────────── */
+#ed-toolbar {
+  display:flex; gap:var(--s1); align-items:center; flex-wrap:wrap;
+  padding:var(--s2) var(--s3);
+  border-bottom:1px solid var(--bor);
+  background:var(--surf); flex-shrink:0;
+}
+#ed-toolbar .tb-spacer { flex:1; }
+.ed-tool {
+  display:inline-flex; align-items:center; justify-content:center; gap:5px;
+  height:34px; min-width:38px; padding:0 var(--s2);
+  border:1px solid var(--bor2); background:var(--surf2); color:var(--txt2);
+  border-radius:var(--r2); cursor:pointer;
+  font-family:var(--ff-mono); font-size:var(--f0); letter-spacing:.06em; text-transform:uppercase;
+  box-shadow:var(--sh1), var(--inset);
+  transition:color var(--t-fast), border-color var(--t-fast), background var(--t-fast);
+}
+.ed-tool:hover { border-color:var(--gold); color:var(--gold2); }
+.ed-tool.active {
+  border-color:var(--gold); color:var(--gold2); background:var(--gold-soft);
+  box-shadow:inset 0 0 0 1px var(--gold-ring);
+}
+.ed-tool .tk { width:13px; height:13px; border-radius:50%; display:inline-block; }
+.ed-tool .tk.p0 { background:radial-gradient(circle at 34% 30%, var(--p0-light), var(--p0) 60%, var(--p0-deep)); }
+.ed-tool .tk.p1 { background:radial-gradient(circle at 34% 30%, var(--p1-light), var(--p1) 60%, var(--p1-deep)); }
+.ed-tool .tk.wh { width:16px; height:5px; border-radius:2px; background:var(--bt-wall,#e8d9b6); }
+.ed-tool .tk.wv { width:5px; height:16px; border-radius:2px; background:var(--bt-wall,#e8d9b6); }
+
+#ed-content { display:flex; flex:1; min-height:0; gap:var(--s3); padding:var(--s3); overflow-y:auto; }
+#ed-board-col { display:flex; flex-direction:column; gap:var(--s2); min-width:0; flex:1; align-items:center; }
+#ed-side-col { display:flex; flex-direction:column; gap:var(--s3); width:100%; min-width:0; }
+.ed-block {
+  display:flex; flex-direction:column; gap:var(--s2);
+  background:var(--surf); border:1px solid var(--bor); border-radius:var(--r2);
+  padding:var(--s3); box-shadow:var(--inset);
+}
+.seg { display:flex; gap:0; border:1px solid var(--bor2); border-radius:var(--r2); overflow:hidden; background:var(--surf2); }
+.seg label {
+  flex:1; display:flex; align-items:center; justify-content:center; gap:6px;
+  padding:var(--s2) var(--s1);
+  font-size:var(--f1); color:var(--txt2); cursor:pointer;
+  transition:background var(--t-fast), color var(--t-fast);
+}
+.seg label + label { border-left:1px solid var(--bor2); }
+.seg input { position:absolute; opacity:0; width:0; height:0; }
+.seg label:hover { background:var(--surf3); color:var(--txt); }
+.seg input:checked + .seg-txt { color:var(--gold2); }
+.seg label:has(input:checked) { background:var(--gold-soft); color:var(--gold2); box-shadow:inset 0 0 0 1px var(--gold-ring); }
+.seg label:has(input:focus-visible) { outline:2px solid var(--gold); outline-offset:-2px; }
+.stepper { display:flex; align-items:center; gap:var(--s2); }
+.stepper .st-label { font-size:var(--f1); color:var(--txt2); flex:1; display:flex; align-items:center; gap:6px; }
+.stepper .st-val {
+  min-width:2.6em; text-align:center;
+  font-size:var(--f3); font-weight:600; color:var(--txt);
+  font-variant-numeric:tabular-nums;
+  background:var(--surf2); border:1px solid var(--bor2); border-radius:var(--r1);
+  padding:3px var(--s1);
+}
+#ed-qfen { width:100%; height:74px; font-size:var(--f1); }
+#ed-validity {
+  font-size:var(--f1); line-height:1.6;
+  border-radius:var(--r2); padding:var(--s2) var(--s3);
+  border:1px solid var(--bor); background:var(--surf2); color:var(--txt2);
+  min-height:2.6em;
+}
+#ed-validity.ok  { border-color:color-mix(in srgb, var(--green) 60%, transparent); background:var(--green-soft); color:var(--green); }
+#ed-validity.bad { border-color:color-mix(in srgb, var(--red) 60%, transparent);   background:var(--red-soft);   color:var(--p1-light); }
+[data-ui-theme="light"] #ed-validity.bad { color:var(--red); }
+#ed-actions { display:flex; gap:var(--s2); }
+#ed-actions .btn { flex:1; }
+
+/* ── 8. MODALS / OVERLAYS ──────────────────────────────────────────── */
+.modal {
+  display:none; position:fixed; inset:0; z-index:200;
+  background:var(--scrim);
+  -webkit-backdrop-filter:blur(3px); backdrop-filter:blur(3px);
+  align-items:center; justify-content:center;
+  padding:var(--s3);
+}
+.modal.show { display:flex; }
+.modal-box {
+  background:var(--surf);
+  border:1px solid var(--bor2);
+  border-top:2px solid var(--gold);
+  border-radius:var(--r3);
+  box-shadow:var(--sh3);
+  width:100%; max-width:420px;
+  max-height:88dvh; overflow-y:auto;
+  padding:var(--s5);
+  display:flex; flex-direction:column; gap:var(--s4);
+  animation:rise .22s cubic-bezier(.2,.8,.3,1);
+}
+@keyframes rise { from { transform:translateY(18px) scale(.985); opacity:0 } to { transform:none; opacity:1 } }
+.modal-head { display:flex; align-items:center; justify-content:space-between; gap:var(--s3); }
+.modal-head h2 {
+  font-family:var(--ff-disp); font-size:var(--f5); font-weight:700;
+  color:var(--gold); letter-spacing:.1em;
+}
+.modal-head .x {
+  background:none; border:none; color:var(--txt2); cursor:pointer;
+  font-size:var(--f5); line-height:1; padding:var(--s1) var(--s2); border-radius:var(--r1);
+  transition:color var(--t-fast), background var(--t-fast);
+}
+.modal-head .x:hover { color:var(--gold2); background:var(--surf2); }
+.modal-foot { display:flex; justify-content:flex-end; gap:var(--s2); }
+
+/* Settings */
+#settings-box { max-width:460px; }
+.cfg-row { display:flex; flex-direction:column; gap:var(--s2); }
+.cfg-label {
+  font-size:var(--f0); color:var(--txt2);
+  letter-spacing:.14em; text-transform:uppercase; font-weight:500;
+}
+.cfg-opts { display:grid; grid-template-columns:repeat(auto-fill, minmax(78px, 1fr)); gap:var(--s2); }
+.cfg-opt {
+  display:flex; flex-direction:column; align-items:center; justify-content:flex-start; gap:6px;
+  padding:var(--s2) var(--s1) 7px;
+  border:1px solid var(--bor2); border-radius:var(--r2);
+  background:var(--surf2); color:var(--txt2);
+  font-family:var(--ff-mono); font-size:var(--f0); letter-spacing:.03em;
+  cursor:pointer; user-select:none; text-align:center;
+  box-shadow:var(--inset);
+  transition:color var(--t-fast), border-color var(--t-fast), background var(--t-fast), transform var(--t-fast);
+}
+.cfg-opt:hover { border-color:var(--gold); color:var(--gold2); transform:translateY(-1px); }
+.cfg-opt.active { border-color:var(--gold); color:var(--gold2); background:var(--gold-soft); box-shadow:inset 0 0 0 1px var(--gold-ring); }
+
+.sw-board {
+  width:44px; height:44px; border-radius:var(--r1);
+  background:var(--bt-bg, var(--surf3));
+  padding:3px; position:relative;
+  display:grid; grid-template-columns:1fr 1fr; grid-template-rows:1fr 1fr; gap:2px;
+  box-shadow:var(--sh1);
+}
+.sw-board i { display:block; border-radius:1.5px; background:var(--bt-light,#ccc); }
+.sw-board i:nth-child(2), .sw-board i:nth-child(3) { background:var(--bt-dark,#999); }
+.sw-board::before {
+  content:''; position:absolute; left:5px; right:5px; top:calc(50% - 1.5px);
+  height:3px; border-radius:2px; background:var(--bt-wall,#eee);
+  box-shadow:0 1px 2px rgba(0,0,0,.5);
+}
+.sw-board::after {
+  content:''; position:absolute; left:9px; top:7px; width:9px; height:9px; border-radius:50%;
+  background:var(--bt-p0,#ddd); box-shadow:0 1px 2px rgba(0,0,0,.5);
+}
+.sw-pawn {
+  width:44px; height:44px; border-radius:var(--r1);
+  background:var(--surf3); border:1px solid var(--bor);
+  display:flex; align-items:center; justify-content:center;
+  font-size:var(--f5); color:var(--p0);
+}
+.sw-pawn .d-disc { width:20px; height:20px; border-radius:50%; background:radial-gradient(circle at 34% 30%, var(--p0-light), var(--p0) 62%, var(--p0-deep)); box-shadow:0 2px 4px rgba(0,0,0,.5); }
+.sw-pawn .d-pin  { width:12px; height:22px; border-radius:6px 6px 3px 3px; background:linear-gradient(180deg, var(--p0-light), var(--p0-deep)); box-shadow:0 2px 4px rgba(0,0,0,.5); }
+.sw-ui {
+  width:44px; height:44px; border-radius:var(--r1);
+  border:1px solid var(--bor);
+  display:flex; align-items:center; justify-content:center; font-size:var(--f4);
+}
+.sw-ui.dark  { background:#12121a; color:#c8a84b; }
+.sw-ui.light { background:#f4f1e8; color:#8a6a17; }
+
+.cfg-toggles { display:flex; flex-direction:column; gap:2px; }
+.cfg-toggle {
+  display:flex; align-items:center; gap:var(--s3);
+  padding:6px var(--s1); border-radius:var(--r1);
+  cursor:pointer;
+  transition:background var(--t-fast);
+}
+.cfg-toggle:hover { background:var(--surf2); }
+.cfg-sw { position:relative; width:40px; height:23px; flex-shrink:0; }
+.cfg-sw input { position:absolute; opacity:0; width:100%; height:100%; margin:0; cursor:pointer; z-index:2; }
+.cfg-sw-track {
+  position:absolute; inset:0;
+  background:var(--surf3); border:1px solid var(--bor2);
+  border-radius:12px; transition:background var(--t-med), border-color var(--t-med);
+}
+.cfg-sw input:checked ~ .cfg-sw-track { background:var(--gold); border-color:var(--gold); }
+.cfg-sw input:disabled ~ .cfg-sw-track { opacity:.4; }
+.cfg-sw input:focus-visible ~ .cfg-sw-track { outline:2px solid var(--gold); outline-offset:2px; }
+.cfg-sw-thumb {
+  position:absolute; top:3px; left:3px; width:15px; height:15px;
+  background:var(--txt); border-radius:50%;
+  transition:left var(--t-med), background var(--t-med);
+  pointer-events:none;
+  box-shadow:0 1px 3px rgba(0,0,0,.5);
+}
+.cfg-sw input:checked ~ .cfg-sw-thumb { left:21px; background:#141004; }
+.cfg-sw-label { font-size:var(--f2); color:var(--txt); }
+.cfg-toggle .cfg-hint { font-size:var(--f0); color:var(--muted); margin-left:auto; }
+.cfg-divider { height:1px; background:var(--bor); }
+
+/* About */
+#about-box { max-width:440px; text-align:left; }
+#about-box p { font-size:var(--f1); color:var(--txt2); line-height:1.8; }
+#about-box strong { color:var(--txt); font-weight:600; }
+#about-box .about-ver {
+  font-family:var(--ff-disp); font-size:var(--f2); color:var(--gold2); letter-spacing:.1em;
+}
+.kbd-list { display:grid; grid-template-columns:auto 1fr; gap:5px var(--s3); font-size:var(--f1); color:var(--txt2); }
+kbd {
+  font-family:var(--ff-mono); font-size:var(--f0);
+  background:var(--surf2); border:1px solid var(--bor2); border-bottom-width:2px;
+  border-radius:var(--r1); padding:1px 6px; color:var(--txt); white-space:nowrap;
+}
+
+/* Text modal */
+#text-modal-area { width:100%; height:140px; font-size:var(--f1); }
+#text-modal-box .modal-foot { justify-content:space-between; }
+
+/* Toast */
+#toast {
+  position:fixed; left:50%; bottom:var(--s5); transform:translate(-50%, 14px);
+  z-index:400; pointer-events:none; opacity:0;
+  max-width:min(92vw, 420px);
+  background:var(--surf); color:var(--txt);
+  border:1px solid var(--gold-ring); border-radius:var(--r2);
+  box-shadow:var(--sh3);
+  padding:var(--s2) var(--s4);
+  font-size:var(--f1); text-align:center;
+  transition:opacity var(--t-med), transform var(--t-med);
+}
+#toast.show { opacity:1; transform:translate(-50%, 0); }
+#toast.bad { border-color:var(--red); color:var(--p1-light); }
+[data-ui-theme="light"] #toast.bad { color:var(--red); }
+
+/* Loading overlay */
+#loading-overlay {
+  display:none; position:fixed; inset:0; z-index:500;
+  background:var(--bg);
+  flex-direction:column; align-items:center; justify-content:center; gap:var(--s4);
+}
+#loading-overlay.show { display:flex; }
+#loading-overlay .spin {
+  width:44px; height:44px; border-radius:50%;
+  border:2px solid var(--bor2); border-top-color:var(--gold);
+  animation:spin 1s linear infinite;
+}
+@keyframes spin { to { transform:rotate(360deg) } }
+#loading-text { font-family:var(--ff-disp); font-size:var(--f2); color:var(--gold2); letter-spacing:.12em; }
+
+/* ── 9. RESPONSIVE ─────────────────────────────────────────────────── */
+@media (min-width:900px) {
+  #play-panel { flex-direction:row; align-items:flex-start; gap:var(--s4); padding:var(--s4); }
+  #pl-board-col { flex:1; max-width:min(100%, calc(100dvh - 190px)); }
+  #pl-side-col  { width:var(--side-w); flex:0 0 var(--side-w); }
+  #pl-movelog-wrap { max-height:none; flex:1; min-height:120px; }
+
+  #an-content   { flex-direction:row; align-items:flex-start; gap:var(--s4); padding:var(--s4); }
+  #an-board-col { flex:1; max-width:min(100%, calc(100dvh - 210px)); }
+  #an-side-col  { width:var(--side-w); flex:0 0 var(--side-w); }
+
+  #ed-content   { flex-direction:row; align-items:flex-start; gap:var(--s4); padding:var(--s4); }
+  #ed-board-col { flex:1; max-width:min(100%, calc(100dvh - 190px)); }
+  #ed-side-col  { width:var(--side-w); flex:0 0 var(--side-w); }
+
+  .tab { flex-direction:row; gap:7px; font-size:var(--f1); padding:var(--s3) var(--s2); }
+  .tab .tab-i { font-size:var(--f3); }
+  #logo { font-size:var(--f5); }
+  #an-graph { height:120px; }
+}
+
+@media (max-width:899px) {
+  /* Stacked layout: the board column must not stretch, otherwise it
+     pushes the controls down and leaves a dead band under the board. */
+  #pl-board-col { flex:0 0 auto; }
+  #pl-board-col, #an-board-col, #ed-board-col { width:100%; max-width:min(94vw, 560px); margin:0 auto; }
+  .evalbar { width:24px; }
+  .evalbar .ev-track { min-height:90px; }
+}
+
+@media (max-width:400px) {
+  :root { --s3:10px; --s4:12px; --s5:18px; }
+  #logo { padding:var(--s2); letter-spacing:.06em; font-size:var(--f2); }
+  #logo .logo-txt { display:none; }
+  .btn { min-width:34px; padding:0 7px; font-size:var(--f0); }
+  .pname { max-width:8ch; }
+  .cfg-opts { grid-template-columns:repeat(auto-fill, minmax(66px, 1fr)); }
+  .modal-box { padding:var(--s4); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration:.001ms !important;
+    animation-iteration-count:1 !important;
+    transition-duration:.001ms !important;
+    scroll-behavior:auto !important;
   }
-  @media (min-width: 640px) { .app { padding-top: 18px; gap: 12px; } }
+}
 </style>
 </head>
+
 <body>
+<div id="app">
 
-<div class="app">
-  <div class="players-row">
-    <div class="player-card p0" id="cardP0">
-      <div class="name"><span class="dot"></span><span id="nameP0">Human</span></div>
-      <div class="meta">
-        <span class="walls-pill"><span class="bars" id="barsP0"></span><span id="walls0">10/10</span></span>
-        <span class="dist-tag"><span class="lbl">dist</span><b id="dist0">--</b></span>
+  <!-- ══ HEADER ══════════════════════════════════════════════════════ -->
+  <header id="header">
+    <button id="logo" type="button" title="About Zquoridor" aria-label="About Zquoridor">
+      <span class="logo-mark" aria-hidden="true"></span><span class="logo-txt">ZQUORIDOR</span>
+    </button>
+
+    <nav id="tabs" role="tablist" aria-label="Main sections">
+      <button class="tab active" id="tab-play" type="button" role="tab" aria-selected="true"
+              aria-controls="play-panel" title="Play against the engine" aria-label="Play panel">
+        <span class="tab-i" aria-hidden="true">&#9679;</span>Play
+      </button>
+      <button class="tab" id="tab-analysis" type="button" role="tab" aria-selected="false"
+              aria-controls="analysis-panel" title="Analyse the current game" aria-label="Analysis panel">
+        <span class="tab-i" aria-hidden="true">&#9906;</span>Analysis
+      </button>
+      <button class="tab" id="tab-editor" type="button" role="tab" aria-selected="false"
+              aria-controls="editor-panel" title="Set up a position" aria-label="Position editor panel">
+        <span class="tab-i" aria-hidden="true">&#9635;</span>Editor
+      </button>
+    </nav>
+
+    <div class="hdr-actions">
+      <button class="btn icon" id="btn-settings" type="button" title="Settings" aria-label="Open settings">&#9881;</button>
+      <button class="btn icon" id="btn-about" type="button" title="About and keyboard shortcuts" aria-label="About and keyboard shortcuts">?</button>
+    </div>
+  </header>
+
+  <!-- ══ PLAY PANEL ══════════════════════════════════════════════════ -->
+  <section id="play-panel" class="panel active" role="tabpanel" aria-labelledby="tab-play">
+
+    <div id="pl-board-col">
+      <div class="pbar" id="pl-bar-top">
+        <span class="pdot p1" id="pl-dot-top" aria-hidden="true"></span>
+        <span class="pname" id="pl-name-top">Zquoridor</span>
+        <span class="pwalls" id="pl-walls-top" title="Walls remaining" aria-label="Walls remaining, top player">
+          <i class="pip"></i><i class="pip"></i><i class="pip"></i><i class="pip"></i><i class="pip"></i>
+          <i class="pip"></i><i class="pip"></i><i class="pip"></i><i class="pip"></i><i class="pip"></i>
+        </span>
+        <span class="pwalls-num" id="pl-walls-num-top">10</span>
+        <span class="pdist" id="pl-dist-top" title="Shortest path to goal">&#8250; 8</span>
+        <span class="pclock" id="pl-clock-top" title="Clock" aria-label="Top player clock">5:00</span>
+      </div>
+
+      <div id="pl-board-wrap">
+        <div class="board-holder">
+          <canvas id="pl-board" width="640" height="640" tabindex="0"
+                  role="application" title="Quoridor board"
+                  aria-label="Quoridor board — use arrow keys to move, Enter to commit, H or V to arm a wall"></canvas>
+        </div>
+        <div class="evalbar" id="pl-evalbar" title="Evaluation — player 1 share on top"
+             role="img" aria-label="Evaluation bar">
+                    <div class="ev-track">
+            <div class="ev-fill" id="pl-evalbar-fill" style="height:50%"></div>
+            <i class="ev-tick" style="top:25%"></i><i class="ev-tick" style="top:50%"></i><i class="ev-tick" style="top:75%"></i>
+            <span class="ev-chip" id="pl-evalbar-num">50%</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="pbar active-bar" id="pl-bar-bot">
+        <span class="pdot p0" id="pl-dot-bot" aria-hidden="true"></span>
+        <span class="pname" id="pl-name-bot">You</span>
+        <span class="pwalls" id="pl-walls-bot" title="Walls remaining" aria-label="Walls remaining, bottom player">
+          <i class="pip"></i><i class="pip"></i><i class="pip"></i><i class="pip"></i><i class="pip"></i>
+          <i class="pip"></i><i class="pip"></i><i class="pip"></i><i class="pip"></i><i class="pip"></i>
+        </span>
+        <span class="pwalls-num" id="pl-walls-num-bot">10</span>
+        <span class="pdist" id="pl-dist-bot" title="Shortest path to goal">&#8250; 8</span>
+        <span class="pclock" id="pl-clock-bot" title="Clock" aria-label="Bottom player clock">5:00</span>
+      </div>
+
+      <!-- Wall placement toolbar: sits directly under the board where the
+           walls go, always visible, with an explicit remaining count. -->
+      <div id="pl-wallbar" role="toolbar" aria-label="Wall placement">
+        <span class="wallbar-label">Wall</span>
+        <button class="btn wall-btn selected" id="pl-wall-h" type="button" aria-pressed="true"
+                title="Place horizontal walls (H)" aria-label="Horizontal wall"><i class="wg wg-h" aria-hidden="true"></i></button>
+        <button class="btn wall-btn" id="pl-wall-v" type="button" aria-pressed="false"
+                title="Place vertical walls (V)" aria-label="Vertical wall"><i class="wg wg-v" aria-hidden="true"></i></button>
+        <span class="wallbar-sep" aria-hidden="true"></span>
+        <span id="pl-wall-count" title="Walls you have left to place">10 left</span>
+        <span class="wallbar-hint">tap the board to place &middot; drag flips orientation</span>
       </div>
     </div>
-    <div class="player-card p1" id="cardP1">
-      <div class="name"><span class="dot"></span><span id="nameP1">Zquoridor</span></div>
-      <div class="meta">
-        <span class="walls-pill"><span class="bars" id="barsP1"></span><span id="walls1">10/10</span></span>
-        <span class="dist-tag"><span class="lbl">dist</span><b id="dist1">--</b></span>
+
+    <div id="pl-side-col">
+      <div id="pl-status-row">
+        <span class="sdot" id="pl-status-dot" aria-hidden="true"></span>
+        <span id="pl-status" role="status" aria-live="polite">Ready.</span>
+      </div>
+
+      <div id="pl-race" title="Race to the goal — each side fills its share of the remaining path">
+        <div class="race-half"><i id="pl-race-p0"></i></div>
+        <div class="race-half"><i id="pl-race-p1"></i></div>
+      </div>
+
+      <div id="pl-controls">
+        <div class="ctl-group">
+          <button class="btn gld" id="pl-btn-new" type="button" title="New game (N)" aria-label="New game">New</button>
+          <button class="btn icon" id="pl-btn-flip" type="button" title="Flip the board (F)" aria-label="Flip the board">&#8645;</button>
+          <button class="btn" id="pl-btn-side" type="button" title="Switch side" aria-label="Switch side">P1</button>
+        </div>
+
+        <div class="ctl-group">
+          <button class="btn icon" id="pl-btn-undo" type="button" title="Undo one ply" aria-label="Undo one ply">&#8249;</button>
+          <button class="btn icon" id="pl-btn-redo" type="button" title="Redo one ply" aria-label="Redo one ply">&#8250;</button>
+          <button class="btn" id="pl-btn-takeback" type="button" title="Take back your last move" aria-label="Take back your last move">Back</button>
+          <button class="btn" id="pl-btn-hint" type="button" title="Show the engine's suggestion (H)" aria-label="Show a hint">Hint</button>
+        </div>
+
+        <div class="ctl-group">
+          <label class="vh" for="pl-sel-level">Engine strength</label>
+          <select id="pl-sel-level" title="Engine strength (S)" aria-label="Engine strength">
+            <option value="0">Pebble &middot; 50ms</option>
+            <option value="1">Bronze &middot; 120ms</option>
+            <option value="2">Silver &middot; 250ms</option>
+            <option value="3">Gold &middot; 500ms</option>
+            <option value="4" selected>Platinum &middot; 1s</option>
+            <option value="5">Diamond &middot; 2s</option>
+            <option value="6">Master &middot; 4s</option>
+            <option value="7">Titan &middot; 8s</option>
+            <option value="custom">Custom&hellip;</option>
+          </select>
+        </div>
+
+        <div class="ctl-group" id="pl-adv-group" style="display:none">
+          <label class="vh" for="pl-sel-mode">Search mode</label>
+          <select id="pl-sel-mode" title="Search mode" aria-label="Search mode">
+            <option value="depth" selected>Depth</option>
+            <option value="time">Move time</option>
+            <option value="game">Game clock</option>
+          </select>
+
+          <label class="vh" for="pl-sel-depth">Search depth</label>
+          <select id="pl-sel-depth" title="Search depth" aria-label="Search depth">
+            <option value="2">d2</option><option value="3">d3</option><option value="4">d4</option>
+            <option value="5">d5</option><option value="6" selected>d6</option><option value="7">d7</option>
+            <option value="8">d8</option><option value="9">d9</option><option value="10">d10</option>
+            <option value="11">d11</option><option value="12">d12</option>
+          </select>
+
+          <label class="vh" for="pl-sel-time">Time per move</label>
+          <select id="pl-sel-time" title="Time per move" aria-label="Time per move" style="display:none">
+            <option value="100">0.1s</option><option value="250">0.25s</option>
+            <option value="500" selected>0.5s</option><option value="1000">1s</option>
+            <option value="2000">2s</option><option value="3000">3s</option>
+            <option value="5000">5s</option><option value="10000">10s</option>
+          </select>
+
+          <label class="vh" for="pl-sel-tc">Time control</label>
+          <select id="pl-sel-tc" title="Time control" aria-label="Time control" style="display:none">
+            <option value="60000|0">1+0</option>
+            <option value="120000|1000">2+1</option>
+            <option value="180000|2000">3+2</option>
+            <option value="300000|0" selected>5+0</option>
+            <option value="300000|3000">5+3</option>
+            <option value="600000|5000">10+5</option>
+            <option value="900000|10000">15+10</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="sec-label">Moves</div>
+      <div class="movelog-wrap card" id="pl-movelog-wrap">
+        <div class="movelog" id="pl-movelog"><div class="ml-empty">No moves yet</div></div>
+      </div>
+
+      <div id="pl-engine-info">Zquoridor &middot; <span class="tagline">WebAssembly</span></div>
+    </div>
+  </section>
+
+  <!-- ══ ANALYSIS PANEL ══════════════════════════════════════════════ -->
+  <section id="analysis-panel" class="panel" role="tabpanel" aria-labelledby="tab-analysis">
+
+    <div id="an-toolbar">
+      <button class="btn gld" id="an-eng-btn" type="button" aria-pressed="false"
+              title="Toggle continuous analysis (A)" aria-label="Toggle continuous analysis">Eng</button>
+
+      <div class="tb-group" role="group" aria-label="Navigation">
+        <button class="btn icon" id="an-first" type="button" title="First ply (Home)" aria-label="Go to first ply">&#8676;</button>
+        <button class="btn icon" id="an-prev"  type="button" title="Previous ply (Left arrow)" aria-label="Previous ply">&#9664;</button>
+        <button class="btn icon" id="an-next"  type="button" title="Next ply (Right arrow)" aria-label="Next ply">&#9654;</button>
+        <button class="btn icon" id="an-last"  type="button" title="Last ply (End)" aria-label="Go to last ply">&#8677;</button>
+      </div>
+
+      <button class="btn icon" id="an-flip" type="button" title="Flip the board (F)" aria-label="Flip the board">&#8645;</button>
+
+      <label class="vh" for="an-sel-depth">Analysis depth</label>
+      <select id="an-sel-depth" title="Analysis depth" aria-label="Analysis depth">
+        <option value="2">d2</option><option value="3">d3</option><option value="4">d4</option>
+        <option value="5">d5</option><option value="6">d6</option><option value="7">d7</option>
+        <option value="8" selected>d8</option><option value="9">d9</option><option value="10">d10</option>
+        <option value="11">d11</option><option value="12">d12</option>
+      </select>
+
+      <label class="vh" for="an-sel-time">Analysis slice time</label>
+      <select id="an-sel-time" title="Time per analysis slice" aria-label="Time per analysis slice">
+        <option value="100">0.1s</option><option value="150">0.15s</option>
+        <option value="250" selected>0.25s</option><option value="500">0.5s</option>
+        <option value="1000">1s</option>
+      </select>
+
+      <div class="tb-group" role="group" aria-label="Number of analysis lines">
+        <button class="btn icon" id="an-pv-minus" type="button" title="Fewer lines" aria-label="Fewer analysis lines">&minus;</button>
+        <span id="an-pv-count" aria-live="polite">1</span>
+        <button class="btn icon" id="an-pv-plus" type="button" title="More lines" aria-label="More analysis lines">+</button>
+      </div>
+
+      <span class="tb-spacer"></span>
+
+      <button class="btn icon" id="an-btn-arrows" type="button" aria-pressed="true"
+              title="Toggle best-move arrows" aria-label="Toggle best-move arrows">&#10230;</button>
+      <button class="btn" id="an-btn-blunder" type="button" title="Analyse the whole game" aria-label="Analyse the whole game">Scan</button>
+      <button class="btn" id="an-btn-qfen" type="button" title="Load or copy QFEN" aria-label="Load or copy QFEN">QFEN</button>
+      <button class="btn" id="an-btn-game" type="button" title="Load or copy the game text" aria-label="Load or copy the game text">Game</button>
+    </div>
+
+    <div id="an-content">
+      <div id="an-board-col">
+        <div id="an-board-wrap">
+          <div class="board-holder">
+            <canvas id="an-board" width="640" height="640" tabindex="0"
+                    role="application" title="Analysis board" aria-label="Analysis board"></canvas>
+          </div>
+          <div class="evalbar" id="an-evalbar" title="Evaluation — player 1 share on top"
+               role="img" aria-label="Evaluation bar">
+                      <div class="ev-track">
+            <div class="ev-fill" id="an-evalbar-fill" style="height:50%"></div>
+            <i class="ev-tick" style="top:25%"></i><i class="ev-tick" style="top:50%"></i><i class="ev-tick" style="top:75%"></i>
+            <span class="ev-chip" id="an-evalbar-num">50%</span>
+          </div>
+          </div>
+        </div>
+
+        <div id="an-lines" class="eng-lines">
+          <div class="eng-line" id="an-line1" title="Best line">
+            <span class="line-rank">1</span><span class="line-score" id="an-ls1">&mdash;</span>
+            <span class="line-moves" id="an-lm1">&mdash;</span><span class="line-visits" id="an-lv1"></span>
+          </div>
+          <div class="eng-line" id="an-line2" style="display:none">
+            <span class="line-rank">2</span><span class="line-score" id="an-ls2"></span>
+            <span class="line-moves" id="an-lm2"></span><span class="line-visits" id="an-lv2"></span>
+          </div>
+          <div class="eng-line" id="an-line3" style="display:none">
+            <span class="line-rank">3</span><span class="line-score" id="an-ls3"></span>
+            <span class="line-moves" id="an-lm3"></span><span class="line-visits" id="an-lv3"></span>
+          </div>
+          <div class="eng-line" id="an-line4" style="display:none">
+            <span class="line-rank">4</span><span class="line-score" id="an-ls4"></span>
+            <span class="line-moves" id="an-lm4"></span><span class="line-visits" id="an-lv4"></span>
+          </div>
+          <div class="eng-line" id="an-line5" style="display:none">
+            <span class="line-rank">5</span><span class="line-score" id="an-ls5"></span>
+            <span class="line-moves" id="an-lm5"></span><span class="line-visits" id="an-lv5"></span>
+          </div>
+        </div>
+
+        <div id="an-status" role="status" aria-live="polite">Idle</div>
+      </div>
+
+      <div id="an-side-col">
+        <div class="sec-label">Moves</div>
+        <div class="movelog-wrap card" id="an-movelog-wrap">
+          <div class="movelog" id="an-movelog"><div class="ml-empty">No moves yet</div></div>
+        </div>
+
+        <div class="sec-label">Eval graph</div>
+        <div id="an-graph-wrap">
+          <canvas id="an-graph" width="600" height="240" title="Win probability over the game"
+                  aria-label="Win probability graph — click a point to navigate"></canvas>
+        </div>
+
+        <div class="sec-label">Summary</div>
+        <div id="an-summary" aria-live="polite">
+          <div class="sum-row"><span>Not analysed yet</span><b>&mdash;</b></div>
+        </div>
       </div>
     </div>
-  </div>
+  </section>
 
-  <div class="board-wrap" id="boardWrap">
-    <div id="board"></div>
-  </div>
+  <!-- ══ EDITOR PANEL ════════════════════════════════════════════════ -->
+  <section id="editor-panel" class="panel" role="tabpanel" aria-labelledby="tab-editor">
 
-  <div class="controls">
-    <div class="toolbar">
-      <button class="tbtn wall h" id="wallH" type="button" title="Horizontal wall — tap or drag on board" aria-label="Horizontal wall">
-        <span class="icon-wrap"><span class="swatch"></span></span><span class="tbtn-label">Horizontal</span>
+    <div id="ed-toolbar" role="group" aria-label="Editor tools">
+      <button class="ed-tool active" id="ed-tool-p0" type="button" title="Place player 1's pawn" aria-label="Place player 1 pawn">
+        <i class="tk p0" aria-hidden="true"></i>P1
       </button>
-      <button class="tbtn wall v" id="wallV" type="button" title="Vertical wall — tap or drag on board" aria-label="Vertical wall">
-        <span class="icon-wrap"><span class="swatch"></span></span><span class="tbtn-label">Vertical</span>
+      <button class="ed-tool" id="ed-tool-p1" type="button" title="Place player 2's pawn" aria-label="Place player 2 pawn">
+        <i class="tk p1" aria-hidden="true"></i>P2
       </button>
-      <button class="tbtn" id="flipBtn" type="button" title="Flip board" aria-label="Flip board">
-        <span class="icon-wrap"><span style="font-size:1.2rem;line-height:1">⇅</span></span><span class="tbtn-label">Flip</span>
+      <button class="ed-tool" id="ed-tool-wallh" type="button" title="Place horizontal walls" aria-label="Place horizontal walls">
+        <i class="tk wh" aria-hidden="true"></i>H
       </button>
-      <button class="tbtn primary" id="newGame" type="button" title="New Game" aria-label="New Game">
-        <span class="icon-wrap"><span style="font-size:1.2rem;line-height:1">↺</span></span><span class="tbtn-label">New Game</span>
+      <button class="ed-tool" id="ed-tool-wallv" type="button" title="Place vertical walls" aria-label="Place vertical walls">
+        <i class="tk wv" aria-hidden="true"></i>V
       </button>
+      <button class="ed-tool" id="ed-tool-erase" type="button" title="Erase walls" aria-label="Erase walls">&#9003; Erase</button>
+
+      <span class="tb-spacer"></span>
+
+      <button class="btn" id="ed-btn-clear" type="button" title="Empty board" aria-label="Clear the board">Clear</button>
+      <button class="btn" id="ed-btn-reset" type="button" title="Reset to the starting position" aria-label="Reset to the starting position">Reset</button>
+      <button class="btn icon" id="ed-btn-flip" type="button" title="Flip the board (F)" aria-label="Flip the board">&#8645;</button>
     </div>
 
-    <div class="movelist" id="movelist">
-      <div class="empty"></div>
+    <div id="ed-content">
+      <div id="ed-board-col">
+        <div class="board-holder">
+          <canvas id="ed-board" width="640" height="640" tabindex="0"
+                  role="application" title="Position editor board" aria-label="Position editor board"></canvas>
+        </div>
+      </div>
+
+      <div id="ed-side-col">
+        <div class="ed-block">
+          <div class="cfg-label" id="ed-turn-label">Side to move</div>
+          <div class="seg" role="radiogroup" aria-labelledby="ed-turn-label">
+            <label title="Player 1 to move">
+              <input type="radio" name="ed-turn" id="ed-turn-p0" value="0" checked aria-label="Player 1 to move">
+              <span class="seg-txt"><i class="tk p0" aria-hidden="true"
+                    style="display:inline-block;width:11px;height:11px;border-radius:50%;background:var(--p0);vertical-align:-1px;margin-right:5px"></i>Player 1</span>
+            </label>
+            <label title="Player 2 to move">
+              <input type="radio" name="ed-turn" id="ed-turn-p1" value="1" aria-label="Player 2 to move">
+              <span class="seg-txt"><i class="tk p1" aria-hidden="true"
+                    style="display:inline-block;width:11px;height:11px;border-radius:50%;background:var(--p1);vertical-align:-1px;margin-right:5px"></i>Player 2</span>
+            </label>
+          </div>
+
+          <div class="stepper">
+            <span class="st-label"><i class="tk p0" aria-hidden="true"
+                  style="display:inline-block;width:11px;height:11px;border-radius:50%;background:var(--p0)"></i>Walls P1</span>
+            <button class="btn sm" id="ed-walls0-dec" type="button" title="One wall fewer for player 1" aria-label="One wall fewer for player 1">&minus;</button>
+            <span class="st-val" id="ed-walls0-val" aria-live="polite">10</span>
+            <button class="btn sm" id="ed-walls0-inc" type="button" title="One wall more for player 1" aria-label="One wall more for player 1">+</button>
+          </div>
+
+          <div class="stepper">
+            <span class="st-label"><i class="tk p1" aria-hidden="true"
+                  style="display:inline-block;width:11px;height:11px;border-radius:50%;background:var(--p1)"></i>Walls P2</span>
+            <button class="btn sm" id="ed-walls1-dec" type="button" title="One wall fewer for player 2" aria-label="One wall fewer for player 2">&minus;</button>
+            <span class="st-val" id="ed-walls1-val" aria-live="polite">10</span>
+            <button class="btn sm" id="ed-walls1-inc" type="button" title="One wall more for player 2" aria-label="One wall more for player 2">+</button>
+          </div>
+        </div>
+
+        <div class="ed-block">
+          <label class="cfg-label" for="ed-qfen">QFEN</label>
+          <textarea id="ed-qfen" spellcheck="false" autocomplete="off"
+                    title="QFEN of the edit buffer" aria-label="QFEN of the edit buffer"
+                    placeholder="e9 e1 10 10 0 -">e9 e1 10 10 0 -</textarea>
+          <div id="ed-actions">
+            <button class="btn" id="ed-btn-qfen-load" type="button" title="Load the QFEN above" aria-label="Load the QFEN above">Load</button>
+            <button class="btn" id="ed-btn-qfen-copy" type="button" title="Copy the QFEN to the clipboard" aria-label="Copy the QFEN to the clipboard">Copy</button>
+          </div>
+        </div>
+
+        <div id="ed-validity" class="ok" role="status" aria-live="polite">Position is legal.</div>
+
+        <div id="ed-actions-main">
+          <button class="btn primary" id="ed-btn-play" type="button" title="Use this position and go to Play" aria-label="Use this position and go to Play">Play</button>
+          <button class="btn gld" id="ed-btn-analyze" type="button" title="Use this position and go to Analysis" aria-label="Use this position and go to Analysis">Analyse</button>
+        </div>
+      </div>
+    </div>
+  </section>
+</div>
+
+<!-- ══ SETTINGS MODAL ════════════════════════════════════════════════ -->
+<div class="modal" id="settings-modal" role="dialog" aria-modal="true" aria-labelledby="settings-title">
+  <div class="modal-box" id="settings-box">
+    <div class="modal-head">
+      <h2 id="settings-title">Settings</h2>
+      <button class="x" id="settings-close" type="button" title="Close settings" aria-label="Close settings">&times;</button>
+    </div>
+
+    <div class="cfg-row">
+      <div class="cfg-label" id="cfg-board-label">Board palette</div>
+      <div class="cfg-opts" id="cfg-board-themes" role="radiogroup" aria-labelledby="cfg-board-label">
+        <div class="cfg-opt active" data-theme="wood"    role="radio" aria-checked="true"  tabindex="0" title="Wood board"    aria-label="Wood board palette"><span class="sw-board" aria-hidden="true"><i></i><i></i><i></i><i></i></span>Wood</div>
+        <div class="cfg-opt"        data-theme="classic" role="radio" aria-checked="false" tabindex="0" title="Classic board" aria-label="Classic board palette"><span class="sw-board" aria-hidden="true"><i></i><i></i><i></i><i></i></span>Classic</div>
+        <div class="cfg-opt"        data-theme="emerald" role="radio" aria-checked="false" tabindex="0" title="Emerald board" aria-label="Emerald board palette"><span class="sw-board" aria-hidden="true"><i></i><i></i><i></i><i></i></span>Emerald</div>
+        <div class="cfg-opt"        data-theme="ocean"   role="radio" aria-checked="false" tabindex="0" title="Ocean board"   aria-label="Ocean board palette"><span class="sw-board" aria-hidden="true"><i></i><i></i><i></i><i></i></span>Ocean</div>
+        <div class="cfg-opt"        data-theme="coral"   role="radio" aria-checked="false" tabindex="0" title="Coral board"   aria-label="Coral board palette"><span class="sw-board" aria-hidden="true"><i></i><i></i><i></i><i></i></span>Coral</div>
+        <div class="cfg-opt"        data-theme="night"   role="radio" aria-checked="false" tabindex="0" title="Night board"   aria-label="Night board palette"><span class="sw-board" aria-hidden="true"><i></i><i></i><i></i><i></i></span>Night</div>
+      </div>
+    </div>
+
+    <div class="cfg-row">
+      <div class="cfg-label" id="cfg-pawn-label">Pawn style</div>
+      <div class="cfg-opts" id="cfg-pawn-styles" role="radiogroup" aria-labelledby="cfg-pawn-label">
+        <div class="cfg-opt active" data-style="disc"  role="radio" aria-checked="true"  tabindex="0" title="Disc pawns"  aria-label="Disc pawn style"><span class="sw-pawn" aria-hidden="true"><i class="d-disc"></i></span>Disc</div>
+        <div class="cfg-opt"        data-style="pin"   role="radio" aria-checked="false" tabindex="0" title="Pin pawns"   aria-label="Pin pawn style"><span class="sw-pawn" aria-hidden="true"><i class="d-pin"></i></span>Pin</div>
+        <div class="cfg-opt"        data-style="chess" role="radio" aria-checked="false" tabindex="0" title="Chess pawns" aria-label="Chess pawn style"><span class="sw-pawn" aria-hidden="true">&#9823;</span>Chess</div>
+        <div class="cfg-opt"        data-style="glyph" role="radio" aria-checked="false" tabindex="0" title="Meeple glyphs" aria-label="Meeple glyph pawn style"><span class="sw-pawn" aria-hidden="true">&#9823;&#65038;</span>Glyph</div>
+      </div>
+    </div>
+
+    <div class="cfg-row">
+      <div class="cfg-label" id="cfg-ui-label">Interface theme</div>
+      <div class="cfg-opts" id="cfg-ui-theme" role="radiogroup" aria-labelledby="cfg-ui-label">
+        <div class="cfg-opt active" data-ui="dark"  role="radio" aria-checked="true"  tabindex="0" title="Dark interface"  aria-label="Dark interface theme"><span class="sw-ui dark" aria-hidden="true">&#9789;</span>Dark</div>
+        <div class="cfg-opt"        data-ui="light" role="radio" aria-checked="false" tabindex="0" title="Light interface" aria-label="Light interface theme"><span class="sw-ui light" aria-hidden="true">&#9788;</span>Light</div>
+      </div>
+    </div>
+
+    <div class="cfg-divider"></div>
+
+    <div class="cfg-row">
+      <div class="cfg-label">Board display</div>
+      <div class="cfg-toggles">
+        <label class="cfg-toggle" for="cfg-highlight" title="Tint the squares of the last move">
+          <span class="cfg-sw"><input type="checkbox" id="cfg-highlight" checked aria-label="Highlight the last move"><span class="cfg-sw-track"></span><span class="cfg-sw-thumb"></span></span>
+          <span class="cfg-sw-label">Highlight last move</span>
+        </label>
+        <label class="cfg-toggle" for="cfg-paths" title="Draw each player's shortest path to their goal">
+          <span class="cfg-sw"><input type="checkbox" id="cfg-paths" checked aria-label="Show shortest paths"><span class="cfg-sw-track"></span><span class="cfg-sw-thumb"></span></span>
+          <span class="cfg-sw-label">Shortest paths</span>
+        </label>
+        <label class="cfg-toggle" for="cfg-coords" title="Draw the a–i and 1–9 coordinates in the margin">
+          <span class="cfg-sw"><input type="checkbox" id="cfg-coords" checked aria-label="Show coordinates"><span class="cfg-sw-track"></span><span class="cfg-sw-thumb"></span></span>
+          <span class="cfg-sw-label">Coordinates</span>
+        </label>
+        <label class="cfg-toggle" for="cfg-dots" title="Mark the legal pawn destinations">
+          <span class="cfg-sw"><input type="checkbox" id="cfg-dots" checked aria-label="Show legal move dots"><span class="cfg-sw-track"></span><span class="cfg-sw-thumb"></span></span>
+          <span class="cfg-sw-label">Legal-move dots</span>
+        </label>
+        <label class="cfg-toggle" for="cfg-anim" title="Animate pawn slides and wall placements">
+          <span class="cfg-sw"><input type="checkbox" id="cfg-anim" checked aria-label="Animate moves"><span class="cfg-sw-track"></span><span class="cfg-sw-thumb"></span></span>
+          <span class="cfg-sw-label">Animations</span>
+        </label>
+      </div>
+    </div>
+
+    <div class="cfg-row">
+      <div class="cfg-label">Interface</div>
+      <div class="cfg-toggles">
+        <label class="cfg-toggle" for="cfg-evalbar" title="Show the vertical evaluation bar next to the board">
+          <span class="cfg-sw"><input type="checkbox" id="cfg-evalbar" checked aria-label="Show the evaluation bar"><span class="cfg-sw-track"></span><span class="cfg-sw-thumb"></span></span>
+          <span class="cfg-sw-label">Evaluation bar</span>
+        </label>
+        <label class="cfg-toggle" for="cfg-movelog-eval" title="Show the evaluation after each ply in the move log">
+          <span class="cfg-sw"><input type="checkbox" id="cfg-movelog-eval" aria-label="Show evaluations in the move log"><span class="cfg-sw-track"></span><span class="cfg-sw-thumb"></span></span>
+          <span class="cfg-sw-label">Eval in move log</span>
+        </label>
+        <label class="cfg-toggle" for="cfg-sound" title="Play synthesized move sounds">
+          <span class="cfg-sw"><input type="checkbox" id="cfg-sound" checked aria-label="Enable sound"><span class="cfg-sw-track"></span><span class="cfg-sw-thumb"></span></span>
+          <span class="cfg-sw-label">Sound</span>
+        </label>
+        <label class="cfg-toggle" for="cfg-haptics" title="Vibrate on moves and game end (mobile)">
+          <span class="cfg-sw"><input type="checkbox" id="cfg-haptics" checked aria-label="Enable haptic feedback"><span class="cfg-sw-track"></span><span class="cfg-sw-thumb"></span></span>
+          <span class="cfg-sw-label">Haptic feedback</span>
+        </label>
+      </div>
+      <div class="field inline">
+        <label class="field-label" for="cfg-sound-vol">Volume</label>
+        <select id="cfg-sound-vol" title="Sound volume" aria-label="Sound volume">
+          <option value="0">Off</option><option value="1">1</option><option value="2">2</option>
+          <option value="3" selected>3</option><option value="4">4</option><option value="5">5</option>
+        </select>
+      </div>
+    </div>
+
+    <div class="cfg-row">
+      <div class="cfg-label">Engine</div>
+      <div class="cfg-toggles">
+        <label class="cfg-toggle" for="cfg-nnue" title="Use the NNUE evaluation instead of the hand-tuned heuristic">
+          <span class="cfg-sw"><input type="checkbox" id="cfg-nnue" checked aria-label="Use NNUE evaluation"><span class="cfg-sw-track"></span><span class="cfg-sw-thumb"></span></span>
+          <span class="cfg-sw-label">NNUE evaluation</span>
+        </label>
+        <label class="cfg-toggle" for="cfg-mcab" title="Use the hybrid MCTS plus alpha-beta search">
+          <span class="cfg-sw"><input type="checkbox" id="cfg-mcab" checked aria-label="Use the hybrid MCTS search"><span class="cfg-sw-track"></span><span class="cfg-sw-thumb"></span></span>
+          <span class="cfg-sw-label">Hybrid MCTS search</span>
+        </label>
+      </div>
+    </div>
+
+    <div class="modal-foot">
+      <button class="btn primary wide" id="cfg-done" type="button" title="Close settings" aria-label="Close settings">Done</button>
     </div>
   </div>
 </div>
 
-<div class="modal-overlay" id="newGameModal" hidden>
-  <div class="modal-card">
-    <h2>New Game</h2>
-    <div class="modal-label">Play as</div>
-    <div class="modal-choices" id="sideChoices">
-      <button class="choice-btn p0" data-side="0" type="button">
-        <span class="choice-dot"></span>First<span class="choice-sub" id="sideSubP0">light</span>
-      </button>
-      <button class="choice-btn p1" data-side="1" type="button">
-        <span class="choice-dot"></span>Second<span class="choice-sub" id="sideSubP1">dark</span>
-      </button>
+<!-- ══ ABOUT MODAL ═══════════════════════════════════════════════════ -->
+<div class="modal" id="about-modal" role="dialog" aria-modal="true" aria-labelledby="about-title">
+  <div class="modal-box" id="about-box">
+    <div class="modal-head">
+      <h2 id="about-title">Zquoridor</h2>
+      <button class="x" id="about-close" type="button" title="Close" aria-label="Close the about dialog">&times;</button>
     </div>
-    <div class="modal-label">Piece Theme</div>
-    <div class="modal-choices" id="themeChoices">
-      <button class="choice-btn theme-btn" data-theme="chess" type="button">
-        <span class="theme-swatch"><span class="sw"></span><span class="sw"></span></span>Wood
-      </button>
-      <button class="choice-btn theme-btn" data-theme="classic" type="button">
-        <span class="theme-swatch"><span class="sw"></span><span class="sw"></span></span>Classic
-      </button>
+
+    <div class="about-ver">NNUE &middot; Hybrid MCTS + Alpha-Beta</div>
+    <p>A Quoridor engine compiled to WebAssembly. A best-first PUCT tree over a
+       neural evaluation, whose leaves are resolved by a real alpha-beta search.</p>
+    <p>Author: <strong>Gustavo Zambrano</strong> &middot; 2026</p>
+
+    <div class="cfg-divider"></div>
+
+    <div class="cfg-label">Keyboard</div>
+    <div class="kbd-list">
+      <kbd>&larr;</kbd><span>Previous ply</span>
+      <kbd>&rarr;</kbd><span>Next ply</span>
+      <kbd>Home</kbd><span>First ply</span>
+      <kbd>End</kbd><span>Last ply</span>
+      <kbd>F</kbd><span>Flip the board</span>
+      <kbd>N</kbd><span>New game</span>
+      <kbd>H</kbd><span>Hint</span>
+      <kbd>A</kbd><span>Toggle the analysis engine</span>
+      <kbd>1 2 3</kbd><span>Switch panel</span>
+      <kbd>E</kbd><span>Position editor</span>
+      <kbd>Esc</kbd><span>Close a dialog / cancel a wall</span>
+      <kbd>?</kbd><span>This list</span>
     </div>
-    <div class="modal-label">Engine Level</div>
-    <div class="modal-choices strength" id="strengthChoices">
-      <button class="choice-btn" data-ms="200" type="button">⚡</button>
-      <button class="choice-btn" data-ms="500" type="button">⚡⚡</button>
-      <button class="choice-btn" data-ms="1500" type="button">⚡⚡⚡</button>
-      <button class="choice-btn" data-ms="4000" type="button">⚡⚡⚡⚡</button>
+
+    <div class="modal-foot">
+      <button class="btn gld wide" id="about-done" type="button" title="Close" aria-label="Close the about dialog">Close</button>
     </div>
-    <button class="modal-confirm" id="modalConfirm" type="button">Start</button>
   </div>
+</div>
+
+<!-- ══ TEXT MODAL (QFEN / game text) ═════════════════════════════════ -->
+<div class="modal" id="text-modal" role="dialog" aria-modal="true" aria-labelledby="text-modal-title">
+  <div class="modal-box" id="text-modal-box">
+    <div class="modal-head">
+      <h2 id="text-modal-title">QFEN</h2>
+      <button class="x" id="text-modal-close" type="button" title="Close" aria-label="Close this dialog">&times;</button>
+    </div>
+    <label class="vh" for="text-modal-area">Position or game text</label>
+    <textarea id="text-modal-area" spellcheck="false" autocomplete="off"
+              title="Position or game text" aria-label="Position or game text"
+              placeholder="Paste here…"></textarea>
+    <div class="modal-foot">
+      <button class="btn" id="text-modal-copy" type="button" title="Copy the current text" aria-label="Copy the current text">Copy</button>
+      <button class="btn primary" id="text-modal-load" type="button" title="Load the text above" aria-label="Load the text above">Load</button>
+    </div>
+  </div>
+</div>
+
+<!-- ══ TOAST + LOADING ═══════════════════════════════════════════════ -->
+<div id="toast" role="status" aria-live="polite"></div>
+
+<div id="loading-overlay" role="status" aria-live="polite">
+  <div class="spin" aria-hidden="true"></div>
+  <div id="loading-text">Loading the engine…</div>
 </div>
 
 <script src="zquoridor.js"></script>
+<script src="board.js"></script>
 <script src="app.js"></script>
 </body>
 </html>

@@ -26,13 +26,14 @@ def main():
     out_path = HERE / "zquoridor.html"
     root_out_path = HERE.parent / "index.html"
 
-    for p in (wasm_path, loader_path, html_path, app_path):
+    for p in (wasm_path, loader_path, html_path, app_path, HERE / "board.js"):
         if not p.exists():
             sys.exit(f"faltando {p} -- rode ./build_wasm.sh primeiro")
 
     wasm_b64 = base64.b64encode(wasm_path.read_bytes()).decode("ascii")
     data_b64 = base64.b64encode(data_path.read_bytes()).decode("ascii") if data_path.exists() else None
     loader_js = loader_path.read_text(encoding="utf-8")
+    board_js = (HERE / "board.js").read_text(encoding="utf-8")
     app_js = app_path.read_text(encoding="utf-8")
     html = html_path.read_text(encoding="utf-8")
 
@@ -50,14 +51,19 @@ def main():
     if app_js_standalone == app_js:
         sys.exit("não encontrei o padrão ZquoridorModule().then(...) em app.js pra adaptar")
 
-    # remove as duas tags <script src="..."> e injeta loader+app inline
-    html_no_scripts = re.sub(
-        r'\s*<script src="zquoridor\.js"></script>\s*<script src="app\.js"></script>\s*',
-        "\n<!--INLINE_SCRIPTS-->\n",
-        html,
+    # remove as tags <script src="*.js"> do shell (zquoridor/board/app, em
+    # qualquer ordem) e injeta loader+board+app inline na posição da primeira
+    tag_re = re.compile(
+        r'\s*<script src="(?:zquoridor|board|app)\.js"></script>'
     )
-    if "<!--INLINE_SCRIPTS-->" not in html_no_scripts:
-        sys.exit("não encontrei as tags <script src=zquoridor.js/app.js> em style.html")
+    matches = list(tag_re.finditer(html))
+    if len(matches) < 3:
+        sys.exit(
+            "não encontrei as 3 tags <script src=zquoridor.js/board.js/app.js> "
+            f"em style.html (achei {len(matches)})"
+        )
+    html_no_scripts = html[:matches[0].start()] + "\n<!--INLINE_SCRIPTS-->\n" + \
+        re.sub(tag_re, "", html[matches[0].end():])
 
     b2b = (
         "function __qr_b64ToBytes(b64) {\n"
@@ -77,6 +83,9 @@ def main():
         "// --- WASM/DATA embutidos em base64 (build standalone, sem servidor HTTP) ---\n"
         f"{b2b}"
         f"{loader_js}\n"
+        "</script>\n"
+        "<script>\n"
+        f"{board_js}\n"
         "</script>\n"
         "<script>\n"
         f"{app_js_standalone}\n"
