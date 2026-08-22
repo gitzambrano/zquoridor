@@ -530,7 +530,7 @@ struct PlayerPathCacheEntry {
     bool occupied = false;
 };
 
-constexpr int PLAYER_PATH_TT_BITS = 16;  // 65536 entradas * ~740B ~= 48MB
+constexpr int PLAYER_PATH_TT_BITS = 16;  // 65536 entradas * ~190B ~= 12MB (era ~48MB antes do slimming de PlayerPathCache)
 constexpr size_t PLAYER_PATH_TT_SIZE = 1ull << PLAYER_PATH_TT_BITS;
 
 // Mistura simples (splitmix64-like) dos 4 componentes da chave -- não
