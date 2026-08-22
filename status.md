@@ -104,6 +104,8 @@ Technical reference, current engine status, design decisions, and future roadmap
 
 ## 6. Recent Changelog
 
+- **2026-08-22**: GUI pivot — production web UI rebuilt on the ORIGINAL DOM-based front-end (`gui_web/app.js`+`style.html` from 9e23e2b) per design feedback: same cell/corridor proportions, same press-button-and-drag (or tap-tap) wall placement UX, move list with per-ply win%. Visual reskin only: near-black walnut wood theme (espresso board well, grain-textured cells, dark slab walls, gold/red pawns unchanged). The v4 canvas rewrite (`board.js`, Play/Analysis/Editor shell, worker offload) is preserved on this branch at commits 2349fc7/db6729e for gradual feature re-introduction; `build_standalone.py` made tolerant of shells without board.js. Verified end-to-end headless: boot, pawn move + engine reply, V-wall f8v via real pointer-drag flow (Human pill 9/10, movelist f8v), zero page errors. Work isolated in git worktree C:\Zquoridor-gui on branch gui/v4-premium while perf/speed-elo-100 tests engine strength.
+
 - **2026-08-22**: GUI v4 UX audit round — every reported problem reproduced programmatically (headless Chrome measurements) and fixed:
   - **Wall count invisible** (root cause: CSS styled `.pwalls .pip`, JS emitted bare `'on'` class → pips rendered 546×0 px). Pips now carry `pip on/spent` classes, player-tinted gradients; explicit numeric counts added to both player bars (`#pl-walls-num-*`) and a wall toolbar.
   - **Wall placement moved under the board** (`#pl-wallbar`): large H/V toggle buttons + live "N left" counter for the human side + usage hint. Old hidden side-column buttons removed. Verified end-to-end with real PointerEvents: arm V → tap board → wall placed, counter drops.

@@ -26,14 +26,17 @@ def main():
     out_path = HERE / "zquoridor.html"
     root_out_path = HERE.parent / "index.html"
 
-    for p in (wasm_path, loader_path, html_path, app_path, HERE / "board.js"):
+    for p in (wasm_path, loader_path, html_path, app_path):
         if not p.exists():
             sys.exit(f"faltando {p} -- rode ./build_wasm.sh primeiro")
+
+    # board.js is optional: only shells that use the canvas renderer carry it.
+    board_path = HERE / "board.js"
+    board_js = board_path.read_text(encoding="utf-8") if board_path.exists() else None
 
     wasm_b64 = base64.b64encode(wasm_path.read_bytes()).decode("ascii")
     data_b64 = base64.b64encode(data_path.read_bytes()).decode("ascii") if data_path.exists() else None
     loader_js = loader_path.read_text(encoding="utf-8")
-    board_js = (HERE / "board.js").read_text(encoding="utf-8")
     app_js = app_path.read_text(encoding="utf-8")
     html = html_path.read_text(encoding="utf-8")
 
@@ -52,16 +55,19 @@ def main():
         sys.exit("não encontrei o padrão ZquoridorModule().then(...) em app.js pra adaptar")
 
     # remove as tags <script src="*.js"> do shell (zquoridor/board/app, em
-    # qualquer ordem) e injeta loader+board+app inline na posição da primeira
+    # qualquer ordem) e injeta loader(+board)+app inline na posição da primeira.
+    # Shells antigos têm apenas zquoridor+app: board.js é inlineado só se a
+    # respectiva tag existir.
     tag_re = re.compile(
         r'\s*<script src="(?:zquoridor|board|app)\.js"></script>'
     )
     matches = list(tag_re.finditer(html))
-    if len(matches) < 3:
+    if len(matches) < 2:
         sys.exit(
-            "não encontrei as 3 tags <script src=zquoridor.js/board.js/app.js> "
-            f"em style.html (achei {len(matches)})"
+            "não encontrei as tags <script src=*.js> "
+            f"em style.html (achei {len(matches)}, mínimo 2)"
         )
+    has_board_tag = any('src="board.js"' in m.group(0) for m in matches)
     html_no_scripts = html[:matches[0].start()] + "\n<!--INLINE_SCRIPTS-->\n" + \
         re.sub(tag_re, "", html[matches[0].end():])
 
@@ -84,13 +90,10 @@ def main():
         f"{b2b}"
         f"{loader_js}\n"
         "</script>\n"
-        "<script>\n"
-        f"{board_js}\n"
-        "</script>\n"
-        "<script>\n"
-        f"{app_js_standalone}\n"
-        "</script>\n"
     )
+    if has_board_tag and board_js is not None:
+        inline += "<script>\n" + board_js + "\n</script>\n"
+    inline += "<script>\n" + f"{app_js_standalone}" + "\n</script>\n"
 
     out = html_no_scripts.replace("<!--INLINE_SCRIPTS-->", inline)
     out_path.write_text(out, encoding="utf-8")
