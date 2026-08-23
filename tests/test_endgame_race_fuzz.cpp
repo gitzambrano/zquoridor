@@ -449,7 +449,6 @@ int main() {
     long nnueChecks = 0, nnueAgree = 0;
 
     for (size_t ci = 0; ci < cases.size(); ci++) {
-        if ((ci % 100) == 0) { std::printf("(tick) case %zu/%zu\n", ci, cases.size()); std::fflush(stdout); }
         TopoCase& tc = cases[ci];
         race_oracle::Table orc;
         orc.build(tc.wh, tc.wv);
@@ -685,9 +684,12 @@ int main() {
                 RaceOutcome oc = orc.query(p0, p1, turn);
                 RaceOutcome prod = resolveEmptyHandedEndgame(wh, wv, p0, p1, turn);
                 RaceOutcome dp = raceExactDTM(wh, wv, p0, p1, turn);
+                // The sealed side has zero legal moves, so no side can force
+                // a finish: every exact path must agree on the draw. (The
+                // pre-fix gate fabricated a win for the sealed side here.)
                 bool ok = prod.winner == oc.winner && prod.dtm == oc.dtm &&
                           dp.winner == oc.winner && dp.dtm == oc.dtm &&
-                          oc.winner == 1;
+                          oc.winner == -1;
                 if (!ok) reportMismatch("E2", wh, wv, p0, p1, turn, prod, dp, oc);
                 CHECK(ok, "sealed losing pawn must not flip the result (gate must refuse on unreachable goal)");
             }

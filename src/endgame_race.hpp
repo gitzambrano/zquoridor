@@ -280,6 +280,21 @@ inline std::array<bool, N * N> reachableRegionMask(uint64_t wallsH, uint64_t wal
 // Serviço B em vez de assumir.
 inline bool raceDisjointGate(uint64_t wallsH, uint64_t wallsV, int pawn0, int pawn1, int turn,
                               int rawDist0, int rawDist1, int& winnerOut, int& dtmOut) {
+    // [Correction -- inv/race-fuzz] Degenerate raw distances refuse the
+    // gate: a pawn already on its own goal row (rawDist == 0) or sealed
+    // away from its goal row (rawDist == -1) breaks the ply arithmetic
+    // below (negative pl -> negative dtmOut, and worse, a WINNER fabricated
+    // from the sign of pl0-pl1). No real game produces such states (wall
+    // legality keeps a path for both sides after every wall move, and
+    // winner() cuts first at a terminal node), so the production hook never
+    // sees one -- but resolveEmptyHandedEndgame/raceDisjointGate are public
+    // inline utilities, called directly by tests and tools. Service B
+    // answers every such state exactly (dtm-0 seeds for whoever already
+    // stands on its goal; a sealed region never enters any attractor), so
+    // falling through to it costs one rebuild and returns the correct
+    // answer. Found by fuzzing against an independent oracle
+    // (tests/test_endgame_race_fuzz.cpp, phases E1b/E2/E3).
+    if (rawDist0 < 1 || rawDist1 < 1) return false;
     auto m0 = reachableRegionMask(wallsH, wallsV, pawn0);
     auto m1 = reachableRegionMask(wallsH, wallsV, pawn1);
     for (int i = 0; i < N * N; i++) {
