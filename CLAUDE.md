@@ -15,14 +15,14 @@ Zquoridor is a 2-player Quoridor engine (9×9, 10 walls each; 4-player variant i
 Header-only engine core: `src/` contains pure C++ header files (`rules.hpp`, `dsu.hpp`, `cat.hpp`, `search.hpp`, `endgame_race.hpp`, `nnue.hpp`, `mcab.hpp`, `search_tuning.hpp`). Executables and tools are modularized in `tools/`, `benchmarks/`, and `tests/`. No complex build system — each binary is a single `g++` invocation over one translation unit, with `-Isrc` (and `-Itools/selfplay` for selfplay-aware components). `tests/*.cpp`, `gui_web/engine_wasm.cpp`, and `benchmarks/*.cpp` include the same headers.
 
 Two build profiles:
-- **Performance targets** (`benchmarks/main.cpp`, benchmarks, selfplay, tune_spsa, arena): `-O3 -std=c++17 -march=native -mavx2 -mfma`
+- **Performance targets** (`benchmarks/main.cpp`, benchmarks, selfplay, tune_spsa, arena): `-O3 -std=c++17 -march=native -mavx2 -mfma`. The `.sh` builds add `-mavx2 -mfma` only on x86-64; other architectures get `-march=native` alone.
 - **Correctness tests** (`tests/test_*.cpp`, `tests/nnue_verify.cpp`): `-O2 -std=c++17` only — no `-march=native`/AVX2, keeping parity reproducible.
 
 `bin/` is the gitignored build output directory.
 
 ## Commands
 
-Windows uses `build/*.bat` (MinGW-w64 `g++` on PATH; `build_selfplay.bat` hardcodes `C:\mingw64\bin`). Linux/macOS `build/*.sh` are exact equivalents. ARM/Termux uses `build/build_termux.sh` (minus `-mavx2 -mfma`).
+Windows uses `build/*.bat` (MinGW-w64 `g++` on PATH; `build_selfplay.bat` hardcodes `C:\mingw64\bin`). Linux/macOS `build/*.sh` detect the CPU architecture: they add `-mavx2 -mfma` only on x86-64. ARM/Termux uses `build/build_termux.sh` (clang fallback).
 
 ```bat
 build\build_all.bat              :: bench + tests + selfplay + tune_spsa (stops at first error)

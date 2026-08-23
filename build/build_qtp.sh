@@ -3,8 +3,9 @@
 # linha) usando o conjunto de comandos do protocolo QTP referenciado em
 # https://github.com/pavlosdais/Quoridor, com A NOSSA notacao de lance
 # (ver cabecalho de src/qtp_main.cpp). Equivalente Linux de
-# build_qtp.bat -- mesmos flags (-mavx2 -mfma explicitos alem de
-# -march=native, mesmo criterio dos outros builds do projeto).
+# build_qtp.bat -- on x86-64, the same flags as the .bat (-mavx2 -mfma
+# plus -march=native). On any other architecture the script drops the
+# x86-only flags automatically.
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -14,7 +15,14 @@ BIN="$ROOT/bin"
 
 mkdir -p "$BIN"
 
-FLAGS=(-O3 -std=c++17 -march=native -mavx2 -mfma)
+FLAGS=(-O3 -std=c++17 -march=native)
+
+# AVX2 and FMA are x86 extensions. The compiler rejects these two flags on
+# other architectures such as AArch64. There, -march=native alone enables
+# the local SIMD. Add the two flags only on x86-64 hosts.
+case "$(uname -m)" in
+    x86_64|amd64) FLAGS+=(-mavx2 -mfma) ;;
+esac
 
 echo "qtp_engine  <-  tools/qtp/qtp_main.cpp"
 g++ "${FLAGS[@]}" -I"$SRC" -o "$BIN/qtp_engine" "$ROOT/tools/qtp/qtp_main.cpp"

@@ -33,7 +33,7 @@ Single `g++` compilation per binary (C++17). Training scripts require Python 3 (
 chmod +x build/*.sh   # once, Linux/macOS
 ```
 
-Windows: equivalent `build/*.bat` scripts (MinGW-w64 `g++` on `PATH`). ARM/Termux: `build/build_termux.sh`.
+Windows: equivalent `build/*.bat` scripts (MinGW-w64 `g++` on `PATH`). The Linux/macOS scripts also build on ARM hosts such as AArch64 servers; they add AVX2 flags only on x86-64. Termux: `build/build_termux.sh`.
 
 | Script                            | Target                                                       |
 | --------------------------------- | ------------------------------------------------------------ |

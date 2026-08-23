@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
-# build_selfplay.sh -- gerador de dados de self-play (multi-thread).
-# Equivalente Linux de build_selfplay.bat -- mesmos flags de
-# performance (AVX2 explícito + -march=native), é o alvo mais sensível
-# a nós/s do projeto.
+# build_selfplay.sh -- self-play data generator (multi-thread).
+# Linux equivalent of build_selfplay.bat -- on x86-64, the same
+# performance flags as the .bat (explicit AVX2 plus -march=native). It is
+# the target most sensitive to nodes/s in the project. On any other
+# architecture the script drops the x86-only flags automatically.
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -12,7 +13,14 @@ BIN="$ROOT/bin"
 
 mkdir -p "$BIN" "$ROOT/data"
 
-FLAGS=(-O3 -std=c++17 -pthread -march=native -mavx2 -mfma)
+FLAGS=(-O3 -std=c++17 -pthread -march=native)
+
+# AVX2 and FMA are x86 extensions. The compiler rejects these two flags on
+# other architectures such as AArch64. There, -march=native alone enables
+# the local SIMD. Add the two flags only on x86-64 hosts.
+case "$(uname -m)" in
+    x86_64|amd64) FLAGS+=(-mavx2 -mfma) ;;
+esac
 
 echo "selfplay  <-  tools/selfplay/selfplay_main.cpp"
 g++ "${FLAGS[@]}" -I"$SRC" -I"$ROOT/tools/selfplay" -o "$BIN/selfplay" "$ROOT/tools/selfplay/selfplay_main.cpp"

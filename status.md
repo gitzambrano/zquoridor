@@ -43,6 +43,15 @@ relearn by experiment.
 
 ## 3. History Notes (durable lessons only)
 
+- **Arch-aware Linux builds (2026-08-23)**: `build_bench.sh`,
+  `build_selfplay.sh` and `build_qtp.sh` add `-mavx2 -mfma` only on x86-64
+  (`uname -m`); every other architecture compiles with `-march=native`
+  alone, which enables NEON on ARM (AArch64 and AArch32 alike). Before
+  this change, a non-x86 `g++` rejected the two flags and the scripts
+  failed outright. Deployment note that came out of the first AArch64
+  server install: a weaker engine there usually means missing NNUE
+  weights (the QTP binary then runs `evalSimple` and prints a stderr
+  warning) or a lower time budget, not the ISA itself.
 - **Production adoption round (2026-08-23, branch `prod/findings-2026-08`)**:
   merged `inv/qsendgame-ext`, `inv/ab-policy`, and `inv/contempt-wandering`
   into one integration line, then flipped ONE production default:

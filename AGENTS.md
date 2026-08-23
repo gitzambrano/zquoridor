@@ -18,14 +18,14 @@ Header-only engine core: `src/` contains pure C++ header files (`rules.hpp`, `ds
 
 Two flag profiles, deliberately different:
 
-- **Performance targets** (`benchmarks/main.cpp`, benchmarks, selfplay, tune_spsa, arena): `-O3 -std=c++17 -march=native -mavx2 -mfma`
+- **Performance targets** (`benchmarks/main.cpp`, benchmarks, selfplay, tune_spsa, arena): `-O3 -std=c++17 -march=native -mavx2 -mfma`. The `.sh` builds add `-mavx2 -mfma` only on x86-64; other architectures get `-march=native` alone.
 - **Correctness tests** (`tests/test_*.cpp`, `tests/nnue_verify.cpp`): `-O2 -std=c++17` only — no `-march=native`/AVX2, so numerical-parity results stay reproducible.
 
 `bin/` is the gitignored build output directory.
 
 ## Commands
 
-Windows uses `build/*.bat` (needs MinGW-w64 `g++` on PATH; `build_selfplay.bat` hardcodes `C:\mingw64\bin`). Linux/macOS `build/*.sh` are exact equivalents. ARM/Termux uses `build/build_termux.sh` — same optimization levels minus `-mavx2 -mfma` (x86-only flags that make the normal scripts fail).
+Windows uses `build/*.bat` (needs MinGW-w64 `g++` on PATH; `build_selfplay.bat` hardcodes `C:\mingw64\bin`). Linux/macOS `build/*.sh` detect the CPU architecture: they add `-mavx2 -mfma` only on x86-64. ARM/Termux uses `build/build_termux.sh` — same optimization levels minus `-mavx2 -mfma` (x86-only flags). The other `.sh` scripts now build natively on ARM as well; `build_termux.sh` remains useful there for its clang fallback.
 
 ```bat
 build\build_all.bat              :: bench + tests + selfplay + tune_spsa (stops at first error)
@@ -127,7 +127,7 @@ Two flag profiles, deliberately different:
 
 ## Commands
 
-Windows uses `build/*.bat` (needs MinGW-w64 `g++` on PATH; `build_selfplay.bat` hardcodes `C:\mingw64\bin`). Linux/macOS `build/*.sh` are exact equivalents. ARM/Termux uses `build/build_termux.sh` — same optimization levels minus `-mavx2 -mfma` (x86-only flags that make the normal scripts fail).
+Windows uses `build/*.bat` (needs MinGW-w64 `g++` on PATH; `build_selfplay.bat` hardcodes `C:\mingw64\bin`). Linux/macOS `build/*.sh` detect the CPU architecture: they add `-mavx2 -mfma` only on x86-64. ARM/Termux uses `build/build_termux.sh` — same optimization levels minus `-mavx2 -mfma` (x86-only flags). The other `.sh` scripts now build natively on ARM as well; `build_termux.sh` remains useful there for its clang fallback.
 
 ```bat
 build\build_all.bat              :: bench + tests + selfplay + tune_spsa (stops at first error)

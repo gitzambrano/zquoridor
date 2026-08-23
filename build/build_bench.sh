@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
-# build_bench.sh -- benchmarks de performance (não fazem parte da suíte
-# de correção, medem nós/s e profundidade). Equivalente Linux de
-# build_bench.bat -- mesmos flags (-mavx2 -mfma explícitos além de
-# -march=native: a máquina alvo tem AVX2 garantido, mesmo critério do
-# Zchezz). Para ARM/Termux use build_termux.sh em vez deste.
+# build_bench.sh -- performance benchmarks (not part of the correctness
+# suite; they measure nodes/s and depth). Linux equivalent of
+# build_bench.bat -- on x86-64, the same flags as the .bat (-mavx2 -mfma
+# plus -march=native). On any other architecture the script drops the
+# x86-only flags automatically; -march=native enables NEON on ARM.
+# Termux users can still prefer build_termux.sh (clang fallback).
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -15,7 +16,14 @@ BIN="$ROOT/bin"
 
 mkdir -p "$BIN"
 
-FLAGS=(-O3 -std=c++17 -march=native -mavx2 -mfma)
+FLAGS=(-O3 -std=c++17 -march=native)
+
+# AVX2 and FMA are x86 extensions. The compiler rejects these two flags on
+# other architectures such as AArch64. There, -march=native alone enables
+# the local SIMD. Add the two flags only on x86-64 hosts.
+case "$(uname -m)" in
+    x86_64|amd64) FLAGS+=(-mavx2 -mfma) ;;
+esac
 
 echo "[1/7] bench  <-  benchmarks/main.cpp"
 g++ "${FLAGS[@]}" -I"$SRC" -I"$SELFPLAY" -o "$BIN/bench" "$BENCHMARK/main.cpp"
