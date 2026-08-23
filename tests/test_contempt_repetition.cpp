@@ -151,10 +151,12 @@ static void testProgressTiebreakInvariant() {
 
         Negamax eng;
         SearchStats stA, stB;
+        // Default is ON since 2026-08-23; compare explicitly OFF (legacy
+        // generation order) against explicitly ON.
+        eng.setEndgameProgressTiebreak(false);
         Move mA = eng.chooseMove(s, 6, 60000, stA);
         eng.setEndgameProgressTiebreak(true);
         Move mB = eng.chooseMove(s, 6, 60000, stB);
-        eng.setEndgameProgressTiebreak(false);
         checked++;
 
         check(stA.score == stB.score,

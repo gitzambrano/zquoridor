@@ -314,15 +314,24 @@ public:
     void setContempt(int c) { contempt = c; }
     int getContempt() const { return contempt; }
 
-    // Empate no ramo de final "maos vazias": por padrao, quando TODOS os
-    // filhos da raiz sao empates teoricos (ro.winner==-1), todos recebem o
-    // mesmo score e a escolha cai no primeiro lance gerado -- que pode ser
-    // um passo PARA TRAS ou lateral (vagancia visivel em partidas reais).
-    // Com este toggle ligado, empates empatados entre si sao desempatados
-    // pelo PROGRESSO do lado da raiz: menor shortestPathLen depois do lance
-    // (o motor continua marchando pra frente mesmo em final teoricamente
-    // morto -- melhor jogada pratica: maximiza a chance de erro do
-    // oponente). Default FALSE = comportamento atual bit a bit.
+    // Empate no ramo de final "maos vazias": quando TODOS os filhos da
+    // raiz sao empates teoricos (ro.winner==-1), todos recebem o mesmo
+    // score e sem este toggle a escolha cai no primeiro lance gerado --
+    // que pode ser um passo PARA TRAS ou lateral (vagancia visivel em
+    // partidas reais). Ligado, empates empatados entre si sao desempatados
+    // pelo PROGRESSO do lado da raiz: menor shortestPathLen depois do
+    // lance (o motor continua marchando pra frente mesmo em final
+    // teoricamente morto -- melhor jogada pratica: maximiza a chance de
+    // erro do oponente).
+    //
+    // Default TRUE desde 2026-08-23 (investigacao inv/contempt-wandering,
+    // ver status.md): so reordena filhos com valor EXATAMENTE igual
+    // (valores de jogo e scores reportados ficam bit a bit identicos),
+    // corta os lances para tras do lado perdedor de 47% para ~27% dos
+    // lances na fase de final sem muros, e mediu Elo -12 +-60 vs default
+    // antigo (estatisticamente neutro, n=qualquer razoavel). Desligue
+    // aqui (ou via --no-endgame-progress-tiebreak) para reproduzir o
+    // comportamento anterior.
     void setEndgameProgressTiebreak(bool enabled) { endgameProgressTiebreak = enabled; }
     bool isEndgameProgressTiebreak() const { return endgameProgressTiebreak; }
 
@@ -811,7 +820,7 @@ private:
     // das constantes CONTEMPT/POLICY_ORDER_SCALE (namespace, ainda
     // existem) e 2 (era CAT_SCORE_SCALE, static constexpr da classe).
     int contempt = CONTEMPT;
-    bool endgameProgressTiebreak = false;
+    bool endgameProgressTiebreak = true;  // produção desde 2026-08-23 (ver comentário do setter)
     bool parityAnchoredRaceDraw = false;
     long long policyOrderScale = POLICY_ORDER_SCALE;
     long long catScoreScale = 2;

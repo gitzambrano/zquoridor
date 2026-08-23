@@ -59,6 +59,7 @@ struct SearchTuning {
     int  qsMaxExtraPlies     = UNSET_INT;  // produção: 2     (QS_MAX_EXTRA_PLIES)
     int  qsLowWallsBonus     = UNSET_INT;  // produção: 0     (desligado)
     int  qsLowWallsThreshold = UNSET_INT;  // produção: 0     (nunca dispara)
+    Tri  endgameProgressTiebreak = Tri::Unset;  // produção: ligado desde 2026-08-23 (setEndgameProgressTiebreak)
     // inv/ab-policy (2026-08-23) -- todos default DESLIGADOS/ vazios; o
     // engine de produção não muda enquanto ninguém preencher estes campos.
     Tri  policyHistory       = Tri::Unset;  // produção: off   (setPolicyHistorySeedEnabled)
@@ -95,6 +96,7 @@ QR_TUNING_TRY_SETTER(trySetQsCriticalBfsDelta, setQsCriticalBfsDelta, int)
 QR_TUNING_TRY_SETTER(trySetQsMaxExtraPlies,    setQsMaxExtraPlies,    int)
 QR_TUNING_TRY_SETTER(trySetQsLowWallsBonus,    setQsLowWallsBonus,    int)
 QR_TUNING_TRY_SETTER(trySetQsLowWallsThreshold, setQsLowWallsThreshold, int)
+QR_TUNING_TRY_SETTER(trySetEndgameProgressTiebreak, setEndgameProgressTiebreak, bool)
 QR_TUNING_TRY_SETTER(trySetPolicyHistorySeedEnabled, setPolicyHistorySeedEnabled, bool)
 QR_TUNING_TRY_SETTER(trySetPolicyHistorySeedScale,  setPolicyHistorySeedScale,  long long)
 QR_TUNING_TRY_SETTER(trySetPolicyLmrEnabled,        setPolicyLmrEnabled,        bool)
@@ -126,6 +128,7 @@ inline void applySearchTuning(Eng& e, const SearchTuning& t) {
     if (isSet(t.qsMaxExtraPlies))    trySetQsMaxExtraPlies(e, t.qsMaxExtraPlies, 0);
     if (isSet(t.qsLowWallsBonus))    trySetQsLowWallsBonus(e, t.qsLowWallsBonus, 0);
     if (isSet(t.qsLowWallsThreshold)) trySetQsLowWallsThreshold(e, t.qsLowWallsThreshold, 0);
+    if (isSet(t.endgameProgressTiebreak)) trySetEndgameProgressTiebreak(e, t.endgameProgressTiebreak == Tri::On, 0);
     // inv/ab-policy knobs: hot/cold/base/min-count are applied only when
     // their feature flag was set, so a bare --policy-lmr keeps the default
     // deltas and never silently turns LMP on.
@@ -175,6 +178,8 @@ inline bool parseSearchTuningArg(const char* arg, int argc, char** argv, int& i,
     if (flag("qs-max-extra-plies"))     { if (temValor()) t.qsMaxExtraPlies = std::atoi(argv[++i]); return true; }
     if (flag("qs-low-walls-bonus"))     { if (temValor()) t.qsLowWallsBonus = std::atoi(argv[++i]); return true; }
     if (flag("qs-low-walls-threshold")) { if (temValor()) t.qsLowWallsThreshold = std::atoi(argv[++i]); return true; }
+    if (flag("endgame-progress-tiebreak"))     { t.endgameProgressTiebreak = Tri::On;  return true; }
+    if (flag("no-endgame-progress-tiebreak"))  { t.endgameProgressTiebreak = Tri::Off; return true; }
     // inv/ab-policy knobs
     if (flag("policy-history"))        { t.policyHistory = Tri::On;  return true; }
     if (flag("no-policy-history"))     { t.policyHistory = Tri::Off; return true; }
@@ -211,6 +216,7 @@ inline std::string describeSearchTuning(const SearchTuning& t) {
     if (isSet(t.qsMaxExtraPlies))    add("qs-max-extra-plies=" + std::to_string(t.qsMaxExtraPlies));
     if (isSet(t.qsLowWallsBonus))    add("qs-low-walls-bonus=" + std::to_string(t.qsLowWallsBonus));
     if (isSet(t.qsLowWallsThreshold)) add("qs-low-walls-threshold=" + std::to_string(t.qsLowWallsThreshold));
+    if (isSet(t.endgameProgressTiebreak)) add(std::string("endgame-progress-tiebreak=") + (t.endgameProgressTiebreak == Tri::On ? "on" : "off"));
     if (isSet(t.policyHistory))       add(std::string("policy-history=") + (t.policyHistory == Tri::On ? "on" : "off"));
     if (isSet(t.policyHistoryScale))  add("policy-history-scale=" + std::to_string(t.policyHistoryScale));
     if (isSet(t.policyLmr))           add(std::string("policy-lmr=") + (t.policyLmr == Tri::On ? "on" : "off"));
@@ -239,6 +245,7 @@ inline const char* searchTuningUsage() {
         "  --qs-max-extra-plies N    extensao maxima de quiescencia de muro (producao: 2)\n"
         "  --qs-low-walls-bonus N    plies extras de quiescencia com poucos muros no total (producao: 0)\n"
         "  --qs-low-walls-threshold N  total de muros no tabuleiro que ativa o bonus (producao: 0)\n"
+        "  --endgame-progress-tiebreak/--no-endgame-progress-tiebreak  desempata empates exatos do solver de final por progresso (producao: ligado)\n"
         "  --quiescence/--no-quiescence  quiescencia de muro (producao: ligada)\n"
         "  --lmr-pvs/--no-lmr-pvs        LMR+PVS (producao: ligado)\n"
         "  --policy-history/--no-policy-history  semeia history com a politica da raiz (producao: off)\n"
