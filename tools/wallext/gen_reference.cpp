@@ -20,6 +20,7 @@
 #define QR_ENABLE_TEST_HOOKS
 #include <cstdio>
 #include <cstdint>
+#include <cstdlib>
 #include <vector>
 #include "corpus.hpp"
 #include "search.hpp"
@@ -66,13 +67,38 @@ int main(int argc, char** argv) {
         }
     }
 
-    printf("static const RefPos REF_POS[] = {\n");
-    for (int idx : refIdx) {
-        const State& s = corpus[idx].s;
-        printf("    {%uu,%uu,%uull,%uull,%d,%d,%d},\n",
+    // Print RefPos rows AND prove they round-trip: rebuild a State from the
+    // exact fields printed here (same path as
+    // test_wall_qextension.cpp:stateFromRef) and demand equality with the
+    // corpus state. This catches printf-format bugs: %u on a 64-bit value
+    // silently truncates wall bitboards to 32 bits, which is exactly how
+    // the first frozen copy of this file became unreplayable (found
+    // 2026-08-23: every row diverged because wallsH/wallsV lost their high
+    // words; scores had been recorded from the true states).
+    auto printRefPos = [&](const State& s) {
+        printf("    {%uu,%uu,%llull,%llull,%d,%d,%d},\n",
                (unsigned)s.pawn[0], (unsigned)s.pawn[1],
                (unsigned long long)s.wallsH, (unsigned long long)s.wallsV,
                (int)s.wallsLeft[0], (int)s.wallsLeft[1], (int)s.turn);
+        State back;
+        back.pawn[0] = (uint8_t)s.pawn[0];
+        back.pawn[1] = (uint8_t)s.pawn[1];
+        back.wallsH = s.wallsH;
+        back.wallsV = s.wallsV;
+        back.wallsLeft[0] = s.wallsLeft[0];
+        back.wallsLeft[1] = s.wallsLeft[1];
+        back.turn = s.turn;
+        back.hash = rebuildHash(back);
+        if (!samePosition(back, s)) {
+            fprintf(stderr, "FATAL: RefPos row does not round-trip (pawns %u/%u)\n",
+                    (unsigned)s.pawn[0], (unsigned)s.pawn[1]);
+            exit(1);
+        }
+    };
+
+    printf("static const RefPos REF_POS[] = {\n");
+    for (int idx : refIdx) {
+        printRefPos(corpus[idx].s);
     }
     // Hash sanity: rebuilt hashes must match the corpus hashes.
     for (int idx : refIdx) {
@@ -107,11 +133,7 @@ int main(int argc, char** argv) {
     }
     int nnueBase = (int)refIdx.size();
     for (int idx : nnueIdx) {
-        const State& s = corpus[idx].s;
-        printf("    {%uu,%uu,%uull,%uull,%d,%d,%d},\n",
-               (unsigned)s.pawn[0], (unsigned)s.pawn[1],
-               (unsigned long long)s.wallsH, (unsigned long long)s.wallsV,
-               (int)s.wallsLeft[0], (int)s.wallsLeft[1], (int)s.turn);
+        printRefPos(corpus[idx].s);
     }
     printf("};\n\n");
 
