@@ -56,6 +56,9 @@ struct SearchTuning {
     int  catColdCm        = UNSET_INT;   // produção: 30      (CAT_COLD_CM)
     int  wallBfsOrderMaxPly  = UNSET_INT;  // produção: 2     (WALL_BFS_ORDER_MAX_PLY)
     int  qsCriticalBfsDelta  = UNSET_INT;  // produção: 2     (QS_CRITICAL_BFS_DELTA)
+    int  qsMaxExtraPlies     = UNSET_INT;  // produção: 2     (QS_MAX_EXTRA_PLIES)
+    int  qsLowWallsBonus     = UNSET_INT;  // produção: 0     (desligado)
+    int  qsLowWallsThreshold = UNSET_INT;  // produção: 0     (nunca dispara)
 };
 
 // Gera um par de helpers "trySet<NOME>(engine, valor, 0)": o template casa
@@ -79,6 +82,9 @@ QR_TUNING_TRY_SETTER(trySetCatHotCm,          setCatHotCm,           int)
 QR_TUNING_TRY_SETTER(trySetCatColdCm,         setCatColdCm,          int)
 QR_TUNING_TRY_SETTER(trySetWallBfsOrderMaxPly, setWallBfsOrderMaxPly, int)
 QR_TUNING_TRY_SETTER(trySetQsCriticalBfsDelta, setQsCriticalBfsDelta, int)
+QR_TUNING_TRY_SETTER(trySetQsMaxExtraPlies,    setQsMaxExtraPlies,    int)
+QR_TUNING_TRY_SETTER(trySetQsLowWallsBonus,    setQsLowWallsBonus,    int)
+QR_TUNING_TRY_SETTER(trySetQsLowWallsThreshold, setQsLowWallsThreshold, int)
 
 #undef QR_TUNING_TRY_SETTER
 
@@ -99,6 +105,9 @@ inline void applySearchTuning(Eng& e, const SearchTuning& t) {
     if (isSet(t.catColdCm))        trySetCatColdCm(e, t.catColdCm, 0);
     if (isSet(t.wallBfsOrderMaxPly)) trySetWallBfsOrderMaxPly(e, t.wallBfsOrderMaxPly, 0);
     if (isSet(t.qsCriticalBfsDelta)) trySetQsCriticalBfsDelta(e, t.qsCriticalBfsDelta, 0);
+    if (isSet(t.qsMaxExtraPlies))    trySetQsMaxExtraPlies(e, t.qsMaxExtraPlies, 0);
+    if (isSet(t.qsLowWallsBonus))    trySetQsLowWallsBonus(e, t.qsLowWallsBonus, 0);
+    if (isSet(t.qsLowWallsThreshold)) trySetQsLowWallsThreshold(e, t.qsLowWallsThreshold, 0);
 }
 
 // Parsing compartilhado pelas CLIs (arena.cpp / selfplay_main.cpp): consome
@@ -130,6 +139,9 @@ inline bool parseSearchTuningArg(const char* arg, int argc, char** argv, int& i,
     if (flag("cat-cold-cm"))         { if (temValor()) t.catColdCm = std::atoi(argv[++i]); return true; }
     if (flag("wall-bfs-order-max-ply")) { if (temValor()) t.wallBfsOrderMaxPly = std::atoi(argv[++i]); return true; }
     if (flag("qs-critical-bfs-delta"))  { if (temValor()) t.qsCriticalBfsDelta = std::atoi(argv[++i]); return true; }
+    if (flag("qs-max-extra-plies"))     { if (temValor()) t.qsMaxExtraPlies = std::atoi(argv[++i]); return true; }
+    if (flag("qs-low-walls-bonus"))     { if (temValor()) t.qsLowWallsBonus = std::atoi(argv[++i]); return true; }
+    if (flag("qs-low-walls-threshold")) { if (temValor()) t.qsLowWallsThreshold = std::atoi(argv[++i]); return true; }
     return false;
 }
 
@@ -151,6 +163,9 @@ inline std::string describeSearchTuning(const SearchTuning& t) {
     if (isSet(t.catColdCm))        add("cat-cold-cm=" + std::to_string(t.catColdCm));
     if (isSet(t.wallBfsOrderMaxPly)) add("wall-bfs-order-max-ply=" + std::to_string(t.wallBfsOrderMaxPly));
     if (isSet(t.qsCriticalBfsDelta)) add("qs-critical-bfs-delta=" + std::to_string(t.qsCriticalBfsDelta));
+    if (isSet(t.qsMaxExtraPlies))    add("qs-max-extra-plies=" + std::to_string(t.qsMaxExtraPlies));
+    if (isSet(t.qsLowWallsBonus))    add("qs-low-walls-bonus=" + std::to_string(t.qsLowWallsBonus));
+    if (isSet(t.qsLowWallsThreshold)) add("qs-low-walls-threshold=" + std::to_string(t.qsLowWallsThreshold));
     return s;
 }
 
@@ -168,6 +183,9 @@ inline const char* searchTuningUsage() {
         "  --cat-cold-cm N           calor CAT abaixo do qual LMR reduz +1 (producao: 30)\n"
         "  --wall-bfs-order-max-ply N  ply maximo com ordenacao de muro por BFS (producao: 2)\n"
         "  --qs-critical-bfs-delta N   delta de BFS que torna o muro critico na quiescencia (producao: 2)\n"
+        "  --qs-max-extra-plies N    extensao maxima de quiescencia de muro (producao: 2)\n"
+        "  --qs-low-walls-bonus N    plies extras de quiescencia com poucos muros no total (producao: 0)\n"
+        "  --qs-low-walls-threshold N  total de muros no tabuleiro que ativa o bonus (producao: 0)\n"
         "  --quiescence/--no-quiescence  quiescencia de muro (producao: ligada)\n"
         "  --lmr-pvs/--no-lmr-pvs        LMR+PVS (producao: ligado)\n";
 }

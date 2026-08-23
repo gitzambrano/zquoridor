@@ -278,6 +278,36 @@ public:
     void setQsCriticalBfsDelta(int v) { qsCriticalBfsDelta = v; }
     int getQsCriticalBfsDelta() const { return qsCriticalBfsDelta; }
 
+    // Wall-quiescence extension depth as instance parameters
+    // (inv/qsendgame-ext, 2026-08). qsMaxExtraPlies replaces the old
+    // compile-time QS_MAX_EXTRA_PLIES bound inside quiescence(); the
+    // default equals that constant, so an engine that never calls these
+    // setters searches exactly as before. qsLowWallsBonus and
+    // qsLowWallsThreshold add a simple endgame rule on top: when the total
+    // number of walls left on the board (both players) is at or below the
+    // threshold, the effective cap gains the bonus plies for that node.
+    // The rule targets the late game, where a horizon-cut critical wall
+    // decides the game while few walls remain to defend with. Threshold 0
+    // (the default) never adds the bonus in practice: a node with zero
+    // walls on the board has no wall move left to extend with, because
+    // both reserves are empty there.
+    //
+    // STACK SAFETY: quiescence() writes NNUE accumulators by pointer
+    // arithmetic (curAcc+1) one slot past each node's own slot of
+    // nnueAccStack. The stack must cover MAX_PLY root plies plus the
+    // worst-case extension qsMaxExtraPlies + qsLowWallsBonus. Every setter
+    // that changes a worst-case cap resizes the stack; call the setters
+    // between searches, never during one. quiescence() also clamps its own
+    // recursion to the free stack space, so an engine whose caps were
+    // raised without a resize degrades the extension instead of writing
+    // out of bounds.
+    void setQsMaxExtraPlies(int v) { qsMaxExtraPlies = v; resizeNnueAccStackForQsCaps(); }
+    int getQsMaxExtraPlies() const { return qsMaxExtraPlies; }
+    void setQsLowWallsBonus(int v) { qsLowWallsBonus = v; resizeNnueAccStackForQsCaps(); }
+    int getQsLowWallsBonus() const { return qsLowWallsBonus; }
+    void setQsLowWallsThreshold(int v) { qsLowWallsThreshold = v; }
+    int getQsLowWallsThreshold() const { return qsLowWallsThreshold; }
+
     // Limpa toda a tabela de transposição. Deve ser chamado entre partidas
     // no self-play: scores de repetição (path-dependent) ficam gravados na
     // TT e contaminam buscas futuras onde a mesma posição é atingida sem
@@ -482,7 +512,10 @@ public:
         // interno; não afeta o modo heurístico (accForSearch fica nullptr).
         int effectiveMaxDepthCap = maxDepthCap;
         if (evalMode == EvalMode::NNUE) {
-            int cap = (int)nnueAccStack.size() - QS_MAX_EXTRA_PLIES - 1;
+            // Worst-case extension the quiescence can stack on top of a
+            // leaf at this depth (see the setter comments for the caps).
+            int extWorst = qsMaxExtraPlies + qsLowWallsBonus;
+            int cap = (int)nnueAccStack.size() - extWorst - 1;
             if (effectiveMaxDepthCap > cap) effectiveMaxDepthCap = cap;
         }
 
@@ -575,10 +608,24 @@ private:
     int catColdCm = CAT_COLD_CM;
     int wallBfsOrderMaxPly = WALL_BFS_ORDER_MAX_PLY;
     int qsCriticalBfsDelta = QS_CRITICAL_BFS_DELTA;
+    // Wall-quiescence extension caps -- see the setter comments above.
+    int qsMaxExtraPlies = QS_MAX_EXTRA_PLIES;
+    int qsLowWallsBonus = 0;
+    int qsLowWallsThreshold = 0;
+
+    // Worst-case quiescence depth changed -> grow (or shrink) the
+    // accumulator stack to cover MAX_PLY root plies plus the worst case,
+    // with the same 4 spare slots as the constructor. Only valid between
+    // searches; see the stack-safety note on the setters.
+    void resizeNnueAccStackForQsCaps() {
+        nnueAccStack.resize((size_t)MAX_PLY + qsMaxExtraPlies + qsLowWallsBonus + 4);
+    }
     // Pilha de pares de acumuladores NNUE -- um AccPair por ply da busca,
     // indexado por aritmética de ponteiro a partir da raiz (curAcc+1 = filho).
-    // Dimensionado para rootDepth até MAX_PLY + quiescência até QS_MAX_EXTRA_PLIES
-    // com 4 slots de folga. Heap-alocado (std::vector) para não onerar a
+    // Dimensionado para rootDepth até MAX_PLY + quiescência até o pior caso
+    // dos caps de extensão (qsMaxExtraPlies + qsLowWallsBonus, ver os
+    // setters) com 4 slots de folga; os setters que mudam esses caps
+    // redimensionam a pilha. Heap-alocado (std::vector) para não onerar a
     // pilha de função quando Negamax é instanciado como variável local.
     // Custo: ~2 KB × 70 = ~140 KB por instância -- desprezível frente à TT (~40 MB).
     std::vector<AccPair> nnueAccStack;
@@ -788,7 +835,28 @@ private:
         int localAlpha = alpha > standPat ? alpha : standPat;
         int best = standPat;
 
-        if (qply >= QS_MAX_EXTRA_PLIES) return best;
+        // Effective extension cap for this node: the base cap plus the
+        // low-walls bonus when few walls remain on the board (see the
+        // setter comments). With the default caps this reduces to the old
+        // compile-time QS_MAX_EXTRA_PLIES bound, bit for bit.
+        //
+        // Defensive clamp on top of the resize contract: never recurse
+        // deeper than the accumulator stack can hold. A child at qply+1
+        // writes its accumulator at index rootDepth + qply + 1, which must
+        // stay below nnueAccStack.size(); hence effCap may not exceed
+        // size - 1 - rootDepth. With depth <= MAX_PLY and a stack sized by
+        // resizeNnueAccStackForQsCaps() this clamp never binds; it only
+        // degrades the extension if a caller raised the caps without the
+        // resize.
+        int effCap = qsMaxExtraPlies;
+        if ((s.wallsLeft[0] + s.wallsLeft[1]) <= qsLowWallsThreshold) {
+            effCap += qsLowWallsBonus;
+        }
+        {
+            int hardCap = (int)nnueAccStack.size() - 1 - rootDepth;
+            if (effCap > hardCap) effCap = hardCap;
+        }
+        if (qply >= effCap) return best;
 
         if (s.wallsLeft[side] <= 0) return best;  // sem muro pra jogar, nada a estender
 
@@ -1236,6 +1304,11 @@ public:
         RepetitionTable emptyHistory;
         return quiescence(s, alpha, beta, 0, stats, emptyHistory, true);
     }
+    // Capacity of the NNUE accumulator stack, for the stack-safety test of
+    // the extension caps (test_wall_qextension.cpp): after any setter that
+    // changes a worst-case cap, this must equal
+    // MAX_PLY + qsMaxExtraPlies + qsLowWallsBonus + 4.
+    size_t testNnueAccStackCapacity() const { return nnueAccStack.size(); }
     // igual a testFixedDepthFullWindow, mas SEM desligar LMR/PVS -- para
     // testes que precisam comparar explicitamente o comportamento COM
     // LMR/PVS ligado (produção) contra a referência de janela cheia
