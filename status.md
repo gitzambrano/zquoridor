@@ -43,6 +43,25 @@ relearn by experiment.
 
 ## 3. History Notes (durable lessons only)
 
+- **Production adoption round (2026-08-23, branch `prod/findings-2026-08`)**:
+  merged `inv/qsendgame-ext`, `inv/ab-policy`, and `inv/contempt-wandering`
+  into one integration line, then flipped ONE production default:
+  `endgameProgressTiebreak` is now ON (see the setter comment in
+  `src/search.hpp`). Everything else ships unchanged: MCAB stays the
+  production search with its 20000-node budget; contempt stays -30;
+  wall-quiescence caps stay at the old constant values. Validation for
+  the default flip: full correctness suite green on the integration tree
+  (staging 0 divergences, LMR/PVS agreement 97/100 and 58/58 decisive,
+  contempt/repetition T1-T5, mcab core/dispatch/phase9), plus a 600-game
+  arena vs `main` at 150 ms/move, MCAB + NNUE both sides:
+  **+2.9 +-26.9 Elo (47.2% vs 46.3%, 39 draws) -- statistically neutral**,
+  which is the expected result: the tie-break only reorders EXACTLY equal
+  solver values, so the payoff is behavioral (loser backward moves
+  47% -> ~27% in wall-less endings), never a value change. Rejected for
+  production after measurement (see entries below): TT-clear per move,
+  parity-anchored race draws, low-wall quiescence bonus, policy-history /
+  policy-LMR / policy-LMP tricks, two-stage AB pre-ranking. All rejected
+  features remain available as runtime knobs for future retests.
 - **inv/ab-policy round (2026-08-23, branch `inv/ab-policy`)**: asked
   whether the engine should rely less on the MCTS side of MCAB. Answer:
   no. Measured on the same binary with runtime knobs (branch has the
