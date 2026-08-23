@@ -56,6 +56,10 @@ echo [7/7] bench_mcab.exe  ^<-  benchmarks\bench_mcab.cpp
 g++ %FLAGS% -I"%SRC%" -o "%BIN%\bench_mcab.exe" "%BENCHMARK%\bench_mcab.cpp"
 if errorlevel 1 goto :erro
 
+echo [extra] bench_wall_ext.exe  ^<-  benchmarks\bench_wall_ext.cpp
+g++ %FLAGS% -I"%SRC%" -o "%BIN%\bench_wall_ext.exe" "%BENCHMARK%\bench_wall_ext.cpp"
+if errorlevel 1 goto :erro
+
 echo.
 echo OK -- binarios em %BIN%
 echo   bench_fixed_depth.exe / bench_mcab.exe: a CONTAGEM DE NOS do bloco A de

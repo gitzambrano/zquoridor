@@ -70,6 +70,10 @@ echo [12/12] test_mcab_phase9.exe  (reuso de arvore, ruido Dirichlet, leaf depth
 g++ %FLAGS% -I"%SRC%" -o "%BIN%\test_mcab_phase9.exe" "%TESTE%\test_mcab_phase9.cpp"
 if errorlevel 1 goto :erro
 
+echo [extra] test_wall_qextension.exe  (inv/qsendgame-ext: caps de quiescencia variaveis)
+g++ %FLAGS% -I"%SRC%" -o "%BIN%\test_wall_qextension.exe" "%TESTE%\test_wall_qextension.cpp"
+if errorlevel 1 goto :erro
+
 echo.
 echo OK -- binarios em %BIN%.
 echo   test_rules_sanity / test_search_staging / test_move_ordering / test_endgame_race / test_lmr_pvs: sem argumentos.
