@@ -107,6 +107,47 @@ constexpr int CAT_COLD_CM = 30;   // heat < isto -> +1 de redução extra ("frio
 // benchNegamaxNNUE/run_arena.py) se compensa e se este peso é razoável.
 constexpr long long POLICY_ORDER_SCALE = 400;
 
+// ---------------------------------------------------------------------
+// Investigation inv/ab-policy (2026-08-23): three cheap ways to let the
+// NNUE policy head carry more weight inside alpha-beta. All three are OFF
+// by default; with every toggle at its default the search is bit-identical
+// to the pre-investigation engine.
+//
+// Unit-cost context measured on the reference machine (-O3 -march=native
+// AVX2, perf/speed-elo-100 build): forwardPolicyQuant ~= 1.3us and
+// nnueEvalInt ~= 1.3us per call, while one legalWallMoves call inside a
+// midgame node costs ~= 13us. The old "policy pass costs 5.8x a leaf eval"
+// note (and the measured ~3x nps drop without the depth gate) predates the
+// vectorized inference path: today an ungated policy pass costs about one
+// leaf eval, so per-node policy at LOW remaining depth is affordable if it
+// buys cutoffs or pruning. These toggles exist to test exactly that.
+//
+// 1) policyHistorySeed* (direction B): one policy pass per SEARCH (not per
+//    node) at the real game root, copied into the history table before
+//    iterative deepening starts. Deep nodes inherit policy guidance with
+//    zero marginal per-node cost. Scale plays the same role as
+//    POLICY_ORDER_SCALE: raw logits live in [-5,5], history increments
+//    accumulate depth^2 per beta-cutoff.
+//
+// 2) policyLmr* (direction C): where a policy array was already computed
+//    for ordering (depth >= policyOrderingMinDepth), modulate the LMR
+//    reduction by the raw policy logit of the candidate relative to the
+//    best candidate of the same stage: moves within policyLmrHotDelta of
+//    the stage maximum are never reduced (same treatment as CAT-hot
+//    walls), moves below policyLmrColdDelta take one extra reduction step.
+//    No extra MACs: the array already exists.
+//
+// 3) policyLmp* (direction D): late-move pruning of trailing WALL moves
+//    whose cumulative softmax policy mass (over the stage's candidates,
+//    normalized among themselves) stays under a depth-scaled threshold.
+//    Threshold = policyLmpBaseMass * 0.5^(depth-1): near the horizon
+//    (depth small) pruning is aggressive, near the root almost nothing is
+//    pruned. Same already-computed logits, zero extra MACs. Guards: wall
+//    stage only, never prunes into the top policyLmpMinCount candidates,
+//    keeps at least one candidate searchable, and disables itself in
+//    mate-score ranges (|score| >= RACE_SCALE_THRESHOLD territory).
+// ---------------------------------------------------------------------
+
 // reduction = clamp( round( ln(depth) * ln(move_index) / 2.25 ), 0, depth/2 )
 // -- ver Prioridade 3 do plano pra derivação/justificativa da fórmula.
 inline int lmrReduction(int depth, int moveIndex, double divisor = LMR_DIVISOR) {
@@ -143,6 +184,10 @@ struct SearchStats {
                             // profundidade alcançada, do ponto de vista de
                             // quem tinha a vez -- exposta pra GUI mostrar
                             // a avaliação ao lado do lance do motor.
+    // inv/ab-policy instrumentation: internal nodes where forwardPolicyQuant
+    // actually ran (ordering gate passed and NNUE accumulator present).
+    // Read-only bookkeeping; nothing in the search depends on it.
+    uint64_t policyNodes = 0;
 };
 
 class Negamax {
@@ -230,6 +275,27 @@ public:
     // de antes (não recomendado, é o que causou a queda medida).
     void setPolicyOrderingMinDepth(int d) { policyOrderingMinDepth = d; }
     int getPolicyOrderingMinDepth() const { return policyOrderingMinDepth; }
+
+    // --- inv/ab-policy toggles (all default OFF, see the block comment at
+    // POLICY_ORDER_SCALE above). Same runtime-toggle pattern as
+    // setQuiescenceEnabled/setLmrPvsEnabled: A/B in one binary without
+    // recompiling, production untouched while off.
+    void setPolicyHistorySeedEnabled(bool enabled) { policyHistorySeedEnabled = enabled; }
+    bool isPolicyHistorySeedEnabled() const { return policyHistorySeedEnabled; }
+    void setPolicyHistorySeedScale(long long s) { policyHistorySeedScale = s; }
+    long long getPolicyHistorySeedScale() const { return policyHistorySeedScale; }
+    void setPolicyLmrEnabled(bool enabled) { policyLmrEnabled = enabled; }
+    bool isPolicyLmrEnabled() const { return policyLmrEnabled; }
+    void setPolicyLmrHotDelta(float d) { policyLmrHotDelta = d; }
+    float getPolicyLmrHotDelta() const { return policyLmrHotDelta; }
+    void setPolicyLmrColdDelta(float d) { policyLmrColdDelta = d; }
+    float getPolicyLmrColdDelta() const { return policyLmrColdDelta; }
+    void setPolicyLmpEnabled(bool enabled) { policyLmpEnabled = enabled; }
+    bool isPolicyLmpEnabled() const { return policyLmpEnabled; }
+    void setPolicyLmpBaseMass(double m) { policyLmpBaseMass = m; }
+    double getPolicyLmpBaseMass() const { return policyLmpBaseMass; }
+    void setPolicyLmpMinCount(int c) { policyLmpMinCount = c; }
+    int getPolicyLmpMinCount() const { return policyLmpMinCount; }
 
     // Parâmetros tunáveis por SPSA (teste/tune_spsa.cpp) -- Fase 4.2.10+.
     // Viraram membros de instância (antes eram `constexpr`/`static constexpr`
@@ -345,6 +411,83 @@ public:
         std::memset(history, 0, sizeof(history));
     }
 
+    // Direction B (inv/ab-policy): one policy pass over the REAL game root,
+    // copied into the history table so every node of the coming search (any
+    // ply, any iterative-deepening iteration) starts from policy guidance
+    // without any per-node forward pass. Called by chooseMove() right after
+    // resetOrderingState() when setPolicyHistorySeedEnabled(true), and by
+    // mcab.hpp's chooseMoveMCAB through an SFINAE hook -- refs without this
+    // method simply skip it. No-op unless NNUE mode is active.
+    void seedPolicyHistoryFromRoot(const State& root) {
+        if (!policyHistorySeedEnabled || evalMode != EvalMode::NNUE) return;
+        AccPair local = buildAccPairRoot(root, &xdistCache);
+        std::array<float, POLICY_OUT> pArr;
+        forwardPolicyQuant(local.acc[root.turn], pArr);
+        int side = root.turn;
+        MoveList rootMoves = legalMoves(root);
+        for (size_t i = 0; i < rootMoves.size(); i++) {
+            const Move& m = rootMoves[i];
+            history[side][moveToPolicyIndex(m)] +=
+                (int)std::lround(policyLogitForMove(pArr, m, side) * (float)policyHistorySeedScale);
+        }
+    }
+
+    // Direction E helper (inv/ab-policy): score every legal root move with
+    // a full-window alpha-beta search of `depth` plies (no aspiration
+    // window, no iterative deepening) and return the pairs sorted by score,
+    // best first, from the perspective of `root.turn`. Used by mcab.hpp to
+    // pre-filter the MCTS root to the top-k children ("two-stage root").
+    // Shares TT/BFS caches with the rest of the engine on purpose: the
+    // MCTS phase that follows reuses everything this pass learned. With
+    // timeBudgetMs > 0 the pass stops early (partial ranking, still sorted)
+    // when the budget runs out; scores of unsearched moves are absent from
+    // the output in that case.
+    void rankRootMoves(const State& root, int depth, int timeBudgetMs, SearchStats& stats,
+                       std::vector<std::pair<int, Move>>& out) {
+        out.clear();
+        stopped = false;
+        deadline = timeBudgetMs > 0
+                        ? std::chrono::steady_clock::now() + std::chrono::milliseconds(timeBudgetMs)
+                        : std::chrono::steady_clock::now() + std::chrono::hours(1);
+        g_raceExactBudgetUs = 1e18;  // only chooseMove() applies that budget (see note there)
+        rootDepth = depth;
+        resetOrderingState();
+        stats = SearchStats{};
+        AccPair* accForSearch = nullptr;
+        if (evalMode == EvalMode::NNUE) {
+            nnueAccStack[0] = buildAccPairRoot(root, &xdistCache);
+            accForSearch = &nnueAccStack[0];
+        }
+        RepetitionTable reptbl;
+        reptbl.markRoot();
+        int mover = root.turn;
+        MoveList rootMoves = legalMoves(root);
+        for (size_t i = 0; i < rootMoves.size(); i++) {
+            const Move& m = rootMoves[i];
+            State ns = applyMove(root, m);
+            int w = winner(ns);
+            if (w != -1) {
+                int sc = (w == mover) ? (SCORE_INF - 1) : -(SCORE_INF - 1);
+                out.push_back({sc, m});
+                continue;
+            }
+            AccPair* childAcc = nullptr;
+            if (accForSearch) {
+                childAcc = accForSearch + 1;
+                makeChildAccPair(*accForSearch, *childAcc, root, m, &xdistCache);
+            }
+            reptbl.push(ns.hash, m.isWall);
+            int sc = -negamax(ns, depth - 1, -SCORE_INF, SCORE_INF, stats, reptbl, childAcc);
+            reptbl.pop();
+            if (stopped) break;  // out of time: return the partial ranking
+            out.push_back({sc, m});
+        }
+        std::stable_sort(out.begin(), out.end(),
+                         [](const std::pair<int, Move>& a, const std::pair<int, Move>& b) {
+                             return a.first > b.first;
+                         });
+    }
+
     // Avaliador de folha para o módulo híbrido MCTS+AB (mcab.hpp). Roda uma
     // busca AB completa (mesmo negamax(), mesmas extensões de quiescência de
     // muro, LMR/PVS, TT, killers/history desta instância) a partir de uma
@@ -426,6 +569,10 @@ public:
         stats = SearchStats{};
         stopped = false;
         resetOrderingState();
+        // Direction B (inv/ab-policy): seed history from the real game root
+        // before iterative deepening. One forward pass per search, off by
+        // default (see block comment at POLICY_ORDER_SCALE).
+        seedPolicyHistoryFromRoot(root);
 
         // [CORREÇÃO -- achado por perda de Elo grande numa arena externa
         // apesar de nós/s saudável] Quando a própria RAIZ real (a posição
@@ -594,6 +741,16 @@ private:
     EvalMode evalMode = EvalMode::Heuristic;
     bool policyOrderingEnabled = true;
     int policyOrderingMinDepth = 3;
+    // inv/ab-policy members -- defaults reproduce the pre-investigation
+    // engine exactly (every feature off).
+    bool policyHistorySeedEnabled = false;
+    long long policyHistorySeedScale = POLICY_ORDER_SCALE;
+    bool policyLmrEnabled = false;
+    float policyLmrHotDelta = 2.5f;
+    float policyLmrColdDelta = 5.0f;
+    bool policyLmpEnabled = false;
+    double policyLmpBaseMass = 0.05;
+    int policyLmpMinCount = 8;
     // Membros tunáveis por SPSA -- ver setContempt/setPolicyOrderScale/
     // setCatScoreScale (públicos, acima). Default = valor antigo hardcoded
     // das constantes CONTEMPT/POLICY_ORDER_SCALE (namespace, ainda
@@ -1094,7 +1251,16 @@ private:
         if (policyOrderingEnabled && curAcc && depth >= policyOrderingMinDepth) {
             forwardPolicyQuant(curAcc->acc[side], policyArr);
             policyPtr = &policyArr;
+            stats.policyNodes++;
         }
+        // Direction C/D context (inv/ab-policy): LMR modulation (C) and
+        // wall late-move pruning (D) are gated SEPARATELY, each on its own
+        // toggle -- enabling only one must never arm the other. Both act
+        // only when a policy array exists for THIS node. With
+        // setPolicyOrderingMinDepth lowered, cheap per-node guidance reaches
+        // deeper plies; see the block comment at POLICY_ORDER_SCALE.
+        bool polLmrActive = policyPtr && policyLmrEnabled;
+        bool polLmpActive = policyPtr && policyLmpEnabled;
 
         // --- Geração estagiada de lances (Fase 4.2.3 do plano) ---------
         // Estágio 1: lance da TT, testado antes de gerar qualquer muro --
@@ -1140,7 +1306,15 @@ private:
         // no topo deste arquivo). Com lmrPvsEnabled desligado, cai de
         // volta no comportamento antigo -- sempre janela completa em
         // profundidade cheia (ver setLmrPvsEnabled acima).
-        auto tryMove = [&](const Move& m, int moveIndex, int catHeat) -> bool {
+        //
+        // polLogit (inv/ab-policy, direção C): logit cru da política do
+        // candidato, junto com polMaxLogit (máximo do estágio atual) e
+        // polHave (false quando a direção C está desligada ou não há
+        // política neste nó). Com polHave==false o bloco LMR é
+        // bit-a-bit o de antes.
+        auto tryMove = [&](const Move& m, int moveIndex, int catHeat,
+                           float polLogit = 0.f, float polMaxLogit = 0.f,
+                           bool polHave = false) -> bool {
             // Acumulador do filho: se modo NNUE ativo, makeChildAccPair
             // (nnue.hpp, Item 3) atualiza AGORA só a perspectiva de quem vai
             // jogar no filho (a que nnueEvalInt vai ler se ele for folha);
@@ -1181,9 +1355,18 @@ private:
                 int reduction = 0;
                 if (moveIndex > lmrMinMoveIndex && depth >= lmrMinDepth && !isKillerMove) {
                     bool hot = (catHeat >= 0 && catHeat >= catHotCm);
+                    // Direction C (inv/ab-policy): a move the policy rates
+                    // near the stage best is treated like a CAT-hot wall --
+                    // never reduced. A move far below the stage best takes
+                    // one extra reduction step. Zero extra MACs: the policy
+                    // array was already computed for ordering.
+                    if (polHave) {
+                        if (polLogit >= polMaxLogit - policyLmrHotDelta) hot = true;
+                    }
                     if (!hot) {
                         reduction = lmrReduction(depth, moveIndex, lmrDivisor);
                         if (catHeat >= 0 && catHeat < catColdCm) reduction += 1;
+                        if (polHave && polLogit <= polMaxLogit - policyLmrColdDelta) reduction += 1;
                         int maxRed = depth / 2;
                         if (reduction > maxRed) reduction = maxRed;
                     }
@@ -1226,11 +1409,24 @@ private:
 
         // Estágio 2: resto dos lances de peão (bloco já gerado/ordenado).
         if (!cutoff) {
+            // Direction C context: stage-local best policy logit over the
+            // (at most 3) pawn candidates.
+            float pawnMaxLogit = 0.f;
+            bool pawnPol = polLmrActive && !pawnMoves.empty();
+            if (pawnPol) {
+                pawnMaxLogit = -std::numeric_limits<float>::infinity();
+                for (size_t i = 0; i < pawnMoves.size(); i++) {
+                    float lg = policyLogitForMove(*policyPtr, pawnMoves[i], side);
+                    if (lg > pawnMaxLogit) pawnMaxLogit = lg;
+                }
+            }
             for (size_t i = 0; i < pawnMoves.size() && !cutoff; i++) {
                 const Move& m = pawnMoves[i];
                 if (ttTried && m == ttMoveVal) continue;  // já tentado no Estágio 1
                 moveCount++;
-                cutoff = tryMove(m, moveCount, -1);
+                cutoff = tryMove(m, moveCount, -1,
+                                 pawnPol ? policyLogitForMove(*policyPtr, m, side) : 0.f,
+                                 pawnMaxLogit, pawnPol);
                 if (stopped) return 0;
             }
         }
@@ -1271,12 +1467,57 @@ private:
                 const PlayerPathCache& oppCache = (opp == 0) ? cache0 : cache1;
                 orderWallMoves(wallMoves, ply, side, s, oppHeat, &oppCache, policyPtr);
             }
+            // Direction C/D context (inv/ab-policy): stage-local best
+            // policy logit over the wall candidates, plus the late-move
+            // pruning cut. Both are O(#candidates) array lookups; the
+            // softmax denominator for LMP is computed once per node.
+            float wallMaxLogit = 0.f;
+            bool wallPol = polLmrActive && haveOppHeat && !wallMoves.empty();
+            float expBuf[ORDER_BUF_CAP];
+            size_t wn = 0;
+            size_t lmpCut = wallMoves.size();  // default: prune nothing
+            if (wallPol || (polLmpActive && haveOppHeat)) {
+                wn = wallMoves.size() < ORDER_BUF_CAP ? wallMoves.size() : ORDER_BUF_CAP;
+                wallMaxLogit = -std::numeric_limits<float>::infinity();
+                for (size_t i = 0; i < wn; i++) {
+                    float lg = policyLogitForMove(*policyPtr, wallMoves[i], side);
+                    expBuf[i] = lg;
+                    if (lg > wallMaxLogit) wallMaxLogit = lg;
+                }
+                if (polLmpActive &&
+                    alpha > -(SCORE_INF - RACE_SCALE_THRESHOLD) &&
+                    beta < (SCORE_INF - RACE_SCALE_THRESHOLD) &&
+                    wn >= (size_t)std::max(2, policyLmpMinCount)) {
+                    // Softmax restricted to this stage's candidates.
+                    float sumExp = 0.f;
+                    for (size_t i = 0; i < wn; i++) sumExp += std::exp(expBuf[i] - wallMaxLogit);
+                    double thr = policyLmpBaseMass * std::pow(0.5, (double)std::max(0, depth - 1));
+                    double mass = 0.0;
+                    size_t cut = wn;
+                    // Walk from the END of the policy-sorted list; never cut
+                    // into the first policyLmpMinCount candidates, always
+                    // keep at least one candidate searchable.
+                    for (size_t i = wn; i-- > (size_t)policyLmpMinCount;) {
+                        mass += std::exp(expBuf[i] - wallMaxLogit) / sumExp;
+                        if (mass < thr) {
+                            cut = i;
+                        } else {
+                            break;
+                        }
+                    }
+                    if (cut == 0) cut = 1;
+                    lmpCut = cut;
+                }
+            }
             for (size_t i = 0; i < wallMoves.size() && !cutoff; i++) {
                 const Move& m = wallMoves[i];
                 if (ttTried && m == ttMoveVal) continue;  // já tentado no Estágio 1
+                if ((size_t)i >= lmpCut) break;           // Direction D: suffix below the mass threshold
                 moveCount++;
                 int heat = haveOppHeat ? wallEdgeHeat(oppHeat, m.a, m.b, m.c) : -1;
-                cutoff = tryMove(m, moveCount, heat);
+                cutoff = tryMove(m, moveCount, heat,
+                                 wallPol ? ((i < wn) ? expBuf[i] : 0.f) : 0.f,
+                                 wallMaxLogit, wallPol);
                 if (stopped) return 0;
             }
         }

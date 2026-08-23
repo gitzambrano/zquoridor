@@ -186,6 +186,19 @@ MCAB_VALUE_KNOBS = [
     ("cat-cold-cm",            "cat_cold_cm",            E1_CAT_COLD_CM,            E2_CAT_COLD_CM,            int),
     ("wall-bfs-order-max-ply", "wall_bfs_order_max_ply", E1_WALL_BFS_ORDER_MAX_PLY, E2_WALL_BFS_ORDER_MAX_PLY, int),
     ("qs-critical-bfs-delta",  "qs_critical_bfs_delta",  E1_QS_CRITICAL_BFS_DELTA,  E2_QS_CRITICAL_BFS_DELTA,  int),
+    # inv/ab-policy (2026-08-23), direcao E: pre-filtro AB da raiz do MCTS.
+    # 0/ausente = off (producao). Constantes por lado ficam None no topo;
+    # passe --eX-ab-prefilter-{depth,topk,timefrac} explicitamente.
+    ("ab-prefilter-depth",    "ab_prefilter_depth",    None, None, int),
+    ("ab-prefilter-topk",     "ab_prefilter_topk",     None, None, int),
+    ("ab-prefilter-timefrac", "ab_prefilter_timefrac", None, None, float),
+    # inv/ab-policy (2026-08-23): deltas das direcoes B/C/D. So valem quando
+    # a flag da direcao esta ligada (arena.cpp aplica condicional).
+    ("policy-history-scale", "policy_history_scale", None, None, int),
+    ("policy-lmr-hot",       "policy_lmr_hot",       None, None, float),
+    ("policy-lmr-cold",      "policy_lmr_cold",      None, None, float),
+    ("policy-lmp-base",      "policy_lmp_base",      None, None, float),
+    ("policy-lmp-min-count", "policy_lmp_min_count", None, None, int),
 ]
 # Knobs liga/desliga. `flag_on`/`flag_off` = o que o arena.exe aceita; None
 # nesse campo significa "aquele lado é o default do binário, não há flag".
@@ -198,6 +211,11 @@ MCAB_FLAG_KNOBS = [
     ("mcab_progressive_widening", E1_MCAB_PROGRESSIVE_WIDENING, E2_MCAB_PROGRESSIVE_WIDENING, "mcab-progressive-widening", "mcab-no-progressive-widening"),
     ("quiescence",               E1_QUIESCENCE,               E2_QUIESCENCE,               "quiescence", "no-quiescence"),
     ("lmr_pvs",                  E1_LMR_PVS,                  E2_LMR_PVS,                  "lmr-pvs", "no-lmr-pvs"),
+    # inv/ab-policy (2026-08-23): direcoes B/C/D do search.hpp. O binario
+    # nasce com tudo OFF; passar a forma global/--eX- liga.
+    ("policy_history",           None, None, "policy-history", "no-policy-history"),
+    ("policy_lmr",               None, None, "policy-lmr", "no-policy-lmr"),
+    ("policy_lmp",               None, None, "policy-lmp", "no-policy-lmp"),
 ]
 # --- Pasta de pesos NNUE por engine (resolve o bug de main vs local
 # carregando o MESMO arquivo, ver defaultNnueWeightsPath em nnue.hpp) ---

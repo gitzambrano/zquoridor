@@ -242,6 +242,18 @@ struct McabParams {
     double rootNoiseEpsilon = 0.25;
     uint32_t rootNoiseSeed = 0x9E3779B9u; // semente do gerador de Dirichlet; varie por thread em self-play
     int maxTreeDepth = 48;               // dimensiona mcabAccStack (Seção 4.3.3)
+
+    // inv/ab-policy, direction E ("two-stage root"): before the tree loop,
+    // score every root child with a full-window AB search of
+    // abPrefilterDepth plies and keep only the top abPrefilterTopK children
+    // active at the MCTS root (priors renormalized over them). Zero keeps
+    // the plain behavior. The AB pass gets at most
+    // abPrefilterTimeFrac of the move's time budget when timeBudgetMs > 0;
+    // with timeBudgetMs == 0 the pass runs unbounded, so keep the depth
+    // modest in that case. Off by default -- bit-identical production.
+    int abPrefilterDepth = 0;
+    int abPrefilterTopK = 0;
+    double abPrefilterTimeFrac = 0.25;
 };
 
 // Estatísticas agregadas de UMA chamada a chooseMoveMCAB (não confundir
@@ -344,6 +356,34 @@ template <typename MoveT>
 inline bool mcabIsWall(const MoveT&, ...) {
     return false;
 }
+
+// inv/ab-policy hooks (directions B and E). Both are optional engine
+// capabilities detected by SFINAE, same pattern as mcabPathCache above:
+// refs older than these methods compile fine and simply skip the feature.
+//
+// mcabSeedPolicyHistory -> Negamax::seedPolicyHistoryFromRoot (direction B):
+// one policy pass over the game root copied into the AB history table.
+//
+// mcabRankRootMoves -> Negamax::rankRootMoves (direction E): score every
+// root child with a shallow full-window AB search; the hybrid then keeps
+// only the top-k children active at its root ("two-stage root").
+template <typename Eng, typename StateT>
+inline auto mcabSeedPolicyHistory(Eng& e, const StateT& s, int)
+    -> decltype(e.seedPolicyHistoryFromRoot(s), void()) {
+    e.seedPolicyHistoryFromRoot(s);
+}
+template <typename Eng, typename StateT>
+inline void mcabSeedPolicyHistory(Eng&, const StateT&, ...) {}
+
+template <typename Eng, typename StateT, typename MoveT, typename StatsT>
+inline auto mcabRankRootMoves(Eng& e, const StateT& s, int depth, int budgetMs,
+                               StatsT& stats, std::vector<std::pair<int, MoveT>>& out, int)
+    -> decltype(e.rankRootMoves(s, depth, budgetMs, stats, out), void()) {
+    e.rankRootMoves(s, depth, budgetMs, stats, out);
+}
+template <typename Eng, typename StateT, typename MoveT, typename StatsT>
+inline void mcabRankRootMoves(Eng&, const StateT&, int, int, StatsT&,
+                               std::vector<std::pair<int, MoveT>>&, ...) {}
 
 template <typename MoveT, typename StateT, typename MoveListT>
 inline auto mcabEnumerateCandidates(const StateT& s, int side, MoveListT& out, int)
@@ -471,6 +511,40 @@ public:
         // chooseMoveMCAB(), não por nó (permite reuso de TT entre folhas
         // vizinhas, ver comentário de searchLeaf em search.hpp).
         engine.resetOrderingState();
+
+        // inv/ab-policy, direction E: optional AB pre-ranking of the root
+        // children, before any tree work. Runs its own resetOrderingState()
+        // internally; TT/BFS caches stay shared with the tree phase. The
+        // ranking consumes part of THIS move's time budget: whatever it
+        // actually spent (up to abPrefilterTimeFrac of timeBudgetMs) is
+        // deducted from the tree phase below, so the whole move stays
+        // inside timeBudgetMs.
+        std::vector<std::pair<int, MoveT>> ranked;
+        int treeBudgetMs = timeBudgetMs;
+        if (params.abPrefilterDepth > 0 && params.abPrefilterTopK > 0) {
+            SearchStatsT preStats{};
+            int preMs = timeBudgetMs > 0
+                            ? (int)((double)timeBudgetMs * params.abPrefilterTimeFrac)
+                            : 0;
+            auto preT0 = std::chrono::steady_clock::now();
+            mcabRankRootMoves(engine, root, params.abPrefilterDepth, preMs, preStats, ranked, 0);
+            if (timeBudgetMs > 0) {
+                auto spent = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                 std::chrono::steady_clock::now() - preT0)
+                                 .count();
+                // Floor of 5ms: a starved tree phase would expand nothing
+                // and pick by prior alone.
+                long long left = (long long)timeBudgetMs - (long long)spent;
+                treeBudgetMs = (int)std::max<long long>(5, left);
+            }
+        }
+
+        // inv/ab-policy, direction B: seed the AB history table from the
+        // game root (one policy pass per move) so searchLeaf-style leaves
+        // inherit policy guidance. After the ranking pass on purpose: both
+        // reset the ordering state.
+        mcabSeedPolicyHistory(engine, root, 0);
+
         if (params.clearTTPerMove) engine.clearTT();
 
         localRepTbl = gameHistory;
@@ -530,6 +604,16 @@ public:
             expandNode(0, /*depthInTree=*/0, mstats);
         }
 
+        // inv/ab-policy, direction E: restrict the active root edges to the
+        // top-k children of the AB pre-ranking. Applied to a fresh AND to a
+        // reused root (each move re-ranks, so yesterday's filter never
+        // persists). Edge stats (N/W/child links) of kept moves survive;
+        // dropped subtrees stay in the pool until the next compaction,
+        // bounded by the same 2x nodeBudget rule as Seção 8.1.
+        if (!ranked.empty() && !pool[0].terminal && params.abPrefilterTopK > 0) {
+            filterRootTopK(pool[0], ranked, params.abPrefilterTopK);
+        }
+
         // Seção 9 -- ruído de Dirichlet nos priors da raiz. Aplicado uma
         // única vez por nó (flag `noised`): quando este nó já foi raiz numa
         // chamada anterior e voltou a sê-lo, recompor o ruído sobre si
@@ -549,14 +633,14 @@ public:
         // sob controle de tempo real no arena. `leafDeadline` propaga o teto
         // até engine.searchLeaf (ver evaluateLeaf).
         auto t0 = std::chrono::steady_clock::now();
-        haveLeafDeadline = (timeBudgetMs > 0);
-        if (haveLeafDeadline) leafDeadline = t0 + std::chrono::milliseconds(timeBudgetMs);
+        haveLeafDeadline = (treeBudgetMs > 0);
+        if (haveLeafDeadline) leafDeadline = t0 + std::chrono::milliseconds(treeBudgetMs);
         while (mstats.nodesExpanded < budget) {
-            if (timeBudgetMs > 0) {
+            if (treeBudgetMs > 0) {
                 auto elapsedMs = std::chrono::duration_cast<std::chrono::milliseconds>(
                                      std::chrono::steady_clock::now() - t0)
                                      .count();
-                if (elapsedMs >= timeBudgetMs) break;
+                if (elapsedMs >= treeBudgetMs) break;
             }
             if (pool[0].terminal) break;  // raiz já resolvida (ex.: vitória em 0 lances -- não deveria ocorrer)
             runSimulation(engine, stats, mstats);
@@ -664,6 +748,50 @@ private:
         }
         pool.swap(compacted);
         return true;
+    }
+
+    // inv/ab-policy, direction E: keep only the moves of `ranked` that fit
+    // in the first `topK` ranked positions (moves absent from the ranking
+    // -- e.g. unsearched when the AB pass ran out of time -- are dropped,
+    // which can leave fewer than topK edges; that is intended). Priors are
+    // renormalized over the survivors so cPuct keeps its meaning.
+    void filterRootTopK(NodeT& r, const std::vector<std::pair<int, MoveT>>& ranked, int topK) {
+        if ((int)r.moves.size() <= topK || ranked.empty()) return;
+        std::vector<MoveT> keep;
+        for (size_t i = 0; i < ranked.size() && (int)keep.size() < topK; i++)
+            keep.push_back(ranked[i].second);
+
+        MoveListT oldMoves = r.moves;
+        std::vector<float> oldP = std::move(r.P);
+        std::vector<float> oldN = std::move(r.N);
+        std::vector<float> oldW = std::move(r.W);
+        std::vector<int32_t> oldChild = std::move(r.child);
+
+        r.moves = MoveListT{};
+        r.P.clear();
+        r.N.clear();
+        r.W.clear();
+        r.child.clear();
+
+        for (size_t e = 0; e < oldMoves.size(); e++) {
+            bool inKeep = false;
+            for (const MoveT& k : keep) {
+                if (mcabMovesEqual(oldMoves[e], k, 0)) { inKeep = true; break; }
+            }
+            if (!inKeep) continue;
+            r.moves.push_back(oldMoves[e]);
+            r.P.push_back(oldP.empty() ? 0.f : oldP[e]);
+            r.N.push_back(oldN.empty() ? 0.f : oldN[e]);
+            r.W.push_back(oldW.empty() ? 0.f : oldW[e]);
+            r.child.push_back(oldChild.empty() ? -1 : oldChild[e]);
+        }
+        r.activeMoves = (int)r.moves.size();
+
+        float sum = 0.f;
+        for (float p : r.P) sum += p;
+        if (sum > 0.f) {
+            for (float& p : r.P) p /= sum;
+        }
     }
 
     // ---------------------------------------------------------------

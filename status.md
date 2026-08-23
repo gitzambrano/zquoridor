@@ -34,14 +34,45 @@ relearn by experiment.
    fixed-size storage for per-edge vectors inside `MCABNode`
    (~4 vectors x up to 131 moves, heap-allocated per expansion), and
    eliminating the ~1KB `AccPair` copy per traversed edge.
-4. **Time-control curve**: measure hybrid vs pure AB at 50ms/500ms/1000ms;
-   the hybrid's advantage was only validated near 150-200ms.
+4. **Time-control curve**: measure hybrid vs pure AB at 500ms/1000ms;
+   the 40ms and 200ms points are done (inv/ab-policy round: the hybrid
+   wins at both, see History Notes).
 5. **GUI worker offload** (`gui_web/`) -- tracked by the GUI section.
 
 ---
 
 ## 3. History Notes (durable lessons only)
 
+- **inv/ab-policy round (2026-08-23, branch `inv/ab-policy`)**: asked
+  whether the engine should rely less on the MCTS side of MCAB. Answer:
+  no. Measured on the same binary with runtime knobs (branch has the
+  toggles, all default OFF):
+  - Node-budget curve vs pure alpha-beta (400/300 games per point,
+    NNUE): at 40ms/move the hybrid wins by +54.3 ±33.8 Elo at the
+    production 20000-node budget and never hits that budget (about 3.9k
+    simulations fit in 40ms; fully time-bound). At 200ms/move it wins
+    by +97.4 ±40.0. Budgets below about 10k nodes LOSE strength at
+    200ms (-92.5 ±40.0 at 2k) because the engine stops early with time
+    left. The node budget is a ceiling, not a tuning knob for speed.
+  - Compute map (`benchmarks/map_compute.cpp`): policy passes are only
+    about 7 percent of hybrid wall time; leaf evals about 8 percent;
+    the MCTS loop itself (per-expansion move generation plus PUCT over
+    up to 131 children) is about 84 percent. A quantized policy pass
+    costs 790ns, roughly one leaf eval, so per-node policy inside
+    alpha-beta is affordable since the vectorized inference work.
+  - Cheap policy-inside-AB tricks are all null results at both 40ms
+    and 200ms (each 300 to 400 games, Elo margin about +/-34 to +/-39):
+    policy-seeded history (B) +10.4/-1.2, policy-scaled LMR (C)
+    -1.7/-5.8, policy-mass LMP (D, base 0.15) -11.6 at 200ms. Policy
+    LMR doubles nodes-to-fixed-depth (+99 percent at depth 8); the
+    others cost or save under 10 percent of nodes.
+  - Two-stage root (E: rank root children with shallow AB, keep top-k
+    for the MCTS) is REJECTED: -96.2 ±39.6 (depth 2, top 8) and
+    -398.4 ±65.0 (depth 3, top 12, truncated ranking) versus
+    production MCAB. Cutting the root starves PUCT exploration, and a
+    time-truncated ranking drops mostly wall candidates.
+  The toggles stay in `search.hpp`/`mcab.hpp` default-off, pinned by
+  `tests/test_policy_ab.cpp` (defaults bit-exact in both eval modes).
 - **Speed round 2026-08-22 (+194.6 Elo total)**: NNUE forward passes
   vectorized (branchless int32 accumulation, bit-exact integer math),
   `PlayerPathCache` slimmed 740B -> 190B, quiescence NNUE stand-pat exits

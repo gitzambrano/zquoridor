@@ -1,0 +1,30 @@
+[map] corpus=16 positions
+[map-unit] policyPass_ns=790 nnueEval_ns=856 legalMoves_ns=6268 makeChildAcc_ns=67 buildRootAcc_ns=544 searchLeafD5_ns=67178
+[map-mcab-40ms-pos00] walls=6/6 sims=4510 exp=4511 ms=40.6
+[map-mcab-40ms-pos01] walls=7/8 sims=4326 exp=4327 ms=40.6
+[map-mcab-40ms-pos02] walls=7/7 sims=4457 exp=4458 ms=40.7
+[map-mcab-40ms-pos03] walls=6/6 sims=4977 exp=4978 ms=40.9
+[map-mcab-40ms-pos04] walls=2/3 sims=3662 exp=3663 ms=40.4
+[map-mcab-40ms-pos06] walls=2/3 sims=3769 exp=3770 ms=40.9
+[map-mcab-40ms-pos07] walls=3/2 sims=3435 exp=3436 ms=41.0
+[map-mcab-40ms-pos08] walls=4/3 sims=2116 exp=2117 ms=40.4
+[map-mcab-40ms-pos09] walls=2/1 sims=4205 exp=4206 ms=40.7
+[map-mcab-40ms] searched_positions=9 sims_per_move=3940 expanded_per_move=3941 leaves_per_move=3940 truncated_total=0 wall_s_per_move_ms=40.7
+[map-mcab-40ms] approx_policy_s=0.028 approx_leaf_eval_s=0.030 total_s=0.37
+[map-mcab-200ms-pos00] walls=6/6 sims=18719 exp=18720 ms=205.6
+[map-mcab-200ms-pos01] walls=7/8 sims=16644 exp=16645 ms=205.1
+[map-mcab-200ms-pos02] walls=7/7 sims=19399 exp=19400 ms=204.4
+[map-mcab-200ms-pos03] walls=6/6 sims=19999 exp=20000 ms=190.9
+[map-mcab-200ms-pos04] walls=2/3 sims=15348 exp=15349 ms=203.7
+[map-mcab-200ms-pos06] walls=2/3 sims=17401 exp=17402 ms=204.5
+[map-mcab-200ms-pos07] walls=3/2 sims=16157 exp=16158 ms=202.7
+[map-mcab-200ms-pos08] walls=4/3 sims=9613 exp=9614 ms=202.1
+[map-mcab-200ms-pos09] walls=2/1 sims=19699 exp=19699 ms=202.5
+[map-mcab-200ms] searched_positions=9 sims_per_move=16998 expanded_per_move=16999 leaves_per_move=16998 truncated_total=0 wall_s_per_move_ms=202.4
+[map-mcab-200ms] approx_policy_s=0.121 approx_leaf_eval_s=0.131 total_s=1.82
+[map-ab-40ms-mindepth3] positions=16 nodes_per_move=14976 avg_depth=19.38 nps=642946
+[map-ab-40ms-mindepth99] positions=16 nodes_per_move=15296 avg_depth=19.44 nps=660934
+[map-ab-40ms-mindepth0] positions=16 nodes_per_move=14291 avg_depth=19.38 nps=627388
+[map-ab-200ms-mindepth3] positions=16 nodes_per_move=92352 avg_depth=20.06 nps=818709
+[map-ab-200ms-mindepth99] positions=16 nodes_per_move=94720 avg_depth=20.06 nps=839526
+[map-ab-200ms-mindepth0] positions=16 nodes_per_move=87488 avg_depth=20.00 nps=776049
