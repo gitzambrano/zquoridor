@@ -42,3 +42,6 @@ ENV/
 .vs/
 .vscode/
 .idea/
+tc_out.txt
+tpa_dbg.exe
+tpa_g.exe
