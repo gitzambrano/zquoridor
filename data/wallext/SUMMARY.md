@@ -90,6 +90,16 @@ Confirm stage: top-3 point estimates re-run on independent corpus slices
 Pooled screen+confirm per variant (700 games each): b1t6 +8.4 +-25.6,
 b2t4 +4.9 +-25.7, b3t4 +2.5 +-25.7 -- none significant.
 
+## Correctness (this session)
+
+`test_wall_qextension` full run (`test_wq_run2.log`, ~105 min at -O2 under
+load): part A exact default-identity 135/135 heuristic + 8/8 NNUE
+(score AND node count) against the regenerated reference; part B
+agreement 73.5%/74.5%/100% with zero illegal moves; part C stack stress
+(caps 6+6, threshold 20) clean. The standard suite (rules_sanity,
+search_staging, move_ordering, endgame_race, lmr_pvs, repetition_diff)
+passed on the featured headers before any experiment ran.
+
 ## Conclusion
 
 The low-walls extension bonus does not produce a measurable strength gain
