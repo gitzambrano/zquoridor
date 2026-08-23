@@ -155,6 +155,16 @@ constexpr mcab::Tri E1_MCAB_CLEAR_TT_PER_MOVE_OVERRIDE = mcab::Tri::Unset;  // p
 constexpr mcab::Tri E2_MCAB_CLEAR_TT_PER_MOVE_OVERRIDE = mcab::Tri::Unset;  // producao: desligado
 constexpr int E1_MCAB_MAX_TREE_DEPTH_OVERRIDE = mcab::UNSET_INT;   // producao: 48
 constexpr int E2_MCAB_MAX_TREE_DEPTH_OVERRIDE = mcab::UNSET_INT;   // producao: 48
+// inv/ab-policy, direção E ("two-stage root"): pré-filtro AB da raiz do
+// MCTS. 0 = desligado (produção). depth = plies da busca AB de ranking;
+// topk = filhos da raiz mantidos ativos; timefrac = fração do tempo do
+// lance dada à passada de ranking.
+constexpr int E1_MCAB_AB_PREFILTER_DEPTH_OVERRIDE = mcab::UNSET_INT;   // producao: 0 (off)
+constexpr int E2_MCAB_AB_PREFILTER_DEPTH_OVERRIDE = mcab::UNSET_INT;   // producao: 0 (off)
+constexpr int E1_MCAB_AB_PREFILTER_TOPK_OVERRIDE = mcab::UNSET_INT;    // producao: 0 (off)
+constexpr int E2_MCAB_AB_PREFILTER_TOPK_OVERRIDE = mcab::UNSET_INT;    // producao: 0 (off)
+constexpr double E1_MCAB_AB_PREFILTER_TIMEFRAC_OVERRIDE = mcab::UNSET_REAL; // producao: 0.25
+constexpr double E2_MCAB_AB_PREFILTER_TIMEFRAC_OVERRIDE = mcab::UNSET_REAL; // producao: 0.25
 // Ruido de Dirichlet na raiz: producao = DESLIGADO aqui de proposito. Serve
 // para diversidade de abertura em dados de treino (selfplay liga), nunca
 // para medir forca -- arena mede forca. Sem flag de CLI correspondente.
@@ -260,6 +270,12 @@ static int g_e1McabMaxTreeDepth = mcab::resolve(E1_MCAB_MAX_TREE_DEPTH_OVERRIDE,
 static int g_e2McabMaxTreeDepth = mcab::resolve(E2_MCAB_MAX_TREE_DEPTH_OVERRIDE, MCAB_PROD.maxTreeDepth);
 static bool g_e1McabEquivMode = E1_MCAB_EQUIV_MODE_DEFAULT;
 static bool g_e2McabEquivMode = E2_MCAB_EQUIV_MODE_DEFAULT;
+static int g_e1McabAbPreDepth = mcab::resolve(E1_MCAB_AB_PREFILTER_DEPTH_OVERRIDE, MCAB_PROD.abPrefilterDepth);
+static int g_e2McabAbPreDepth = mcab::resolve(E2_MCAB_AB_PREFILTER_DEPTH_OVERRIDE, MCAB_PROD.abPrefilterDepth);
+static int g_e1McabAbPreTopK = mcab::resolve(E1_MCAB_AB_PREFILTER_TOPK_OVERRIDE, MCAB_PROD.abPrefilterTopK);
+static int g_e2McabAbPreTopK = mcab::resolve(E2_MCAB_AB_PREFILTER_TOPK_OVERRIDE, MCAB_PROD.abPrefilterTopK);
+static double g_e1McabAbPreTimeFrac = mcab::resolve(E1_MCAB_AB_PREFILTER_TIMEFRAC_OVERRIDE, MCAB_PROD.abPrefilterTimeFrac);
+static double g_e2McabAbPreTimeFrac = mcab::resolve(E2_MCAB_AB_PREFILTER_TIMEFRAC_OVERRIDE, MCAB_PROD.abPrefilterTimeFrac);
 
 // Struct de amostra de treino local (independente das duas engines) --
 // layout idÃªntico ao TrainingSample de selfplay.hpp/arena.cpp original.
@@ -448,6 +464,9 @@ int playArenaGame(int engine1PlayerIdx, int timeMs, int randomPlies, std::mt1993
         p1.rootNoiseAlpha = g_e1McabRootNoiseAlpha;
         p1.rootNoiseEpsilon = g_e1McabRootNoiseEpsilon;
         p1.maxTreeDepth = g_e1McabMaxTreeDepth;
+        p1.abPrefilterDepth = g_e1McabAbPreDepth;
+        p1.abPrefilterTopK = g_e1McabAbPreTopK;
+        p1.abPrefilterTimeFrac = g_e1McabAbPreTimeFrac;
         mcabRunner1.setParams(p1);
 
         mcab::McabParams p2;
@@ -471,6 +490,9 @@ int playArenaGame(int engine1PlayerIdx, int timeMs, int randomPlies, std::mt1993
         p2.rootNoiseAlpha = g_e2McabRootNoiseAlpha;
         p2.rootNoiseEpsilon = g_e2McabRootNoiseEpsilon;
         p2.maxTreeDepth = g_e2McabMaxTreeDepth;
+        p2.abPrefilterDepth = g_e2McabAbPreDepth;
+        p2.abPrefilterTopK = g_e2McabAbPreTopK;
+        p2.abPrefilterTimeFrac = g_e2McabAbPreTimeFrac;
         mcabRunner2.setParams(p2);
     }
     mcabRunner1.resetTree();
@@ -670,6 +692,12 @@ int main(int argc, char* argv[]) {
     int e1McabMaxTreeDepth = mcab::resolve(E1_MCAB_MAX_TREE_DEPTH_OVERRIDE, MCAB_PROD.maxTreeDepth);
     int e2McabMaxTreeDepth = mcab::resolve(E2_MCAB_MAX_TREE_DEPTH_OVERRIDE, MCAB_PROD.maxTreeDepth);
     bool e1McabEquivMode = E1_MCAB_EQUIV_MODE_DEFAULT, e2McabEquivMode = E2_MCAB_EQUIV_MODE_DEFAULT;
+    int e1McabAbPreDepth = mcab::resolve(E1_MCAB_AB_PREFILTER_DEPTH_OVERRIDE, MCAB_PROD.abPrefilterDepth);
+    int e2McabAbPreDepth = mcab::resolve(E2_MCAB_AB_PREFILTER_DEPTH_OVERRIDE, MCAB_PROD.abPrefilterDepth);
+    int e1McabAbPreTopK = mcab::resolve(E1_MCAB_AB_PREFILTER_TOPK_OVERRIDE, MCAB_PROD.abPrefilterTopK);
+    int e2McabAbPreTopK = mcab::resolve(E2_MCAB_AB_PREFILTER_TOPK_OVERRIDE, MCAB_PROD.abPrefilterTopK);
+    double e1McabAbPreTimeFrac = mcab::resolve(E1_MCAB_AB_PREFILTER_TIMEFRAC_OVERRIDE, MCAB_PROD.abPrefilterTimeFrac);
+    double e2McabAbPreTimeFrac = mcab::resolve(E2_MCAB_AB_PREFILTER_TIMEFRAC_OVERRIDE, MCAB_PROD.abPrefilterTimeFrac);
 
     // Valor nao reconhecido cai no de producao (nao vira MaxVisits calado):
     // um typo em "visits-then-q" nao deve parecer que funcionou.
@@ -779,6 +807,23 @@ int main(int argc, char* argv[]) {
         else if (std::strcmp(argv[i], "--e2-mcab-max-tree-depth") == 0 && i + 1 < argc) e2McabMaxTreeDepth = std::atoi(argv[++i]);
         else if (std::strcmp(argv[i], "--e1-mcab-equiv-mode") == 0) e1McabEquivMode = true;
         else if (std::strcmp(argv[i], "--e2-mcab-equiv-mode") == 0) e2McabEquivMode = true;
+        // inv/ab-policy, direção E: pré-filtro AB da raiz do MCTS.
+        // Formas globais (--ab-prefilter-*) e por engine (--e1-/--e2-).
+        else if (std::strcmp(argv[i], "--ab-prefilter-depth") == 0 && i + 1 < argc) {
+            int v = std::atoi(argv[++i]); e1McabAbPreDepth = v; e2McabAbPreDepth = v;
+        }
+        else if (std::strcmp(argv[i], "--e1-ab-prefilter-depth") == 0 && i + 1 < argc) e1McabAbPreDepth = std::atoi(argv[++i]);
+        else if (std::strcmp(argv[i], "--e2-ab-prefilter-depth") == 0 && i + 1 < argc) e2McabAbPreDepth = std::atoi(argv[++i]);
+        else if (std::strcmp(argv[i], "--ab-prefilter-topk") == 0 && i + 1 < argc) {
+            int v = std::atoi(argv[++i]); e1McabAbPreTopK = v; e2McabAbPreTopK = v;
+        }
+        else if (std::strcmp(argv[i], "--e1-ab-prefilter-topk") == 0 && i + 1 < argc) e1McabAbPreTopK = std::atoi(argv[++i]);
+        else if (std::strcmp(argv[i], "--e2-ab-prefilter-topk") == 0 && i + 1 < argc) e2McabAbPreTopK = std::atoi(argv[++i]);
+        else if (std::strcmp(argv[i], "--ab-prefilter-timefrac") == 0 && i + 1 < argc) {
+            double v = std::atof(argv[++i]); e1McabAbPreTimeFrac = v; e2McabAbPreTimeFrac = v;
+        }
+        else if (std::strcmp(argv[i], "--e1-ab-prefilter-timefrac") == 0 && i + 1 < argc) e1McabAbPreTimeFrac = std::atof(argv[++i]);
+        else if (std::strcmp(argv[i], "--e2-ab-prefilter-timefrac") == 0 && i + 1 < argc) e2McabAbPreTimeFrac = std::atof(argv[++i]);
         else if (std::strcmp(argv[i], "--no-invert") == 0) invertColors = false;
         // Parametros de busca (search.hpp): --e1-<knob>/--e2-<knob> valem so
         // aquele lado, --<knob> escreve nos dois. O helper casa o nome
@@ -834,6 +879,12 @@ int main(int argc, char* argv[]) {
     g_e2McabMaxTreeDepth = e2McabMaxTreeDepth;
     g_e1McabEquivMode = e1McabEquivMode;
     g_e2McabEquivMode = e2McabEquivMode;
+    g_e1McabAbPreDepth = e1McabAbPreDepth;
+    g_e2McabAbPreDepth = e2McabAbPreDepth;
+    g_e1McabAbPreTopK = e1McabAbPreTopK;
+    g_e2McabAbPreTopK = e2McabAbPreTopK;
+    g_e1McabAbPreTimeFrac = e1McabAbPreTimeFrac;
+    g_e2McabAbPreTimeFrac = e2McabAbPreTimeFrac;
 
     g_e1UsePolicyOrdering = e1PolicyOrder;
     g_e2UsePolicyOrdering = e2PolicyOrder;

@@ -56,6 +56,16 @@ struct SearchTuning {
     int  catColdCm        = UNSET_INT;   // produção: 30      (CAT_COLD_CM)
     int  wallBfsOrderMaxPly  = UNSET_INT;  // produção: 2     (WALL_BFS_ORDER_MAX_PLY)
     int  qsCriticalBfsDelta  = UNSET_INT;  // produção: 2     (QS_CRITICAL_BFS_DELTA)
+    // inv/ab-policy (2026-08-23) -- todos default DESLIGADOS/ vazios; o
+    // engine de produção não muda enquanto ninguém preencher estes campos.
+    Tri  policyHistory       = Tri::Unset;  // produção: off   (setPolicyHistorySeedEnabled)
+    long long policyHistoryScale = UNSET_I64;  // produção: 400  (setPolicyHistorySeedScale)
+    Tri  policyLmr           = Tri::Unset;  // produção: off   (setPolicyLmrEnabled)
+    double policyLmrHot      = UNSET_REAL;  // produção: 2.5   (setPolicyLmrHotDelta)
+    double policyLmrCold     = UNSET_REAL;  // produção: 5.0   (setPolicyLmrColdDelta)
+    Tri  policyLmp           = Tri::Unset;  // produção: off   (setPolicyLmpEnabled)
+    double policyLmpBase     = UNSET_REAL;  // produção: 0.05  (setPolicyLmpBaseMass)
+    int  policyLmpMinCount   = UNSET_INT;   // produção: 8     (setPolicyLmpMinCount)
 };
 
 // Gera um par de helpers "trySet<NOME>(engine, valor, 0)": o template casa
@@ -79,6 +89,14 @@ QR_TUNING_TRY_SETTER(trySetCatHotCm,          setCatHotCm,           int)
 QR_TUNING_TRY_SETTER(trySetCatColdCm,         setCatColdCm,          int)
 QR_TUNING_TRY_SETTER(trySetWallBfsOrderMaxPly, setWallBfsOrderMaxPly, int)
 QR_TUNING_TRY_SETTER(trySetQsCriticalBfsDelta, setQsCriticalBfsDelta, int)
+QR_TUNING_TRY_SETTER(trySetPolicyHistorySeedEnabled, setPolicyHistorySeedEnabled, bool)
+QR_TUNING_TRY_SETTER(trySetPolicyHistorySeedScale,  setPolicyHistorySeedScale,  long long)
+QR_TUNING_TRY_SETTER(trySetPolicyLmrEnabled,        setPolicyLmrEnabled,        bool)
+QR_TUNING_TRY_SETTER(trySetPolicyLmrHotDelta,       setPolicyLmrHotDelta,       float)
+QR_TUNING_TRY_SETTER(trySetPolicyLmrColdDelta,      setPolicyLmrColdDelta,      float)
+QR_TUNING_TRY_SETTER(trySetPolicyLmpEnabled,        setPolicyLmpEnabled,        bool)
+QR_TUNING_TRY_SETTER(trySetPolicyLmpBaseMass,       setPolicyLmpBaseMass,       double)
+QR_TUNING_TRY_SETTER(trySetPolicyLmpMinCount,       setPolicyLmpMinCount,       int)
 
 #undef QR_TUNING_TRY_SETTER
 
@@ -99,6 +117,21 @@ inline void applySearchTuning(Eng& e, const SearchTuning& t) {
     if (isSet(t.catColdCm))        trySetCatColdCm(e, t.catColdCm, 0);
     if (isSet(t.wallBfsOrderMaxPly)) trySetWallBfsOrderMaxPly(e, t.wallBfsOrderMaxPly, 0);
     if (isSet(t.qsCriticalBfsDelta)) trySetQsCriticalBfsDelta(e, t.qsCriticalBfsDelta, 0);
+    // inv/ab-policy knobs: hot/cold/base/min-count are applied only when
+    // their feature flag was set, so a bare --policy-lmr keeps the default
+    // deltas and never silently turns LMP on.
+    if (isSet(t.policyHistory))      trySetPolicyHistorySeedEnabled(e, t.policyHistory == Tri::On, 0);
+    if (isSet(t.policyHistoryScale)) trySetPolicyHistorySeedScale(e, t.policyHistoryScale, 0);
+    if (isSet(t.policyLmr))          trySetPolicyLmrEnabled(e, t.policyLmr == Tri::On, 0);
+    if (t.policyLmr == Tri::On) {
+        if (isSet(t.policyLmrHot))  trySetPolicyLmrHotDelta(e, (float)t.policyLmrHot, 0);
+        if (isSet(t.policyLmrCold)) trySetPolicyLmrColdDelta(e, (float)t.policyLmrCold, 0);
+    }
+    if (isSet(t.policyLmp))          trySetPolicyLmpEnabled(e, t.policyLmp == Tri::On, 0);
+    if (t.policyLmp == Tri::On) {
+        if (isSet(t.policyLmpBase))     trySetPolicyLmpBaseMass(e, t.policyLmpBase, 0);
+        if (isSet(t.policyLmpMinCount)) trySetPolicyLmpMinCount(e, t.policyLmpMinCount, 0);
+    }
 }
 
 // Parsing compartilhado pelas CLIs (arena.cpp / selfplay_main.cpp): consome
@@ -130,6 +163,18 @@ inline bool parseSearchTuningArg(const char* arg, int argc, char** argv, int& i,
     if (flag("cat-cold-cm"))         { if (temValor()) t.catColdCm = std::atoi(argv[++i]); return true; }
     if (flag("wall-bfs-order-max-ply")) { if (temValor()) t.wallBfsOrderMaxPly = std::atoi(argv[++i]); return true; }
     if (flag("qs-critical-bfs-delta"))  { if (temValor()) t.qsCriticalBfsDelta = std::atoi(argv[++i]); return true; }
+    // inv/ab-policy knobs
+    if (flag("policy-history"))        { t.policyHistory = Tri::On;  return true; }
+    if (flag("no-policy-history"))     { t.policyHistory = Tri::Off; return true; }
+    if (flag("policy-history-scale"))  { if (temValor()) t.policyHistoryScale = std::atoll(argv[++i]); return true; }
+    if (flag("policy-lmr"))            { t.policyLmr = Tri::On;  return true; }
+    if (flag("no-policy-lmr"))         { t.policyLmr = Tri::Off; return true; }
+    if (flag("policy-lmr-hot"))        { if (temValor()) t.policyLmrHot = std::atof(argv[++i]); return true; }
+    if (flag("policy-lmr-cold"))       { if (temValor()) t.policyLmrCold = std::atof(argv[++i]); return true; }
+    if (flag("policy-lmp"))            { t.policyLmp = Tri::On;  return true; }
+    if (flag("no-policy-lmp"))         { t.policyLmp = Tri::Off; return true; }
+    if (flag("policy-lmp-base"))       { if (temValor()) t.policyLmpBase = std::atof(argv[++i]); return true; }
+    if (flag("policy-lmp-min-count"))  { if (temValor()) t.policyLmpMinCount = std::atoi(argv[++i]); return true; }
     return false;
 }
 
@@ -151,6 +196,14 @@ inline std::string describeSearchTuning(const SearchTuning& t) {
     if (isSet(t.catColdCm))        add("cat-cold-cm=" + std::to_string(t.catColdCm));
     if (isSet(t.wallBfsOrderMaxPly)) add("wall-bfs-order-max-ply=" + std::to_string(t.wallBfsOrderMaxPly));
     if (isSet(t.qsCriticalBfsDelta)) add("qs-critical-bfs-delta=" + std::to_string(t.qsCriticalBfsDelta));
+    if (isSet(t.policyHistory))       add(std::string("policy-history=") + (t.policyHistory == Tri::On ? "on" : "off"));
+    if (isSet(t.policyHistoryScale))  add("policy-history-scale=" + std::to_string(t.policyHistoryScale));
+    if (isSet(t.policyLmr))           add(std::string("policy-lmr=") + (t.policyLmr == Tri::On ? "on" : "off"));
+    if (isSet(t.policyLmrHot))        add("policy-lmr-hot=" + std::to_string(t.policyLmrHot));
+    if (isSet(t.policyLmrCold))       add("policy-lmr-cold=" + std::to_string(t.policyLmrCold));
+    if (isSet(t.policyLmp))           add(std::string("policy-lmp=") + (t.policyLmp == Tri::On ? "on" : "off"));
+    if (isSet(t.policyLmpBase))       add("policy-lmp-base=" + std::to_string(t.policyLmpBase));
+    if (isSet(t.policyLmpMinCount))   add("policy-lmp-min-count=" + std::to_string(t.policyLmpMinCount));
     return s;
 }
 
@@ -169,7 +222,15 @@ inline const char* searchTuningUsage() {
         "  --wall-bfs-order-max-ply N  ply maximo com ordenacao de muro por BFS (producao: 2)\n"
         "  --qs-critical-bfs-delta N   delta de BFS que torna o muro critico na quiescencia (producao: 2)\n"
         "  --quiescence/--no-quiescence  quiescencia de muro (producao: ligada)\n"
-        "  --lmr-pvs/--no-lmr-pvs        LMR+PVS (producao: ligado)\n";
+        "  --lmr-pvs/--no-lmr-pvs        LMR+PVS (producao: ligado)\n"
+        "  --policy-history/--no-policy-history  semeia history com a politica da raiz (producao: off)\n"
+        "  --policy-history-scale N      escala do logit semeado na history (producao: 400)\n"
+        "  --policy-lmr/--no-policy-lmr  LMR modulado pelo logit da politica (producao: off)\n"
+        "  --policy-lmr-hot F            janela do maximo do estagio que impede reducao (default 2.5)\n"
+        "  --policy-lmr-cold F           distancia do maximo que adiciona +1 de reducao (default 5.0)\n"
+        "  --policy-lmp/--no-policy-lmp  poda tardia por massa softmax da politica (producao: off)\n"
+        "  --policy-lmp-base F           massa sufixo tolerada no horizonte (default 0.05)\n"
+        "  --policy-lmp-min-count N      candidatos iniciais nunca podados (default 8)\n";
 }
 
 }  // namespace tuning
