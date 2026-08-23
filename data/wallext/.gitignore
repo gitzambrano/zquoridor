@@ -1,3 +1,4 @@
 *.log
 *.log.err
+*.err
 ref_*.inc
