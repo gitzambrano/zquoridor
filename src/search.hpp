@@ -456,7 +456,6 @@ public:
                 State ns = applyMove(root, rootMoves[i]);
                 int w = winner(ns);
                 int childScore;
-                bool childIsDraw = false;
                 if (w != -1) {
                     childScore = (w == ns.turn) ? SCORE_INF - 1 : -(SCORE_INF - 1);
                 } else {
@@ -469,22 +468,25 @@ public:
                         // -contempt -> a raiz ve contempt. Sem o toggle,
                         // mantem `contempt` direto (comportamento historico).
                         childScore = parityAnchoredRaceDraw ? -contempt : contempt;
-                        childIsDraw = true;
                     } else {
                         int raw = RACE_SCORE_BASE - ro.dtm;
                         childScore = (ro.winner == ns.turn) ? raw : -raw;
                     }
                 }
                 int scoreForRoot = -childScore;  // negamax: valor do filho é do ponto de vista do OPONENTE
+                bool terminalBand = (bestScore <= -(SCORE_INF - 1) || bestScore >= SCORE_INF - 1);
                 int tieDist = 0;
-                if (endgameProgressTiebreak && childIsDraw && scoreForRoot == bestScore) {
-                    // so paga BFS extra em empate empatado com o best atual
+                if (endgameProgressTiebreak && !terminalBand && scoreForRoot == bestScore && bestScore != -SCORE_INF) {
+                    // empate empatado dentro da faixa nao-terminal (empates
+                    // entre si OU derrotas/vitorias de mesmo dtm): desempata
+                    // pelo progresso do lado da raiz (menor distancia dele
+                    // depois do lance -- marcha pra frente mesmo em final
+                    // perdido/empatado, maximizando chances praticas).
                     tieDist = shortestPathLen(ns.wallsH, ns.wallsV, ns.pawn[rootSide], rootSide);
                 }
                 bool better = scoreForRoot > bestScore;
-                if (!better && endgameProgressTiebreak && scoreForRoot == bestScore &&
-                    (bestScore > -(SCORE_INF - 1) && bestScore < SCORE_INF - 1)) {
-                    // faixa de nao-terminal (empates entre si): desempata por progresso
+                if (!better && endgameProgressTiebreak && !terminalBand &&
+                    scoreForRoot == bestScore && bestScore != -SCORE_INF) {
                     better = tieDist < bestTieDist;
                 }
                 if (better || bestScore == -SCORE_INF) {

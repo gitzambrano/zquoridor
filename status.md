@@ -65,6 +65,32 @@ relearn by experiment.
   never disappear); `push(hash, irreversible)` exploits this. The subtle
   case (post-wall position recurring via pawn cycles) is pinned by
   `tests/test_repetition_diff.cpp`.
+- **Contempt / wandering investigation 2026-08-22** (`inv/contempt-wandering`
+  worktree; full data in that branch, `investigation_data/`): the reported
+  pawn "wandering" in near-endgames is NOT caused by contempt. Sweep of
+  `setContempt` over {-60,-30,-15,-5,0} moved the backward-move rate by
+  less than measurement noise in both eval modes and both time controls;
+  head-to-head -30 vs 0 gave -44 +/-76 Elo (n.s.). Findings, by share of
+  the symptom: (1) In wall-less endings the LOSING side makes ~47%
+  backward moves even with exact solver values -- among tied max-DTM
+  losses the empty-handed root branch falls back to move-generation
+  order. This is game-theoretically optimal resistance, but it looks
+  like shuffling; `setEndgameProgressTiebreak(true)` reorders only
+  exactly-equal children and cuts it to ~27% with identical results
+  (Elo -12 +/-60 vs default). All-draw roots never occurred (0/290).
+  (2) The persistent TT carries path-dependent repetition scores across
+  real moves; clearing the TT per move removes nearly all of it
+  (heuristic mode: repetition-drawn games 41/120 -> 0/120; NNUE mode:
+  backward moves 0.125 -> 0.081) but costs about -71 +/-78 Elo from lost
+  TT reuse -- rejected for production. (3) Confirmed sign inconsistency:
+  race-solver draws use `contempt` from the node mover regardless of ply,
+  while repetition draws anchor to root parity; provably unable to flip a
+  move choice inside the solver regime (wins/losses are ~1e5 apart), so
+  left as-is behind `setParityAnchoredRaceDraw`. Depth >=7 fixed-depth
+  searches do not finish near-endgame positions within sane budgets
+  (>20M nodes at depth 8); production time controls reach depth 5-6 there.
+  New test: `tests/test_contempt_repetition.cpp`; bench:
+  `benchmarks/bench_contempt_wandering.cpp`.
 
 ---
 

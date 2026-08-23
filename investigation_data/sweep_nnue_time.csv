@@ -1,0 +1,13 @@
+corpus,mode,tc,tt,contempt,games,a_wins,b_wins,rep_draws,timeouts,avg_plies,shuffle_rate,cycle4_rate,back_rate,progress_per_move,illegal
+mid,nnue,time,persist,-60,120,59,55,4,2,50.60,0.00000,0.00445,0.12072,0.51087,0
+empty,nnue,time,persist,-60,160,80,80,0,0,11.80,0.00000,0.00000,0.22564,0.54979,0
+mid,nnue,time,persist,-30,120,50,62,6,2,52.19,0.00000,0.00830,0.12534,0.50774,0
+empty,nnue,time,persist,-30,160,80,80,0,0,11.80,0.00000,0.00000,0.22564,0.54979,0
+mid,nnue,time,persist,-15,120,58,52,2,8,53.82,0.00000,0.00372,0.11939,0.52509,0
+empty,nnue,time,persist,-15,160,80,80,0,0,11.80,0.00000,0.00000,0.22564,0.54979,0
+mid,nnue,time,persist,-5,120,55,58,5,2,51.17,0.00000,0.00798,0.12068,0.51466,0
+empty,nnue,time,persist,-5,160,80,80,0,0,11.80,0.00000,0.00000,0.22564,0.54979,0
+mid,nnue,time,persist,0,120,53,56,7,4,53.02,0.00000,0.00849,0.13107,0.49395,0
+empty,nnue,time,persist,0,160,80,80,0,0,11.80,0.00000,0.00000,0.22564,0.54979,0
+mid,nnue,time,clear,-30,120,64,56,0,0,51.28,0.00000,0.00374,0.08125,0.57914,0
+mid,nnue,time,clear,0,120,62,56,1,1,53.36,0.00000,0.00375,0.08855,0.56302,0

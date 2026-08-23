@@ -47,6 +47,8 @@ static std::atomic<long long> g_illegalMoves{0};
 struct EngineCfg {
     int contempt = CONTEMPT;                    // default -30
     bool clearTTPerMove = false;
+    bool progressTiebreak = false;              // setEndgameProgressTiebreak
+    bool parityRaceDraw = false;                // setParityAnchoredRaceDraw
     Negamax::EvalMode mode = Negamax::EvalMode::Heuristic;
     int depthCap = 40;
     int timeMs = 150;
@@ -266,6 +268,9 @@ static void runPass(const char* corpusName, const std::vector<State>& corpus,
     std::atomic<size_t> nextJob{0};
     std::mutex aggMutex;
     SideStats aggA, aggB;
+    // Split by final role: metrics of the WINNING side vs the LOSING (or
+    // drawing) side -- wandering concentrates on one role or the other.
+    SideStats aggWinner, aggLoser;
     long long resA = 0, resB = 0, resDraw = 0, resTO = 0;
     double plySum = 0;
     long long gamesDone = 0;
@@ -278,15 +283,22 @@ static void runPass(const char* corpusName, const std::vector<State>& corpus,
             size_t posIdx = j / 2;
             int aSide = (j % 2 == 0) ? 0 : 1;
             const State& pos = corpus[posIdx];
-            GameOutcome go = playGame(pos, aSide, cA, cB,
-                                      wk.get(0, cA), wk.get(1, cB), maxPlies);
+            Negamax& e1 = wk.get(0, cA);
+            Negamax& e2 = wk.get(1, cB);
+            e1.setEndgameProgressTiebreak(cA.progressTiebreak);
+            e2.setEndgameProgressTiebreak(cB.progressTiebreak);
+            e1.setParityAnchoredRaceDraw(cA.parityRaceDraw);
+            e2.setParityAnchoredRaceDraw(cB.parityRaceDraw);
+            GameOutcome go = playGame(pos, aSide, cA, cB, e1, e2, maxPlies);
             std::lock_guard<std::mutex> lk(aggMutex);
             aggA.merge(go.a);
             aggB.merge(go.b);
-            if (go.result == 0) resA++;
-            else if (go.result == 1) resB++;
-            else if (go.result == 2) resDraw++;
-            else resTO++;
+            if (go.result == 0) { aggWinner.merge(go.a); aggLoser.merge(go.b); resA++; }
+            else if (go.result == 1) { aggWinner.merge(go.b); aggLoser.merge(go.a); resB++; }
+            else if (go.result == 2) { aggWinner.merge(go.a); aggWinner.merge(go.b);
+                                       aggLoser.merge(go.a); aggLoser.merge(go.b); resDraw++; }
+            else { aggWinner.merge(go.a); aggWinner.merge(go.b);
+                   aggLoser.merge(go.a); aggLoser.merge(go.b); resTO++; }
             plySum += go.plies;
             gamesDone++;
         }
@@ -307,6 +319,11 @@ static void runPass(const char* corpusName, const std::vector<State>& corpus,
 
     const char* modeName = evalModeName(cA.mode);
     std::string tcName = (cA.timeMs >= 30000) ? "depth" : "time";
+    double winDenom = double(aggWinner.moves), loseDenom = double(aggLoser.moves);
+    double winBack = winDenom ? aggWinner.backMoves / winDenom : 0.0;
+    double loseBack = loseDenom ? aggLoser.backMoves / loseDenom : 0.0;
+    double winProg = winDenom ? aggWinner.progressSum / winDenom : 0.0;
+    double loseProg = loseDenom ? aggLoser.progressSum / loseDenom : 0.0;
     if (duelMode) {
         double elo, margin;
         eloAndCI(resA, resB, resDraw, elo, margin);
@@ -322,6 +339,8 @@ static void runPass(const char* corpusName, const std::vector<State>& corpus,
                cA.contempt, games, resA, resB, resDraw, resTO,
                shufRate, cyc4Rate, backRate, prog, avgPlies, illegalHere);
     }
+    printf("    split winner-vs-loser: back=%.3f/%.3f prog/move=%.3f/%.3f moves=%lld/%lld\n",
+           winBack, loseBack, winProg, loseProg, aggWinner.moves, aggLoser.moves);
     fflush(stdout);
     if (csv) {
         std::lock_guard<std::mutex> lk(csvMutex);
@@ -427,25 +446,41 @@ int main(int argc, char** argv) {
     // ---------------- Duel mode ----------------
     if (!duelSpec.empty()) {
         size_t colon = duelSpec.find(':');
-        if (colon == std::string::npos) { fprintf(stderr, "--duel wants ca:cb\n"); return 1; }
-        int ca = atoi(duelSpec.substr(0, colon).c_str());
-        int cb = atoi(duelSpec.substr(colon + 1).c_str());
+        if (colon == std::string::npos) { fprintf(stderr, "--duel wants cA[+flags]:cB[+flags]\n"); return 1; }
+        // Side spec: <contempt> followed by optional flag chars anywhere
+        // after the number: t = clear TT per move, p = endgame progress
+        // tie-break, r = parity-anchored race draw. Example: --duel "-30:-30t"
+        auto parseSide = [](const std::string& tokIn, EngineCfg& c) {
+            std::string num;
+            for (char ch : tokIn) {
+                if (ch == 't') c.clearTTPerMove = true;
+                else if (ch == 'p') c.progressTiebreak = true;
+                else if (ch == 'r') c.parityRaceDraw = true;
+                else num += ch;
+            }
+            c.contempt = atoi(num.c_str());
+        };
+        EngineCfg baseA, baseB;
+        parseSide(duelSpec.substr(0, colon), baseA);
+        parseSide(duelSpec.substr(colon + 1), baseB);
+        printf("DUEL spec: A={c=%d tt=%d tb=%d par=%d} B={c=%d tt=%d tb=%d par=%d}\n",
+               baseA.contempt, (int)baseA.clearTTPerMove, (int)baseA.progressTiebreak,
+               (int)baseA.parityRaceDraw, baseB.contempt, (int)baseB.clearTTPerMove,
+               (int)baseB.progressTiebreak, (int)baseB.parityRaceDraw);
 
         std::vector<Negamax::EvalMode> modes;
         if (wantHeur) modes.push_back(Negamax::EvalMode::Heuristic);
         if (wantNnue) modes.push_back(Negamax::EvalMode::NNUE);
         for (auto md : modes) {
             if (wantDepth) {
-                EngineCfg c; c.depthCap = 5; c.timeMs = 60000; c.mode = md;
-                c.contempt = ca;
-                EngineCfg d = c; d.contempt = cb;
+                EngineCfg c = baseA; c.depthCap = 5; c.timeMs = 60000; c.mode = md;
+                EngineCfg d = baseB; d.depthCap = 5; d.timeMs = 60000; d.mode = md;
                 runPass("mid", mid, 20, c, d, "persist", true, 48, threads, csv, csvMutex);
                 runPass("empty", emp, (int)emp.size(), c, d, "persist", true, maxPlies, threads, csv, csvMutex);
             }
             if (wantTime) {
-                EngineCfg c; c.depthCap = 40; c.timeMs = 150; c.mode = md;
-                c.contempt = ca;
-                EngineCfg d = c; d.contempt = cb;
+                EngineCfg c = baseA; c.depthCap = 40; c.timeMs = 150; c.mode = md;
+                EngineCfg d = baseB; d.depthCap = 40; d.timeMs = 150; d.mode = md;
                 runPass("mid", mid, timeSubset, c, d, "persist", true, maxPlies, threads, csv, csvMutex);
                 runPass("empty", emp, (int)emp.size(), c, d, "persist", true, maxPlies, threads, csv, csvMutex);
             }
