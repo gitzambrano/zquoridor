@@ -61,6 +61,41 @@ perf/Elo -> final status.md update + report.
 
 (pending)
 
+## Step 0 audit outcome (session 3 fixes, commit 2)
+
+1. TEST BUG (fixed): tests/test_policy_ab.cpp configureVariant() hard-wired
+   evalMode=NNUE, so the "defaults-heur" block compared a Heuristic engine
+   against an NNUE engine -> spurious FAIL. configureVariant now takes an
+   explicit nnue flag.
+2. ENGINE BUG (fixed): search.hpp gated LMR modulation and wall LMP on one
+   shared flag `polActive = policyPtr && (policyLmrEnabled || policyLmpEnabled)`,
+   so enabling ONLY --policy-lmp also armed policy-LMR hot/cold modulation
+   inside tryMove (evidence: C and D both showed identical 0.52x node ratio).
+   Now polLmrActive/polLmpActive are separate; each feature only its own
+   toggle. Also reused expBuf[i] in the wall loop instead of re-calling
+   policyLogitForMove per candidate.
+3. ENGINE CRASH (fixed during fix 2, caught by test): first split dropped the
+   policyPtr null check for LMP -> SIGSEGV at nodes where depth <
+   policyOrderingMinDepth (no policy array). polLmpActive = policyPtr &&
+   policyLmpEnabled now.
+4. Build scripts: added map_compute.exe to build_bench.bat [8/8] and
+   test_policy_ab.exe to build_tests.bat [13/13]; renumbered steps.
+
+test_policy_ab results AFTER fixes (-O2, weights loaded):
+- defaults bit-exact BOTH eval modes (22 positions each)
+- history-seed(B): score-agree 98.4%, decisive 100%, illegal 0,
+  nodes ref/var 1.04x (B slightly CHEAPER at equal depth)
+- policy-lmr(C): agree ok but nodes ref/var 0.52x -> C DOUBLES
+  nodes-to-equal-depth with hotDelta 2.5 (policy-hot exemption fires too
+  often). Strength must come from arena to justify this cost.
+- policy-lmp(D) base 0.05: 100% agreement, nodes 1.01x (barely prunes)
+- lmp-base0.15(D): 100% agreement, nodes 1.03x
+- stress all-on mindepth1: agree ok, nodes 0.82x (C dominates inflation)
+
+Full regression suite after fixes: rules_sanity, staging, move_ordering,
+endgame_race, lmr_pvs, repetition_diff, leaf_smoke, mcab_core,
+mcab_dispatch, mcab_phase9 -- ALL PASS.
+
 ## Decisions
 
 - Keep all four inherited pieces (A not implemented; directions B/C/D/E are,

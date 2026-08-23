@@ -1185,11 +1185,14 @@ private:
             policyPtr = &policyArr;
             stats.policyNodes++;
         }
-        // Direction C/D context (inv/ab-policy): the toggles below only act
-        // when a policy array exists for THIS node. With
+        // Direction C/D context (inv/ab-policy): LMR modulation (C) and
+        // wall late-move pruning (D) are gated SEPARATELY, each on its own
+        // toggle -- enabling only one must never arm the other. Both act
+        // only when a policy array exists for THIS node. With
         // setPolicyOrderingMinDepth lowered, cheap per-node guidance reaches
         // deeper plies; see the block comment at POLICY_ORDER_SCALE.
-        bool polActive = policyPtr && (policyLmrEnabled || policyLmpEnabled);
+        bool polLmrActive = policyPtr && policyLmrEnabled;
+        bool polLmpActive = policyPtr && policyLmpEnabled;
 
         // --- Geração estagiada de lances (Fase 4.2.3 do plano) ---------
         // Estágio 1: lance da TT, testado antes de gerar qualquer muro --
@@ -1341,7 +1344,7 @@ private:
             // Direction C context: stage-local best policy logit over the
             // (at most 3) pawn candidates.
             float pawnMaxLogit = 0.f;
-            bool pawnPol = polActive && !pawnMoves.empty();
+            bool pawnPol = polLmrActive && !pawnMoves.empty();
             if (pawnPol) {
                 pawnMaxLogit = -std::numeric_limits<float>::infinity();
                 for (size_t i = 0; i < pawnMoves.size(); i++) {
@@ -1401,18 +1404,19 @@ private:
             // pruning cut. Both are O(#candidates) array lookups; the
             // softmax denominator for LMP is computed once per node.
             float wallMaxLogit = 0.f;
-            bool wallPol = polActive && haveOppHeat && !wallMoves.empty();
+            bool wallPol = polLmrActive && haveOppHeat && !wallMoves.empty();
             float expBuf[ORDER_BUF_CAP];
+            size_t wn = 0;
             size_t lmpCut = wallMoves.size();  // default: prune nothing
-            if (wallPol) {
-                size_t wn = wallMoves.size() < ORDER_BUF_CAP ? wallMoves.size() : ORDER_BUF_CAP;
+            if (wallPol || (polLmpActive && haveOppHeat)) {
+                wn = wallMoves.size() < ORDER_BUF_CAP ? wallMoves.size() : ORDER_BUF_CAP;
                 wallMaxLogit = -std::numeric_limits<float>::infinity();
                 for (size_t i = 0; i < wn; i++) {
                     float lg = policyLogitForMove(*policyPtr, wallMoves[i], side);
                     expBuf[i] = lg;
                     if (lg > wallMaxLogit) wallMaxLogit = lg;
                 }
-                if (policyLmpEnabled &&
+                if (polLmpActive &&
                     alpha > -(SCORE_INF - RACE_SCALE_THRESHOLD) &&
                     beta < (SCORE_INF - RACE_SCALE_THRESHOLD) &&
                     wn >= (size_t)std::max(2, policyLmpMinCount)) {
@@ -1444,7 +1448,7 @@ private:
                 moveCount++;
                 int heat = haveOppHeat ? wallEdgeHeat(oppHeat, m.a, m.b, m.c) : -1;
                 cutoff = tryMove(m, moveCount, heat,
-                                 wallPol ? policyLogitForMove(*policyPtr, m, side) : 0.f,
+                                 wallPol ? ((i < wn) ? expBuf[i] : 0.f) : 0.f,
                                  wallMaxLogit, wallPol);
                 if (stopped) return 0;
             }

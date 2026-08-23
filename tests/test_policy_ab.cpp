@@ -84,10 +84,12 @@ Result runChoose(Negamax& eng, const State& s) {
     return {m, st.score, st.nodes};
 }
 
-void configureVariant(Negamax& eng, int variant) {
+void configureVariant(Negamax& eng, int variant, bool nnue) {
     // variant bitmask: 1 = history seed, 2 = policy LMR, 4 = policy LMP,
     // 8 = lower the policy-ordering depth gate to 1 (stress only).
-    eng.setEvalMode(Negamax::EvalMode::NNUE);
+    // nnue selects the eval mode explicitly: the defaults-bit-exact block
+    // needs a HEURISTIC pair too, so eval mode must not be hard-wired here.
+    eng.setEvalMode(nnue ? Negamax::EvalMode::NNUE : Negamax::EvalMode::Heuristic);
     eng.setPolicyHistorySeedEnabled(false);
     eng.setPolicyLmrEnabled(false);
     eng.setPolicyLmpEnabled(false);
@@ -143,12 +145,9 @@ int main(int argc, char** argv) {
             bool ok = true;
             for (const State& s : subset) {
                 Negamax untouched;
+                if (modeIsNnue) untouched.setEvalMode(Negamax::EvalMode::NNUE);
                 Negamax explicitOff;
-                if (modeIsNnue) {
-                    untouched.setEvalMode(Negamax::EvalMode::NNUE);
-                    explicitOff.setEvalMode(Negamax::EvalMode::NNUE);
-                }
-                configureVariant(explicitOff, 0);
+                configureVariant(explicitOff, 0, modeIsNnue == 1);
                 Result rA = runChoose(untouched, s);
                 Result rB = runChoose(explicitOff, s);
                 if (!(rA.move == rB.move) || rA.score != rB.score || rA.nodes != rB.nodes) {
@@ -188,9 +187,9 @@ static bool compareVariants(const char* label, int variant,
     double refNodes = 0, varNodes = 0;
     for (const State& s : pos) {
         Negamax refEng;
-        configureVariant(refEng, 0);
+        configureVariant(refEng, 0, true);
         Negamax varEng;
-        configureVariant(varEng, variant & 15);
+        configureVariant(varEng, variant & 15, true);
         if (variant & 16) varEng.setPolicyLmpBaseMass(0.15);  // coarse second threshold
 
         Result rRef = runChoose(refEng, s);
