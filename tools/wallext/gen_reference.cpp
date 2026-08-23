@@ -83,9 +83,10 @@ int main(int argc, char** argv) {
         }
     }
 
-    // ---- NNUE-mode positions: appended to REF_POS after the slice above,
-    // so both tables share one position array. Lowest-wall positions come
-    // last in the corpus, hence the backward scan.
+    // ---- NNUE mode: deep searches on low-wall positions. Depths stay at
+    // 8/10 and totals at 3..5: full-window deep searches on the very
+    // lowest-wall positions cost seconds per thousand nodes (long BFS
+    // frontiers on crowded boards), so anything deeper is hours per row.
     if (!loadWeightsQuant(weightsPath)) {
         fprintf(stderr, "FATAL: cannot load NNUE weights from %s\n", weightsPath);
         return 1;
@@ -95,6 +96,7 @@ int main(int argc, char** argv) {
         int lastTotal = -999, perBucket = 0;
         for (int i = (int)corpus.size() - 1; i >= 0 && (int)nnueIdx.size() < 4; i--) {
             int total = corpus[i].s.wallsLeft[0] + corpus[i].s.wallsLeft[1];
+            if (total < 3) continue;  // skip the most expensive bucket
             if (total != lastTotal) { lastTotal = total; perBucket = 0; }
             bool dupAgainstSlice = false;
             for (int r : refIdx) {
@@ -131,7 +133,7 @@ int main(int argc, char** argv) {
     // ---- NNUE mode: deep searches on the lowest-wall positions ----
     // These pin the incremental accumulator stack behavior at extension
     // depths far beyond the default cap.
-    const int NNUE_DEPTHS[] = {10, 12};
+    const int NNUE_DEPTHS[] = {8, 10};
     printf("static const RefVal REF_NNUE[] = {\n");
     for (int k = 0; k < (int)nnueIdx.size(); k++) {
         State s = corpus[nnueIdx[k]].s;
