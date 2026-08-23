@@ -514,14 +514,29 @@ public:
 
         // inv/ab-policy, direction E: optional AB pre-ranking of the root
         // children, before any tree work. Runs its own resetOrderingState()
-        // internally; TT/BFS caches stay shared with the tree phase.
+        // internally; TT/BFS caches stay shared with the tree phase. The
+        // ranking consumes part of THIS move's time budget: whatever it
+        // actually spent (up to abPrefilterTimeFrac of timeBudgetMs) is
+        // deducted from the tree phase below, so the whole move stays
+        // inside timeBudgetMs.
         std::vector<std::pair<int, MoveT>> ranked;
+        int treeBudgetMs = timeBudgetMs;
         if (params.abPrefilterDepth > 0 && params.abPrefilterTopK > 0) {
             SearchStatsT preStats{};
             int preMs = timeBudgetMs > 0
                             ? (int)((double)timeBudgetMs * params.abPrefilterTimeFrac)
                             : 0;
+            auto preT0 = std::chrono::steady_clock::now();
             mcabRankRootMoves(engine, root, params.abPrefilterDepth, preMs, preStats, ranked, 0);
+            if (timeBudgetMs > 0) {
+                auto spent = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                 std::chrono::steady_clock::now() - preT0)
+                                 .count();
+                // Floor of 5ms: a starved tree phase would expand nothing
+                // and pick by prior alone.
+                long long left = (long long)timeBudgetMs - (long long)spent;
+                treeBudgetMs = (int)std::max<long long>(5, left);
+            }
         }
 
         // inv/ab-policy, direction B: seed the AB history table from the
@@ -618,14 +633,14 @@ public:
         // sob controle de tempo real no arena. `leafDeadline` propaga o teto
         // até engine.searchLeaf (ver evaluateLeaf).
         auto t0 = std::chrono::steady_clock::now();
-        haveLeafDeadline = (timeBudgetMs > 0);
-        if (haveLeafDeadline) leafDeadline = t0 + std::chrono::milliseconds(timeBudgetMs);
+        haveLeafDeadline = (treeBudgetMs > 0);
+        if (haveLeafDeadline) leafDeadline = t0 + std::chrono::milliseconds(treeBudgetMs);
         while (mstats.nodesExpanded < budget) {
-            if (timeBudgetMs > 0) {
+            if (treeBudgetMs > 0) {
                 auto elapsedMs = std::chrono::duration_cast<std::chrono::milliseconds>(
                                      std::chrono::steady_clock::now() - t0)
                                      .count();
-                if (elapsedMs >= timeBudgetMs) break;
+                if (elapsedMs >= treeBudgetMs) break;
             }
             if (pool[0].terminal) break;  // raiz já resolvida (ex.: vitória em 0 lances -- não deveria ocorrer)
             runSimulation(engine, stats, mstats);
