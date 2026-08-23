@@ -1,4 +1,4 @@
-# inv/ab-policy -- running notes (session 3)
+﻿# inv/ab-policy -- running notes (session 3)
 
 Mission: reduce MCAB/MCTS dependence; use NNUE policy head cheaply inside
 alpha-beta. Worktree C:\Zq-inv-abpolicy, branch inv/ab-policy @ 2f0e4e3.
@@ -96,7 +96,45 @@ Full regression suite after fixes: rules_sanity, staging, move_ordering,
 endgame_race, lmr_pvs, repetition_diff, leaf_smoke, mcab_core,
 mcab_dispatch, mcab_phase9 -- ALL PASS.
 
-## Decisions
+
+### Compute map (map_compute.exe, -O3 native AVX2, corpus=16 positions)
+
+Unit costs: policyPass 790ns, nnueEvalInt 856ns, legalMoves 6268ns,
+makeChildAccPair 67ns, buildRootAcc 544ns, searchLeaf(d5) 67.2us.
+
+MCAB production shape (fresh tree, no noise): at 40ms/move about 3940
+sims+expansions per move; policy passes take approximately 7.6% of wall
+time, leaf evals 8.1%. At 200ms/move about 17.0k sims per move; policy
+6.6%, leaf evals 7.2%. CONCLUSION: the NNUE policy head is NOT the
+hybrid's cost center -- the MCTS loop itself is (about 84%): per-expansion
+legalMoves (6.3us) times thousands of expansions, plus PUCT over up to 131
+children. Any per-node policy inside AB costs about one leaf eval today.
+
+Pure AB reference on same corpus: 15.0k nodes/move at 40ms (nps 643k),
+92.4k nodes/move at 200ms (nps 819k), avg reached depth 19-20 (corpus has
+late/race positions where the exact solver shortcuts).
+
+Direction A note (root-only policy ordering) is MOOT as a saving: an ungated
+per-node policy pass costs about one leaf eval today (790 vs 856ns), not the
+5.8x of the pre-vectorization era.
+
+### Experiment F part 1: MCAB node-budget curve vs PURE AB at 40ms
+
+Setup: ref1 HEAD==5fe8e19 vs ref2 HEAD, both sides identical binary; E1 =
+MCAB with nodeBudget N; E2 = pure AB (--e2-no-mcab). NNUE mode, invert
+colors on, 400 games/pairing, 4 threads, seed 8589. Elo for E1-E2 with
+95% margin from run_arena.py:
+
+| N (nodes) | Elo +/- 95% CI    | W/D/L       |
+|-----------|-------------------|-------------|
+| 2000      | +19.1 +-33.1      | 200/22/178  |
+| 5000      | +39.3 +-33.4      | 213/19/168  |
+| 10000     | +57.9 +-33.6      | 223/20/157  |
+| 20000     | +54.3 +-33.8      | 223/16/161  |
+
+HEADLINE so far: even at the production selfplay TC (40ms) the hybrid
+beats pure AB decisively. The knee is near 10k nodes (matches full 20k
+within noise). Raw outputs: exp_f_40_n{2000,5000,10000,20000}.txt.
 
 - Keep all four inherited pieces (A not implemented; directions B/C/D/E are,
   F needs no code beyond McabParams.nodeBudget which already exists).

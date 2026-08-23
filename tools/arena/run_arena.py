@@ -186,6 +186,12 @@ MCAB_VALUE_KNOBS = [
     ("cat-cold-cm",            "cat_cold_cm",            E1_CAT_COLD_CM,            E2_CAT_COLD_CM,            int),
     ("wall-bfs-order-max-ply", "wall_bfs_order_max_ply", E1_WALL_BFS_ORDER_MAX_PLY, E2_WALL_BFS_ORDER_MAX_PLY, int),
     ("qs-critical-bfs-delta",  "qs_critical_bfs_delta",  E1_QS_CRITICAL_BFS_DELTA,  E2_QS_CRITICAL_BFS_DELTA,  int),
+    # inv/ab-policy (2026-08-23), direcao E: pre-filtro AB da raiz do MCTS.
+    # 0/ausente = off (producao). Constantes por lado ficam None no topo;
+    # passe --eX-ab-prefilter-{depth,topk,timefrac} explicitamente.
+    ("ab-prefilter-depth",    "ab_prefilter_depth",    None, None, int),
+    ("ab-prefilter-topk",     "ab_prefilter_topk",     None, None, int),
+    ("ab-prefilter-timefrac", "ab_prefilter_timefrac", None, None, float),
 ]
 # Knobs liga/desliga. `flag_on`/`flag_off` = o que o arena.exe aceita; None
 # nesse campo significa "aquele lado é o default do binário, não há flag".
