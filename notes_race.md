@@ -117,3 +117,49 @@ Rebuilt the harness at the pre-fix commit 858214c in a scratch directory
   all value-optimal, all score-convention hits, NNUE-vs-heuristic root
   move agreement 8468/8468, cache stress 960 checks bad=0, tiny-budget
   legality 60/60.
+
+### 2026-08-23 -- session 2: camping survey (priority-zero symptom)
+
+User symptom: "sometimes the engine in endgame seems not to understand it
+has to go to the end of the board and STAYS ON THE FIRST ROW". New tool
+`benchmarks/bench_camping_survey.cpp` (standalone, deterministic seed
+20260823). Camping = the chosen pawn move keeps the root-side pawn inside
+its own back two rows while some legal move advances that pawn a row toward
+its goal. Every camping instance is classified by the independent oracle.
+
+Empty-handed corpus: 2040 roots from 340 frozen-topology families (wall-
+biased playouts plus a 5-ply random race walk per family).
+
+- TB-on (production): camping 722/2040 = 35.39%. Split: WON side 321,
+  LOST side 401, DRAWN side 0 (no drawn states exist in this corpus).
+- Value check against oracle children: ZERO mismatches over all 2040
+  roots x 2 modes (4080 chooseMove calls). Every camping instance is
+  value-optimal: 401 are maximum-delay defenses while LOST (correct
+  play), 321 are minimal-DTM geometry while WON (a sideways/backward
+  step can be part of the unique fastest route).
+- Tiebreak interplay: OFF raises total camping to 784/2040 = 38.43%
+  (LOST side 463). endgameProgressTiebreak ON removes 62 lost-side
+  camping moves (about 13% relative) at zero optimality cost.
+- NNUE pass (weights read-only from C:/Zquoridor/data/nnue): root-move
+  agreement 2040/2040. The MCAB shell needs no separate run here:
+  src/mcab.hpp delegates an empty-handed root straight to
+  Negamax::chooseMove, which both passes exercise.
+
+Quasi-endgame corpus (no solver at the root; at least one side <= 2 walls,
+not both zero): 220 states, 120 ms heuristic searches. The side ahead by
+2+ raw plies is the root side in 13 of them; that side camps in 7.
+Follow-up probes with 500 ms and 2000 ms budgets:
+
+- 5 of the 7 stop camping with more time: 3 switch to a wall move,
+  2 switch to a forward move.
+- The stable wall choices are mostly rational trades: the chosen wall
+  adds +4 raw plies to the opponent path in one case, +1 in another,
+  and +0 in one case (own path unchanged too). The +0 case is ordinary
+  heuristic noise in a won-looking position, not a logic defect.
+
+Verdict: no bug behind the symptom so far. In the solved regime the
+"first-row camping" is provably optimal play (delay when lost, forced
+pace otherwise). In the quasi regime it is wall-building or stalling
+while clearly ahead, and deeper searches mostly replace it. P7 below
+adds the dynamic confirmation (realized game length must equal the
+predicted DTM exactly, which caps cumulative suboptimality at zero).
