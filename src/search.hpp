@@ -248,6 +248,29 @@ public:
     void setContempt(int c) { contempt = c; }
     int getContempt() const { return contempt; }
 
+    // Empate no ramo de final "maos vazias": por padrao, quando TODOS os
+    // filhos da raiz sao empates teoricos (ro.winner==-1), todos recebem o
+    // mesmo score e a escolha cai no primeiro lance gerado -- que pode ser
+    // um passo PARA TRAS ou lateral (vagancia visivel em partidas reais).
+    // Com este toggle ligado, empates empatados entre si sao desempatados
+    // pelo PROGRESSO do lado da raiz: menor shortestPathLen depois do lance
+    // (o motor continua marchando pra frente mesmo em final teoricamente
+    // morto -- melhor jogada pratica: maximiza a chance de erro do
+    // oponente). Default FALSE = comportamento atual bit a bit.
+    void setEndgameProgressTiebreak(bool enabled) { endgameProgressTiebreak = enabled; }
+    bool isEndgameProgressTiebreak() const { return endgameProgressTiebreak; }
+
+    // Ancoragem de sinal do EMPATE DE RACE-SOLVER (nao confundir com empate
+    // por repeticao, que ja e ancorado em paridade de ply). Por padrao (em
+    // ambos os sitios: negamax e ramo raiz de chooseMove) um empate vale
+    // `contempt` para QUEM MOVE NO NO -- cego a paridade. Com este toggle
+    // ligado, o empate de race passa a usar a MESMA ancoragem do empate por
+    // repeticao ((ply%2==0) ? contempt : -contempt), eliminando a
+    // inconsistencia de sinal entre as duas fontes de empate. Default FALSE
+    // = comportamento atual bit a bit.
+    void setParityAnchoredRaceDraw(bool enabled) { parityAnchoredRaceDraw = enabled; }
+    bool isParityAnchoredRaceDraw() const { return parityAnchoredRaceDraw; }
+
     // policyOrderScale: escala do logit cru da cabeça de política somado
     // em orderPawnMoves/orderWallMoves (ver comentário grande de
     // POLICY_ORDER_SCALE acima). Default = essa mesma constante.
@@ -424,23 +447,53 @@ public:
             MoveList rootMoves = legalMoves(root);
             Move best = rootMoves[0];
             int bestScore = -SCORE_INF;
+            // Desempate por progresso (so com endgameProgressTiebreak): o
+            // comprimento do caminho do LADO DA RAIZ depois do lance candidato
+            // -- menor e melhor. Guardado junto do best atual.
+            int rootSide = root.turn;
+            int bestTieDist = 2 * N;  // acima de qualquer distancia real
             for (size_t i = 0; i < rootMoves.size(); i++) {
                 State ns = applyMove(root, rootMoves[i]);
                 int w = winner(ns);
                 int childScore;
+                bool childIsDraw = false;
                 if (w != -1) {
                     childScore = (w == ns.turn) ? SCORE_INF - 1 : -(SCORE_INF - 1);
                 } else {
                     RaceOutcome ro = resolveEmptyHandedEndgame(ns.wallsH, ns.wallsV, ns.pawn[0], ns.pawn[1], ns.turn);
                     if (ro.winner == -1) {
-                        childScore = contempt;
+                        // Com parityAnchoredRaceDraw, o empate do solver usa a
+                        // mesma ancoragem do empate por repeticao: o filho
+                        // esta a distancia impar da raiz (oponente a mover),
+                        // entao o valor dele (perspectiva do oponente) e
+                        // -contempt -> a raiz ve contempt. Sem o toggle,
+                        // mantem `contempt` direto (comportamento historico).
+                        childScore = parityAnchoredRaceDraw ? -contempt : contempt;
+                        childIsDraw = true;
                     } else {
                         int raw = RACE_SCORE_BASE - ro.dtm;
                         childScore = (ro.winner == ns.turn) ? raw : -raw;
                     }
                 }
                 int scoreForRoot = -childScore;  // negamax: valor do filho é do ponto de vista do OPONENTE
-                if (scoreForRoot > bestScore) { bestScore = scoreForRoot; best = rootMoves[i]; }
+                int tieDist = 0;
+                if (endgameProgressTiebreak && childIsDraw && scoreForRoot == bestScore) {
+                    // so paga BFS extra em empate empatado com o best atual
+                    tieDist = shortestPathLen(ns.wallsH, ns.wallsV, ns.pawn[rootSide], rootSide);
+                }
+                bool better = scoreForRoot > bestScore;
+                if (!better && endgameProgressTiebreak && scoreForRoot == bestScore &&
+                    (bestScore > -(SCORE_INF - 1) && bestScore < SCORE_INF - 1)) {
+                    // faixa de nao-terminal (empates entre si): desempata por progresso
+                    better = tieDist < bestTieDist;
+                }
+                if (better || bestScore == -SCORE_INF) {
+                    bestScore = scoreForRoot;
+                    best = rootMoves[i];
+                    bestTieDist = endgameProgressTiebreak
+                        ? shortestPathLen(ns.wallsH, ns.wallsV, ns.pawn[rootSide], rootSide)
+                        : 0;
+                }
             }
             stats.reachedDepth = maxDepthCap;  // resolvido com certeza matemática, não com busca heurística parcial
             stats.score = bestScore;
@@ -566,6 +619,8 @@ private:
     // das constantes CONTEMPT/POLICY_ORDER_SCALE (namespace, ainda
     // existem) e 2 (era CAT_SCORE_SCALE, static constexpr da classe).
     int contempt = CONTEMPT;
+    bool endgameProgressTiebreak = false;
+    bool parityAnchoredRaceDraw = false;
     long long policyOrderScale = POLICY_ORDER_SCALE;
     long long catScoreScale = 2;
     int lmrMinDepth = LMR_MIN_DEPTH;
@@ -920,7 +975,11 @@ private:
                 g_raceExactUsedUs += std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now() - __raceT0).count();
                 raceResolved = true;
                 if (ro.winner == -1) {
-                    raceScore = contempt;  // empate -- perseguição infinita/repetição (bug corrigido: era -CONTEMPT, recompensava o empate)
+                    // empate -- perseguição infinita/repetição (bug corrigido: era -CONTEMPT, recompensava o empate).
+                    // parityAnchoredRaceDraw (default OFF): ancora o sinal na paridade do ply,
+                    // igual ao empate por repeticao logo acima -- sem o toggle, mantem o
+                    // comportamento historico (contempt direto, cego a paridade).
+                    raceScore = parityAnchoredRaceDraw ? ((ply % 2 == 0) ? contempt : -contempt) : contempt;
                 } else {
                     int raw = RACE_SCORE_BASE - ro.dtm;
                     raceScore = (ro.winner == s.turn) ? raw : -raw;
