@@ -138,3 +138,45 @@ within noise). Raw outputs: exp_f_40_n{2000,5000,10000,20000}.txt.
 
 - Keep all four inherited pieces (A not implemented; directions B/C/D/E are,
   F needs no code beyond McabParams.nodeBudget which already exists).
+
+### Experiment F part 2 + variants (final, session 3)
+
+Full budget curve, Elo(E1)-Elo(E2) with 95% margin:
+
+| TC    | N=2000        | N=5000       | N=10000      | N=20000(prod) |
+|-------|---------------|--------------|--------------|---------------|
+| 40ms  | +19.1 +-33.1  | +39.3 +-33.4 | +57.9 +-33.6 | +54.3 +-33.8  |
+| 200ms | -92.5 +-40.0  | +10.4 +-38.3 | +60.8 +-39.2 | +97.4 +-40.1  |
+
+Reading: at 40ms the hybrid is time-bound at about 3.9k sims/move, so
+budgets >= 10k never bind and are equal; 2k/5k truncate sims and lose.
+At 200ms a small budget makes the engine STOP EARLY WITH TIME LEFT
+(2k sims take about 40ms of the 200ms), hence the -92.5. The node
+budget is a ceiling for runaway nodes, not a speed knob.
+
+Variant matches (all NNUE, colors swapped; E1-vs-E2 Elo):
+
+| Match                                        | 40ms          | 200ms         |
+|----------------------------------------------|---------------|---------------|
+| AB+B vs pure AB                              | +10.4 +-34.0  | -1.2 +-39.1   |
+| AB+C vs pure AB                              | -1.7 +-33.9   | -5.8 +-39.3   |
+| AB+D(base .15) vs pure AB                    | not run       | -11.6 +-39.1  |
+| AB+B+C+D(.15) vs pure AB                     | not run       | +8.1 +-39.3   |
+| MCAB+B vs production MCAB                    | -16.5 +-32.8  | not run       |
+| MCAB+B+C+D vs production MCAB                | not run       | -17.4 +-38.5  |
+| MCAB+E(d2,k8,f.25) vs production MCAB        | not run       | -96.2 +-39.6  |
+| MCAB+E(d3,k12,f.15) vs production MCAB       | not run       | -398.4 +-65.0 |
+
+VERDICT: no cheap policy trick beats production; direction E is harmful.
+Recommended configuration = production unchanged. All toggles stay in the
+tree default-off, pinned by tests/test_policy_ab.cpp.
+
+Pareto (equal TC, Elo over pure AB): pure AB < AB+tricks (~0) <
+reduced MCAB (5k@200ms: +10.4; 10k: +60.8) < full MCAB (+97.4).
+At 40ms: full MCAB +54.3, knee already at 10k (never binds).
+
+### Fixes made during experiments (session 3)
+- mcab.hpp: pre-ranking now carves its time OUT of the move budget
+  (was additive on top; would have given side E +25% wall time).
+- bench_policy_ab.cpp block 1 resets ordering state and seeds history
+  explicitly per position (searchShallow does neither on its own).

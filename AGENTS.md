@@ -43,6 +43,7 @@ bin\test_move_ordering.exe
 bin\test_endgame_race.exe
 bin\test_lmr_pvs.exe
 bin\test_repetition_diff.exe
+bin\test_policy_ab.exe
 bin\nnue_verify.exe data\nnue\nnue_weights.bin data\nnue\nnue_weights_int8.bin
 ```
 
@@ -142,6 +143,7 @@ bin\test_move_ordering.exe
 bin\test_endgame_race.exe
 bin\test_lmr_pvs.exe
 bin\test_repetition_diff.exe
+bin\test_policy_ab.exe
 bin\nnue_verify.exe data\nnue\nnue_weights.bin data\nnue\nnue_weights_int8.bin
 ```
 
