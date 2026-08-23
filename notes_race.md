@@ -96,4 +96,24 @@ multi-slot cache experiment (NSLOTS=1024).
 
 ## 4. Log
 
-(work in progress)
+### 2026-08-23 -- session 2: red->green re-verified from scratch
+
+Rebuilt the harness at the pre-fix commit 858214c in a scratch directory
+(outside the repo) and at HEAD c1c32ef:
+
+- Pre-fix: 5 FAILURES, all in the degenerate-input probes -- E1b
+  `prod=(0,-1)` vs oracle `(0,0)` (pawn on goal row behind a partition),
+  E2 `prod=(0,-3)/(0,-2)` vs oracle/dp `(-1,0)` (sealed pocket flips the
+  winner to a NEGATIVE dtm), E3 `prod=(0,-3)` and even `(1,-3)` depending
+  on turn vs true draw. Phases A-D identical to HEAD and green there,
+  which isolates the gate as the sole diverging component.
+- Honesty note: at 858214c the pinned E2 expectation itself was wrong
+  (`oc.winner == 1`; the oracle always answered draw `-1`). Commit c1c32ef
+  corrected the pin together with the gate guard. The gate bug evidence
+  stands on its own: production fabricated winners with negative dtm
+  against BOTH the bare DP and the oracle.
+- HEAD: all green. Phase A 8468 comparisons (gate decided 610, refused
+  7858), phase B 8468 roots x 4 toggle combos = 33872 optimality checks,
+  all value-optimal, all score-convention hits, NNUE-vs-heuristic root
+  move agreement 8468/8468, cache stress 960 checks bad=0, tiny-budget
+  legality 60/60.
