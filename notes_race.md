@@ -1,0 +1,99 @@
+# inv/race-fuzz -- bug hunt in src/endgame_race.hpp
+
+Worktree `C:\Zq-racehunt`, branch `inv/race-fuzz`, base 3947e26.
+Goal: adversarial verification of the empty-handed race solver and its
+consumers; deliver a permanent oracle/fuzz regression test.
+
+## 1. Audit of the four documented past corrections (read before touching)
+
+1. **ETA gate removed from the decision pipeline** (header note + plano 4d-1).
+   The "gap >= 3 tempos" margin assumed physical blocking costs at most one
+   extra tempo beyond a jump. A random-topology test found a real
+   counterexample (exact dtm 21 vs naive prediction 19). `raceETAGate`
+   survives as an isolated, tested utility; it is NOT called by
+   `resolveEmptyHandedEndgame`. Do not re-plug it without a new geometric
+   proof.
+2. **Disjoint gate rebased on reachable REGION** (header note + plano 4d-2).
+   The original gate used shortest-path-mask disjointness. False security:
+   a losing player may detour outside its own shortest-path set purely to
+   block. Counterexample pinned in `testInfinitePursuitDraw` (synthetic
+   topology, turn 1 = draw). Correct base: whole-region disjointness
+   (`reachableRegionMask`); disjoint regions imply zero traversable edges
+   between them, so no jump/block ever, on any route.
+3. **Real-time budget for Service B + TT storage** (plano 4e-1).
+   Per-topology DP rebuild measured ~790us/call; corrected Level-2 gate
+   decides less often, so Service B became the common path (>50x nps drop,
+   Elo -166 in an external arena before the fix). Fix: per-chooseMove
+   chrono budget (~3% of move time) covering gate+DP, budget-exhausted
+   nodes fall through to heuristic search at zero extra cost, plus
+   TT EXACT depth=127 storage keyed by s.hash for exact-position reuse.
+4. **Move-choice bug at the real root** (plano 4e-2).
+   The solver returns a VALUE only. When the real game root is already
+   empty-handed there is no parent node to compare children, and chooseMove
+   read a TT placeholder best move -> arbitrary moves with correct scores;
+   lost most games while nodes/s looked healthy. Fixed by comparing all
+   pawn children by exact solver values inside chooseMove. Later extended
+   by `endgameProgressTiebreak` (default ON since 2026-08-23): reorders
+   ONLY exactly-equal children by root-side progress.
+
+Also documented: succOff hole bug for p0==p1 states inside the CSR builder
+(fixed), openDir/neighborCell precompute (~242us of the miss path),
+multi-slot cache experiment (NSLOTS=1024).
+
+## 2. Static-analysis findings to verify numerically
+
+- F1 (gate robustness): `raceDisjointGate` computes
+  `pl = off + 2*(rawDist-1)` with `shortestPathLen` possibly returning -1
+  (unreachable) or 0 (pawn already on goal row). Outside the real-play
+  invariant ("both pawns always keep a path after each legal wall") this
+  yields pl < 1 and a negative/zero dtmOut or a WRONG winner, while the DP
+  would answer correctly. Production hook never sees such states (winner()
+  checked first; wall legality preserves the invariant), but
+  `resolveEmptyHandedEndgame` is a public inline utility called directly by
+  tests/tools. Candidate minimal fix: only let the gate decide when both
+  rawDist >= 1.
+- F2 (DP core): solveFor retrograde BFS dtm semantics look sound
+  (queue monotone in dtm; universal branch takes last-entered successor =
+  max dtm). To be proven empirically against an independent oracle.
+- F3 (jump semantics): DP graph builder mirrors `pawnStepMoves` exactly
+  (straight jump precedence, diagonals only when straight blocked, edge
+  into opponent required open). Verified by reading; oracle re-derived
+  independently.
+- F4 (cache): slot key = exact wallsH/wallsV compare after hash mod 1024;
+  DP solves ALL (p0,p1,t) states, so pawn/turn are query-time indices ->
+  sound by construction; thread_local slots match per-thread engines in
+  selfplay. Collisions fall back to rebuild. Empirical stress planned.
+- F5 (budget globals): `g_raceExactBudgetUs/UsedUs` are plain global
+  doubles; selfplay runs N threads x own Negamax but shares these ->
+  cross-thread budget interference. Perf-only (fallback is safe), to be
+  confirmed + documented.
+- F6 (TT probe without depth check in race hook): any matching EXACT entry
+  (including heuristic full-window entries left by earlier moves' searches)
+  short-circuits the solver. Sound (value approximates truth), accepted
+  tradeoff; document only.
+- F7 (root branch ignores repetition history): internal negamax nodes rank
+  repetition above the solver; the empty-handed ROOT branch ignores
+  gameHistory entirely. Inconsistent priority, practical nit; document.
+
+## 3. Plan
+
+- P1 independent oracle (naive win-set fixpoint + separate simple retrograde
+  dtm, successor generation written from scratch) vs
+  `resolveEmptyHandedEndgame` AND vs `raceExactDTM` (splits gate bugs from
+  DP bugs) over thousands of topologies (playout-born + synthetic +
+  adversarial pawn configs).
+- P2 root-choice optimality vs oracle children values (catches value-right
+  move-wrong class).
+- P3 budget exhaustion fallback (deterministic via g_raceExactUsedUs
+  override + statistical tiny-budget chooseMove).
+- P4 cache soundness under collisions/alternation.
+- P5 gate boundary stress + degenerate rawDist probes (F1).
+- P6 toggle combos (endgameProgressTiebreak x parityAnchoredRaceDraw):
+  chosen child value must equal oracle-best under every combo.
+- P7 long-game differential: engine-vs-engine from hands-empty positions,
+  winner AND mate length must equal oracle prediction (engine plays
+  optimally there, so game length == dtm exactly).
+
+## 4. Log
+
+(work in progress)
