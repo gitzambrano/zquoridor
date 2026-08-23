@@ -46,7 +46,7 @@ int main(int argc, char** argv) {
     for (const CorpusEntry& e : full) {
         if (e.s.wallsLeft[0] + e.s.wallsLeft[1] <= 5) lowWall.push_back(e);
     }
-    const int STRIDE = argv[1] ? std::atoi(argv[1]) : 3;
+    const int STRIDE = argv[1] ? std::atoi(argv[1]) : 24;  // ~7 positions per sweep
     std::vector<CorpusEntry> subset;
     for (size_t i = 0; i < lowWall.size(); i += (size_t)STRIDE) subset.push_back(lowWall[i]);
 

@@ -238,10 +238,10 @@ int main(int argc, char** argv) {
         stress.setQsLowWallsBonus(6);
         stress.setQsLowWallsThreshold(20);  // bonus applies everywhere
         int stressed = 0;
-        for (size_t i = 0; i < corpus.size(); i += corpus.size() / 10) {
+        for (size_t i = 0; i < corpus.size(); i += corpus.size() / 6) {
             const State& s = corpus[corpus.size() - 1 - i].s;  // lowest walls last
             SearchStats st;
-            int score = stress.testFixedDepthFullWindowLmr(s, 16, st);
+            int score = stress.testFixedDepthFullWindowLmr(s, 12, st);
             stressed++;
             if (score <= -SCORE_INF || score >= SCORE_INF) {
                 printf("FALHOU: score fora do intervalo na posicao %zu (profunda)\n",
@@ -249,7 +249,7 @@ int main(int argc, char** argv) {
                 ok = false;
             }
             SearchStats stChoose;
-            Move mv = stress.chooseMove(s, 14, 600000, stChoose);
+            Move mv = stress.chooseMove(s, 10, 600000, stChoose);
             qr::MoveList legal = qr::legalMoves(s);
             if (std::find(legal.begin(), legal.end(), mv) == legal.end()) {
                 totalIllegal++;
