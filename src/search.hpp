@@ -305,6 +305,36 @@ public:
     // Somente leitura -- não altera nada do caminho de AB puro.
     bool searchWasStopped() const { return stopped; }
 
+    // Rebuilds the PV of the LAST search run by this engine from the TT
+    // (the same technique as Stockfish's pv info): start at `root`, read
+    // that position's TT entry, follow the stored `best` move, repeat on
+    // the child. Stop conditions: maxPlies reached, terminal position,
+    // missing TT entry, entry with a different key (collision or
+    // replacement), or a stored `best` that is not in the legal move list
+    // (defensive check; this should not happen). The result only means
+    // something after a real chooseMove/searchLeaf ran on THIS engine at
+    // `root`; a cold TT returns 0. Used by the WASM GUI to show analysis
+    // lines without a dedicated PV channel inside the search itself.
+    int extractPv(const State& root, int maxPlies, Move* out) const {
+        State s = root;
+        int n = 0;
+        while (n < maxPlies) {
+            if (winner(s) != -1) break;
+            const TTEntry& e = tt[s.hash & (TT_SIZE - 1)];
+            if (!e.valid || e.key != s.hash) break;
+            MoveList ms = legalMoves(s);
+            bool legal = false;
+            for (size_t i = 0; i < ms.size(); i++) {
+                if (ms[i] == e.best) { legal = true; break; }
+            }
+            if (!legal) break;
+            out[n++] = e.best;
+            s = applyMove(s, e.best);
+        }
+        return n;
+    }
+
+
     // Movido de private: para public: (corpo idêntico, sem nenhuma
     // alteração de comportamento) -- ver mcab.hpp: MCABSearch chama isto
     // 1x por chooseMoveMCAB(), do mesmo jeito que chooseMove() já faz 1x

@@ -1,16 +1,31 @@
 ﻿// board.js -- QBoard: premium canvas board for Zquoridor (plan gui-premium.md,
-// sections 2, 5.3, 6.1). One <canvas>, DPR-aware, layered repaint: static layer
-// (frame, cells, grooves, coordinates) is cached offscreen and blitted; the
-// dynamic layer (walls, pawns, ghosts, overlays) redraws on state change.
+// sections 2, 5.3, 6.1, 17). One <canvas>, DPR-aware, layered repaint: static
+// layer (frame, cells, grooves, coordinates) is cached offscreen and blitted;
+// the dynamic layer (walls, pawns, ghosts, overlays) redraws on state change.
 // All colours come from CSS custom properties read at draw time, so theme
-// switching needs no canvas-specific palette.
+// switching needs no canvas-specific palette. Board dressing (frame style,
+// wall finish, cell separation, coordinates mode, scale) and the extra pawn
+// styles follow plan section 17.
 'use strict';
+
+// Deterministic PRNG for the marble vein texture (mulberry32): same seed,
+// same veins, so the static layer cache stays valid.
+function qrMulberry32(seed) {
+  let a = seed >>> 0;
+  return function () {
+    a |= 0; a = (a + 0x6D2B79F5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
 
 class QBoard {
   constructor(canvas, opts = {}) {
     this.cv = canvas;
     this.ctx = canvas.getContext('2d');
     this.onChange = opts.onChange || (() => {});
+    this.fixedSide = opts.fixedSide || 0;   // export renders / mini previews
     // game state mirrored from the engine (display orientation: player 0 at
     // the bottom, moving up, unless flipped)
     this.flipped = false;
@@ -23,41 +38,61 @@ class QBoard {
     this.paths = null;
     this.ghost = null;
     this.ghostFrom = null;
+    // Analysis line preview (plan 5.3): { walls:[{o,r,c}] engine coords,
+    // pawns:[engCell] in step order, color }. Drawn translucent under the
+    // pieces; set by the analysis PV rows, cleared by clearGhost/Esc.
+    this.linePreview = null;
     this.turn = 0;
     this.themeDirty = true;
     this._sideApplied = -1;
-    new ResizeObserver(() => this.fit()).observe(canvas.parentElement);
+    if (!this.fixedSide) new ResizeObserver(() => this.fit()).observe(canvas.parentElement);
     this.fit();
   }
 
   css(name) {
-    return getComputedStyle(this.cv.parentElement).getPropertyValue(name).trim();
+    // Detached canvases (export renders) have no parent element; fall back
+    // to the document root so token lookups keep working.
+    const el = this.cv.parentElement || document.documentElement;
+    return getComputedStyle(el).getPropertyValue(name).trim();
   }
+  ds() { return document.documentElement.dataset; }
 
   fit() {
-    // measure the LAYOUT ZONE, not the wrapper: the wrapper wraps the canvas,
-    // which would otherwise collapse to its own content size (chicken/egg)
-    const zone = this.cv.closest('#boardZone') ||
-                 this.cv.parentElement.parentElement ||
-                 this.cv.parentElement;
-    const zw = zone.clientWidth || 320, zh = zone.clientHeight || 320;
-    const side = Math.max(220, Math.floor(Math.min(zw, zh)) - 6);
-    if (this._sideApplied === side) { this.render(); return; }
+    let side;
+    if (this.fixedSide) {
+      side = this.fixedSide;
+      this.cv.width = Math.round(side * (window.devicePixelRatio || 1));
+      this.cv.height = Math.round(side * (window.devicePixelRatio || 1));
+      this.cv.style.width = side + 'px';
+      this.cv.style.height = side + 'px';
+    } else {
+      // measure the LAYOUT ZONE, not the wrapper: the wrapper wraps the canvas,
+      // which would otherwise collapse to its own content size (chicken/egg)
+      const zone = this.cv.closest('#boardZone') ||
+                   this.cv.parentElement.parentElement ||
+                   this.cv.parentElement;
+      const zw = zone.clientWidth || 320, zh = zone.clientHeight || 320;
+      const scale = Math.max(0.8, Math.min(1, parseFloat(this.ds().boardScale) || 1));
+      side = Math.max(220, Math.floor(Math.min(zw, zh) * scale) - 6);
+      if (this._sideApplied === side) { this.render(); return; }
+      const wrap = this.cv.parentElement;
+      wrap.style.width = side + 'px';
+      wrap.style.height = side + 'px';
+    }
     this._sideApplied = side;
-    const wrap = this.cv.parentElement;
-    wrap.style.width = side + 'px';
-    wrap.style.height = side + 'px';
     const dpr = Math.min(window.devicePixelRatio || 1, 3);
     this.cssSide = side;
-    this.cv.width = Math.round(side * dpr);
-    this.cv.height = Math.round(side * dpr);
-    this.cv.style.width = side + 'px';
-    this.cv.style.height = side + 'px';
+    if (!this.fixedSide) {
+      this.cv.width = Math.round(side * dpr);
+      this.cv.height = Math.round(side * dpr);
+      this.cv.style.width = side + 'px';
+      this.cv.style.height = side + 'px';
+    }
     this.ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     // geometry per plan 6.1: S = 9C + 8G (+ coordinate margin M on both sides)
-    this.G = Math.max(8, Math.min(14, 0.20 * (side / 10.42)));
-    const hasCoords = document.documentElement.dataset.coords !== 'off';
-    this.M = hasCoords ? 0.42 * ((side - 8 * this.G) / 9) : 0;
+    this.G = Math.max(5, Math.min(14, 0.20 * (side / 10.42)));
+    const coordsMode = this.ds().coords || 'edges';
+    this.M = coordsMode !== 'off' ? 0.42 * ((side - 8 * this.G) / 9) : 0;
     this.C = (side - 2 * this.M - 8 * this.G) / 9;
     this.U = this.C + this.G;
     this.themeDirty = true;
@@ -84,9 +119,13 @@ class QBoard {
   dispPawnToEng(r, c) { return this.flipped ? r * 9 + c : (8 - r) * 9 + c; }
   engWallToDisp(o, r, c) { return this.flipped ? [o, r, c] : [o, 7 - r, c]; }
   dispWallToEng(o, r, c) { return this.flipped ? [o, r, c] : [o, 7 - r, c]; }
+  // Absolute algebraic name (file + engine rank), independent of the display
+  // orientation: rank 1 is always player 0's home row, matching the QFEN.
+  engAlgName(engCell) {
+    return 'abcdefghi'[engCell % 9] + (Math.floor(engCell / 9) + 1);
+  }
   algName(dispCell) {
-    const r = Math.floor(dispCell / 9), c = dispCell % 9;
-    return 'abcdefghi'[c] + (this.flipped ? 9 - r : r + 1);
+    return this.engAlgName(this.dispPawnToEng(Math.floor(dispCell / 9), dispCell % 9));
   }
 
   setData(pawnEng, wallsHEng, wallsVEng, lastMove) {
@@ -134,25 +173,81 @@ class QBoard {
 
   paintStatic(g) {
     const { C, G, U, M, S } = this;
+    const ds = this.ds();
     const frame = this.css('--frame'), groove = this.css('--groove');
     const ca = this.css('--cell-a'), cb = this.css('--cell-b');
-    g.fillStyle = frame;
-    this.rr(g, 0, 0, S, S, 12); g.fill();
+    const frameStyle = ds.frame || 'hairline';
+    const cellSep = ds.cellSep || 'grooves';
+    // E4 board frame: four dressing variants (plan 17.2)
+    if (frameStyle !== 'none') {
+      g.fillStyle = frame;
+      this.rr(g, 0, 0, S, S, 12); g.fill();
+      if (frameStyle === 'gilded') {
+        g.strokeStyle = this.css('--gold'); g.lineWidth = 2;
+        this.rr(g, 1.5, 1.5, S - 3, S - 3, 10); g.stroke();
+        const sh = g.createLinearGradient(0, 0, 0, S);
+        sh.addColorStop(0, 'rgba(0,0,0,.28)'); sh.addColorStop(.08, 'rgba(0,0,0,0)');
+        sh.addColorStop(.92, 'rgba(0,0,0,0)'); sh.addColorStop(1, 'rgba(0,0,0,.34)');
+        g.fillStyle = sh; this.rr(g, 0, 0, S, S, 12); g.fill();
+      } else if (frameStyle === 'beveled') {
+        const be = g.createLinearGradient(0, 0, 0, S);
+        be.addColorStop(0, 'rgba(255,255,255,.10)');
+        be.addColorStop(.06, 'rgba(0,0,0,.22)');
+        be.addColorStop(.94, 'rgba(0,0,0,.18)');
+        be.addColorStop(1, 'rgba(255,255,255,.06)');
+        g.fillStyle = be; this.rr(g, 0, 0, S, S, 12); g.fill();
+      }
+    }
     for (let r = 0; r < 9; r++) for (let c = 0; c < 9; c++) {
       const p = this.cellXY(r, c);
       g.fillStyle = ((r + c) & 1) ? cb : ca;
+      if (cellSep === 'flat') {
+        if (r === 0 && c === 0) { g.fillRect(M - G / 2, M - G / 2, 9 * U + G / 2, 9 * U + G / 2); continue; }
+        if (((r + c) & 1) === 0) continue;
+      }
       g.fillRect(p.x, p.y, C + 0.5, C + 0.5);
     }
-    g.strokeStyle = groove; g.lineWidth = G; g.lineCap = 'butt';
-    g.beginPath();
-    for (let i = 0; i <= 9; i++) {
-      const t = M + i * U - G / 2;
-      const e0 = M - G / 2, e1 = S - M + G / 2;
-      const tt = Math.max(e0, Math.min(e1, t));
-      g.moveTo(e0, tt); g.lineTo(e1, tt);
-      g.moveTo(tt, e0); g.lineTo(tt, e1);
+    if (cellSep === 'grooves') {
+      g.strokeStyle = groove; g.lineWidth = G; g.lineCap = 'butt';
+      g.beginPath();
+      for (let i = 0; i <= 9; i++) {
+        const t = M + i * U - G / 2;
+        const e0 = M - G / 2, e1 = S - M + G / 2;
+        const tt = Math.max(e0, Math.min(e1, t));
+        g.moveTo(e0, tt); g.lineTo(e1, tt);
+        g.moveTo(tt, e0); g.lineTo(tt, e1);
+      }
+      g.stroke();
+    } else if (cellSep === 'inlaid') {
+      g.strokeStyle = this.css('--gold'); g.globalAlpha = .35; g.lineWidth = 1;
+      g.beginPath();
+      for (let i = 0; i <= 9; i++) {
+        const t = Math.round(M + i * U) + .5;
+        g.moveTo(M, t); g.lineTo(S - M, t);
+        g.moveTo(t, M); g.lineTo(t, S - M);
+      }
+      g.stroke(); g.globalAlpha = 1;
     }
-    g.stroke();
+    // Carrara Marble signature theme: deterministic procedural veins drawn
+    // once into the static layer -- zero per-frame cost (plan 17.1 #7).
+    if ((ds.board || '') === 'marble') {
+      const rnd = qrMulberry32(0xCAFE);
+      g.save();
+      g.beginPath(); g.rect(M - G / 2, M - G / 2, 9 * U, 9 * U); g.clip();
+      for (let v = 0; v < 26; v++) {
+        g.strokeStyle = rnd() > .5 ? 'rgba(120,125,140,.16)' : 'rgba(70,74,88,.12)';
+        g.lineWidth = .6 + rnd() * 1.8;
+        let x = M + rnd() * 9 * U, y = M - 4;
+        g.beginPath(); g.moveTo(x, y);
+        while (y < S - M + 4) {
+          y += 14 + rnd() * 30;
+          x += (rnd() - .5) * 46;
+          g.quadraticCurveTo(x + (rnd() - .5) * 24, y - 12, x, y);
+        }
+        g.stroke();
+      }
+      g.restore();
+    }
     // goal edges: player 0's goal is the BOTTOM edge when not flipped
     const p0 = this.css('--p0'), p1 = this.css('--p1');
     g.globalAlpha = .45;
@@ -161,7 +256,8 @@ class QBoard {
     g.fillStyle = this.flipped ? p1 : p0;
     g.fillRect(M - G / 2, S - M - G / 2 + 1, 9 * U, 3);
     g.globalAlpha = 1;
-    if (document.documentElement.dataset.coords !== 'off' && C >= 26) {
+    const coordsMode = ds.coords || 'edges';
+    if (coordsMode !== 'off' && C >= 26) {
       g.fillStyle = this.css('--txt2'); g.globalAlpha = .6;
       g.font = `${Math.max(9, .52 * C)}px 'JetBrains Mono', monospace`;
       g.textAlign = 'center'; g.textBaseline = 'middle';
@@ -173,7 +269,19 @@ class QBoard {
       g.textAlign = 'left';
       for (let r = 0; r < 9; r++) {
         const y = this.cellCenter(r, 0).y;
-        g.fillText(String(this.flipped ? 9 - r : r + 1), M / 2 - 3, y);
+        // absolute rank: display row r is engine row (flipped ? r : 8-r)
+        g.fillText(String(this.flipped ? r + 1 : 9 - r), M / 2 - 3, y);
+      }
+      // "every cell" study mode: faint file+rank in each cell corner
+      if (coordsMode === 'all' && C >= 40) {
+        g.globalAlpha = .28;
+        g.font = `${Math.max(7, .26 * C)}px 'JetBrains Mono', monospace`;
+        g.textAlign = 'left'; g.textBaseline = 'top';
+        for (let r = 0; r < 9; r++) for (let c = 0; c < 9; c++) {
+          const p = this.cellXY(r, c);
+          const engR = this.flipped ? r : 8 - r;
+          g.fillText('abcdefghi'[c] + (engR + 1), p.x + 3, p.y + 2);
+        }
       }
       g.globalAlpha = 1;
     }
@@ -182,6 +290,7 @@ class QBoard {
   drawDynamic(g) {
     const { C } = this;
     if (this.paths) for (const line of this.paths) this.drawPathLine(g, line);
+    if (this.linePreview) this.drawLinePreview(g);
     for (let r = 0; r < 8; r++) for (let c = 0; c < 8; c++) {
       if (this.wallH[r * 8 + c]) this.drawWall(g, 0, r, c, false);
       if (this.wallV[r * 8 + c]) this.drawWall(g, 1, r, c, false);
@@ -232,6 +341,32 @@ class QBoard {
 
   setTurn(t) { this.turn = t; }
 
+  // Analysis PV preview: every wall of the line as a translucent beam (wall
+  // slots are order-independent) plus numbered rings on the pawn destinations.
+  drawLinePreview(g) {
+    const lp = this.linePreview;
+    const col = lp.color || this.css('--blue');
+    g.save();
+    for (const w of lp.walls || []) {
+      const [do_, dr, dc] = this.engWallToDisp(w.o, w.r, w.c);
+      g.globalAlpha = .38;
+      this.drawWall(g, do_, dr, dc, false, col);
+    }
+    g.globalAlpha = .9;
+    let step = 1;
+    for (const pc of lp.pawns || []) {
+      const d = this.engPawnToDisp(pc);
+      const ctr = this.cellCenter(Math.floor(d / 9), d % 9);
+      g.beginPath(); g.arc(ctr.x, ctr.y, .24 * this.C, 0, 7);
+      g.strokeStyle = col; g.lineWidth = 2; g.stroke();
+      g.fillStyle = col;
+      g.font = `600 ${Math.max(9, Math.floor(.34 * this.C))}px 'JetBrains Mono', monospace`;
+      g.textAlign = 'center'; g.textBaseline = 'middle';
+      g.fillText(String(step++), ctr.x, ctr.y);
+    }
+    g.restore();
+  }
+
   drawPathLine(g, line) {
     if (!line.cells || line.cells.length < 2) return;
     g.save();
@@ -256,25 +391,55 @@ class QBoard {
   drawWall(g, o, r, c, ghostStyle, outlineOverride) {
     const rc = this.wallRect(o, r, c);
     const wall = this.css('--wall'), edge = this.css('--wall-edge');
+    const finish = this.ds().wallFinish || 'beveled';
     g.save();
-    g.fillStyle = 'rgba(0,0,0,.45)';
-    if (o === 0) { this.rr(g, rc.x + 1, rc.y + 2.5, rc.w, rc.h, 2); g.fill(); }
-    else { this.rr(g, rc.x + 2.5, rc.y + 1, rc.w, rc.h, 2); g.fill(); }
-    const grad = o === 0
-      ? g.createLinearGradient(0, rc.y, 0, rc.y + rc.h)
-      : g.createLinearGradient(rc.x, 0, rc.x + rc.w, 0);
-    grad.addColorStop(0, edge); grad.addColorStop(.22, wall);
-    grad.addColorStop(.78, wall); grad.addColorStop(1, edge);
-    g.fillStyle = grad;
-    this.rr(g, rc.x, rc.y, rc.w, rc.h, 2); g.fill();
-    g.lineWidth = outlineOverride ? 1.8 : 1;
-    g.strokeStyle = outlineOverride || edge;
-    g.stroke();
-    g.strokeStyle = edge; g.globalAlpha = .7; g.lineWidth = 1;
-    g.beginPath();
-    if (o === 0) { const mx = rc.x + rc.w / 2; g.moveTo(mx, rc.y + 1); g.lineTo(mx, rc.y + rc.h - 1); }
-    else { const my = rc.y + rc.h / 2; g.moveTo(rc.x + 1, my); g.lineTo(rc.x + rc.w - 1, my); }
-    g.stroke(); g.globalAlpha = 1;
+    if (finish !== 'flat') {
+      g.fillStyle = 'rgba(0,0,0,.45)';
+      if (o === 0) { this.rr(g, rc.x + 1, rc.y + 2.5, rc.w, rc.h, 2); g.fill(); }
+      else { this.rr(g, rc.x + 2.5, rc.y + 1, rc.w, rc.h, 2); g.fill(); }
+    }
+    if (finish === 'glossy') {
+      const grad = o === 0
+        ? g.createLinearGradient(0, rc.y, 0, rc.y + rc.h)
+        : g.createLinearGradient(rc.x, 0, rc.x + rc.w, 0);
+      grad.addColorStop(0, edge); grad.addColorStop(.18, wall);
+      grad.addColorStop(.42, 'rgba(255,255,255,.55)');
+      grad.addColorStop(.60, wall); grad.addColorStop(1, edge);
+      g.fillStyle = grad;
+    } else if (finish === 'flat') {
+      g.fillStyle = wall;
+    } else {
+      const grad = o === 0
+        ? g.createLinearGradient(0, rc.y, 0, rc.y + rc.h)
+        : g.createLinearGradient(rc.x, 0, rc.x + rc.w, 0);
+      grad.addColorStop(0, edge); grad.addColorStop(.22, wall);
+      grad.addColorStop(.78, wall); grad.addColorStop(1, edge);
+      g.fillStyle = grad;
+    }
+    this.rr(g, rc.x, rc.y, rc.w, rc.h, finish === 'flat' ? 0 : 2); g.fill();
+    if (finish !== 'flat') {
+      g.lineWidth = outlineOverride ? 1.8 : 1;
+      g.strokeStyle = outlineOverride || edge;
+      g.stroke();
+    } else if (outlineOverride) {
+      g.lineWidth = 1.8; g.strokeStyle = outlineOverride;
+      this.rr(g, rc.x, rc.y, rc.w, rc.h, 0); g.stroke();
+    }
+    if (finish === 'beveled' || finish === 'etched') {
+      g.strokeStyle = edge; g.globalAlpha = finish === 'etched' ? .95 : .7;
+      g.lineWidth = 1;
+      g.beginPath();
+      if (o === 0) { const mx = rc.x + rc.w / 2; g.moveTo(mx, rc.y + 1); g.lineTo(mx, rc.y + rc.h - 1); }
+      else { const my = rc.y + rc.h / 2; g.moveTo(rc.x + 1, my); g.lineTo(rc.x + rc.w - 1, my); }
+      g.stroke();
+    }
+    if (finish === 'etched') {
+      // inner shadow along the top/left of the beam
+      g.globalAlpha = .35;
+      g.strokeStyle = 'rgba(0,0,0,.8)'; g.lineWidth = 1;
+      this.rr(g, rc.x + 1, rc.y + 1, rc.w - 2, rc.h - 2, 2); g.stroke();
+    }
+    g.globalAlpha = 1;
     g.restore();
   }
 
@@ -317,9 +482,10 @@ class QBoard {
     const ctr = this.cellCenter(r, c);
     const px = this.css('--p' + pl), pli = this.css('--p' + pl + '-light'),
           pd = this.css('--p' + pl + '-deep');
-    const R = .31 * C;
+    const sizeMul = { small: .85, large: 1.15 }[this.ds().pawnSize] || 1;
+    const R = .31 * C * sizeMul;
     g.save();
-    const shadow = document.documentElement.dataset.pawnShadow || 'soft';
+    const shadow = this.ds().pawnShadow || 'soft';
     if (shadow !== 'off') {
       g.fillStyle = 'rgba(0,0,0,' + (shadow === 'deep' ? '.5' : '.35') + ')';
       g.beginPath();
@@ -328,8 +494,36 @@ class QBoard {
     const grd = g.createRadialGradient(ctr.x - R * .35, ctr.y - R * .45, R * .15, ctr.x, ctr.y, R * 1.05);
     grd.addColorStop(0, pli); grd.addColorStop(.55, px); grd.addColorStop(1, pd);
     g.fillStyle = grd; g.strokeStyle = pd; g.lineWidth = 1;
-    const style = document.documentElement.dataset.pawn || 'disc';
-    if (style === 'pillar' || style === 'crown') {
+    let style = this.ds().pawn || 'disc';
+    // Distinct shapes (plan 17.3): force the two players to differ in
+    // silhouette for colour-independent play; automatic in the noir theme.
+    const distinct = this.ds().distinctShapes === '1' || this.ds().board === 'noir';
+    if (distinct && pl === 1 && (style === 'disc' || style === 'pillar')) style = 'crown';
+    if (distinct && pl === 0 && style === 'crown') style = 'disc';
+    if (style === 'pawnChess') {
+      // full chess-pawn silhouette: bulb, collar, flared base
+      g.beginPath();
+      g.arc(ctr.x, ctr.y - R * .34, R * .46, 0, 7);
+      g.moveTo(ctr.x - R * .26, ctr.y - R * .02);
+      g.quadraticCurveTo(ctr.x - R * .40, ctr.y - R * .16, ctr.x - R * .30, ctr.y - R * .30);
+      g.moveTo(ctr.x + R * .26, ctr.y - R * .02);
+      g.quadraticCurveTo(ctr.x + R * .40, ctr.y - R * .16, ctr.x + R * .30, ctr.y - R * .30);
+      g.moveTo(ctr.x - R * .26, ctr.y - R * .02);
+      g.lineTo(ctr.x - R * .52, ctr.y + R * .58);
+      g.quadraticCurveTo(ctr.x, ctr.y + R * .34, ctr.x + R * .52, ctr.y + R * .58);
+      g.lineTo(ctr.x + R * .26, ctr.y - R * .02);
+      g.closePath(); g.fill(); g.stroke();
+    } else if (style === 'beacon') {
+      // ring with a light arc pointing at that player's goal (didactic)
+      const dir = pl === 0 ? 1 : -1;   // display-space: p0 goal is down when not flipped
+      g.beginPath(); g.arc(ctr.x, ctr.y, R * .78, 0, 7);
+      g.lineWidth = Math.max(3, R * .38); g.strokeStyle = grd; g.stroke();
+      g.beginPath();
+      g.arc(ctr.x, ctr.y, R * .78, dir > 0 ? Math.PI * .25 : Math.PI * 1.25,
+            dir > 0 ? Math.PI * .75 : Math.PI * 1.75);
+      g.lineWidth = Math.max(3, R * .38);
+      g.strokeStyle = this.css('--gold2'); g.stroke();
+    } else if (style === 'pillar' || style === 'crown') {
       g.beginPath();
       g.arc(ctr.x, ctr.y - R * .25, R * .58, 0, 7);
       g.moveTo(ctr.x - R * .34, ctr.y + R * .05);
@@ -375,6 +569,126 @@ class QBoard {
     if (r < 0 || r > 7 || c < 0 || c > 7) return null;
     const ctr = this.anchorCenter(r, c);
     return { r, c, dist: Math.hypot(px - ctr.x, py - ctr.y) };
+  }
+
+  // ---- image export (plan section 16.5) ----------------------------------
+  // Renders the current position into a detached canvas at a fixed size,
+  // independent of the on-screen board, with an optional footer strip
+  // carrying both player names and a small wordmark. opts:
+  //   { size=1600, transparent=false, coords=true, footer=null } where
+  //   footer is { name0, name1 }.
+  renderExport(opts = {}) {
+    const size = opts.size || 1600;
+    const cv = document.createElement('canvas');
+    cv.width = size; cv.height = size;
+    const ex = new QBoard(cv, { fixedSide: size });
+    ex.flipped = this.flipped;
+    ex.pawn = this.pawn.slice();
+    ex.wallH = Uint8Array.from(this.wallH);
+    ex.wallV = Uint8Array.from(this.wallV);
+    ex.lastMove = null;
+    ex.turn = this.turn;
+    const savedCoords = document.documentElement.dataset.coords;
+    if (!opts.coords) document.documentElement.dataset.coords = 'off';
+    ex.themeDirty = true;
+    ex.fit();
+    const g = ex.ctx;
+    g.save(); g.setTransform(1, 0, 0, 1, 0, 0);
+    g.clearRect(0, 0, cv.width, cv.height);
+    if (!opts.transparent) {
+      g.fillStyle = this.css('--bg');   // page background, not the frame
+      g.fillRect(0, 0, cv.width, cv.height);
+    }
+    g.restore();
+    ex.render();
+    document.documentElement.dataset.coords = savedCoords || 'edges';
+    if (opts.footer) {
+      const fh = Math.round(size * .055);
+      const out = document.createElement('canvas');
+      out.width = cv.width; out.height = cv.height + fh * 2;
+      const og = out.getContext('2d');
+      if (!opts.transparent) {
+        og.fillStyle = this.css('--surf');
+        og.fillRect(0, 0, out.width, out.height);
+      }
+      og.drawImage(cv, 0, fh * 2);
+      og.fillStyle = this.css('--gold');
+      og.font = `700 ${Math.round(fh * .52)}px Cinzel, 'Times New Roman', serif`;
+      og.textAlign = 'center'; og.textBaseline = 'middle';
+      og.fillText('Z Q U O R I D O R', out.width / 2, fh);
+      og.fillStyle = this.css('--txt2');
+      og.font = `${Math.round(fh * .40)}px 'JetBrains Mono', monospace`;
+      og.fillText(`${opts.footer.name0}  \u2014  ${opts.footer.name1}`,
+                  out.width / 2, fh * 3);
+      return out;
+    }
+    return cv;
+  }
+
+  // Vector twin of the export renderer: same scene emitted as SVG for print
+  // or docs. Honours the same opts contract as renderExport.
+  toSVG(opts = {}) {
+    const size = opts.size || 1600;
+    const tmp = document.createElement('div');
+    tmp.style.display = 'none';
+    document.body.appendChild(tmp);
+    const cssOf = name => getComputedStyle(tmp).getPropertyValue(name).trim() ||
+                          getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+    const esc = s => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;');
+    const frame = cssOf('--frame'), groove = cssOf('--groove');
+    const ca = cssOf('--cell-a'), cb = cssOf('--cell-b'), wall = cssOf('--wall');
+    const edge = cssOf('--wall-edge'), gold = cssOf('--gold'), txt2 = cssOf('--txt2');
+    const G = size * 0.0115, M = size * 0.0195;
+    const C = (size - 2 * M - 8 * G) / 9, U = C + G;
+    let b = `<svg xmlns="http://www.w3.org/2000/svg" width="${size}" height="${size}" viewBox="0 0 ${size} ${size}">`;
+    if (!opts.transparent) b += `<rect width="${size}" height="${size}" fill="${esc(cssOf('--bg'))}"/>`;
+    b += `<rect width="${size}" height="${size}" rx="26" fill="${esc(frame)}"/>`;
+    for (let r = 0; r < 9; r++) for (let c = 0; c < 9; c++)
+      b += `<rect x="${(M + c * U).toFixed(1)}" y="${(M + r * U).toFixed(1)}" width="${C.toFixed(1)}" height="${C.toFixed(1)}" fill="${esc(((r + c) & 1) ? cb : ca)}"/>`;
+    for (let i = 0; i <= 9; i++) {
+      const t = M + i * U - G / 2;
+      b += `<line x1="${M - G / 2}" y1="${t.toFixed(1)}" x2="${size - M + G / 2}" y2="${t.toFixed(1)}" stroke="${esc(groove)}" stroke-width="${G.toFixed(1)}"/>`;
+      b += `<line x1="${t.toFixed(1)}" y1="${M - G / 2}" x2="${t.toFixed(1)}" y2="${size - M + G / 2}" stroke="${esc(groove)}" stroke-width="${G.toFixed(1)}"/>`;
+    }
+    for (let r = 0; r < 8; r++) for (let c = 0; c < 8; c++) {
+      if (this.wallH[r * 8 + c]) {
+        const x = M + c * U, y = M + (r + 1) * U - G / 2;
+        b += `<rect x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${(2 * C + G).toFixed(1)}" height="${G.toFixed(1)}" rx="4" fill="${esc(wall)}" stroke="${esc(edge)}"/>`;
+      }
+      if (this.wallV[r * 8 + c]) {
+        const x = M + (c + 1) * U - G / 2, y = M + r * U;
+        b += `<rect x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${G.toFixed(1)}" height="${(2 * C + G).toFixed(1)}" rx="4" fill="${esc(wall)}" stroke="${esc(edge)}"/>`;
+      }
+    }
+    for (let pl = 0; pl < 2; pl++) {
+      if (!Number.isInteger(this.pawn[pl])) continue;
+      const d = this.pawn[pl];
+      const cx = M + (d % 9) * U + C / 2, cy = M + Math.floor(d / 9) * U + C / 2;
+      const R = .31 * C;
+      b += `<circle cx="${cx.toFixed(1)}" cy="${cy.toFixed(1)}" r="${R.toFixed(1)}" fill="${esc(cssOf('--p' + pl))}" stroke="${esc(cssOf('--p' + pl + '-deep'))}"/>`;
+    }
+    if (opts.coords !== false) {
+      b += `<g fill="${esc(txt2)}" font-family="monospace" font-size="${(C * .16).toFixed(0)}" opacity=".6">`;
+      for (let c = 0; c < 9; c++) {
+        const x = M + c * U + C / 2;
+        b += `<text x="${x.toFixed(1)}" y="${size - M / 2}" text-anchor="middle">${'abcdefghi'[c]}</text>`;
+      }
+      for (let r = 0; r < 9; r++) {
+        const y = M + r * U + C / 2;
+        b += `<text x="${M / 2}" y="${y.toFixed(1)}" text-anchor="middle">${this.flipped ? r + 1 : 9 - r}</text>`;
+      }
+      b += `</g>`;
+    }
+    if (opts.footer) {
+      const fh = size * .055;
+      b = b.replace(`height="${size}"`, `height="${size + fh * 2}"`)
+           .replace(`viewBox="0 0 ${size} ${size}"`, `viewBox="0 0 ${size} ${size + fh * 2}"`);
+      b += `<text x="${size / 2}" y="${fh * .55}" text-anchor="middle" fill="${esc(gold)}" font-family="Cinzel, serif" font-weight="700" font-size="${(fh * .52).toFixed(0)}">Z Q U O R I D O R</text>`;
+      b += `<text x="${size / 2}" y="${size + fh * 1.45}" text-anchor="middle" fill="${esc(txt2)}" font-family="monospace" font-size="${(fh * .40).toFixed(0)}">${esc(opts.footer.name0)} \u2014 ${esc(opts.footer.name1)}</text>`;
+    }
+    b += `</svg>`;
+    tmp.remove();
+    return b;
   }
 }
 

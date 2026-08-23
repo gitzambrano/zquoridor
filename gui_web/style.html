@@ -40,6 +40,15 @@ html[data-board="ivory"]{--cell-a:#efe7d6;--cell-b:#e6dcc7;--groove:#c3b699;--fr
 html[data-board="slate"]{--cell-a:#1e2a3a;--cell-b:#233245;--groove:#101a26;--frame:#2c3c52;--wall:#d3ddea;--wall-edge:#7d8ea3;}
 html[data-board="emerald"]{--cell-a:#16302a;--cell-b:#1a3a32;--groove:#0b1f1a;--frame:#22463c;--wall:#ecdfc0;--wall-edge:#93815a;}
 html[data-board="parchment"]{--cell-a:#faf6ec;--cell-b:#f1ead9;--groove:#b3a68b;--frame:#a2937a;--wall:#3f3a2e;--wall-edge:#201d16;}
+/* signature themes (plan 17.1): veins are procedural in board.js */
+html[data-board="marble"]{--cell-a:#e8e6e0;--cell-b:#dedbd3;--groove:#b8b4aa;--frame:#8f8a7e;--wall:#3a3f4c;--wall-edge:#14161d;}
+html[data-board="noir"]{--cell-a:#161616;--cell-b:#1d1d1d;--groove:#050505;--frame:#000000;--wall:#f2f2f2;--wall-edge:#8a8a8a;
+  --p0:#f2f2f2;--p0-deep:#9a9a9a;--p0-light:#ffffff;
+  --p1:#3c3c3c;--p1-deep:#0a0a0a;--p1-light:#6e6e6e;}
+html[data-board="noir"][data-ui="light"]{--cell-a:#ececec;--cell-b:#e2e2e2;--groove:#bdbdbd;--frame:#9e9e9e;
+  --wall:#222222;--wall-edge:#000000;
+  --p0:#2e2e2e;--p0-deep:#000000;--p0-light:#555555;
+  --p1:#ffffff;--p1-deep:#777777;--p1-light:#dddddd;}
 
 /* ============================== base ================================== */
 *{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent}
@@ -308,15 +317,170 @@ button{font:inherit;color:inherit;background:none;border:none;cursor:pointer}
 .sronly{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0)}
 :focus-visible{outline:2px solid var(--gold2);outline-offset:2px}
 @media (prefers-reduced-motion:reduce){*{animation-duration:0ms!important;transition-duration:0ms!important}}
+
+/* ==================== analysis pane (plan 5.6) ==================== */
+.sel{
+  background:var(--surf2);border:1px solid var(--bor);border-radius:var(--r-sm);
+  color:var(--txt);font:inherit;font-size:.62rem;padding:5px 6px;
+}
+.anInfo{
+  font-size:.58rem;color:var(--txt2);padding:2px 4px;min-height:14px;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+}
+#anLines{display:flex;flex-direction:column;gap:4px;min-height:44px}
+.pvRow{
+  display:grid;grid-template-columns:auto 1fr auto auto;align-items:center;
+  gap:8px;border:1px solid var(--bor);border-radius:var(--r-md);
+  background:var(--surf2);padding:7px 9px;cursor:pointer;
+  transition:border-color var(--dur-fast),background var(--dur-fast);
+  min-height:38px;
+}
+.pvRow:hover{background:var(--surf3);border-color:var(--bor2)}
+.pvChip{
+  font-weight:700;font-size:.72rem;padding:3px 7px;border-radius:var(--r-sm);
+  background:var(--muted);color:#fff;min-width:52px;text-align:center;
+  font-variant-numeric:tabular-nums;
+}
+.pvChip.good{background:var(--green-dim);color:var(--green)}
+.pvChip.bad{background:var(--red-dim);color:var(--red)}
+.pvMoves{font-size:.68rem;color:var(--txt);line-height:1.35;overflow:hidden;
+  display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical}
+.pvDist{font-size:.56rem;color:var(--txt2);font-variant-numeric:tabular-nums;flex:none}
+.pvTag{font-size:.5rem;color:var(--muted);letter-spacing:.06em}
+.pvRow.preview .pvMoves{color:var(--gold2)}
+#anGraph{
+  width:100%;height:72px;border:1px solid var(--bor);border-radius:var(--r-md);
+  background:var(--surf);touch-action:none;cursor:crosshair;
+}
+.anNavCard h4{margin-bottom:2px}
+.anNav{display:flex;align-items:center;justify-content:center;gap:6px}
+.navb{
+  width:44px;height:40px;border:1px solid var(--bor);border-radius:var(--r-md);
+  background:var(--surf2);color:var(--txt2);font-size:.66rem;
+  transition:background var(--dur-fast),color var(--dur-fast);
+}
+.navb:hover{background:var(--surf3);color:var(--gold2)}
+.navb:active{transform:scale(.94)}
+#navPly{font-size:.62rem;color:var(--txt2);min-width:64px;text-align:center}
+.bcTrack{height:8px;border-radius:4px;background:var(--surf3);
+  border:1px solid var(--bor);overflow:hidden}
+#bcFill{height:100%;width:0%;background:linear-gradient(90deg,var(--gold),var(--gold2));
+  transition:width var(--dur) var(--ease)}
+#bcSummary b{color:var(--txt)}
+
+/* move log rows (plan 5.8) */
+.mlRow{display:flex;gap:10px;padding:3px 6px;font-size:.72rem;
+  border-radius:var(--r-sm);align-items:baseline}
+.mlRow:nth-child(odd){background:rgba(255,255,255,.02)}
+.mlNum{color:var(--muted);min-width:26px;text-align:right}
+.mlMv{cursor:pointer;color:var(--txt2);min-width:44px;
+  font-variant-numeric:tabular-nums;white-space:nowrap}
+.mlMv:hover{color:var(--gold2)}
+.mlMv.cur{color:var(--txt);border-left:2px solid var(--gold);
+  padding-left:5px;background:var(--surf3)}
+.mlSep{text-align:center;color:var(--amber);font-size:.56rem;padding:3px 0;
+  font-family:Cinzel,serif;letter-spacing:.08em}
+
+/* mobile: panes open as a full sheet over the board */
+@media (max-width:899.9px){
+  #sidePanel{
+    display:none;position:fixed;left:0;right:0;top:44px;bottom:52px;z-index:30;
+    width:auto;border:none;border-radius:0;background:var(--bg);
+  }
+  #sidePanel.open{display:flex}
+  #panelBody{padding:10px}
+}
+
+/* ==================== header menu dropdown ==================== */
+#menuDrop{
+  display:none;position:absolute;top:46px;right:8px;min-width:190px;z-index:50;
+  background:var(--surf);border:1px solid var(--bor2);border-radius:var(--r-md);
+  box-shadow:0 18px 44px rgba(0,0,0,.55);padding:5px;
+}
+#menuDrop.open{display:block}
+#menuDrop button{
+  display:flex;width:100%;text-align:left;padding:9px 10px;border-radius:var(--r-sm);
+  font-size:.64rem;color:var(--txt);gap:8px;align-items:center;
+}
+#menuDrop button:hover{background:var(--surf3);color:var(--gold2)}
+#menuDrop button.danger{color:var(--red)}
+#menuDrop hr{border:none;border-top:1px solid var(--bor);margin:4px 6px}
+
+/* ==================== editor pane ==================== */
+.etool{
+  border:1px solid var(--bor);background:var(--surf2);border-radius:var(--r-md);
+  padding:8px 11px;font-size:.62rem;color:var(--txt2);
+  transition:border-color var(--dur-fast),color var(--dur-fast);
+}
+.etool.on{border-color:var(--gold);color:var(--gold2);box-shadow:inset 0 0 10px var(--gold-dim)}
+.stepper{display:inline-flex;align-items:center;gap:2px;border:1px solid var(--bor);
+  border-radius:var(--r-sm);overflow:hidden;background:var(--surf2)}
+.stepper button{width:28px;height:28px;color:var(--txt2)}
+.stepper button:hover{background:var(--surf3);color:var(--gold2)}
+.stepper b{min-width:26px;text-align:center;font-size:.72rem}
+.edValidity{
+  border-radius:var(--r-sm);padding:8px 10px;font-size:.64rem;margin-top:8px;
+  border:1px solid var(--bor);
+}
+.edValidity.ok{color:var(--green);background:var(--green-dim);border-color:transparent}
+.edValidity.bad{color:var(--red);background:var(--red-dim);border-color:transparent}
+
+/* ==================== misc premium bits ==================== */
+#resumeChip{
+  font-size:.58rem;color:var(--gold2);border:1px solid var(--gold);
+  background:var(--gold-dim);border-radius:999px;padding:3px 10px;flex:none;
+  animation:tIn var(--dur) var(--ease);
+}
+#dropOverlay{
+  display:none;position:absolute;inset:-6px;z-index:8;pointer-events:none;
+  border:2px dashed var(--gold);border-radius:16px;
+  align-items:center;justify-content:center;
+  font-family:Cinzel,serif;font-size:.72rem;color:var(--gold2);
+  background:rgba(200,168,75,.06);
+}
+#dropOverlay.on{display:flex}
+
+/* text I/O modal */
+.ioArea{
+  width:100%;height:180px;background:var(--bg);color:var(--txt);
+  border:1px solid var(--bor2);border-radius:var(--r-sm);padding:8px;
+  font-family:'JetBrains Mono',monospace;font-size:.58rem;resize:vertical;
+}
+.ioArea.err{border-color:var(--red)}
+#ioDiag{font-size:.6rem;color:var(--red);min-height:15px;margin-top:4px;white-space:pre-wrap}
+
+/* keyboard help overlay rows */
+.kbdRow{display:flex;gap:10px;padding:3px 0;font-size:.64rem;color:var(--txt2)}
+.kbdRow kbd{
+  background:var(--surf2);border:1px solid var(--bor2);border-bottom-width:2px;
+  border-radius:4px;padding:1px 7px;font-family:'JetBrains Mono';font-size:.6rem;
+  color:var(--txt);min-width:34px;text-align:center;
+}
+
+/* ==================== personalization switches (plan 17) ============ */
+html[data-density="compact"]{--hdr-h:40px}
+html[data-density="compact"] body{font-size:.68rem}
+html[data-density="compact"] .hud-card{padding:5px 8px}
+html[data-density="compact"] #dock{height:66px}
+html[data-density="compact"] #tabBar{height:46px}
+html[data-anim="off"] *{transition-duration:0ms!important;animation-duration:0ms!important}
+html[data-handed="left"] #toasts{left:12px;right:auto;transform:none;align-items:flex-start}
+html[data-handed="left"] #dock{direction:rtl}
+html[data-handed="left"] #dock > *{direction:ltr}
+#toasts{align-items:center}
 </style>
 </head>
 <body>
 <header id="hdr">
   <span id="logo">ZQUORIDOR</span>
   <button id="lvlChip" title="Change level"><span class="dot"></span><span id="lvlName">Knight</span></button>
+  <button class="hbtn" id="btnMenu" aria-label="Menu" aria-haspopup="true">
+    <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M3 5.5h14M3 10h14M3 14.5h14"/></svg>
+  </button>
   <button class="hbtn" id="btnSettings" aria-label="Settings">
     <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="10" cy="10" r="2.6"/><path d="M10 2.5v2.2M10 15.3v2.2M2.5 10h2.2M15.3 10h2.2M4.7 4.7l1.6 1.6M13.7 13.7l1.6 1.6M15.3 4.7l-1.6 1.6M6.3 13.7l-1.6 1.6"/></svg>
   </button>
+  <div id="menuDrop" role="menu"></div>
 </header>
 
 <div id="main">
@@ -365,6 +529,7 @@ button{font:inherit;color:inherit;background:none;border:none;cursor:pointer}
     </div>
     <div id="statusStrip">
       <span id="status" role="status">Loading engine...</span>
+      <button id="resumeChip" style="display:none">Resume game?</button>
       <button id="movesChip">Moves 0</button>
     </div>
     <div id="boardZone">
@@ -376,6 +541,7 @@ button{font:inherit;color:inherit;background:none;border:none;cursor:pointer}
           <button class="no" id="ccNo" aria-label="Cancel wall">&#10005;</button>
         </div>
       </div>
+      <div id="dropOverlay">Drop a .qgn / .qfen / .txt file</div>
     </div>
     <div id="dock" touch-action="none">
       <button class="dbtn" id="wallH"><span class="swatchH"></span><small>H WALL</small><span class="badge" id="badgeH">10</span></button>
@@ -411,16 +577,81 @@ button{font:inherit;color:inherit;background:none;border:none;cursor:pointer}
         </div>
       </div>
       <div class="pane" id="anPane">
-        <div class="card"><h4>ANALYSIS</h4>
-          <p style="color:var(--txt2)">The analysis surface (Multi-PV, eval graph, blunder
-          check) lands in the next iteration of this plan.</p>
+        <div class="card">
+          <div class="row" style="gap:6px">
+            <button class="btn gold" id="anEngBtn" style="flex:1">ENGINE OFF</button>
+          </div>
+          <div class="row" style="margin-top:8px">
+            <label>Depth</label>
+            <select class="sel" id="anDepth">
+              <option value="6">6</option>
+              <option value="10" selected>10</option>
+              <option value="14">14</option>
+              <option value="20">20</option>
+              <option value="0">&#8734;</option>
+            </select>
+            <label>Lines</label>
+            <select class="sel" id="anPvCount">
+              <option value="1">1</option>
+              <option value="2">2</option>
+              <option value="3" selected>3</option>
+              <option value="4">4</option>
+              <option value="5">5</option>
+            </select>
+          </div>
+        </div>
+        <div id="anInfo" class="anInfo num">Depth &#8211; &#183; nodes &#8211; &#183; nps &#8211;</div>
+        <div id="anLines"></div>
+        <canvas id="anGraph" height="72" aria-label="Evaluation graph"></canvas>
+        <div class="card anNavCard">
+          <div class="anNav">
+            <button class="navb" id="navFirst" aria-label="First ply">&#124;&#9668;</button>
+            <button class="navb" id="navPrev" aria-label="Previous ply">&#9664;</button>
+            <span class="num" id="navPly">0 / 0</span>
+            <button class="navb" id="navNext" aria-label="Next ply">&#9654;</button>
+            <button class="navb" id="navLast" aria-label="Last ply">&#9654;&#124;</button>
+          </div>
+          <div class="row" style="margin-top:8px;gap:6px">
+            <button class="btn" id="btnReturn" style="flex:1;display:none">Return to game</button>
+            <button class="btn" id="anBlunderBtn" style="flex:1.6">Blunder check</button>
+          </div>
+          <div id="bcBox" style="display:none;margin-top:8px">
+            <div id="bcLabel" style="font-size:.6rem;color:var(--txt2);margin-bottom:4px"></div>
+            <div class="bcTrack"><div id="bcFill"></div></div>
+          </div>
+          <div id="bcSummary" style="display:none;margin-top:8px;font-size:.62rem;color:var(--txt2)"></div>
         </div>
       </div>
       <div class="pane" id="edPane">
-        <div class="card"><h4>EDITOR</h4>
-          <p style="color:var(--txt2)">Position editor and QFEN/QGN import-export land in
-          the next iteration of this plan.</p>
+        <div class="card">
+          <h4>EDITOR</h4>
+          <div class="row" style="gap:6px;flex-wrap:wrap">
+            <button class="etool on" id="etPawn0">Pawn 0</button>
+            <button class="etool" id="etPawn1">Pawn 1</button>
+            <button class="etool" id="etWallH">Wall H</button>
+            <button class="etool" id="etWallV">Wall V</button>
+            <button class="etool" id="etErase">Erase</button>
+          </div>
+          <div class="row"><label>Walls left</label>
+            <span class="stepper"><button data-st="w0-1">&#8722;</button><b id="edW0">10</b><button data-st="w0+1">+</button></span>
+            <span class="stepper"><button data-st="w1-1">&#8722;</button><b id="edW1">10</b><button data-st="w1+1">+</button></span>
+          </div>
+          <div class="row"><label>Side to move</label>
+            <div class="seg" id="edTurn">
+              <button data-t="0" class="on">Player 0</button>
+              <button data-t="1">Player 1</button>
+            </div>
+          </div>
+          <div id="edValidity" class="edValidity ok">Legal position</div>
         </div>
+        <div class="row" style="gap:6px;flex-wrap:wrap">
+          <button class="btn gold" id="btnEdApply" style="flex:1.4">APPLY</button>
+          <button class="btn" id="btnEdClear">Clear</button>
+          <button class="btn" id="btnEdCopy">Copy QFEN</button>
+          <button class="btn" id="btnEdPaste">Paste QFEN</button>
+        </div>
+        <p style="font-size:.6rem;color:var(--muted)">Clicks on the board apply the active
+        tool here. Apply starts a new game from the edited position.</p>
       </div>
     </div>
   </div>
@@ -436,8 +667,8 @@ button{font:inherit;color:inherit;background:none;border:none;cursor:pointer}
 <div id="toasts"></div>
 <span class="sronly" id="srBoard" aria-live="polite"></span>
 
-<script src="zquoridor.js"></script>
 <script src="board.js"></script>
+<script src="zquoridor.js"></script>
 <script src="app.js"></script>
 </body>
 </html>

@@ -36,7 +36,11 @@ relearn by experiment.
    eliminating the ~1KB `AccPair` copy per traversed edge.
 4. **Time-control curve**: measure hybrid vs pure AB at 50ms/500ms/1000ms;
    the hybrid's advantage was only validated near 150-200ms.
-5. **GUI worker offload** (`gui_web/`) -- tracked by the GUI section.
+5. **GUI worker for play turns** (`gui_web/`): analysis already runs in a
+   worker; the play-mode `engineMove` (up to Titan 8 s) still blocks the
+   main thread. Replay-based request shape is ready in `worker.js`.
+6. **MCTS visit-share %** in analysis PV rows needs a
+   `rootNodeForInspection` export channel.
 
 ---
 
@@ -65,6 +69,46 @@ relearn by experiment.
   never disappear); `push(hash, irreversible)` exploits this. The subtle
   case (post-wall position recurring via pawn cycles) is pinned by
   `tests/test_repetition_diff.cpp`.
+- **QFEN lessons (2026-08-23, pinned by `tests/test_notation.cpp`)**:
+  - Wall token rank is the slot row + 1 (the wall's south-west cell). An
+    off-by-one here survives casual testing because every token still parses;
+    it only shows up as import/export disagreement on real positions.
+  - The checkable budget invariant from a QFEN alone is
+    `placed + wallsLeft0 + wallsLeft1 <= 20`, NOT `placed <= wallsLeft sum`.
+    A finished game legitimately exports hands 0/0 with all 20 walls placed.
+    Fewer than 20 total is accepted (the editor may drop walls).
+  - Small enclosures are impossible with legal walls (a 1x1 box needs two
+    crossing walls; a 2x1 box needs colinear-adjacent ones). The smallest
+    legal sealed region is 2x2 -- the shape the path-rejection test uses.
+- **PowerShell file round-trips corrupt UTF-8**: `Get-Content | Set-Content`
+  mangles accented characters in this repo's scripts and adds CRLF/BOM. Patch
+  committed files with Python byte I/O or the Edit tool only.
+- **GUI bugs the browser test caught that unit tests could not (2026-08-23)**:
+  - Tap-to-move was dead since the P2 interaction work: the board pointer
+    handler passed a `{r,c}` cell object into code comparing against a
+    numeric display index. Silent no-op, no exception -- only a click-driven
+    Playwright test catches it.
+  - Naming any `EXPORTED_RUNTIME_METHODS` in emcc turns it into an
+    allowlist: `HEAPU8` silently vanished from `Module`, and every string
+    export crashed only when first used. Export what you touch.
+  - A `$` helper bound to `getElementById` does not take descendant
+    selectors; `$('#ioFmt .on')` returned null at event time. Keep one
+    lookup discipline per codebase.
+  - Manual board flip was instantly undone: `doFlip` toggled `B.flipped`,
+    then `syncFromEngine` recomputed it from `humanSide`. The flip now lives
+    in `S.flipped` (settings) and `syncFromEngine` derives the display
+    orientation from it -- derived state must have exactly one writer.
+  - Deleting the last entry of the Recent Games sheet re-called
+    `showRecentGames()`, which early-returns on an empty list and left the
+    stale row visible. Re-rendered surfaces need an explicit empty state.
+  - The analysis worker request must carry only the plies up to the review
+    cursor (`pliesUpToCursor()`); replaying the full recorded line analysed
+    a different position than the main-thread fallback when the user had
+    navigated back.
+- **Testing discipline for this GUI**: browser tests must drive the GUI
+  entry points (`newGame()`, not `__w.newGame()`); calling C-level exports
+  directly skips JS-side resets (humanSide, gameOver, clocks, level marks)
+  and poisons every later assertion in the run.
 
 ---
 
@@ -87,6 +131,107 @@ relearn by experiment.
 - **`tools/arena/`**, **`tools/selfplay/`**, **`tools/spsa/`**,
   **`training/`**: strength testing, dataset generation, parameter
   tuning, NNUE training.
+
+## 4b. Web GUI (`gui_web/`)
+
+Premium interface per `gui-premium.md`. Phases P0-P5 (tokens, canvas board
+`board.js` QBoard, wall/pawn interaction, HUD, layouts, play tab) landed
+2026-08-22. P6 + P7 landed 2026-08-23; P8, P8b, P8c, P9 and P10 completed
+2026-08-23 (same day), making the plan fully implemented:
+
+- **P6 engine surface** (`engine_wasm.cpp`, exports synced in
+  `wasm_args.rsp` and both `build_wasm.*` scripts -- keep the three lists
+  identical):
+  - Full game history in C (`g_histStates`/`g_histMoves` + cursor):
+    `qr_goto_ply`, `qr_truncate_history`, `qr_ply_*` getters. Every live
+    mutation records a ply; the JS snapshot-diffing of the old GUI is gone.
+    `qr_goto_ply` rebuilds the repetition table from real history and resets
+    the MCTS tree (tree reuse assumes one continuous line).
+  - Scratch position shared by analysis/editor/blunder-check
+    (`qr_scratch_from_live/from_ply/reset`, `qr_scr_*` getters). Analysis can
+    never mutate the live game.
+  - Multi-line analysis `qr_analyze(maxDepth, timeMs, lines)`: line 1 is a
+    full search at the scratch root (the same move the game engine would
+    play); lines 2+ come from independent searches of child positions after
+    candidates ordered by a depth-2 pass. Honest but only line 1 is proven
+    best -- documented here because the UI does not say it. PVs are rebuilt
+    from the TT by the new public `Negamax::extractPv` (`src/search.hpp`).
+    Runs on its own `Negamax g_anEngine` so the game TT stays warm.
+  - Editor ops on scratch (`qr_edit_set_pawn/wall/walls_left/turn`,
+    `qr_edit_validity` bitmask, `qr_edit_apply`). Wall placement refuses only
+    physical conflicts (occupied/crossing/colinear); path problems go to the
+    bitmask so the user can build freely and read what is wrong.
+  - QFEN import/export (plan section 16.1): canonical export sorts walls by
+    orientation/row/column, token rank = slot row + 1 (south-west cell);
+    import validates before applying and reports the exact failing token via
+    `qr_last_error`. Pinned by `tests/test_notation.cpp` (round-trip over
+    random playouts + diagnostics table), which includes
+    `gui_web/engine_wasm.cpp` directly to reach the anonymous namespace.
+  - `_malloc`/`_free` and the `HEAPU8` view had to join the export lists:
+    naming any `EXPORTED_RUNTIME_METHODS` turns it into an allowlist, and the
+    JS string bridge reads QFEN bytes through `Module.HEAPU8`.
+- **P7 analysis tab** (`app.js` section 14): ENGINE ON/OFF, depth select with
+  infinite mode (iterative deepening loop capped at depth 22), 1-5 PV rows
+  with eval chip / moves / opponent-distance delta badge / line preview on
+  the board (walls translucent, pawn steps numbered), eval graph canvas with
+  scrub-to-jump and blunder dots, ply navigation wired to `qr_goto_ply` plus
+  `,` `.` `Home` `End` keys and an `A` engine toggle, move log rendered from
+  recorded plies with click-to-jump, takeback that rolls back to the human's
+  previous turn, hint (single-line analyze drawn as ghost/dot for 4 s),
+  blunder check with cancel + progress + per-side accuracy card (win-prob
+  drops 0.06/0.13/0.25 -> `?!` `?` `??`; `!` when the played move matches the
+  engine best with a decent score).
+- **P8 serialization & editor**: full QGN exporter (PGN-shaped headers,
+  `{[%ev ...]}` comments from stored analysis scores, blunder symbols,
+  result); game importer that strips headers/comments/numbering and applies
+  tokens one by one through the legality-checked C surface, stopping at the
+  first bad token with its index; dialect normalization for
+  orientation-first (`Ha5`, `V f3`), coordinate-pair (`c6-d6`) and bare move
+  lists; shape-based routing (`routeImport`) between QFEN and QGN. Text I/O
+  modal (format toggle, copy/paste/load/download, diagnostics), drag-and-drop
+  onto the board, file picker, `#qfen=`/`#qgn=` URL hash load plus Copy link,
+  autosave of the live game to `zq.game` (debounced) with a 10 s Resume chip,
+  and a 20-game `zq.recent` ring with Load/Copy/Delete sheet. Editor tab: tool
+  palette, wall-budget steppers, side-to-move switch, live validity strip fed
+  by `qr_edit_validity`, Apply gated on validity, Copy/Paste QFEN; while the
+  pane is open the board renders the SCRATCH position.
+- **P8b personalization**: settings schema v1 per plan section 11 with merge
+  migration and corrupt-blob reset; presets Classic / Premium Dark / High
+  Contrast / Minimal (touching any option flips the chip to Custom); 8 board
+  themes including Carrara Marble (deterministic procedural veins drawn once
+  into the static layer, mulberry32 seed) and Noir (value-separated pawns;
+  light variant redefines wall tokens -- found missing by the contrast gate);
+  board dressing switches (frame none/hairline/gilded/beveled, wall finish
+  flat/beveled/glossy/etched, cell separation grooves/flat/inlaid,
+  coordinates off/edges/all, board scale slider); accent colour presets plus
+  custom picker with derived `--gold2`/dim/glow; 6 pawn styles (adds
+  pawnChess and beacon), pawn size and shadow, distinct-shapes toggle
+  (automatic in noir); sound packs wood/modern/marble/silent as data tables
+  with per-event toggles, volume slider and Test button; haptics levels;
+  motion full/reduced/off with speed multiplier over the duration tokens;
+  density and text-size switches; handedness mirroring dock/toasts.
+- **P8c image export**: PNG via `QBoard.renderExport` into a detached fixed
+  size canvas (transparent-background, coordinates and footer-wordmark
+  options) and SVG via `QBoard.toSVG`.
+- **P9 accessibility**: `tools/gui/contrast_check.py` gate (wall/cell and
+  wall/groove >= 3:1 for all 8x2 theme combinations, text >= 4.5:1) runs
+  inside `build_standalone.py` and fails the bundle on regression; SR live
+  region announcements after every ply; keyboard help overlay (`?`), full
+  §14 key map including arrow-key pawn movement with Shift diagonals and
+  straight-jump continuation; focus-visible outlines kept.
+- **P10 standalone**: Google Fonts downloaded at bundle time into the
+  committed `gui_web/fonts_cache/` and inlined as base64 WOFF2, so the
+  single-file bundle needs no network; graceful fallback to the `<link>` if
+  the cache is empty and the network is unavailable.
+- **Analysis worker** (`worker.js`, plan section 12): a second WASM module
+  instance receives self-contained requests (root QFEN optional plus the
+  recorded packed plies), replays them onto its scratch and returns line
+  data, keeping the main thread free during analysis. The main-thread
+  slicing path remains as the silent fallback (file:// bundles cannot spawn
+  the worker). Play-mode engine turns still run synchronously on the main
+  thread -- tracked below as remaining work.
+
+---
 
 ## 5. Evaluation Conventions
 

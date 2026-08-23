@@ -21,7 +21,7 @@ A high-performance Quoridor engine for the 9×9, 2-player variant (10 walls per 
 - **Training & Quantization Pipeline**: PyTorch training script with dataset blending (`train_nnue.py`), automated int8 quantization (`quantize_nnue.py`), and C++/Python numerical parity verification (`nnue_verify`).
 - **Strength Arena**: Automated head-to-head match runner (`tools/arena/run_arena.py`) with Elo estimation and confidence intervals.
 - **SPSA Parameter Tuning**: Multi-mode SPSA tuner (`tools/spsa/tune_spsa.cpp`) supporting continuous parameter tuning (`--mode spsa`), discrete depth sweeps (`--mode sweep-mindepth`), and multi-depth parallel tuning (`--mode hybrid`) with matplotlib visualization (`tools/spsa/plot_spsa.py`).
-- **WebAssembly & Browser GUI**: Mobile-friendly browser UI compiled via Emscripten with WebAssembly engine backend.
+- **WebAssembly & Browser GUI**: Premium mobile and desktop browser UI on a canvas board, with wall-placement assist (drag, tap-to-arm, flip gesture, magnetic legality snapping), clocks, race meter, themes and deep personalization (8 board themes, 6 pawn styles, sound packs, presets). Includes an analysis tab running in a Web Worker: engine lines with evaluations, an evaluation graph, position navigation with takeback, hints and an automatic blunder check; a position editor with validity feedback; QFEN positions and QGN game text for import/export (clipboard, files, drag-and-drop and share links); and PNG/SVG board image export.
 
 ---
 
