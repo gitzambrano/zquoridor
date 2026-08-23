@@ -17,8 +17,8 @@
   --green:#4a9c6a;--red:#c0394a;--amber:#d99b3c;--blue:#4a7bc0;
   --p0:#f0e6d2;--p0-deep:#b9a87e;--p0-light:#fdf8ec;--p0-soft:rgba(240,230,210,.16);
   --p1:#cf4155;--p1-deep:#7d1f2c;--p1-light:#e8697a;--p1-soft:rgba(207,65,85,.18);
-  --wall:#e2cd96;--wall-edge:#8d6f31;--wall-dim:rgba(226,205,150,.35);
-  --cell-a:#1b1b26;--cell-b:#20202d;--groove:#0b0b12;--frame:#2a2a3c;
+  --wall:#ece7da;--wall-edge:#8f8878;--wall-dim:rgba(236,231,218,.35);
+  --cell-a:#20202c;--cell-b:#242433;--groove:#14141d;--frame:#30304a;
   --r-sm:6px;--r-md:10px;--r-lg:14px;--r-xl:18px;
   --dur-fast:110ms;--dur:180ms;--dur-slow:320ms;
   --ease:cubic-bezier(.22,.61,.36,1);
@@ -143,7 +143,8 @@ button{font:inherit;color:inherit;background:none;border:none;cursor:pointer}
   background:linear-gradient(var(--p0),var(--p0-light));transition:height var(--dur) var(--ease)}
 #boardWrap{position:relative;align-self:center;max-width:100%;min-width:0}
 #boardZone,#boardCol{min-width:0;max-width:100%}
-#board{display:block;border-radius:12px;box-shadow:0 10px 34px rgba(0,0,0,.55),0 0 0 1px var(--bor2)}
+#board{display:block;border-radius:10px;touch-action:none;
+  box-shadow:0 6px 22px rgba(0,0,0,.45),0 0 0 1px var(--bor2)}
 #confirmChip{position:absolute;display:none;gap:8px;z-index:5}
 #confirmChip button{width:44px;height:44px;border-radius:50%;display:flex;
   align-items:center;justify-content:center;box-shadow:0 6px 16px rgba(0,0,0,.5)}
@@ -1079,8 +1080,9 @@ class QBoard {
       this.cv.style.height = side + 'px';
     }
     this.ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    // geometry per plan 6.1: S = 9C + 8G (+ coordinate margin M on both sides)
-    this.G = Math.max(5, Math.min(14, 0.20 * (side / 10.42)));
+    // geometry per plan 6.1: S = 9C + 8G. G stays slim (classic look): it is
+    // the wall thickness and the breathing room between cells.
+    this.G = Math.max(4, Math.min(9, 0.14 * (side / 10.6)));
     const coordsMode = this.ds().coords || 'edges';
     this.M = coordsMode !== 'off' ? 0.42 * ((side - 8 * this.G) / 9) : 0;
     this.C = (side - 2 * this.M - 8 * this.G) / 9;
@@ -1120,9 +1122,14 @@ class QBoard {
 
   setData(pawnEng, wallsHEng, wallsVEng, lastMove) {
     this.pawn = [this.engPawnToDisp(pawnEng[0]), this.engPawnToDisp(pawnEng[1])];
-    for (let s = 0; s < 64; s++) {
-      this.wallH[s] = wallsHEng[s] | 0;
-      this.wallV[s] = wallsVEng[s] | 0;
+    // Wall slots mirror like the pawns: the board arrays hold display
+    // coordinates (engine row r lands at display row 7-r), so the paint and
+    // export paths can index them directly. The map is a bijection, so every
+    // display slot is rewritten and no stale bit survives a position change.
+    for (let r = 0; r < 8; r++) for (let c = 0; c < 8; c++) {
+      const s = r * 8 + c, d = this.flipped ? s : (7 - r) * 8 + c;
+      this.wallH[d] = wallsHEng[s] | 0;
+      this.wallV[d] = wallsVEng[s] | 0;
     }
     this.lastMove = lastMove || null;
     this.render();
@@ -1168,55 +1175,42 @@ class QBoard {
     const ca = this.css('--cell-a'), cb = this.css('--cell-b');
     const frameStyle = ds.frame || 'hairline';
     const cellSep = ds.cellSep || 'grooves';
-    // E4 board frame: four dressing variants (plan 17.2)
+    // Classic base: one flat surface in the groove color, cells drawn on top
+    // with a thin light edge -- the pre-premium look (flat, quiet).
+    g.fillStyle = frameStyle === 'none' ? ca : groove;
+    this.rr(g, 0, 0, S, S, 10); g.fill();
     if (frameStyle !== 'none') {
-      g.fillStyle = frame;
-      this.rr(g, 0, 0, S, S, 12); g.fill();
-      if (frameStyle === 'gilded') {
-        g.strokeStyle = this.css('--gold'); g.lineWidth = 2;
-        this.rr(g, 1.5, 1.5, S - 3, S - 3, 10); g.stroke();
-        const sh = g.createLinearGradient(0, 0, 0, S);
-        sh.addColorStop(0, 'rgba(0,0,0,.28)'); sh.addColorStop(.08, 'rgba(0,0,0,0)');
-        sh.addColorStop(.92, 'rgba(0,0,0,0)'); sh.addColorStop(1, 'rgba(0,0,0,.34)');
-        g.fillStyle = sh; this.rr(g, 0, 0, S, S, 12); g.fill();
-      } else if (frameStyle === 'beveled') {
-        const be = g.createLinearGradient(0, 0, 0, S);
-        be.addColorStop(0, 'rgba(255,255,255,.10)');
-        be.addColorStop(.06, 'rgba(0,0,0,.22)');
-        be.addColorStop(.94, 'rgba(0,0,0,.18)');
-        be.addColorStop(1, 'rgba(255,255,255,.06)');
-        g.fillStyle = be; this.rr(g, 0, 0, S, S, 12); g.fill();
-      }
+      g.strokeStyle = this.css('--bor2'); g.lineWidth = 1;
+      this.rr(g, .5, .5, S - 1, S - 1, 10); g.stroke();
     }
+    if (frameStyle === 'gilded') {
+      g.strokeStyle = this.css('--gold'); g.lineWidth = 2;
+      this.rr(g, 1.5, 1.5, S - 3, S - 3, 9); g.stroke();
+    } else if (frameStyle === 'beveled') {
+      const be = g.createLinearGradient(0, 0, 0, S);
+      be.addColorStop(0, 'rgba(255,255,255,.08)');
+      be.addColorStop(.05, 'rgba(0,0,0,.18)');
+      be.addColorStop(.95, 'rgba(0,0,0,.15)');
+      be.addColorStop(1, 'rgba(255,255,255,.05)');
+      g.fillStyle = be; this.rr(g, 0, 0, S, S, 10); g.fill();
+    }
+    // cells: flat single tone + thin light grid line (classic). The 'inlaid'
+    // dressing swaps the line for gold; 'flat' drops the lines entirely.
+    const twoTone = false;   // classic: uniform cells
     for (let r = 0; r < 9; r++) for (let c = 0; c < 9; c++) {
       const p = this.cellXY(r, c);
-      g.fillStyle = ((r + c) & 1) ? cb : ca;
-      if (cellSep === 'flat') {
-        if (r === 0 && c === 0) { g.fillRect(M - G / 2, M - G / 2, 9 * U + G / 2, 9 * U + G / 2); continue; }
-        if (((r + c) & 1) === 0) continue;
+      g.fillStyle = twoTone ? (((r + c) & 1) ? cb : ca) : ca;
+      if (cellSep === 'grooves' || cellSep === 'inlaid') {
+        g.fillRect(p.x - G / 2 + .5, p.y - G / 2 + .5, C + G - 1, C + G - 1);
+        g.strokeStyle = cellSep === 'inlaid'
+          ? this.css('--gold') : 'rgba(255,255,255,.13)';
+        g.globalAlpha = cellSep === 'inlaid' ? .35 : 1;
+        g.lineWidth = 1;
+        g.strokeRect(p.x + .5, p.y + .5, C - 1, C - 1);
+        g.globalAlpha = 1;
+      } else {
+        g.fillRect(p.x, p.y, C + .5, C + .5);
       }
-      g.fillRect(p.x, p.y, C + 0.5, C + 0.5);
-    }
-    if (cellSep === 'grooves') {
-      g.strokeStyle = groove; g.lineWidth = G; g.lineCap = 'butt';
-      g.beginPath();
-      for (let i = 0; i <= 9; i++) {
-        const t = M + i * U - G / 2;
-        const e0 = M - G / 2, e1 = S - M + G / 2;
-        const tt = Math.max(e0, Math.min(e1, t));
-        g.moveTo(e0, tt); g.lineTo(e1, tt);
-        g.moveTo(tt, e0); g.lineTo(tt, e1);
-      }
-      g.stroke();
-    } else if (cellSep === 'inlaid') {
-      g.strokeStyle = this.css('--gold'); g.globalAlpha = .35; g.lineWidth = 1;
-      g.beginPath();
-      for (let i = 0; i <= 9; i++) {
-        const t = Math.round(M + i * U) + .5;
-        g.moveTo(M, t); g.lineTo(S - M, t);
-        g.moveTo(t, M); g.lineTo(t, S - M);
-      }
-      g.stroke(); g.globalAlpha = 1;
     }
     // Carrara Marble signature theme: deterministic procedural veins drawn
     // once into the static layer -- zero per-frame cost (plan 17.1 #7).
@@ -1238,13 +1232,14 @@ class QBoard {
       }
       g.restore();
     }
-    // goal edges: player 0's goal is the BOTTOM edge when not flipped
-    const p0 = this.css('--p0'), p1 = this.css('--p1');
-    g.globalAlpha = .45;
-    g.fillStyle = this.flipped ? p0 : p1;
-    g.fillRect(M - G / 2, M - G / 2 - 4, 9 * U, 3);
-    g.fillStyle = this.flipped ? p1 : p0;
-    g.fillRect(M - G / 2, S - M - G / 2 + 1, 9 * U, 3);
+    // goal markers: a quiet 2px line just inside the top and bottom play
+    // edges (subtle orientation cue, classic-quiet).
+    const p0c = this.css('--p0'), p1c = this.css('--p1');
+    g.globalAlpha = .22;
+    g.fillStyle = this.flipped ? p0c : p1c;
+    g.fillRect(M - G / 2, M - G / 2, 9 * U, 2);
+    g.fillStyle = this.flipped ? p1c : p0c;
+    g.fillRect(M - G / 2, S - M - G / 2 - 2, 9 * U, 2);
     g.globalAlpha = 1;
     const coordsMode = ds.coords || 'edges';
     if (coordsMode !== 'off' && C >= 26) {
@@ -1289,9 +1284,11 @@ class QBoard {
       if (this.lastMove.type === 'pawn') {
         const p = this.cellXY(this.lastMove.r, this.lastMove.c);
         g.fillStyle = this.css('--gold-dim');
+        g.globalAlpha = .8;
         g.fillRect(p.x, p.y, C, C);
-        g.strokeStyle = this.css('--gold'); g.lineWidth = 1.5;
-        g.strokeRect(p.x + .75, p.y + .75, C - 1.5, C - 1.5);
+        g.globalAlpha = 1;
+        g.strokeStyle = this.css('--gold'); g.lineWidth = 1;
+        g.strokeRect(p.x + .5, p.y + .5, C - 1, C - 1);
       } else {
         const [o, r, c] = this.engWallToDisp(this.lastMove.o, this.lastMove.r, this.lastMove.c);
         g.save(); g.globalAlpha = .9;
@@ -1384,9 +1381,9 @@ class QBoard {
     const finish = this.ds().wallFinish || 'beveled';
     g.save();
     if (finish !== 'flat') {
-      g.fillStyle = 'rgba(0,0,0,.45)';
-      if (o === 0) { this.rr(g, rc.x + 1, rc.y + 2.5, rc.w, rc.h, 2); g.fill(); }
-      else { this.rr(g, rc.x + 2.5, rc.y + 1, rc.w, rc.h, 2); g.fill(); }
+      g.fillStyle = 'rgba(0,0,0,.32)';
+      if (o === 0) { this.rr(g, rc.x + 1, rc.y + 2, rc.w, rc.h, 3); g.fill(); }
+      else { this.rr(g, rc.x + 2, rc.y + 1, rc.w, rc.h, 3); g.fill(); }
     }
     if (finish === 'glossy') {
       const grad = o === 0
@@ -1406,7 +1403,7 @@ class QBoard {
       grad.addColorStop(.78, wall); grad.addColorStop(1, edge);
       g.fillStyle = grad;
     }
-    this.rr(g, rc.x, rc.y, rc.w, rc.h, finish === 'flat' ? 0 : 2); g.fill();
+    this.rr(g, rc.x, rc.y, rc.w, rc.h, finish === 'flat' ? 0 : 3); g.fill();
     if (finish !== 'flat') {
       g.lineWidth = outlineOverride ? 1.8 : 1;
       g.strokeStyle = outlineOverride || edge;
@@ -1543,8 +1540,8 @@ class QBoard {
     }
     if (this.turn === pl) {
       g.beginPath(); g.arc(ctr.x, ctr.y, .40 * C, 0, 7);
-      g.strokeStyle = this.css('--gold'); g.lineWidth = 2;
-      g.shadowColor = this.css('--gold-glow'); g.shadowBlur = 8;
+      g.strokeStyle = this.css('--gold'); g.lineWidth = 1.5;
+      g.shadowColor = this.css('--gold-glow'); g.shadowBlur = 5;
       g.stroke();
     }
     g.restore();
@@ -2048,9 +2045,11 @@ function syncFromEngine() {
   B.flipped = ((humanSide === 1) !== !!S.flipped);
   lastMoveInfo = plyToLastMove(W.cursor() - 1);
   B.linePreview = null;
-  B.setData(pw, wh, wv, lastMoveInfo);
+  // Dots and the side-to-move marker must be current BEFORE setData paints,
+  // or they only appear on the render after this one.
   buildLegalSets();
   refreshHud();
+  B.setData(pw, wh, wv, lastMoveInfo);
   renderMoveLog();
   updateNav();
   drawGraph();
@@ -2073,13 +2072,36 @@ function buildLegalSets() {
 
 // ===================== 9. play flow ====================================
 function setStatus(t) { $('status').textContent = t; }
+
+// Single-owner engine timer: scheduling a new engine turn cancels any stale
+// one, and engineTurn refuses to act unless it really is the engine's move.
+// This makes "the engine playing for both sides" structurally impossible.
+let engineTimer = null;
+function scheduleEngineTurn(delay) {
+  if (engineTimer) clearTimeout(engineTimer);
+  engineTimer = setTimeout(() => { engineTimer = null; engineTurn(); }, delay);
+}
 function afterHumanMove() {
   updateMovesChip();
   checkEnd();
-  if (!gameOver) { engineThinking = true; refreshHud(); setStatus('Zquoridor is thinking...');
-    setTimeout(engineTurn, 120); }
+  if (!gameOver) {
+    engineThinking = true;
+    refreshHud();
+    setStatus('Zquoridor is thinking...');
+    scheduleEngineTurn(120);
+  }
 }
 function engineTurn() {
+  if (!engineThinking) return;   // stale timer already superseded
+  if (gameOver || W.winner() !== -1 || W.isDraw()) {
+    engineThinking = false; syncAll(); return;
+  }
+  if (W.turn() === humanSide) {   // never let the engine move for the human
+    engineThinking = false;
+    syncAll();
+    setStatus('Your move');
+    return;
+  }
   const lv = LEVELS[S.level];
   const ok = W.engineMove(24, lv.ms);
   engineThinking = false;
@@ -2134,7 +2156,7 @@ function newGame() {
   setStatus(humanSide === 0 ? 'Your move' : 'Zquoridor starts');
   syncAll();
   startClock();
-  if (W.turn() !== humanSide) { engineThinking = true; refreshHud(); setTimeout(engineTurn, 150); }
+  if (W.turn() !== humanSide) { engineThinking = true; refreshHud(); scheduleEngineTurn(150); }
 }
 function updateMovesChip() { $('movesChip').textContent = 'Moves ' + Math.ceil(W.plyCount() / 2); }
 
@@ -2230,12 +2252,15 @@ function boardPoint(ev) {
 function snapGhost(px, py) {
   const off = touchOffsetPx();
   const p = { x: px, y: py - off };
+  // Always snap to the NEAREST anchor inside the board: a tap far from any
+  // groove still produces a concrete ghost (ok / assisted / bad with the
+  // reason), never a silent no-op.
   let a = B.nearestAnchor(p.x, p.y);
-  if (!a || a.dist > .85 * B.U) { B.ghost = null; setStatus('Drag onto a groove between cells'); return; }
+  if (!a) { B.ghost = null; setStatus('Tap between cells to place the wall'); B.render(); return; }
   let [o, r, c] = [armedO, a.r, a.c];
   const [eo, er, ec] = B.dispWallToEng(o, r, c);
   let st = legalWall[o * 64 + r * 8 + c] ? 'ok' : null;
-  if (!st) {   // magnetic assist: nearest legal anchor within .60U
+  if (!st) {   // magnetic assist: nearest LEGAL anchor around the pointer
     let best = null;
     for (let dr = -1; dr <= 1; dr++) for (let dc = -1; dc <= 1; dc++) {
       const rr2 = r + dr, cc2 = c + dc;
@@ -2243,7 +2268,7 @@ function snapGhost(px, py) {
       if (!legalWall[o * 64 + rr2 * 8 + cc2]) continue;
       const ctr = B.anchorCenter(rr2, cc2);
       const dist = Math.hypot(p.x - ctr.x, p.y - ctr.y);
-      if (dist <= .60 * B.U && (!best || dist < best.dist)) best = { r: rr2, c: cc2, dist };
+      if (dist <= .90 * B.U && (!best || dist < best.dist)) best = { r: rr2, c: cc2, dist };
     }
     if (best) { r = best.r; c = best.c; st = 'assisted'; }
   }
@@ -2262,16 +2287,32 @@ function illegalReason(o, r, c) {
   return 'Would leave a player with no path to goal';
 }
 
+let lastNudge = 0;
+function thinkNudge() {
+  const now = performance.now();
+  if (now - lastNudge < 1500) return;
+  lastNudge = now;
+  toast('info', 'Zquoridor is thinking...');
+}
+
 function onBoardPointerDown(ev) {
   if (currentPane === 'edPane') { edBoardDown(ev); return; }
-  if (gameOver || engineThinking) return;
+  if (gameOver) return;
+  if (engineThinking) { thinkNudge(); return; }
   if (!atLiveEnd()) { toast('info', 'Reviewing an earlier ply - press Return to game'); return; }
   const pt = boardPoint(ev);
   const cell = B.pointToCell(pt.x, pt.y);
   if (wallState === 'ARMED') { wallState = 'DRAGGING'; dragPtr = ev.pointerId; snapGhost(pt.x, pt.y); ev.preventDefault(); return; }
   if (cell) {
     const near = B.nearestAnchor(pt.x, pt.y);
-    if (!near || near.dist > .55 * B.U || !nearAnchorHasLegal(near)) {
+    // A press on a CELL CENTER belongs to the pawn; only presses hugging a
+    // groove intersection start the direct wall gesture (plan section 6.2).
+    let cellCenterPress = false;
+    if (cell) {
+      const cc2 = B.cellCenter(cell.r, cell.c);
+      cellCenterPress = Math.hypot(pt.x - cc2.x, pt.y - cc2.y) < .34 * B.U;
+    }
+    if (!near || cellCenterPress || near.dist > .55 * B.U || !nearAnchorHasLegal(near)) {
       pawnDown(cell.r * 9 + cell.c, pt);   // pawnDown wants a display index
       return;
     }
@@ -2303,6 +2344,9 @@ function onBoardPointerUp(ev) {
   }
 }
 function commitGhost(gh) {
+  if (!gh || engineThinking || gameOver || W.turn() !== humanSide) {
+    clearGhost(); B.render(); return;   // stale ghost: never apply out of turn
+  }
   const [eo, er, ec] = B.dispWallToEng(gh.o, gh.r, gh.c);
   if (W.applyWall(eo, er, ec)) {
     clearGhost();
@@ -3328,7 +3372,7 @@ function wireEditor() {
     setStatus(humanSide === 0 ? 'Your move' : 'Engine to move');
     startClock();
     if (W.turn() !== humanSide && !gameOver) {
-      engineThinking = true; refreshHud(); setTimeout(engineTurn, 150);
+      engineThinking = true; refreshHud(); scheduleEngineTurn(150);
     }
   };
   $('btnEdClear').onclick = () => {
@@ -3920,6 +3964,8 @@ function boot() {
   wireDropTarget();
   if (!bootHashLoad()) checkAutosaveOnBoot();
   $('movesChip').onclick = showRecentGames;
+  // prewarm the analysis worker while the user plays
+  try { ANW.ensure(); } catch (e) {}
   updateMovesChip();
 }
 ZquoridorModule({ wasmBinary: __QR_WASM_BYTES__, getPreloadedPackage: (remoteName, remotePackageSize) => __QR_DATA_BYTES__ }).then((Module) => {

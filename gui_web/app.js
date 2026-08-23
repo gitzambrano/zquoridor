@@ -360,9 +360,11 @@ function syncFromEngine() {
   B.flipped = ((humanSide === 1) !== !!S.flipped);
   lastMoveInfo = plyToLastMove(W.cursor() - 1);
   B.linePreview = null;
-  B.setData(pw, wh, wv, lastMoveInfo);
+  // Dots and the side-to-move marker must be current BEFORE setData paints,
+  // or they only appear on the render after this one.
   buildLegalSets();
   refreshHud();
+  B.setData(pw, wh, wv, lastMoveInfo);
   renderMoveLog();
   updateNav();
   drawGraph();
@@ -385,13 +387,36 @@ function buildLegalSets() {
 
 // ===================== 9. play flow ====================================
 function setStatus(t) { $('status').textContent = t; }
+
+// Single-owner engine timer: scheduling a new engine turn cancels any stale
+// one, and engineTurn refuses to act unless it really is the engine's move.
+// This makes "the engine playing for both sides" structurally impossible.
+let engineTimer = null;
+function scheduleEngineTurn(delay) {
+  if (engineTimer) clearTimeout(engineTimer);
+  engineTimer = setTimeout(() => { engineTimer = null; engineTurn(); }, delay);
+}
 function afterHumanMove() {
   updateMovesChip();
   checkEnd();
-  if (!gameOver) { engineThinking = true; refreshHud(); setStatus('Zquoridor is thinking...');
-    setTimeout(engineTurn, 120); }
+  if (!gameOver) {
+    engineThinking = true;
+    refreshHud();
+    setStatus('Zquoridor is thinking...');
+    scheduleEngineTurn(120);
+  }
 }
 function engineTurn() {
+  if (!engineThinking) return;   // stale timer already superseded
+  if (gameOver || W.winner() !== -1 || W.isDraw()) {
+    engineThinking = false; syncAll(); return;
+  }
+  if (W.turn() === humanSide) {   // never let the engine move for the human
+    engineThinking = false;
+    syncAll();
+    setStatus('Your move');
+    return;
+  }
   const lv = LEVELS[S.level];
   const ok = W.engineMove(24, lv.ms);
   engineThinking = false;
@@ -446,7 +471,7 @@ function newGame() {
   setStatus(humanSide === 0 ? 'Your move' : 'Zquoridor starts');
   syncAll();
   startClock();
-  if (W.turn() !== humanSide) { engineThinking = true; refreshHud(); setTimeout(engineTurn, 150); }
+  if (W.turn() !== humanSide) { engineThinking = true; refreshHud(); scheduleEngineTurn(150); }
 }
 function updateMovesChip() { $('movesChip').textContent = 'Moves ' + Math.ceil(W.plyCount() / 2); }
 
@@ -542,12 +567,15 @@ function boardPoint(ev) {
 function snapGhost(px, py) {
   const off = touchOffsetPx();
   const p = { x: px, y: py - off };
+  // Always snap to the NEAREST anchor inside the board: a tap far from any
+  // groove still produces a concrete ghost (ok / assisted / bad with the
+  // reason), never a silent no-op.
   let a = B.nearestAnchor(p.x, p.y);
-  if (!a || a.dist > .85 * B.U) { B.ghost = null; setStatus('Drag onto a groove between cells'); return; }
+  if (!a) { B.ghost = null; setStatus('Tap between cells to place the wall'); B.render(); return; }
   let [o, r, c] = [armedO, a.r, a.c];
   const [eo, er, ec] = B.dispWallToEng(o, r, c);
   let st = legalWall[o * 64 + r * 8 + c] ? 'ok' : null;
-  if (!st) {   // magnetic assist: nearest legal anchor within .60U
+  if (!st) {   // magnetic assist: nearest LEGAL anchor around the pointer
     let best = null;
     for (let dr = -1; dr <= 1; dr++) for (let dc = -1; dc <= 1; dc++) {
       const rr2 = r + dr, cc2 = c + dc;
@@ -555,7 +583,7 @@ function snapGhost(px, py) {
       if (!legalWall[o * 64 + rr2 * 8 + cc2]) continue;
       const ctr = B.anchorCenter(rr2, cc2);
       const dist = Math.hypot(p.x - ctr.x, p.y - ctr.y);
-      if (dist <= .60 * B.U && (!best || dist < best.dist)) best = { r: rr2, c: cc2, dist };
+      if (dist <= .90 * B.U && (!best || dist < best.dist)) best = { r: rr2, c: cc2, dist };
     }
     if (best) { r = best.r; c = best.c; st = 'assisted'; }
   }
@@ -574,16 +602,32 @@ function illegalReason(o, r, c) {
   return 'Would leave a player with no path to goal';
 }
 
+let lastNudge = 0;
+function thinkNudge() {
+  const now = performance.now();
+  if (now - lastNudge < 1500) return;
+  lastNudge = now;
+  toast('info', 'Zquoridor is thinking...');
+}
+
 function onBoardPointerDown(ev) {
   if (currentPane === 'edPane') { edBoardDown(ev); return; }
-  if (gameOver || engineThinking) return;
+  if (gameOver) return;
+  if (engineThinking) { thinkNudge(); return; }
   if (!atLiveEnd()) { toast('info', 'Reviewing an earlier ply - press Return to game'); return; }
   const pt = boardPoint(ev);
   const cell = B.pointToCell(pt.x, pt.y);
   if (wallState === 'ARMED') { wallState = 'DRAGGING'; dragPtr = ev.pointerId; snapGhost(pt.x, pt.y); ev.preventDefault(); return; }
   if (cell) {
     const near = B.nearestAnchor(pt.x, pt.y);
-    if (!near || near.dist > .55 * B.U || !nearAnchorHasLegal(near)) {
+    // A press on a CELL CENTER belongs to the pawn; only presses hugging a
+    // groove intersection start the direct wall gesture (plan section 6.2).
+    let cellCenterPress = false;
+    if (cell) {
+      const cc2 = B.cellCenter(cell.r, cell.c);
+      cellCenterPress = Math.hypot(pt.x - cc2.x, pt.y - cc2.y) < .34 * B.U;
+    }
+    if (!near || cellCenterPress || near.dist > .55 * B.U || !nearAnchorHasLegal(near)) {
       pawnDown(cell.r * 9 + cell.c, pt);   // pawnDown wants a display index
       return;
     }
@@ -615,6 +659,9 @@ function onBoardPointerUp(ev) {
   }
 }
 function commitGhost(gh) {
+  if (!gh || engineThinking || gameOver || W.turn() !== humanSide) {
+    clearGhost(); B.render(); return;   // stale ghost: never apply out of turn
+  }
   const [eo, er, ec] = B.dispWallToEng(gh.o, gh.r, gh.c);
   if (W.applyWall(eo, er, ec)) {
     clearGhost();
@@ -1640,7 +1687,7 @@ function wireEditor() {
     setStatus(humanSide === 0 ? 'Your move' : 'Engine to move');
     startClock();
     if (W.turn() !== humanSide && !gameOver) {
-      engineThinking = true; refreshHud(); setTimeout(engineTurn, 150);
+      engineThinking = true; refreshHud(); scheduleEngineTurn(150);
     }
   };
   $('btnEdClear').onclick = () => {
@@ -2232,6 +2279,8 @@ function boot() {
   wireDropTarget();
   if (!bootHashLoad()) checkAutosaveOnBoot();
   $('movesChip').onclick = showRecentGames;
+  // prewarm the analysis worker while the user plays
+  try { ANW.ensure(); } catch (e) {}
   updateMovesChip();
 }
 ZquoridorModule().then((Module) => {

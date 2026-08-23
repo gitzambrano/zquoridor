@@ -146,10 +146,13 @@ def main():
             page.click("#panelTabs .tab[data-pane='anPane']")
             page.wait_for_timeout(200)
             page.click("#anEngBtn")
-            page.wait_for_timeout(300)
-            ready = page.evaluate(
-                "typeof ANW !== 'undefined' ? (ANW.ready || ANW.failed) : 'no-anw'")
-            check("worker state resolved", bool(ready) and ready != 'no-anw')
+            worker_ok = False
+            for _ in range(40):
+                if page.evaluate("typeof ANW !== 'undefined' && (ANW.ready || ANW.failed)"):
+                    worker_ok = True
+                    break
+                page.wait_for_timeout(200)
+            check("worker state resolved", worker_ok)
             page.wait_for_timeout(2500)
             rows = page.locator(".pvRow").count()
             check("pv rows rendered", rows >= 1)

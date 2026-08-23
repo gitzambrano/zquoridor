@@ -105,6 +105,17 @@ relearn by experiment.
     cursor (`pliesUpToCursor()`); replaying the full recorded line analysed
     a different position than the main-thread fallback when the user had
     navigated back.
+  - Walls painted vertically mirrored since P2: `setData` stored engine-space
+    wall slots while the paint and SVG-export paths index them in display
+    space (pawns were converted at the same boundary, so only walls were
+    wrong). A human wall clicked near their goal appeared near the engine's.
+    Engine-state assertions cannot see it -- only a canvas `getImageData`
+    probe at the display anchor can. Fix: `setData` mirrors wall slots like
+    pawns; `QBoard.wallH/wallV` are display-space by convention.
+  - `syncFromEngine` called `setData` (which renders) before
+    `buildLegalSets`/`refreshHud`, so the legal dots and the side-to-move
+    ring appeared only after the NEXT render. Build all board state first,
+    then paint once.
 - **Testing discipline for this GUI**: browser tests must drive the GUI
   entry points (`newGame()`, not `__w.newGame()`); calling C-level exports
   directly skips JS-side resets (humanSide, gameOver, clocks, level marks)
@@ -227,9 +238,30 @@ Premium interface per `gui-premium.md`. Phases P0-P5 (tokens, canvas board
   instance receives self-contained requests (root QFEN optional plus the
   recorded packed plies), replays them onto its scratch and returns line
   data, keeping the main thread free during analysis. The main-thread
-  slicing path remains as the silent fallback (file:// bundles cannot spawn
-  the worker). Play-mode engine turns still run synchronously on the main
-  thread -- tracked below as remaining work.
+   slicing path remains as the silent fallback (file:// bundles cannot spawn
+   the worker). Play-mode engine turns still run synchronously on the main
+   thread -- tracked below as remaining work.
+- **Post-commit hardening + classic board pass (2026-08-23)**: after the P0-P10
+  commit, user reports ("engine plays for both sides", "walls cannot be
+  placed", board looked worse than the old GUI) led to a turn-machine and
+  input hardening round plus a board visual rework:
+  - Turn ownership is now structural: `scheduleEngineTurn(delay)` is the
+    single owner of the engine timer (a new schedule cancels any stale one),
+    and `engineTurn` refuses to move unless it is really the engine's side --
+    the engine can never move for the human even with a duplicated timer.
+    Clicking while the engine thinks gives a throttled toast instead of
+    queueing input.
+  - Wall gestures never fail silently: `snapGhost` always snaps to the
+    nearest anchor and reports ok/assisted/bad with a reason; presses near a
+    cell center route to the pawn handler, not the wall gesture; `#board`
+    has `touch-action:none` so touch drags commit instead of scrolling.
+  - The default obsidian look moved back toward the old board: flat uniform
+    cells with thin light gridlines, hairline frame, slim ivory walls
+    (`--wall:#ece7da`, was gold), subtle goal markers and softer
+    highlights. All dressing options keep working.
+  - The mcab play budget is node-based (~20k nodes), so engine replies are
+    usually faster than the level's nominal time -- tests must not assume
+    `engineThinking` stays true for the level duration.
 
 ---
 

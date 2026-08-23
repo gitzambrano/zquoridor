@@ -89,8 +89,9 @@ class QBoard {
       this.cv.style.height = side + 'px';
     }
     this.ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    // geometry per plan 6.1: S = 9C + 8G (+ coordinate margin M on both sides)
-    this.G = Math.max(5, Math.min(14, 0.20 * (side / 10.42)));
+    // geometry per plan 6.1: S = 9C + 8G. G stays slim (classic look): it is
+    // the wall thickness and the breathing room between cells.
+    this.G = Math.max(4, Math.min(9, 0.14 * (side / 10.6)));
     const coordsMode = this.ds().coords || 'edges';
     this.M = coordsMode !== 'off' ? 0.42 * ((side - 8 * this.G) / 9) : 0;
     this.C = (side - 2 * this.M - 8 * this.G) / 9;
@@ -130,9 +131,14 @@ class QBoard {
 
   setData(pawnEng, wallsHEng, wallsVEng, lastMove) {
     this.pawn = [this.engPawnToDisp(pawnEng[0]), this.engPawnToDisp(pawnEng[1])];
-    for (let s = 0; s < 64; s++) {
-      this.wallH[s] = wallsHEng[s] | 0;
-      this.wallV[s] = wallsVEng[s] | 0;
+    // Wall slots mirror like the pawns: the board arrays hold display
+    // coordinates (engine row r lands at display row 7-r), so the paint and
+    // export paths can index them directly. The map is a bijection, so every
+    // display slot is rewritten and no stale bit survives a position change.
+    for (let r = 0; r < 8; r++) for (let c = 0; c < 8; c++) {
+      const s = r * 8 + c, d = this.flipped ? s : (7 - r) * 8 + c;
+      this.wallH[d] = wallsHEng[s] | 0;
+      this.wallV[d] = wallsVEng[s] | 0;
     }
     this.lastMove = lastMove || null;
     this.render();
@@ -178,55 +184,42 @@ class QBoard {
     const ca = this.css('--cell-a'), cb = this.css('--cell-b');
     const frameStyle = ds.frame || 'hairline';
     const cellSep = ds.cellSep || 'grooves';
-    // E4 board frame: four dressing variants (plan 17.2)
+    // Classic base: one flat surface in the groove color, cells drawn on top
+    // with a thin light edge -- the pre-premium look (flat, quiet).
+    g.fillStyle = frameStyle === 'none' ? ca : groove;
+    this.rr(g, 0, 0, S, S, 10); g.fill();
     if (frameStyle !== 'none') {
-      g.fillStyle = frame;
-      this.rr(g, 0, 0, S, S, 12); g.fill();
-      if (frameStyle === 'gilded') {
-        g.strokeStyle = this.css('--gold'); g.lineWidth = 2;
-        this.rr(g, 1.5, 1.5, S - 3, S - 3, 10); g.stroke();
-        const sh = g.createLinearGradient(0, 0, 0, S);
-        sh.addColorStop(0, 'rgba(0,0,0,.28)'); sh.addColorStop(.08, 'rgba(0,0,0,0)');
-        sh.addColorStop(.92, 'rgba(0,0,0,0)'); sh.addColorStop(1, 'rgba(0,0,0,.34)');
-        g.fillStyle = sh; this.rr(g, 0, 0, S, S, 12); g.fill();
-      } else if (frameStyle === 'beveled') {
-        const be = g.createLinearGradient(0, 0, 0, S);
-        be.addColorStop(0, 'rgba(255,255,255,.10)');
-        be.addColorStop(.06, 'rgba(0,0,0,.22)');
-        be.addColorStop(.94, 'rgba(0,0,0,.18)');
-        be.addColorStop(1, 'rgba(255,255,255,.06)');
-        g.fillStyle = be; this.rr(g, 0, 0, S, S, 12); g.fill();
-      }
+      g.strokeStyle = this.css('--bor2'); g.lineWidth = 1;
+      this.rr(g, .5, .5, S - 1, S - 1, 10); g.stroke();
     }
+    if (frameStyle === 'gilded') {
+      g.strokeStyle = this.css('--gold'); g.lineWidth = 2;
+      this.rr(g, 1.5, 1.5, S - 3, S - 3, 9); g.stroke();
+    } else if (frameStyle === 'beveled') {
+      const be = g.createLinearGradient(0, 0, 0, S);
+      be.addColorStop(0, 'rgba(255,255,255,.08)');
+      be.addColorStop(.05, 'rgba(0,0,0,.18)');
+      be.addColorStop(.95, 'rgba(0,0,0,.15)');
+      be.addColorStop(1, 'rgba(255,255,255,.05)');
+      g.fillStyle = be; this.rr(g, 0, 0, S, S, 10); g.fill();
+    }
+    // cells: flat single tone + thin light grid line (classic). The 'inlaid'
+    // dressing swaps the line for gold; 'flat' drops the lines entirely.
+    const twoTone = false;   // classic: uniform cells
     for (let r = 0; r < 9; r++) for (let c = 0; c < 9; c++) {
       const p = this.cellXY(r, c);
-      g.fillStyle = ((r + c) & 1) ? cb : ca;
-      if (cellSep === 'flat') {
-        if (r === 0 && c === 0) { g.fillRect(M - G / 2, M - G / 2, 9 * U + G / 2, 9 * U + G / 2); continue; }
-        if (((r + c) & 1) === 0) continue;
+      g.fillStyle = twoTone ? (((r + c) & 1) ? cb : ca) : ca;
+      if (cellSep === 'grooves' || cellSep === 'inlaid') {
+        g.fillRect(p.x - G / 2 + .5, p.y - G / 2 + .5, C + G - 1, C + G - 1);
+        g.strokeStyle = cellSep === 'inlaid'
+          ? this.css('--gold') : 'rgba(255,255,255,.13)';
+        g.globalAlpha = cellSep === 'inlaid' ? .35 : 1;
+        g.lineWidth = 1;
+        g.strokeRect(p.x + .5, p.y + .5, C - 1, C - 1);
+        g.globalAlpha = 1;
+      } else {
+        g.fillRect(p.x, p.y, C + .5, C + .5);
       }
-      g.fillRect(p.x, p.y, C + 0.5, C + 0.5);
-    }
-    if (cellSep === 'grooves') {
-      g.strokeStyle = groove; g.lineWidth = G; g.lineCap = 'butt';
-      g.beginPath();
-      for (let i = 0; i <= 9; i++) {
-        const t = M + i * U - G / 2;
-        const e0 = M - G / 2, e1 = S - M + G / 2;
-        const tt = Math.max(e0, Math.min(e1, t));
-        g.moveTo(e0, tt); g.lineTo(e1, tt);
-        g.moveTo(tt, e0); g.lineTo(tt, e1);
-      }
-      g.stroke();
-    } else if (cellSep === 'inlaid') {
-      g.strokeStyle = this.css('--gold'); g.globalAlpha = .35; g.lineWidth = 1;
-      g.beginPath();
-      for (let i = 0; i <= 9; i++) {
-        const t = Math.round(M + i * U) + .5;
-        g.moveTo(M, t); g.lineTo(S - M, t);
-        g.moveTo(t, M); g.lineTo(t, S - M);
-      }
-      g.stroke(); g.globalAlpha = 1;
     }
     // Carrara Marble signature theme: deterministic procedural veins drawn
     // once into the static layer -- zero per-frame cost (plan 17.1 #7).
@@ -248,13 +241,14 @@ class QBoard {
       }
       g.restore();
     }
-    // goal edges: player 0's goal is the BOTTOM edge when not flipped
-    const p0 = this.css('--p0'), p1 = this.css('--p1');
-    g.globalAlpha = .45;
-    g.fillStyle = this.flipped ? p0 : p1;
-    g.fillRect(M - G / 2, M - G / 2 - 4, 9 * U, 3);
-    g.fillStyle = this.flipped ? p1 : p0;
-    g.fillRect(M - G / 2, S - M - G / 2 + 1, 9 * U, 3);
+    // goal markers: a quiet 2px line just inside the top and bottom play
+    // edges (subtle orientation cue, classic-quiet).
+    const p0c = this.css('--p0'), p1c = this.css('--p1');
+    g.globalAlpha = .22;
+    g.fillStyle = this.flipped ? p0c : p1c;
+    g.fillRect(M - G / 2, M - G / 2, 9 * U, 2);
+    g.fillStyle = this.flipped ? p1c : p0c;
+    g.fillRect(M - G / 2, S - M - G / 2 - 2, 9 * U, 2);
     g.globalAlpha = 1;
     const coordsMode = ds.coords || 'edges';
     if (coordsMode !== 'off' && C >= 26) {
@@ -299,9 +293,11 @@ class QBoard {
       if (this.lastMove.type === 'pawn') {
         const p = this.cellXY(this.lastMove.r, this.lastMove.c);
         g.fillStyle = this.css('--gold-dim');
+        g.globalAlpha = .8;
         g.fillRect(p.x, p.y, C, C);
-        g.strokeStyle = this.css('--gold'); g.lineWidth = 1.5;
-        g.strokeRect(p.x + .75, p.y + .75, C - 1.5, C - 1.5);
+        g.globalAlpha = 1;
+        g.strokeStyle = this.css('--gold'); g.lineWidth = 1;
+        g.strokeRect(p.x + .5, p.y + .5, C - 1, C - 1);
       } else {
         const [o, r, c] = this.engWallToDisp(this.lastMove.o, this.lastMove.r, this.lastMove.c);
         g.save(); g.globalAlpha = .9;
@@ -394,9 +390,9 @@ class QBoard {
     const finish = this.ds().wallFinish || 'beveled';
     g.save();
     if (finish !== 'flat') {
-      g.fillStyle = 'rgba(0,0,0,.45)';
-      if (o === 0) { this.rr(g, rc.x + 1, rc.y + 2.5, rc.w, rc.h, 2); g.fill(); }
-      else { this.rr(g, rc.x + 2.5, rc.y + 1, rc.w, rc.h, 2); g.fill(); }
+      g.fillStyle = 'rgba(0,0,0,.32)';
+      if (o === 0) { this.rr(g, rc.x + 1, rc.y + 2, rc.w, rc.h, 3); g.fill(); }
+      else { this.rr(g, rc.x + 2, rc.y + 1, rc.w, rc.h, 3); g.fill(); }
     }
     if (finish === 'glossy') {
       const grad = o === 0
@@ -416,7 +412,7 @@ class QBoard {
       grad.addColorStop(.78, wall); grad.addColorStop(1, edge);
       g.fillStyle = grad;
     }
-    this.rr(g, rc.x, rc.y, rc.w, rc.h, finish === 'flat' ? 0 : 2); g.fill();
+    this.rr(g, rc.x, rc.y, rc.w, rc.h, finish === 'flat' ? 0 : 3); g.fill();
     if (finish !== 'flat') {
       g.lineWidth = outlineOverride ? 1.8 : 1;
       g.strokeStyle = outlineOverride || edge;
@@ -553,8 +549,8 @@ class QBoard {
     }
     if (this.turn === pl) {
       g.beginPath(); g.arc(ctr.x, ctr.y, .40 * C, 0, 7);
-      g.strokeStyle = this.css('--gold'); g.lineWidth = 2;
-      g.shadowColor = this.css('--gold-glow'); g.shadowBlur = 8;
+      g.strokeStyle = this.css('--gold'); g.lineWidth = 1.5;
+      g.shadowColor = this.css('--gold-glow'); g.shadowBlur = 5;
       g.stroke();
     }
     g.restore();

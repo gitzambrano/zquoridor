@@ -19,8 +19,8 @@
   --green:#4a9c6a;--red:#c0394a;--amber:#d99b3c;--blue:#4a7bc0;
   --p0:#f0e6d2;--p0-deep:#b9a87e;--p0-light:#fdf8ec;--p0-soft:rgba(240,230,210,.16);
   --p1:#cf4155;--p1-deep:#7d1f2c;--p1-light:#e8697a;--p1-soft:rgba(207,65,85,.18);
-  --wall:#e2cd96;--wall-edge:#8d6f31;--wall-dim:rgba(226,205,150,.35);
-  --cell-a:#1b1b26;--cell-b:#20202d;--groove:#0b0b12;--frame:#2a2a3c;
+  --wall:#ece7da;--wall-edge:#8f8878;--wall-dim:rgba(236,231,218,.35);
+  --cell-a:#20202c;--cell-b:#242433;--groove:#14141d;--frame:#30304a;
   --r-sm:6px;--r-md:10px;--r-lg:14px;--r-xl:18px;
   --dur-fast:110ms;--dur:180ms;--dur-slow:320ms;
   --ease:cubic-bezier(.22,.61,.36,1);
@@ -145,7 +145,8 @@ button{font:inherit;color:inherit;background:none;border:none;cursor:pointer}
   background:linear-gradient(var(--p0),var(--p0-light));transition:height var(--dur) var(--ease)}
 #boardWrap{position:relative;align-self:center;max-width:100%;min-width:0}
 #boardZone,#boardCol{min-width:0;max-width:100%}
-#board{display:block;border-radius:12px;box-shadow:0 10px 34px rgba(0,0,0,.55),0 0 0 1px var(--bor2)}
+#board{display:block;border-radius:10px;touch-action:none;
+  box-shadow:0 6px 22px rgba(0,0,0,.45),0 0 0 1px var(--bor2)}
 #confirmChip{position:absolute;display:none;gap:8px;z-index:5}
 #confirmChip button{width:44px;height:44px;border-radius:50%;display:flex;
   align-items:center;justify-content:center;box-shadow:0 6px 16px rgba(0,0,0,.5)}
