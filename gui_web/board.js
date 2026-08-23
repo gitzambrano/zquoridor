@@ -1,4 +1,4 @@
-// board.js -- QBoard: premium canvas board for Zquoridor (plan gui-premium.md,
+﻿// board.js -- QBoard: premium canvas board for Zquoridor (plan gui-premium.md,
 // sections 2, 5.3, 6.1). One <canvas>, DPR-aware, layered repaint: static layer
 // (frame, cells, grooves, coordinates) is cached offscreen and blitted; the
 // dynamic layer (walls, pawns, ghosts, overlays) redraws on state change.
@@ -14,17 +14,18 @@ class QBoard {
     // game state mirrored from the engine (display orientation: player 0 at
     // the bottom, moving up, unless flipped)
     this.flipped = false;
-    this.pawn = [/*disp cells*/];
+    this.pawn = [];
     this.wallH = new Uint8Array(64);
     this.wallV = new Uint8Array(64);
-    this.lastMove = null;          // {type:'pawn',r,c} | {type:'wall',o,r,c}
-    this.dots = [];                // legal pawn destinations (display cells)
+    this.lastMove = null;
+    this.dots = [];
     this.selected = -1;
-    this.paths = null;             // [{cells:[...]}] shortest-path overlay
-    this.ghost = null;             // {o,r,c,state:'ok'|'assisted'|'bad'|'pending'}
-    this.ghostFrom = null;         // anchor the pointer actually hit (assist)
+    this.paths = null;
+    this.ghost = null;
+    this.ghostFrom = null;
+    this.turn = 0;
     this.themeDirty = true;
-    this._resizeObserved = false;
+    this._sideApplied = -1;
     new ResizeObserver(() => this.fit()).observe(canvas.parentElement);
     this.fit();
   }
@@ -34,8 +35,18 @@ class QBoard {
   }
 
   fit() {
-    const box = this.cv.parentElement.getBoundingClientRect();
-    const side = Math.max(200, Math.floor(Math.min(box.width, box.height)));
+    // measure the LAYOUT ZONE, not the wrapper: the wrapper wraps the canvas,
+    // which would otherwise collapse to its own content size (chicken/egg)
+    const zone = this.cv.closest('#boardZone') ||
+                 this.cv.parentElement.parentElement ||
+                 this.cv.parentElement;
+    const zw = zone.clientWidth || 320, zh = zone.clientHeight || 320;
+    const side = Math.max(220, Math.floor(Math.min(zw, zh)) - 6);
+    if (this._sideApplied === side) { this.render(); return; }
+    this._sideApplied = side;
+    const wrap = this.cv.parentElement;
+    wrap.style.width = side + 'px';
+    wrap.style.height = side + 'px';
     const dpr = Math.min(window.devicePixelRatio || 1, 3);
     this.cssSide = side;
     this.cv.width = Math.round(side * dpr);
@@ -43,9 +54,8 @@ class QBoard {
     this.cv.style.width = side + 'px';
     this.cv.style.height = side + 'px';
     this.ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    // geometry per plan 6.1
+    // geometry per plan 6.1: S = 9C + 8G (+ coordinate margin M on both sides)
     this.G = Math.max(8, Math.min(14, 0.20 * (side / 10.42)));
-    // solve C from S = 9C + 8G (+ margins handled by padding inside S)
     const hasCoords = document.documentElement.dataset.coords !== 'off';
     this.M = hasCoords ? 0.42 * ((side - 8 * this.G) / 9) : 0;
     this.C = (side - 2 * this.M - 8 * this.G) / 9;
@@ -65,16 +75,18 @@ class QBoard {
   }
 
   // ---- coordinate conversions -------------------------------------------
+  // The human player (side 0) sits at the BOTTOM moving up: display row
+  // = 8 - engine row unless the board is flipped.
   engPawnToDisp(cell) {
     const r = Math.floor(cell / 9), c = cell % 9;
-    return this.flipped ? (8 - r) * 9 + c : r * 9 + c;
+    return this.flipped ? r * 9 + c : (8 - r) * 9 + c;
   }
-  dispPawnToEng(r, c) { return this.flipped ? (8 - r) * 9 + c : r * 9 + c; }
-  engWallToDisp(o, r, c) { return this.flipped ? [o, 7 - r, c] : [o, r, c]; }
-  dispWallToEng(o, r, c) { return this.flipped ? [o, 7 - r, c] : [o, r, c]; }
+  dispPawnToEng(r, c) { return this.flipped ? r * 9 + c : (8 - r) * 9 + c; }
+  engWallToDisp(o, r, c) { return this.flipped ? [o, r, c] : [o, 7 - r, c]; }
+  dispWallToEng(o, r, c) { return this.flipped ? [o, r, c] : [o, 7 - r, c]; }
   algName(dispCell) {
     const r = Math.floor(dispCell / 9), c = dispCell % 9;
-    return 'abcdefghi'[c] + (this.flipped ? r + 1 : 9 - r);
+    return 'abcdefghi'[c] + (this.flipped ? 9 - r : r + 1);
   }
 
   setData(pawnEng, wallsHEng, wallsVEng, lastMove) {
@@ -95,7 +107,6 @@ class QBoard {
     if (this.onChange) this.onChange();
   }
 
-  // static layer: frame, cells, grooves, coordinates (cached offscreen)
   drawStatic(ctx) {
     const S = this.cssSide;
     if (!this._static || this.themeDirty || this._static.side !== S) {
@@ -110,59 +121,6 @@ class QBoard {
     ctx.drawImage(this._static.canvas, 0, 0, S, S);
   }
 
-  paintStatic(g) {
-    const { C, G, U, M, S } = this;
-    const frame = this.css('--frame'), groove = this.css('--groove');
-    const ca = this.css('--cell-a'), cb = this.css('--cell-b');
-    // frame slab
-    g.fillStyle = frame;
-    this.rr(g, 0, 0, S, S, 12); g.fill();
-    // cells
-    for (let r = 0; r < 9; r++) for (let c = 0; c < 9; c++) {
-      const p = this.cellXY(r, c);
-      g.fillStyle = ((r + c) & 1) ? cb : ca;
-      g.fillRect(p.x, p.y, C + 0.5, C + 0.5);
-    }
-    // grooves
-    g.strokeStyle = groove; g.lineWidth = G; g.lineCap = 'butt';
-    g.beginPath();
-    for (let i = 0; i <= 9; i++) {
-      const t = M + i * U - G / 2;
-      g.moveTo(M - G / 2, Math.min(t, M + 8 * U + G / 2));
-      g.lineTo(S - M + G / 2, t);
-      g.moveTo(t, M - G / 2);
-      g.lineTo(t, S - M + G / 2);
-    }
-    g.stroke();
-    // goal edges
-    const p0 = this.css('--p0'), p1 = this.css('--p1');
-    g.globalAlpha = .45;
-    g.fillStyle = this.flipped ? p0 : p1;
-    g.fillRect(M - G / 2, M - G / 2 - 4, 9 * U, 3);
-    g.fillStyle = this.flipped ? p1 : p0;
-    g.fillRect(M - G / 2, S - M - G / 2 + 1, 9 * U, 3);
-    g.globalAlpha = 1;
-    // coordinates
-    if (document.documentElement.dataset.coords !== 'off' && C >= 26) {
-      g.fillStyle = this.css('--txt2'); g.globalAlpha = .6;
-      g.font = `${Math.max(9, .52 * C)}px 'JetBrains Mono', monospace`;
-      g.textAlign = 'center'; g.textBaseline = 'middle';
-      for (let c = 0; c < 9; c++) {
-        const x = this.cellCenter(0, c).x;
-        const file = 'abcdefghi'[c];
-        g.fillText(file, x, S - M / 2 + 1);
-        g.fillText(file, x, M / 2 - 1);
-      }
-      g.textAlign = 'left';
-      for (let r = 0; r < 9; r++) {
-        const y = this.cellCenter(r, 0).y;
-        const rank = String(this.flipped ? r + 1 : 9 - r);
-        g.fillText(rank, M / 2 - (M > C * .3 ? 4 : 2), y);
-      }
-      g.globalAlpha = 1;
-    }
-  }
-
   rr(g, x, y, w, h, r) {
     r = Math.min(r, w / 2, h / 2);
     g.beginPath();
@@ -174,16 +132,60 @@ class QBoard {
     g.closePath();
   }
 
+  paintStatic(g) {
+    const { C, G, U, M, S } = this;
+    const frame = this.css('--frame'), groove = this.css('--groove');
+    const ca = this.css('--cell-a'), cb = this.css('--cell-b');
+    g.fillStyle = frame;
+    this.rr(g, 0, 0, S, S, 12); g.fill();
+    for (let r = 0; r < 9; r++) for (let c = 0; c < 9; c++) {
+      const p = this.cellXY(r, c);
+      g.fillStyle = ((r + c) & 1) ? cb : ca;
+      g.fillRect(p.x, p.y, C + 0.5, C + 0.5);
+    }
+    g.strokeStyle = groove; g.lineWidth = G; g.lineCap = 'butt';
+    g.beginPath();
+    for (let i = 0; i <= 9; i++) {
+      const t = M + i * U - G / 2;
+      const e0 = M - G / 2, e1 = S - M + G / 2;
+      const tt = Math.max(e0, Math.min(e1, t));
+      g.moveTo(e0, tt); g.lineTo(e1, tt);
+      g.moveTo(tt, e0); g.lineTo(tt, e1);
+    }
+    g.stroke();
+    // goal edges: player 0's goal is the BOTTOM edge when not flipped
+    const p0 = this.css('--p0'), p1 = this.css('--p1');
+    g.globalAlpha = .45;
+    g.fillStyle = this.flipped ? p0 : p1;
+    g.fillRect(M - G / 2, M - G / 2 - 4, 9 * U, 3);
+    g.fillStyle = this.flipped ? p1 : p0;
+    g.fillRect(M - G / 2, S - M - G / 2 + 1, 9 * U, 3);
+    g.globalAlpha = 1;
+    if (document.documentElement.dataset.coords !== 'off' && C >= 26) {
+      g.fillStyle = this.css('--txt2'); g.globalAlpha = .6;
+      g.font = `${Math.max(9, .52 * C)}px 'JetBrains Mono', monospace`;
+      g.textAlign = 'center'; g.textBaseline = 'middle';
+      for (let c = 0; c < 9; c++) {
+        const x = this.cellCenter(0, c).x;
+        g.fillText('abcdefghi'[c], x, S - M / 2 + 1);
+        g.fillText('abcdefghi'[c], x, M / 2 - 1);
+      }
+      g.textAlign = 'left';
+      for (let r = 0; r < 9; r++) {
+        const y = this.cellCenter(r, 0).y;
+        g.fillText(String(this.flipped ? 9 - r : r + 1), M / 2 - 3, y);
+      }
+      g.globalAlpha = 1;
+    }
+  }
+
   drawDynamic(g) {
-    const { C, G } = this;
-    // path overlay under everything else
+    const { C } = this;
     if (this.paths) for (const line of this.paths) this.drawPathLine(g, line);
-    // walls
     for (let r = 0; r < 8; r++) for (let c = 0; c < 8; c++) {
       if (this.wallH[r * 8 + c]) this.drawWall(g, 0, r, c, false);
       if (this.wallV[r * 8 + c]) this.drawWall(g, 1, r, c, false);
     }
-    // last move highlight
     if (this.lastMove) {
       if (this.lastMove.type === 'pawn') {
         const p = this.cellXY(this.lastMove.r, this.lastMove.c);
@@ -198,21 +200,26 @@ class QBoard {
         g.restore();
       }
     }
-    // ghost wall
     if (this.ghost) this.drawGhost(g);
-    // legal dots
-    if (this.dots.length && !this.ghost) for (const d of this.dots) {
+    const havePawns = Array.isArray(this.pawn) && this.pawn.length === 2 &&
+                      Number.isInteger(this.pawn[0]) && Number.isInteger(this.pawn[1]);
+    if (this.dots.length && !this.ghost && havePawns) for (const d of this.dots) {
       const ctr = this.cellCenter(Math.floor(d / 9), d % 9);
-      const jump = Math.abs(Math.floor(d / 9) - Math.floor(this.pawn[this.turn ?? 0] / 9)) +
-                   Math.abs((d % 9) - (this.pawn[this.turn ?? 0] % 9)) > 1;
+      const me = this.cellCenter(Math.floor(this.pawn[this.turn] / 9), this.pawn[this.turn] % 9);
+      const jump = Math.abs(ctr.x - me.x) + Math.abs(ctr.y - me.y) > this.U * 1.5;
       g.beginPath();
-      if (jump) { g.arc(ctr.x, ctr.y, .21 * C, 0, 7); g.lineWidth = Math.max(2, .07 * C); g.strokeStyle = this.dotColor(); g.stroke(); }
-      else { g.arc(ctr.x, ctr.y, .16 * C, 0, 7); g.fillStyle = this.dotColor(); g.globalAlpha = .55; g.fill(); g.globalAlpha = 1; }
+      if (jump) {
+        g.arc(ctr.x, ctr.y, .21 * C, 0, 7); g.lineWidth = Math.max(2, .07 * C);
+        g.strokeStyle = this.dotColor(); g.stroke();
+      } else {
+        g.arc(ctr.x, ctr.y, .16 * C, 0, 7);
+        g.fillStyle = this.dotColor(); g.globalAlpha = .55; g.fill(); g.globalAlpha = 1;
+      }
     }
-    // pawns
-    this.drawPawn(g, this.pawn[0], 0);
-    this.drawPawn(g, this.pawn[1], 1);
-    // selected ring
+    if (havePawns) {
+      this.drawPawn(g, this.pawn[0], 0);
+      this.drawPawn(g, this.pawn[1], 1);
+    }
     if (this.selected >= 0) {
       const ctr = this.cellCenter(Math.floor(this.selected / 9), this.selected % 9);
       g.beginPath(); g.arc(ctr.x, ctr.y, .40 * C, 0, 7);
@@ -250,11 +257,9 @@ class QBoard {
     const rc = this.wallRect(o, r, c);
     const wall = this.css('--wall'), edge = this.css('--wall-edge');
     g.save();
-    // shadow along perpendicular axis
     g.fillStyle = 'rgba(0,0,0,.45)';
-    if (o === 0) this.rr(g, rc.x + 1, rc.y + 2.5, rc.w, rc.h, 2), g.fill();
-    else this.rr(g, rc.x + 2.5, rc.y + 1, rc.w, rc.h, 2), g.fill();
-    // body gradient across thickness
+    if (o === 0) { this.rr(g, rc.x + 1, rc.y + 2.5, rc.w, rc.h, 2); g.fill(); }
+    else { this.rr(g, rc.x + 2.5, rc.y + 1, rc.w, rc.h, 2); g.fill(); }
     const grad = o === 0
       ? g.createLinearGradient(0, rc.y, 0, rc.y + rc.h)
       : g.createLinearGradient(rc.x, 0, rc.x + rc.w, 0);
@@ -265,7 +270,6 @@ class QBoard {
     g.lineWidth = outlineOverride ? 1.8 : 1;
     g.strokeStyle = outlineOverride || edge;
     g.stroke();
-    // seam at midpoint
     g.strokeStyle = edge; g.globalAlpha = .7; g.lineWidth = 1;
     g.beginPath();
     if (o === 0) { const mx = rc.x + rc.w / 2; g.moveTo(mx, rc.y + 1); g.lineTo(mx, rc.y + rc.h - 1); }
@@ -275,7 +279,7 @@ class QBoard {
   }
 
   drawGhost(g) {
-    const gh = this.ghost, [o, r, c] = [gh.o, gh.r, gh.c];
+    const gh = this.ghost, o = gh.o, r = gh.r, c = gh.c;
     const rc = this.wallRect(o, r, c);
     const st = gh.state;
     const alpha = st === 'bad' ? .20 : st === 'pending' ? 1 : .55;
@@ -290,14 +294,13 @@ class QBoard {
     g.strokeStyle = col; g.lineWidth = 2;
     if (st === 'ok') { g.shadowColor = col; g.shadowBlur = 6; }
     this.rr(g, rc.x, rc.y, rc.w, rc.h, 2); g.stroke();
-    if (st === 'bad') {  // cross glyph
+    if (st === 'bad') {
       const cx = rc.x + rc.w / 2, cy = rc.y + rc.h / 2, k = this.G * .8;
       g.beginPath();
       g.moveTo(cx - k, cy - k); g.lineTo(cx + k, cy + k);
       g.moveTo(cx + k, cy - k); g.lineTo(cx - k, cy + k);
       g.stroke();
     }
-    // assist trace: faint outline where the pointer actually was
     if (gh.from && st === 'assisted') {
       const fc = this.wallRect(o, gh.from.r, gh.from.c);
       g.strokeStyle = this.css('--muted'); g.lineWidth = 1;
@@ -312,10 +315,9 @@ class QBoard {
     const { C } = this;
     const r = Math.floor(dispCell / 9), c = dispCell % 9;
     const ctr = this.cellCenter(r, c);
-    const px = this.css('--p' + pl), pl2 = this.css('--p' + pl + '-light'),
+    const px = this.css('--p' + pl), pli = this.css('--p' + pl + '-light'),
           pd = this.css('--p' + pl + '-deep');
     const R = .31 * C;
-    // contact shadow
     g.save();
     const shadow = document.documentElement.dataset.pawnShadow || 'soft';
     if (shadow !== 'off') {
@@ -323,15 +325,13 @@ class QBoard {
       g.beginPath();
       g.ellipse(ctr.x, ctr.y + R * .55, R * .95, R * .38, 0, 0, 7); g.fill();
     }
-    // body: radial gradient
     const grd = g.createRadialGradient(ctr.x - R * .35, ctr.y - R * .45, R * .15, ctr.x, ctr.y, R * 1.05);
-    grd.addColorStop(0, pl2); grd.addColorStop(.55, px); grd.addColorStop(1, pd);
-    const style = document.documentElement.dataset.pawn || 'disc';
+    grd.addColorStop(0, pli); grd.addColorStop(.55, px); grd.addColorStop(1, pd);
     g.fillStyle = grd; g.strokeStyle = pd; g.lineWidth = 1;
-    if (style === 'crown' || style === 'pillar') {
-      // simple chess-pawn silhouette
+    const style = document.documentElement.dataset.pawn || 'disc';
+    if (style === 'pillar' || style === 'crown') {
       g.beginPath();
-      g.arc(ctr.x, ctr.y - R * .25, R * .58, 0, 7);           // bulb
+      g.arc(ctr.x, ctr.y - R * .25, R * .58, 0, 7);
       g.moveTo(ctr.x - R * .34, ctr.y + R * .05);
       g.quadraticCurveTo(ctr.x, ctr.y + R * .18, ctr.x + R * .34, ctr.y + R * .05);
       g.lineTo(ctr.x + R * .52, ctr.y + R * .62);
@@ -347,7 +347,6 @@ class QBoard {
       g.lineTo(ctr.x - k * .87, ctr.y + k * .5);
       g.lineTo(ctr.x - k * .87, ctr.y - k * .5);
       g.closePath(); g.fill(); g.stroke();
-      // engraved glyph toward that player's goal
       g.strokeStyle = this.css('--bg'); g.lineWidth = Math.max(1.5, C * .05);
       const dir = pl === 0 ? -1 : 1;
       g.beginPath();
@@ -355,10 +354,9 @@ class QBoard {
       g.lineTo(ctr.x, ctr.y - dir * R * .22);
       g.lineTo(ctr.x + R * .3, ctr.y + dir * R * .22);
       g.stroke();
-    } else {  // disc (default)
+    } else {
       g.beginPath(); g.arc(ctr.x, ctr.y, R, 0, 7); g.fill(); g.stroke();
     }
-    // side-to-move gold breathing ring
     if (this.turn === pl) {
       g.beginPath(); g.arc(ctr.x, ctr.y, .40 * C, 0, 7);
       g.strokeStyle = this.css('--gold'); g.lineWidth = 2;
@@ -368,7 +366,6 @@ class QBoard {
     g.restore();
   }
 
-  // ---- hit testing -------------------------------------------------------
   pointToCell(px, py) {
     const c = Math.floor((px - this.M) / this.U), r = Math.floor((py - this.M) / this.U);
     return (r >= 0 && r < 9 && c >= 0 && c < 9) ? { r, c } : null;

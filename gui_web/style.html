@@ -128,19 +128,28 @@ button{font:inherit;color:inherit;background:none;border:none;cursor:pointer}
 /* ---- board zone ---- */
 #boardZone{flex:1 1 auto;min-height:0;display:flex;justify-content:center;position:relative}
 #evalStrip{
-  width:6px;border-radius:3px;align-self:stretch;margin-right:6px;position:relative;
+  width:6px;border-radius:3px;align-self:center;position:relative;
   background:linear-gradient(var(--p1-deep),var(--p1));overflow:hidden;opacity:.55;
-  border:1px solid var(--bor);
+  border:1px solid var(--bor);height:200px;
 }
 #evalStrip .fill{position:absolute;left:0;right:0;bottom:0;
   background:linear-gradient(var(--p0),var(--p0-light));transition:height var(--dur) var(--ease)}
-#boardWrap{position:relative;align-self:center}
+#boardWrap{position:relative;align-self:center;max-width:100%;min-width:0}
+#boardZone,#boardCol{min-width:0;max-width:100%}
 #board{display:block;border-radius:12px;box-shadow:0 10px 34px rgba(0,0,0,.55),0 0 0 1px var(--bor2)}
 #confirmChip{position:absolute;display:none;gap:8px;z-index:5}
 #confirmChip button{width:44px;height:44px;border-radius:50%;display:flex;
   align-items:center;justify-content:center;box-shadow:0 6px 16px rgba(0,0,0,.5)}
 #confirmChip .ok{background:var(--green);color:#fff}
 #confirmChip .no{background:var(--surf2);border:1px solid var(--bor2);color:var(--txt2)}
+
+/* ---- mobile race meter ---- */
+#raceMeterM{flex:0 0 auto;height:12px;border-radius:6px;overflow:hidden;cursor:pointer;display:flex;border:1px solid var(--bor);margin-bottom:6px;position:relative}
+#raceMeterM .rfill0{background:var(--p0);transition:width var(--dur) var(--ease);height:100%}
+#raceMeterM .rfill1{background:var(--p1);transition:width var(--dur) var(--ease);height:100%;flex:1}
+#raceMeterM .rdiv{position:absolute;top:-2px;bottom:-2px;width:2px;background:var(--gold)}
+#raceMeterM .num{position:absolute;right:8px;top:50%;transform:translateY(-50%);font-size:.54rem;font-weight:700;background:rgba(0,0,0,.45);padding:0 5px;border-radius:6px;color:#eee}
+@media (min-width:900px){#raceMeterM{display:none}}
 
 /* ---- status strip ---- */
 #statusStrip{
@@ -192,10 +201,10 @@ button{font:inherit;color:inherit;background:none;border:none;cursor:pointer}
 /* ============================ desktop ================================= */
 @media (min-width:900px){
   #hdr{height:52px}
+  #hudBar{display:none}   /* the desktop rail replaces the mobile dual bar */
   #main{flex-direction:row;gap:14px;padding:12px 16px}
   #leftCol{display:flex;flex-direction:column;gap:10px;width:148px;flex:none;
     justify-content:space-between;height:100%}
-  #hudBar{display:flex;flex-direction:column;grid-template-columns:none;margin:0;gap:10px}
   .hud-card.rail{grid-template-columns:10px 1fr;row-gap:5px}
   .hud-card.rail .hud-clock{font-size:1.5rem;text-align:left;grid-column:2}
   .hud-card.rail .hud-row2{margin-top:2px}
@@ -352,7 +361,7 @@ button{font:inherit;color:inherit;background:none;border:none;cursor:pointer}
           <span class="hud-dist num" id="mDist1"><small>DIST</small>-</span>
         </div>
       </div>
-      <div id="raceMeterM" style="display:contents"></div>
+      <div id="raceMeterM"><div class="rfill0" id="rf0M"></div><div class="rdiv" id="rdvM"></div><div class="rfill1" id="rf1M"></div><span class="num" id="rlM"></span></div>
     </div>
     <div id="statusStrip">
       <span id="status" role="status">Loading engine...</span>

@@ -19,33 +19,35 @@ const FILES = 'abcdefghi';
 
 // ===================== 2. wasm bindings ================================
 let W = null;   // wrapped exports
-function bindEngine() {
-  const m = ZquoridorModule;
-  const c = (name, ret, args) => m.cwrap(name, ret, args);
+function bindEngine(m) {
+  const c = name => {
+    if (typeof m[name] !== 'function') throw new Error('export missing: ' + name);
+    return (...args) => m[name](...args);
+  };
   W = {
-    newGame: c('_qr_new_game', null, []),
-    turn: c('_qr_turn', 'number', []),
-    winner: c('_qr_winner', 'number', []),
-    pawn: c('_qr_pawn', 'number', ['number']),
-    wallsLeft: c('_qr_walls_left', 'number', ['number']),
-    wallHBit: c('_qr_wall_h_bit', 'number', ['number']),
-    wallVBit: c('_qr_wall_v_bit', 'number', ['number']),
-    dist: c('_qr_dist_to_goal', 'number', ['number']),
-    moveCount: c('_qr_legal_moves_count', 'number', []),
-    mvIsWall: c('_qr_legal_move_is_wall', 'number', ['number']),
-    mvA: c('_qr_legal_move_a', 'number', ['number']),
-    mvB: c('_qr_legal_move_b', 'number', ['number']),
-    mvC: c('_qr_legal_move_c', 'number', ['number']),
-    applyPawn: c('_qr_apply_pawn_move', 'number', ['number']),
-    applyWall: c('_qr_apply_wall_move', 'number', ['number', 'number', 'number']),
-    engineMove: c('_qr_engine_move', 'number', ['number', 'number']),
-    lastIsWall: c('_qr_last_move_is_wall', 'number', []),
-    lastA: c('_qr_last_move_a', 'number', []),
-    lastB: c('_qr_last_move_b', 'number', []),
-    lastC: c('_qr_last_move_c', 'number', []),
-    lastEval: c('_qr_last_move_eval', 'number', []),
-    isDraw: c('_qr_is_draw', 'number', []),
-    loadNnue: c('_qr_load_nnue_weights', 'number', ['string']),
+    newGame: c('_qr_new_game'),
+    turn: c('_qr_turn'),
+    winner: c('_qr_winner'),
+    pawn: c('_qr_pawn'),
+    wallsLeft: c('_qr_walls_left'),
+    wallHBit: c('_qr_wall_h_bit'),
+    wallVBit: c('_qr_wall_v_bit'),
+    dist: c('_qr_dist_to_goal'),
+    moveCount: c('_qr_legal_moves_count'),
+    mvIsWall: c('_qr_legal_move_is_wall'),
+    mvA: c('_qr_legal_move_a'),
+    mvB: c('_qr_legal_move_b'),
+    mvC: c('_qr_legal_move_c'),
+    applyPawn: c('_qr_apply_pawn_move'),
+    applyWall: c('_qr_apply_wall_move'),
+    engineMove: c('_qr_engine_move'),
+    lastIsWall: c('_qr_last_move_is_wall'),
+    lastA: c('_qr_last_move_a'),
+    lastB: c('_qr_last_move_b'),
+    lastC: c('_qr_last_move_c'),
+    lastEval: c('_qr_last_move_eval'),
+    isDraw: c('_qr_is_draw'),
+    loadNnue: c('_qr_load_nnue_weights'),
   };
 }
 
@@ -162,10 +164,14 @@ function refreshHud() {
   // race meter
   const total = Math.max(1, dYou + dOpp);
   const share = dOpp / total * 100;
-  if (innerWidth >= 900) $('raceFill0').style.setProperty('--share', (dOpp / total * 100).toFixed(1));
-  else $('raceFill0').style.width = share.toFixed(1) + '%';
+  $('raceFill0').style.setProperty('--share', (dOpp / total).toFixed(3));
+  $('raceFill0').style.width = share.toFixed(1) + '%';
   $('raceDiv').style.left = share.toFixed(1) + '%';
   $('raceLbl').textContent = dYou + ' : ' + dOpp;
+  // mobile meter
+  $('rf0M').style.width = share.toFixed(1) + '%';
+  $('rdvM').style.left = share.toFixed(1) + '%';
+  $('rlM').textContent = dYou + ' : ' + dOpp;
   renderClocks();
 }
 function setDist(idM, idMob, v, lead) {
@@ -218,18 +224,13 @@ function afterHumanMove() {
 }
 function engineTurn() {
   const lv = LEVELS[S.level];
+  const pre = snapState();
   const ok = W.engineMove(24, lv.ms);
   engineThinking = false;
   if (!ok) { syncAll(); return; }
-  lastMoveInfo = W.lastIsWall()
-    ? { type: 'wall', o: W.lastA(), r: W.lastB(), c: W.lastC() }
-    : { type: 'pawn', cell: W.pawn(1 - humanSide) === undefined ? 0 : 0, o2: 0 };
-  // recompute display-space last move properly:
-  if (!W.lastIsWall()) {
-    // the engine's pawn cell for its own side already moved; derive from state diff
-  }
+  history._snapBefore = pre;
   rebuildLastFromEngine();
-  setEval(-W.lastEval());          // engine eval is from ITS perspective
+  setEval(-W.lastEval());          // eval is from the engine's perspective
   history.push(false);
   updateMovesChip();
   sound('move'); haptic(10);
@@ -238,14 +239,9 @@ function engineTurn() {
   if (!gameOver) setStatus('Your move');
 }
 function rebuildLastFromEngine() {
-  if (history._lastState) {
-    const prev = history._lastState;
-    if (prev.pawn[W.turn()] !== undefined) {}
-  }
-  // simple robust approach: compare current vs snapshot taken before engine move
   const cur = snapState();
-  const lm = diffMoves(history._snapBefore, cur);
-  lastMoveInfo = lm; history._snapBefore = cur;
+  lastMoveInfo = diffMoves(history._snapBefore, cur);
+  history._snapBefore = cur;
 }
 function snapState() {
   const wh = [], wv = [];
@@ -366,12 +362,12 @@ function snapGhost(px, py) {
   B.render();
 }
 function illegalReason(o, r, c) {
-  if ([W.wallsLeft(humanSide)] <= 0 || W.wallsLeft(humanSide) <= 0) return 'No walls left';
-  // cheap geometric checks mirror the engine pre-filter
-  const occH = [], occV = [];
-  for (let s = 0; s < 64; s++) { if (W.wallHBit(s)) occH.push(s); if (W.wallVBit(s)) occV.push(s); }
-  void occH; void occV;
-  return 'Illegal: that wall traps a player or overlaps another';
+  if (W.wallsLeft(humanSide) <= 0) return 'No walls left';
+  const sameOcc = (o === 0 ? W.wallHBit(r * 8 + c) : W.wallVBit(r * 8 + c));
+  if (sameOcc) return 'Overlaps an existing wall';
+  const cross = (o === 0 ? W.wallVBit(r * 8 + c) : W.wallHBit(r * 8 + c));
+  if (cross) return 'Crosses another wall';
+  return 'Would leave a player with no path to goal';
 }
 
 function onBoardPointerDown(ev) {
@@ -413,6 +409,7 @@ function commitGhost(gh) {
   const [eo, er, ec] = B.dispWallToEng(gh.o, gh.r, gh.c);
   if (W.applyWall(eo, er, ec)) {
     lastMoveInfo = { type: 'wall', o: eo, r: er, c: ec };
+    history._snapBefore = snapState();
     clearGhost();
     sound('wall'); haptic(18);
     afterHumanMove();
@@ -460,12 +457,11 @@ function pawnDown(dispCell, pt) {
   const isMyTurn = W.turn() === humanSide && !engineThinking;
   if (dispCell === myPawnDisp && isMyTurn) { B.selected = dispCell; B.dots = [...legalPawn]; B.render(); return; }
   if (isMyTurn && legalPawn.has(dispCell)) {
-    const eng = B.dispPawnToEng(dispCell === undefined ? 0 : dispCell, dispCell % 9);
-    void eng;
     const engCell = B.flipped ? (8 - Math.floor(dispCell / 9)) * 9 + dispCell % 9
                               : Math.floor(dispCell / 9) * 9 + dispCell % 9;
     if (W.applyPawn(engCell)) {
       lastMoveInfo = { type: 'pawn', r: Math.floor(dispCell / 9), c: dispCell % 9 };
+      history._snapBefore = snapState();
       B.selected = -1; B.dots = [];
       sound('move'); haptic(10);
       afterHumanMove();
@@ -692,15 +688,23 @@ function togglePaths() {
 // ===================== 13. boot ========================================
 function boot() {
   loadSettings();
-  bindEngine();
   B = new QBoard($('board'));
+  B.onChange = () => { $('evalStrip').style.height = (B.cssSide - 4) + 'px'; };
   applySettings();
   W.newGame();
   humanSide = S.side;
   history._snapBefore = snapState();
   syncAll();
   startClock();
-  setStatus('Your move');
+  setStatus(humanSide === 0 ? 'Your move' : 'Zquoridor starts');
+  // deferred re-fits: first fit() can run before final layout; also refit on resize
+  [200, 600, 1500].forEach(t => setTimeout(() => B.fit(), t));
+  window.addEventListener('resize', () => B.fit());
+  // deferred re-fits: the first fit() may run before final layout; re-measure
+  // once the flex layout settles, and on any viewport resize.
+  [200,600,1500].forEach(function(t){ setTimeout(function(){ B.fit(); }, t); });
+  window.addEventListener('resize', function(){ B.fit(); });
+
   // demo hook for visual testing: ?demo places a few moves programmatically
   if (location.search.includes('demo')) runDemo();
 }
@@ -729,4 +733,14 @@ function rebuildLastFromEngine2() {
   history._snapBefore = cur;
   syncFromEngine();
 }
-if (ZquoridorModule.ready) boot(); else ZquoridorModule.then ? ZquoridorModule.then(boot) : (ZquoridorModule.onRuntimeInitialized = boot);
+ZquoridorModule().then(inst => {
+  try {
+    bindEngine(inst);
+    let nnueOk = false;
+    try { nnueOk = !!inst._qr_load_nnue_weights('/data/nnue/nnue_weights_int8.bin'); } catch (e3) {}
+    boot();
+    if (!nnueOk) toast('warn', 'NNUE weights unavailable - heuristic mode');
+  } catch (e) {
+    document.title="BOOTERR "+(e&&e.stack?e.stack.split("\n")[1]:""+e);
+  }
+}).catch(e => { var st=document.getElementById("status"); if(st) st.textContent="WASM load failed: "+e; });
