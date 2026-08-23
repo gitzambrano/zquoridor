@@ -65,6 +65,26 @@ relearn by experiment.
   never disappear); `push(hash, irreversible)` exploits this. The subtle
   case (post-wall position recurring via pawn cycles) is pinned by
   `tests/test_repetition_diff.cpp`.
+- **Wall-quiescence extension sweep (2026-08-23, inv/qsendgame-ext)**: the
+  compile-time `QS_MAX_EXTRA_PLIES` bound became instance params
+  (`qsMaxExtraPlies`, plus an endgame rule `qsLowWallsBonus` when
+  `qsLowWallsThreshold >= wallsLeft[0]+wallsLeft[1]`). Defaults are
+  bit-identical to the old constant (frozen reference values in
+  `tests/wall_qextension_reference.inc`; setters resize `nnueAccStack`
+  and quiescence clamps itself to free stack space, so raised caps can
+  never write past the accumulator stack). The endgame rule was measured
+  over bonus {1,2,3} x threshold {2,4,6} from low-wall corpus positions at
+  100 ms/move: no significant Elo change vs defaults in heuristic or NNUE
+  mode (best pooled result +8.4 +-25.6 at 700 games), despite only ~11%
+  extra nodes to depth 10. Defaults stay production; knobs remain exposed
+  (`--qs-low-walls-bonus/--qs-low-walls-threshold`). Full data:
+  `data/wallext/SUMMARY.md` (untracked logs alongside).
+- **Silent printf truncation (2026-08-23)**: `%u` applied to an
+  `(unsigned long long)` value prints only the low 32 bits -- this is how
+  the first frozen wall-extension reference file stored truncated wall
+  bitboards and became unreplayable. Generators that emit state
+  coordinates must round-trip every row through reconstruction and assert
+  equality (see `tools/wallext/gen_reference.cpp`).
 
 ---
 
@@ -87,6 +107,10 @@ relearn by experiment.
 - **`tools/arena/`**, **`tools/selfplay/`**, **`tools/spsa/`**,
   **`training/`**: strength testing, dataset generation, parameter
   tuning, NNUE training.
+- **`tools/wallext/`**: wall-quiescence extension experiment kit
+  (deterministic low-wall corpus, frozen-reference generator with
+  round-trip proof, nodes-to-depth bench, single-process pairwise arena,
+  match orchestrator `run_wallext.ps1`).
 
 ## 5. Evaluation Conventions
 
