@@ -45,3 +45,6 @@ ENV/
 tc_out.txt
 tpa_dbg.exe
 tpa_g.exe
+
+data_policy_ab.*
+data_wall_qext.*
