@@ -80,6 +80,20 @@ relearn by experiment.
   - Small enclosures are impossible with legal walls (a 1x1 box needs two
     crossing walls; a 2x1 box needs colinear-adjacent ones). The smallest
     legal sealed region is 2x2 -- the shape the path-rejection test uses.
+- **parity_check.py drift (found and fixed 2026-08-24)**: the Python half
+  of the `nnue_verify` cross-check had drifted twice from `nnue.hpp` --
+  first the walls-left buckets (it still read 332 of the real 354
+  features), then the perspective mirroring of pawn/wall features added
+  to `buildAccumulator`. Because it has no file-size check (unlike
+  `quantize_nnue.py`), both drifts produced confident-looking garbage
+  instead of an error. It now reads 354 features, sets the walls-left
+  one-hots, and mirrors pawns/wall slots per perspective exactly like
+  the C++ side. Verification rule after the fix: the int8 block must
+  match `nnue_verify` digit-for-digit (integer math is deterministic),
+  and the float32 block must match within summation-order noise
+  (approximately 1e-6). Lesson: when `nnue.hpp` gains a feature or a
+  transform, update `train_nnue.py`, `quantize_nnue.py` AND
+  `parity_check.py` in the same commit.
 - **PowerShell file round-trips corrupt UTF-8**: `Get-Content | Set-Content`
   mangles accented characters in this repo's scripts and adds CRLF/BOM. Patch
   committed files with Python byte I/O or the Edit tool only.
@@ -278,6 +292,22 @@ Premium interface per `gui-premium.md`. Phases P0-P5 (tokens, canvas board
   - The mcab play budget is node-based (~20k nodes), so engine replies are
     usually faster than the level's nominal time -- tests must not assume
     `engineThinking` stays true for the level duration.
+- **Dock press-and-drag was dead (found and fixed 2026-08-24)**: the M1
+  gesture (press a wall on the dock, drag onto the board, release) never
+  placed anything. `setPointerCapture` retargets every pointermove to the
+  dock element, but the dock handler early-returned once `_dragging` was
+  set -- so the ghost froze off-board and the release had nothing to
+  commit. The board drag (press directly on a groove) was unaffected,
+  which is why earlier suites passed. Fix: keep forwarding snapGhost on
+  every move while the drag is engaged (`app.js`, dock pointermove).
+  Pinned by the new `gui_web/test_deep_click.py`, an 80-check click
+  suite covering pawn destinations, wall refusal reasons, keyboard arms,
+  confirm chips, settings persistence, worker-off analysis fallback,
+  editor validity gating, QFEN/QGN diagnostics, resume chip and recent
+  games. Geometry note for assist tests: pressing dead-center on an
+  illegal anchor leaves all neighbours at exactly 1 U, outside the
+  0.9 U assist radius -- press at approximately 0.48 U toward the legal
+  neighbour instead.
 - **Per-feature sweep** (`gui_web/test_gui_features.py`, 2026-08-23): one
   pass over EVERY settings control and dressing option (8 board themes,
   6 pawn styles, frame/finish/surface/coords/scale, overlay toggles, UI

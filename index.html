@@ -2388,8 +2388,14 @@ for (const [id, o] of [['wallH', 0], ['wallV', 1]]) {
     el._downAt = performance.now(); el._dragging = false;
   });
   el.addEventListener('pointermove', ev => {
-    if (el._dragging || !el._downAt) return;
-    if (Math.abs(ev.movementX) + Math.abs(ev.movementY) > 3 || performance.now() - el._downAt > 150) el._dragging = true;
+    if (!el._downAt) return;
+    // Keep tracking AFTER the drag engages: pointer capture retargets every
+    // move to the dock, so this handler is the only channel that can carry
+    // the ghost across the board. An early return here left M1 dead -- the
+    // ghost froze off-board and the release could never commit.
+    if (!el._dragging &&
+        (Math.abs(ev.movementX) + Math.abs(ev.movementY) > 3 ||
+         performance.now() - el._downAt > 150)) el._dragging = true;
     if (el._dragging && wallState !== 'DRAGGING') { armWall(o); wallState = 'DRAGGING'; dragPtr = ev.pointerId; }
     if (wallState === 'DRAGGING' && ev.pointerId === dragPtr) {
       // ghost over the board while the pointer is still on the dock is not

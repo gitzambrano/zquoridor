@@ -13,13 +13,16 @@ heurística evalSimple) foi removida de nnue.hpp/train_nnue.py por virar
 peso morto -- ver a tabela em status.md/CLAUDE.md ("Avaliação: o que cada
 estágio usa"). Este script computa e imprime só value_wl agora.
 
-ATENÇÃO (pré-existente, não corrigido nesta mudança): NUM_FEATURES abaixo
-está em 332 (sem WALLS_LEFT_BUCKETS), desatualizado em relação aos 354 de
-nnue.hpp/train_nnue.py desde que os buckets de muros restantes foram
-adicionados como feature -- ver a mesma nota em quantize_nnue.py, que TEM
-a checagem de tamanho de arquivo que pegaria esse desalinhamento; este
-script não tem essa checagem. Fora do escopo desta mudança (não mexe com
-cabeça auxiliar nem avaliação salva no .bin); ver status.md.
+ALINHADO COM NNUE.HPP (354 features, 2026-08): este script ficou para
+trás duas vezes no passado e as duas vezes o sintoma foi o mesmo (saída
+sem sentido nenhum, porque o load lê o arquivo com o layout errado):
+(1) buckets de muros restantes (WALLS_LEFT_BUCKETS) viraram feature --
+    NUM_FEATURES subiu de 332 para 354;
+(2) buildAccumulator passou a ESPELHAR peão/slot de muro por perspectiva
+    (mirroredPawnCell/mirroredWallSlot em nnue.hpp) -- sem isso a
+    perspectiva 1 lia as linhas de peso da perspectiva 0. As funções
+    mirrored_* abaixo reproduzem esse espelhamento. Se nnue.hpp ganhar
+    feature ou transformação nova, atualize AQUI no mesmo commit.
 
 Também recomputa, de forma totalmente independente do C++, o forward
 QUANTIZADO (int8/int16, mesmas fórmulas de NNUEWeightsQuant em nnue.hpp)
@@ -38,9 +41,13 @@ import numpy as np
 
 N, WS = 9, 8
 DIST_BUCKETS = 21   # ver DIST_BUCKETS em nnue.hpp (Seção 7.10 do plano)
-NUM_FEATURES = N * N + N * N + WS * WS * 2 + 2 * DIST_BUCKETS  # 332
+WALLS_LEFT_BUCKETS = 11  # WALLS_PER_PLAYER + 1 -- ver WALLS_LEFT_BUCKETS em nnue.hpp
+NUM_FEATURES = N * N + N * N + WS * WS * 2 + 2 * DIST_BUCKETS + 2 * WALLS_LEFT_BUCKETS  # 354
 HIDDEN = 256
 POLICY_OUT = N * N + WS * WS * 2  # 209
+DIST_FEAT_BASE = N * N + N * N + WS * WS * 2              # 290
+WALLS_LEFT_FEAT_BASE = DIST_FEAT_BASE + 2 * DIST_BUCKETS  # 332
+WALLS_PER_PLAYER = 10  # rules.hpp -- orçamento do initialState()
 
 
 def slot_idx(r, c):
@@ -169,43 +176,84 @@ def final_descale(num, den):
     return np.asarray(num, dtype=np.float64) / np.asarray(den, dtype=np.float64)
 
 
-def build_feature_vector(own_pawn, opp_pawn, walls_h_bits, walls_v_bits, own_player):
-    """walls_h_bits/walls_v_bits: listas de slots (r,c) com muro presente.
+def mirrored_pawn_cell(cell, perspective):
+    """Espelho de linha usado por mirroredPawnCell (nnue.hpp): a
+    perspectiva 1 inverte r -> N-1-r; a coluna nunca muda."""
+    if perspective == 0:
+        return cell
+    return cell_idx(N - 1 - cell // N, cell % N)
+
+
+def mirrored_wall_rc(r, c, perspective):
+    """Espelho de slot usado por mirroredWallSlot (nnue.hpp): a
+    perspectiva 1 inverte r -> WS-1-r; a coluna nunca muda."""
+    if perspective == 0:
+        return (r, c)
+    return (WS - 1 - r, c)
+
+
+def build_feature_vector(own_pawn, opp_pawn, walls_h_bits, walls_v_bits,
+                         own_player, own_walls_left=WALLS_PER_PLAYER,
+                         opp_walls_left=WALLS_PER_PLAYER):
+    """walls_h_bits/walls_v_bits: listas de slots (r,c) com muro presente,
+    em coordenada CRUA do tabuleiro -- o espelhamento por perspectiva é
+    aplicado AQUI, igual ao buildAccumulator(s, perspective) do lado C++.
     own_player: índice 0/1 de quem é o peão "próprio" nesta perspectiva --
-    necessário aqui (e só aqui) pra saber qual GOAL_ROW usar na BFS; não
-    existe no lado C++ porque lá a perspectiva já vem com esse índice
-    (ver buildAccumulator(s, perspective) em nnue.hpp)."""
+    necessário aqui (e só aqui) pra saber qual GOAL_ROW usar na BFS; no
+    C++ ele coincide com o próprio argumento `perspective`.
+    own_walls_left/opp_walls_left: orçamentos de muro da posição; o default
+    WALLS_PER_PLAYER cobre a posição de teste fixa (initialState() + dois
+    bits de muro pintados direto no bitboard, sem tocar o orçamento)."""
     x = np.zeros(NUM_FEATURES, dtype=np.float32)
-    x[own_pawn] = 1.0
-    x[81 + opp_pawn] = 1.0
+    x[mirrored_pawn_cell(own_pawn, own_player)] = 1.0
+    x[81 + mirrored_pawn_cell(opp_pawn, own_player)] = 1.0
     walls_h_set = set(walls_h_bits)
     walls_v_set = set(walls_v_bits)
     for (r, c) in walls_h_bits:
-        x[162 + slot_idx(r, c)] = 1.0
+        rm, cm = mirrored_wall_rc(r, c, own_player)
+        x[162 + slot_idx(rm, cm)] = 1.0
     for (r, c) in walls_v_bits:
-        x[162 + 64 + slot_idx(r, c)] = 1.0
+        rm, cm = mirrored_wall_rc(r, c, own_player)
+        x[162 + 64 + slot_idx(rm, cm)] = 1.0
     opp_player = 1 - own_player
     own_dist = dist_bucket(shortest_path_len(walls_h_set, walls_v_set, own_pawn, own_player))
     opp_dist = dist_bucket(shortest_path_len(walls_h_set, walls_v_set, opp_pawn, opp_player))
-    x[290 + own_dist] = 1.0
-    x[290 + DIST_BUCKETS + opp_dist] = 1.0
+    x[DIST_FEAT_BASE + own_dist] = 1.0
+    x[DIST_FEAT_BASE + DIST_BUCKETS + opp_dist] = 1.0
+    # muros restantes (feature nova, 2026-08): one-hot, mesma família dos
+    # buckets de distância -- ver featOwnWallsLeft/featOppWallsLeft.
+    own_wl_bucket = min(max(own_walls_left, 0), WALLS_LEFT_BUCKETS - 1)
+    opp_wl_bucket = min(max(opp_walls_left, 0), WALLS_LEFT_BUCKETS - 1)
+    x[WALLS_LEFT_FEAT_BASE + own_wl_bucket] = 1.0
+    x[WALLS_LEFT_FEAT_BASE + WALLS_LEFT_BUCKETS + opp_wl_bucket] = 1.0
     return x
 
 
-def build_active_features(own_pawn, opp_pawn, walls_h_bits, walls_v_bits, own_player):
+def build_active_features(own_pawn, opp_pawn, walls_h_bits, walls_v_bits,
+                          own_player, own_walls_left=WALLS_PER_PLAYER,
+                          opp_walls_left=WALLS_PER_PLAYER):
     """Mesma posição, mas como lista de índices de feature ativos -- usado
     no forward quantizado pra somar só as linhas relevantes de w1 (o
     acumulador em nnue.hpp é sempre incremental/esparso, nunca faz um
-    produto matricial denso contra as 332 features)."""
-    feats = [own_pawn, 81 + opp_pawn]
-    feats += [162 + slot_idx(r, c) for (r, c) in walls_h_bits]
-    feats += [162 + 64 + slot_idx(r, c) for (r, c) in walls_v_bits]
+    produto matricial denso contra as 354 features)."""
+    feats = [mirrored_pawn_cell(own_pawn, own_player),
+             81 + mirrored_pawn_cell(opp_pawn, own_player)]
+    for (r, c) in walls_h_bits:
+        rm, cm = mirrored_wall_rc(r, c, own_player)
+        feats.append(162 + slot_idx(rm, cm))
+    for (r, c) in walls_v_bits:
+        rm, cm = mirrored_wall_rc(r, c, own_player)
+        feats.append(162 + 64 + slot_idx(rm, cm))
     walls_h_set = set(walls_h_bits)
     walls_v_set = set(walls_v_bits)
     opp_player = 1 - own_player
     own_dist = dist_bucket(shortest_path_len(walls_h_set, walls_v_set, own_pawn, own_player))
     opp_dist = dist_bucket(shortest_path_len(walls_h_set, walls_v_set, opp_pawn, opp_player))
-    feats += [290 + own_dist, 290 + DIST_BUCKETS + opp_dist]
+    feats += [DIST_FEAT_BASE + own_dist, DIST_FEAT_BASE + DIST_BUCKETS + opp_dist]
+    own_wl_bucket = min(max(own_walls_left, 0), WALLS_LEFT_BUCKETS - 1)
+    opp_wl_bucket = min(max(opp_walls_left, 0), WALLS_LEFT_BUCKETS - 1)
+    feats += [WALLS_LEFT_FEAT_BASE + own_wl_bucket,
+              WALLS_LEFT_FEAT_BASE + WALLS_LEFT_BUCKETS + opp_wl_bucket]
     return feats
 
 
