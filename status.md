@@ -52,6 +52,47 @@ relearn by experiment.
   server install: a weaker engine there usually means missing NNUE
   weights (the QTP binary then runs `evalSimple` and prints a stderr
   warning) or a lower time budget, not the ISA itself.
+- **Race-solver audit round (2026-08-23, branch `inv/race-fuzz`)**:
+  adversarial verification of `src/endgame_race.hpp` against an
+  independent brute-force oracle (`tests/race_oracle.hpp`: from-scratch
+  successor generation, naive win-set fixpoint, separate DTM relaxation).
+  Findings and outcomes:
+  - **F1, fixed**: `raceDisjointGate` computed its ply arithmetic from raw
+    BFS distances without guarding degenerate values. For direct callers of
+    the public inline utilities a pawn already on its goal row (rawDist 0)
+    produced dtm -1, and a sealed pawn (rawDist -1) flipped the winner with
+    a negative dtm. No real game reaches such states (wall legality keeps
+    both paths alive), so the production hook is unchanged; the gate now
+    refuses when either rawDist < 1 and Service B answers instead.
+  - **F5/F6/F7, documented-only**: the race budget globals are process-wide,
+    so selfplay threads interfere on solver accounting (perf-only; the
+    fallback path is the ordinary heuristic node); the race-hook TT probe
+    accepts any EXACT entry regardless of depth (sound approximation);
+    the empty-handed root branch ignores repetition history while internal
+    nodes rank it first (rare in practice). See `notes_race.md` (branch
+    log) for details.
+  - **Camping symptom verdict** ("engine stays on the first row"): no bug.
+    Survey over 2040 hands-empty roots x tiebreak on/off: about 35% of
+    chosen moves keep the root-side pawn on its back two rows, and ALL of
+    them achieve the oracle-best child value. Camping while lost is the
+    correct maximum-delay defense; camping while won is minimal-DTM
+    geometry. `endgameProgressTiebreak` ON cuts lost-side camping by about
+    13% relative at zero optimality cost. In the quasi-endgame (no solver)
+    camping-while-ahead appears at short budgets but mostly turns into
+    wall trades that add +1 to +4 opponent plies under deeper search.
+  - **Permanent coverage**: `tests/test_endgame_race_fuzz.cpp` wired into
+    both build_tests scripts as entry [16/16] (about 12 s at -O2): 8468
+    oracle comparisons, 33872 root-optimality checks across all four
+    toggle combos, budget-fallback and cache-eviction stress, degenerate
+    probes including 600 randomized ones, and a compact engine-vs-engine
+    differential where every decisive game must end in exactly the
+    predicted DTM. `benchmarks/bench_race_differential.cpp` scales that to
+    366 games standalone (360/360 exact lengths).
+  - **Drift fix**: `build/build_tests.sh` still compiled the deleted
+    `lazy_acc_parity.cpp` (the Linux suite aborted there) and lacked three
+    newer tests; both build_tests scripts now list the same 16 entries.
+
+>>>>>>> inv/race-fuzz
 - **Production adoption round (2026-08-23, branch `prod/findings-2026-08`)**:
   merged `inv/qsendgame-ext`, `inv/ab-policy`, and `inv/contempt-wandering`
   into one integration line, then flipped ONE production default:
