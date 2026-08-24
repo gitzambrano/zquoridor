@@ -31,13 +31,13 @@ import time
 # =============================================================================
 
 # --- Geração de partidas ---
-TOTAL_GAMES   = 300000   # partidas totais a gerar nesta rodada
+TOTAL_GAMES   = 50000   # partidas totais a gerar nesta rodada
 CHUNK_GAMES   = 3000    # partidas por arquivo .bin
                         # Cada chunk fica ~6.5 MB -- confortável pra 32 GB RAM
 
 # --- Busca ---
 MAX_DEPTH     = 50      # profundidade máxima do negamax (iterative deepening)
-TIME_MS       = 60     # orçamento de tempo por lance em ms
+TIME_MS       = 40     # orçamento de tempo por lance em ms
                         # 200 ms = boa qualidade; reduza para 50-100 ms se quiser
                         # gerar muito volume rapidamente (em detrimento da força)
  
@@ -74,7 +74,7 @@ EPSILON_MIDGAME  = 0.01   # prob. de desvio no midgame: escolhe 2º ou 3º melho
 #                                                              de MC_TEMP_OPENING a MC_TEMP_END
 # Depois disso, mesmo comportamento do midgame do modo antigo
 # (EPSILON_MIDGAME -> 2º/3º melhor lance; senão busca completa).
-MC_OBVIOUS_PLIES    = 3      # nº de lances iniciais (obvios no Quoridor) com temperatura fixa e baixa
+MC_OBVIOUS_PLIES    = 6      # nº de lances iniciais (obvios no Quoridor) com temperatura fixa e baixa
 MC_TEMP_OBVIOUS      = 0.3  # temperatura da fase 1 (baixa -> quase argmax, pouca variancia de proposito)
 MC_TEMP_OPENING     = 1.00   # temperatura no inicio da fase 2 (>1 achata -- mais uniforme/exploratório)
 MC_TEMP_END         = 0.12   # temperatura ao fim da fase 2 (<1 afia -- quase argmax)
@@ -95,7 +95,7 @@ MAX_PLIES     = 300     # corte: partidas que não terminam são descartadas
 SEPARATE_TT   = False
 
 # --- Paralelismo ---
-THREADS       = 10      # 0 = auto (usa hardware_concurrency); ajuste se quiser
+THREADS       = 8       # 0 = auto (usa hardware_concurrency); ajuste se quiser
                         # reservar threads para outras tarefas
 
 # --- Semente ---
@@ -108,7 +108,7 @@ SEED          = 150    # semente base do RNG; chunks subsequentes variam automat
 # data/selfplay/montecarlo/...) pra dar pra treinar misturando as duas
 # fontes com pesos por-fonte (k diferentes) em train_nnue.py, sem que uma
 # rodada sobrescreva/misture shards da outra sem querer.
-OUT_TEMPLATE  = "data/selfplay/gen5-{mode}/selfplay_{shard:03d}.bin"
+OUT_TEMPLATE  = "data/selfplay/gen6-{mode}/selfplay_{shard:03d}.bin"
 
 # --- Avaliação de folha (NNUE vs. heurística) ---
 # NNUE é o default de avaliação deste binário desde 2026-08 (selfplay
