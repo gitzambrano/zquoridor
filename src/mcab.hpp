@@ -254,6 +254,39 @@ struct McabParams {
     int abPrefilterDepth = 0;
     int abPrefilterTopK = 0;
     double abPrefilterTimeFrac = 0.25;
+
+    // inv/endgame-wander: leaf depth for a spent wall stock.
+    //
+    // The WL head is almost blind to the pawn race after a side spends its
+    // walls. It reports a win probability of 0.13 to 0.28 for every pawn
+    // distance from 5 down to 2, and it separates the moves only at
+    // distance 1. A tree of static leaves therefore has no gradient toward
+    // the goal. `AvgBlend` averages 20000 of those near-equal leaves, the
+    // Q values of the root moves land within 0.02 of each other, and
+    // `MaxVisits` picks whichever branch PUCT happened to visit more. The
+    // engine then shuffles its pawn sideways in a won race. See
+    // benchmarks/repro_wander.cpp for the position, and status.md.
+    //
+    // When the SIDE TO MOVE at the root holds at most
+    // endgameMoverWallThreshold walls, every leaf gets a real alpha-beta
+    // search of endgameLeafDepth plies instead of the static net value. The
+    // alpha-beta search sees the goal row through winner(), so it supplies
+    // the gradient the net does not.
+    //
+    // The gate counts the MOVER's own walls, not the combined stock, for
+    // two reasons. The reported failure needs only the mover to be out of
+    // walls: the opponent still held 8 walls in the repro position. A
+    // combined-stock gate wide enough to cover that position fires through
+    // most of the game and costs more than half the node rate. That variant
+    // measured -88.7 +/- 86.7 Elo over 60 games at 200ms.
+    //
+    // A negative threshold turns the rule off. Off is the default, so
+    // production stays bit-identical until an arena match measures the
+    // rule. Do NOT raise the threshold toward 10: that makes the rule
+    // global, which is the leafDepth >= 1 setting status.md already
+    // rejected at approximately -250 Elo.
+    int endgameMoverWallThreshold = -1;
+    int endgameLeafDepth = 2;
 };
 
 // Estatísticas agregadas de UMA chamada a chooseMoveMCAB (não confundir
@@ -547,6 +580,13 @@ public:
 
         if (params.clearTTPerMove) engine.clearTT();
 
+        // inv/endgame-wander: decide the leaf rule once per move, from the
+        // wall stock of the side to move at the root, so that the whole tree
+        // uses one leaf depth.
+        endgameLeafActive =
+            params.endgameMoverWallThreshold >= 0 &&
+            (int)root.wallsLeft[root.turn] <= params.endgameMoverWallThreshold;
+
         localRepTbl = gameHistory;
         localRepTbl.markRoot();
 
@@ -677,6 +717,10 @@ private:
     // haveLeafDeadline == true, o que só ocorre com timeBudgetMs > 0.
     std::chrono::steady_clock::time_point leafDeadline;
     bool haveLeafDeadline = false;
+    // Resolved once per chooseMoveMCAB from the root wall stock. True means
+    // that leaves use params.endgameLeafDepth (see
+    // McabParams::endgameMoverWallThreshold).
+    bool endgameLeafActive = false;
 
     // NOTA: buildAccPairRoot/makeChildAccPair recebem um `PlayerPathCacheTable*`
     // opcional para cachear BFS de distância entre chamadas -- o mesmo
@@ -831,6 +875,7 @@ private:
     // sem encarecer a cauda de ramos visitados 1x. FATOR NÃO CALIBRADO --
     // ver status.md; default de `adaptiveLeafDepth` é false.
     int effectiveLeafDepth(int branchVisits) const {
+        if (endgameLeafActive) return params.endgameLeafDepth;
         if (!params.adaptiveLeafDepth) return params.leafDepth;
         int bonus = 0;
         long long threshold = 4;

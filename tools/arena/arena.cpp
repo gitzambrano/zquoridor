@@ -165,6 +165,12 @@ constexpr int E1_MCAB_AB_PREFILTER_TOPK_OVERRIDE = mcab::UNSET_INT;    // produc
 constexpr int E2_MCAB_AB_PREFILTER_TOPK_OVERRIDE = mcab::UNSET_INT;    // producao: 0 (off)
 constexpr double E1_MCAB_AB_PREFILTER_TIMEFRAC_OVERRIDE = mcab::UNSET_REAL; // producao: 0.25
 constexpr double E2_MCAB_AB_PREFILTER_TIMEFRAC_OVERRIDE = mcab::UNSET_REAL; // producao: 0.25
+// inv/endgame-wander: busca AB de folha quando o estoque de muros da RAIZ
+// acabou. threshold = muros somados dos dois lados; <0 desliga a regra.
+constexpr int E1_MCAB_ENDGAME_MOVER_WALL_THRESHOLD_OVERRIDE = mcab::UNSET_INT; // producao: -1 (off)
+constexpr int E2_MCAB_ENDGAME_MOVER_WALL_THRESHOLD_OVERRIDE = mcab::UNSET_INT; // producao: -1 (off)
+constexpr int E1_MCAB_ENDGAME_LEAF_DEPTH_OVERRIDE = mcab::UNSET_INT;    // producao: 2
+constexpr int E2_MCAB_ENDGAME_LEAF_DEPTH_OVERRIDE = mcab::UNSET_INT;    // producao: 2
 // Ruido de Dirichlet na raiz: producao = DESLIGADO aqui de proposito. Serve
 // para diversidade de abertura em dados de treino (selfplay liga), nunca
 // para medir forca -- arena mede forca. Sem flag de CLI correspondente.
@@ -276,6 +282,10 @@ static int g_e1McabAbPreTopK = mcab::resolve(E1_MCAB_AB_PREFILTER_TOPK_OVERRIDE,
 static int g_e2McabAbPreTopK = mcab::resolve(E2_MCAB_AB_PREFILTER_TOPK_OVERRIDE, MCAB_PROD.abPrefilterTopK);
 static double g_e1McabAbPreTimeFrac = mcab::resolve(E1_MCAB_AB_PREFILTER_TIMEFRAC_OVERRIDE, MCAB_PROD.abPrefilterTimeFrac);
 static double g_e2McabAbPreTimeFrac = mcab::resolve(E2_MCAB_AB_PREFILTER_TIMEFRAC_OVERRIDE, MCAB_PROD.abPrefilterTimeFrac);
+static int g_e1McabEndgameMoverWallThr = mcab::resolve(E1_MCAB_ENDGAME_MOVER_WALL_THRESHOLD_OVERRIDE, MCAB_PROD.endgameMoverWallThreshold);
+static int g_e2McabEndgameMoverWallThr = mcab::resolve(E2_MCAB_ENDGAME_MOVER_WALL_THRESHOLD_OVERRIDE, MCAB_PROD.endgameMoverWallThreshold);
+static int g_e1McabEndgameLeafDepth = mcab::resolve(E1_MCAB_ENDGAME_LEAF_DEPTH_OVERRIDE, MCAB_PROD.endgameLeafDepth);
+static int g_e2McabEndgameLeafDepth = mcab::resolve(E2_MCAB_ENDGAME_LEAF_DEPTH_OVERRIDE, MCAB_PROD.endgameLeafDepth);
 
 // Struct de amostra de treino local (independente das duas engines) --
 // layout idÃªntico ao TrainingSample de selfplay.hpp/arena.cpp original.
@@ -467,6 +477,8 @@ int playArenaGame(int engine1PlayerIdx, int timeMs, int randomPlies, std::mt1993
         p1.abPrefilterDepth = g_e1McabAbPreDepth;
         p1.abPrefilterTopK = g_e1McabAbPreTopK;
         p1.abPrefilterTimeFrac = g_e1McabAbPreTimeFrac;
+        p1.endgameMoverWallThreshold = g_e1McabEndgameMoverWallThr;
+        p1.endgameLeafDepth = g_e1McabEndgameLeafDepth;
         mcabRunner1.setParams(p1);
 
         mcab::McabParams p2;
@@ -493,6 +505,8 @@ int playArenaGame(int engine1PlayerIdx, int timeMs, int randomPlies, std::mt1993
         p2.abPrefilterDepth = g_e2McabAbPreDepth;
         p2.abPrefilterTopK = g_e2McabAbPreTopK;
         p2.abPrefilterTimeFrac = g_e2McabAbPreTimeFrac;
+        p2.endgameMoverWallThreshold = g_e2McabEndgameMoverWallThr;
+        p2.endgameLeafDepth = g_e2McabEndgameLeafDepth;
         mcabRunner2.setParams(p2);
     }
     mcabRunner1.resetTree();
@@ -698,6 +712,10 @@ int main(int argc, char* argv[]) {
     int e2McabAbPreTopK = mcab::resolve(E2_MCAB_AB_PREFILTER_TOPK_OVERRIDE, MCAB_PROD.abPrefilterTopK);
     double e1McabAbPreTimeFrac = mcab::resolve(E1_MCAB_AB_PREFILTER_TIMEFRAC_OVERRIDE, MCAB_PROD.abPrefilterTimeFrac);
     double e2McabAbPreTimeFrac = mcab::resolve(E2_MCAB_AB_PREFILTER_TIMEFRAC_OVERRIDE, MCAB_PROD.abPrefilterTimeFrac);
+    int e1McabEndgameMoverWallThr = mcab::resolve(E1_MCAB_ENDGAME_MOVER_WALL_THRESHOLD_OVERRIDE, MCAB_PROD.endgameMoverWallThreshold);
+    int e2McabEndgameMoverWallThr = mcab::resolve(E2_MCAB_ENDGAME_MOVER_WALL_THRESHOLD_OVERRIDE, MCAB_PROD.endgameMoverWallThreshold);
+    int e1McabEndgameLeafDepth = mcab::resolve(E1_MCAB_ENDGAME_LEAF_DEPTH_OVERRIDE, MCAB_PROD.endgameLeafDepth);
+    int e2McabEndgameLeafDepth = mcab::resolve(E2_MCAB_ENDGAME_LEAF_DEPTH_OVERRIDE, MCAB_PROD.endgameLeafDepth);
 
     // Valor nao reconhecido cai no de producao (nao vira MaxVisits calado):
     // um typo em "visits-then-q" nao deve parecer que funcionou.
@@ -776,6 +794,12 @@ int main(int argc, char* argv[]) {
             mcab::BackupMode m = mcab::resolveBackupMode(argv[++i], MCAB_PROD.backupMode);
             e1McabBackupMode = m; e2McabBackupMode = m;
         }
+        else if (std::strcmp(argv[i], "--mcab-endgame-mover-walls") == 0 && i + 1 < argc) { e1McabEndgameMoverWallThr = e2McabEndgameMoverWallThr = std::atoi(argv[++i]); }
+        else if (std::strcmp(argv[i], "--e1-mcab-endgame-mover-walls") == 0 && i + 1 < argc) e1McabEndgameMoverWallThr = std::atoi(argv[++i]);
+        else if (std::strcmp(argv[i], "--e2-mcab-endgame-mover-walls") == 0 && i + 1 < argc) e2McabEndgameMoverWallThr = std::atoi(argv[++i]);
+        else if (std::strcmp(argv[i], "--mcab-endgame-leaf-depth") == 0 && i + 1 < argc) { e1McabEndgameLeafDepth = e2McabEndgameLeafDepth = std::atoi(argv[++i]); }
+        else if (std::strcmp(argv[i], "--e1-mcab-endgame-leaf-depth") == 0 && i + 1 < argc) e1McabEndgameLeafDepth = std::atoi(argv[++i]);
+        else if (std::strcmp(argv[i], "--e2-mcab-endgame-leaf-depth") == 0 && i + 1 < argc) e2McabEndgameLeafDepth = std::atoi(argv[++i]);
         else if (std::strcmp(argv[i], "--e1-mcab-backup") == 0 && i + 1 < argc) e1McabBackupMode = mcab::resolveBackupMode(argv[++i], MCAB_PROD.backupMode);
         else if (std::strcmp(argv[i], "--e2-mcab-backup") == 0 && i + 1 < argc) e2McabBackupMode = mcab::resolveBackupMode(argv[++i], MCAB_PROD.backupMode);
         else if (std::strcmp(argv[i], "--mcab-progressive-widening") == 0) e1McabProgressiveWidening = e2McabProgressiveWidening = true;
@@ -879,6 +903,10 @@ int main(int argc, char* argv[]) {
     g_e2McabMaxTreeDepth = e2McabMaxTreeDepth;
     g_e1McabEquivMode = e1McabEquivMode;
     g_e2McabEquivMode = e2McabEquivMode;
+    g_e1McabEndgameMoverWallThr = e1McabEndgameMoverWallThr;
+    g_e2McabEndgameMoverWallThr = e2McabEndgameMoverWallThr;
+    g_e1McabEndgameLeafDepth = e1McabEndgameLeafDepth;
+    g_e2McabEndgameLeafDepth = e2McabEndgameLeafDepth;
     g_e1McabAbPreDepth = e1McabAbPreDepth;
     g_e2McabAbPreDepth = e2McabAbPreDepth;
     g_e1McabAbPreTopK = e1McabAbPreTopK;
@@ -991,6 +1019,10 @@ int main(int argc, char* argv[]) {
                           g_e1McabWideningCoefficient, g_e1McabWideningExponent,
                           g_e1McabTreeReuse ? "on" : "off",
                           g_e1McabEquivMode ? ", modo equivalencia" : "");
+            if (g_e1McabEndgameMoverWallThr >= 0) {
+                std::fprintf(stderr, "[arena] Engine 1: folha AB de fim de jogo LIGADA (muros do lado da vez <= %d -> leaf-depth=%d)\n",
+                              g_e1McabEndgameMoverWallThr, g_e1McabEndgameLeafDepth);
+            }
         }
     } else {
         std::fprintf(stderr, "[arena] Engine 1: ALPHA-BETA PURO (MCTS hibrido desligado)\n");
@@ -1007,6 +1039,10 @@ int main(int argc, char* argv[]) {
                           g_e2McabWideningCoefficient, g_e2McabWideningExponent,
                           g_e2McabTreeReuse ? "on" : "off",
                           g_e2McabEquivMode ? ", modo equivalencia" : "");
+            if (g_e2McabEndgameMoverWallThr >= 0) {
+                std::fprintf(stderr, "[arena] Engine 2: folha AB de fim de jogo LIGADA (muros do lado da vez <= %d -> leaf-depth=%d)\n",
+                              g_e2McabEndgameMoverWallThr, g_e2McabEndgameLeafDepth);
+            }
         }
     } else {
         std::fprintf(stderr, "[arena] Engine 2: ALPHA-BETA PURO (MCTS hibrido desligado)\n");

@@ -112,6 +112,12 @@ E1_MCAB_ROOT_SELECT = None         # produção: "visits" | "q" | "visits-then-q
 E2_MCAB_ROOT_SELECT = None
 E1_MCAB_BACKUP = None              # produção: "avg"; modo antigo: "minimax"
 E2_MCAB_BACKUP = None
+E1_MCAB_ENDGAME_MOVER_WALL_THRESHOLD = None  # produção: -1 (desligado). Muros restantes
+E2_MCAB_ENDGAME_MOVER_WALL_THRESHOLD = None  # do lado da vez na raiz. Em ou abaixo desse valor,
+                                       # a folha vira busca AB de verdade em vez do
+                                       # valor estático da rede. Ver inv/endgame-wander.
+E1_MCAB_ENDGAME_LEAF_DEPTH = None      # produção: 2 -- plies da folha AB de fim de jogo
+E2_MCAB_ENDGAME_LEAF_DEPTH = None
 E1_MCAB_PROGRESSIVE_WIDENING = None # produção: False; experimento: True
 E2_MCAB_PROGRESSIVE_WIDENING = None # idem
 E1_MCAB_WIDENING_INITIAL = None    # produção: 16; só tem efeito com progressive widening
@@ -173,6 +179,8 @@ MCAB_VALUE_KNOBS = [
     ("mcab-max-tree-depth", "mcab_max_tree_depth", E1_MCAB_MAX_TREE_DEPTH, E2_MCAB_MAX_TREE_DEPTH, int),
     ("mcab-root-select",    "mcab_root_select",    E1_MCAB_ROOT_SELECT,    E2_MCAB_ROOT_SELECT,    str),
     ("mcab-backup",         "mcab_backup",         E1_MCAB_BACKUP,         E2_MCAB_BACKUP,         str),
+    ("mcab-endgame-mover-walls", "mcab_endgame_mover_walls", E1_MCAB_ENDGAME_MOVER_WALL_THRESHOLD, E2_MCAB_ENDGAME_MOVER_WALL_THRESHOLD, int),
+    ("mcab-endgame-leaf-depth",     "mcab_endgame_leaf_depth",     E1_MCAB_ENDGAME_LEAF_DEPTH,     E2_MCAB_ENDGAME_LEAF_DEPTH,     int),
     ("mcab-widening-initial", "mcab_widening_initial", E1_MCAB_WIDENING_INITIAL, E2_MCAB_WIDENING_INITIAL, int),
     ("mcab-widening-coefficient", "mcab_widening_coefficient", E1_MCAB_WIDENING_COEFFICIENT, E2_MCAB_WIDENING_COEFFICIENT, float),
     ("mcab-widening-exponent", "mcab_widening_exponent", E1_MCAB_WIDENING_EXPONENT, E2_MCAB_WIDENING_EXPONENT, float),

@@ -43,6 +43,64 @@ relearn by experiment.
 
 ## 3. History Notes (durable lessons only)
 
+- **MCTS endgame wandering (2026-08-24, branch
+  `claude/zquoridor-mcts-bug-hf6uqv`)**: a user reported that the engine
+  spends its walls fast, then shuffles its pawn sideways forever in a won
+  race. The position was rebuilt exactly from the reported game and lives
+  in `benchmarks/repro_wander.cpp`. Player 0 is the engine with 0 walls and
+  5 steps to the goal. Player 1 holds 8 walls and needs 13 steps. All four
+  DIST counters match the report. At production settings the engine answers
+  f6, g6, f6, g6 and holds its own distance at 5 for six moves while the
+  opponent closes from 13 to 6.
+
+  The measured cause is the WL head, not the tree. `benchmarks/diag_wander.cpp`
+  prints a win probability of 0.137, 0.153, 0.191 and 0.281 for pawn
+  distances 5, 4, 3 and 2 in that position, and it only separates the moves
+  at distance 1. With the wall stocks swapped, 8 against 0, the same head
+  reports 0.997 to 0.999 for every distance. The head therefore reads the
+  remaining-wall counts and is almost blind to the pawn race. The policy
+  head stays correct and gives the advancing move a prior of 0.73.
+
+  The hybrid amplifies the blind spot. Leaves are the raw net value at
+  `leafDepth = 0`, so no leaf ever calls `winner()`. `AvgBlend` averages
+  20000 near-equal leaves, the Q values of the root moves land within 0.02
+  of each other, their order is inverted against the truth, and `MaxVisits`
+  then picks a shuffle. Instrumentation showed the tree reaches ply 17 to 21
+  in that position and still creates ZERO terminal nodes, so an MCTS solver
+  would have nothing to prove. Pure alpha-beta wanders in the same position
+  too, only less: it scores +2 against +1 over seven moves.
+
+  Two candidate fixes were measured and both failed:
+  1. `BackupMode::MinimaxHard` plays the repro position perfectly at every
+     setting tried, even at a node budget of 2000. It is still NOT the fix.
+     It lost the arena 0 wins to 56 in 60 games, approximately -585 Elo at
+     200ms, and it also lost the 40-position corpus of
+     `benchmarks/bench_mcab_endgame_progress.cpp` (mean progress 5.650
+     against 6.625, 5 wandering positions against 0). This repeats the
+     earlier rejection under "Rejected" below, without the FPU confound.
+  2. An endgame alpha-beta leaf gated on the COMBINED wall stock at or below
+     8 also fixes the position, but it fires through most of the game and
+     cuts the node rate by 56%. It measured -88.7 +/- 86.7 Elo over 60
+     games at 200ms.
+
+  What shipped is `McabParams::endgameMoverWallThreshold`, OFF by default,
+  so production stays bit-identical. It gates the alpha-beta leaf on the
+  wall stock of the SIDE TO MOVE at the root. At threshold 0 the rule fires
+  only after that side spends its last wall, which is the reported
+  condition, and it costs approximately 6% of the node rate. It plays the
+  repro position perfectly. `tests/test_mcab_endgame_leaf.cpp` pins the
+  default, the gate and the fixed behavior. Arena flags are
+  `--e1-mcab-endgame-mover-walls` and `--e1-mcab-endgame-leaf-depth`.
+
+  Durable lesson: a position where the engine plays badly is not proof that
+  the search is at fault. Print the value head across the moves in question
+  before you change the tree. Here the tree was doing exactly what a correct
+  PUCT does with a flat, wrong value function.
+
+  Open item: retrain the WL head on wall-poor endgames. The head cannot
+  currently separate a won race from a lost one once a side runs out of
+  walls, and no search rule fixes that at the source.
+
 - **Arch-aware Linux builds (2026-08-23)**: `build_bench.sh`,
   `build_selfplay.sh` and `build_qtp.sh` add `-mavx2 -mfma` only on x86-64
   (`uname -m`); every other architecture compiles with `-march=native`
