@@ -9,7 +9,9 @@ relearn by experiment.
 ## 1. Production Status
 
 - **Search**: hybrid PUCT MCTS (`src/mcab.hpp`), default in all tools.
-  Leaves are direct `nnueEvalInt` (`leafDepth=0`). Backup `AvgBlend`,
+  Leaves are direct `nnueEvalInt` (`leafDepth=0`), except in a wall-poor
+  endgame: `endgameMoverWallThreshold=0` gives alpha-beta leaves of 2 plies
+  once the side to move has no walls left. Backup `AvgBlend`,
   tree reuse on, node budget 20000/move (not time-binding: p99 is ~18.6k
   nodes at 150ms).
 - **Network**: Gen 5 NNUE (`data/nnue/nnue_weights_int8.bin`),
@@ -83,16 +85,28 @@ relearn by experiment.
      cuts the node rate by 56%. It measured -88.7 +/- 86.7 Elo over 60
      games at 200ms.
 
-  What shipped is `McabParams::endgameMoverWallThreshold`, OFF by default,
-  so production stays bit-identical. It gates the alpha-beta leaf on the
-  wall stock of the SIDE TO MOVE at the root. At threshold 0 the rule fires
-  only after that side spends its last wall, which is the reported
-  condition, and it costs approximately 6% of the node rate. It plays the
-  repro position perfectly. It measured +17.4 +/- 37.8 Elo over 300 games
-  at 200ms, which is inside the error margin and therefore neutral.
-  `tests/test_mcab_endgame_leaf.cpp` pins the default, the gate and the
-  fixed behavior. Arena flags are
-  `--e1-mcab-endgame-mover-walls` and `--e1-mcab-endgame-leaf-depth`.
+  What shipped is `McabParams::endgameMoverWallThreshold`, ON in production
+  at threshold 0 since 2026-08-24. It gates the alpha-beta leaf on the wall
+  stock of the SIDE TO MOVE at the root. At threshold 0 the rule fires only
+  after that side spends its last wall, which is the reported condition, and
+  it costs approximately 6% of the node rate. It plays the repro position
+  perfectly. It measured +17.4 +/- 37.8 Elo over 300 games at 200ms.
+
+  Read that number as neutral, not as a gain. The interval spans
+  approximately -20 to +55, therefore 300 games do not exclude a small
+  loss. The rule is on because it removes a reported, reproducible failure
+  at no measured cost. Re-measure with more games before you quote it as an
+  improvement.
+
+  Two consequences of the default change. Self-play data generation now
+  uses alpha-beta leaves in wall-poor endgames, so `.bin` files recorded
+  after this date differ from earlier ones in that regime. The WASM and GUI
+  build inherits the new default through `McabParams{}`, but only after
+  `build/build_wasm.sh` regenerates the bundled HTML.
+
+  `tests/test_mcab_endgame_leaf.cpp` pins the exact threshold, the gate and
+  the fixed behavior. Arena flags are `--e1-mcab-endgame-mover-walls` and
+  `--e1-mcab-endgame-leaf-depth`.
 
   Durable lesson: a position where the engine plays badly is not proof that
   the search is at fault. Print the value head across the moves in question

@@ -165,10 +165,10 @@ constexpr int E1_MCAB_AB_PREFILTER_TOPK_OVERRIDE = mcab::UNSET_INT;    // produc
 constexpr int E2_MCAB_AB_PREFILTER_TOPK_OVERRIDE = mcab::UNSET_INT;    // producao: 0 (off)
 constexpr double E1_MCAB_AB_PREFILTER_TIMEFRAC_OVERRIDE = mcab::UNSET_REAL; // producao: 0.25
 constexpr double E2_MCAB_AB_PREFILTER_TIMEFRAC_OVERRIDE = mcab::UNSET_REAL; // producao: 0.25
-// inv/endgame-wander: busca AB de folha quando o estoque de muros da RAIZ
-// acabou. threshold = muros somados dos dois lados; <0 desliga a regra.
-constexpr int E1_MCAB_ENDGAME_MOVER_WALL_THRESHOLD_OVERRIDE = mcab::UNSET_INT; // producao: -1 (off)
-constexpr int E2_MCAB_ENDGAME_MOVER_WALL_THRESHOLD_OVERRIDE = mcab::UNSET_INT; // producao: -1 (off)
+// inv/endgame-wander: busca AB de folha quando o LADO DA VEZ na raiz ficou
+// sem muros. threshold = muros restantes do lado da vez; <0 desliga a regra.
+constexpr int E1_MCAB_ENDGAME_MOVER_WALL_THRESHOLD_OVERRIDE = mcab::UNSET_INT; // producao: 0 (ligado)
+constexpr int E2_MCAB_ENDGAME_MOVER_WALL_THRESHOLD_OVERRIDE = mcab::UNSET_INT; // producao: 0 (ligado)
 constexpr int E1_MCAB_ENDGAME_LEAF_DEPTH_OVERRIDE = mcab::UNSET_INT;    // producao: 2
 constexpr int E2_MCAB_ENDGAME_LEAF_DEPTH_OVERRIDE = mcab::UNSET_INT;    // producao: 2
 // Ruido de Dirichlet na raiz: producao = DESLIGADO aqui de proposito. Serve

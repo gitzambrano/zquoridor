@@ -7,7 +7,7 @@
 // real alpha-beta search in that regime only.
 //
 // The test checks three things:
-//   1. Production stays bit-identical: the rule is off by default.
+//   1. The production default is threshold 0 and leaf depth 2.
 //   2. The gate reads the wall stock of the side to move at the root, and it
 //      stays off above the threshold.
 //   3. With the rule on, the engine walks the won race of
@@ -103,14 +103,23 @@ int playProgress(const mcab::McabParams& params, int timeMs, int moveCap) {
 } // namespace
 
 // ---------------------------------------------------------------------
-// 1) The rule is off in production, so production stays bit-identical.
+// 1) The production default. The rule is ON at threshold 0 since
+//    2026-08-24, measured at +17.4 +/- 37.8 Elo over 300 games at 200ms.
+//    Threshold 0 means that only a side with no walls left gets alpha-beta
+//    leaves. A larger threshold makes the rule fire in the midgame, which is
+//    the globally rejected leafDepth >= 1 setting. Therefore this test pins
+//    the exact value, not just "enabled".
 // ---------------------------------------------------------------------
-void testDefaultIsOff() {
+void testProductionDefault() {
     mcab::McabParams prod;
-    assert(prod.endgameMoverWallThreshold < 0 &&
-           "the endgame leaf rule must stay OFF by default -- turning it on "
-           "changes every production search and needs an arena match first");
-    printf("[testDefaultIsOff] endgameMoverWallThreshold=%d OK\n", prod.endgameMoverWallThreshold);
+    assert(prod.endgameMoverWallThreshold == 0 &&
+           "the endgame leaf rule must stay at threshold 0 in production -- "
+           "raising it makes the rule fire in the midgame, which status.md "
+           "rejected at approximately -250 Elo");
+    assert(prod.endgameLeafDepth == 2 &&
+           "production endgame leaf depth is 2 plies");
+    printf("[testProductionDefault] endgameMoverWallThreshold=%d endgameLeafDepth=%d OK\n",
+           prod.endgameMoverWallThreshold, prod.endgameLeafDepth);
 }
 
 // ---------------------------------------------------------------------
@@ -174,7 +183,7 @@ int main() {
                "Run this test from the repo ROOT.\n");
         return 1;
     }
-    testDefaultIsOff();
+    testProductionDefault();
     testGateReadsRootWallStock();
     testEndgameLeafStopsWandering();
     printf("\nTODOS OS TESTES DE test_mcab_endgame_leaf PASSARAM\n");

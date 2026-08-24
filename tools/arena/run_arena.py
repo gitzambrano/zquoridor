@@ -112,7 +112,7 @@ E1_MCAB_ROOT_SELECT = None         # produção: "visits" | "q" | "visits-then-q
 E2_MCAB_ROOT_SELECT = None
 E1_MCAB_BACKUP = None              # produção: "avg"; modo antigo: "minimax"
 E2_MCAB_BACKUP = None
-E1_MCAB_ENDGAME_MOVER_WALL_THRESHOLD = None  # produção: -1 (desligado). Muros restantes
+E1_MCAB_ENDGAME_MOVER_WALL_THRESHOLD = None  # produção: 0 (ligado). Muros restantes
 E2_MCAB_ENDGAME_MOVER_WALL_THRESHOLD = None  # do lado da vez na raiz. Em ou abaixo desse valor,
                                        # a folha vira busca AB de verdade em vez do
                                        # valor estático da rede. Ver inv/endgame-wander.
