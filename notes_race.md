@@ -165,6 +165,7 @@ Rebuilt the harness at the pre-fix commit 858214c in a scratch directory
   corrected the pin together with the gate guard. The gate bug evidence
   stands on its own: production fabricated winners with negative dtm
   against BOTH the bare DP and the oracle.
+
 ### 2026-08-23 -- session 2: P1-P7 closed, permanent coverage wired
 
 - Phase E4 added to test_endgame_race_fuzz: 600 randomized degenerate
@@ -181,9 +182,9 @@ Rebuilt the harness at the pre-fix commit 858214c in a scratch directory
   suite (whole fuzz binary runs in about 12 s); the bench scales the same
   check to 366 games on 4 workers (about 4 min) and stays standalone like
   tools/arena, since it costs minutes and spawns threads. Repairs applied:
-  aggregate built before the draw stage used it, makeState() did not exist
-  (local Zobrist-correct builder added), worker count capped at 4 per the
-  load constraints of this investigation.
+  the draw stage referenced the aggregate before its declaration,
+  makeState() did not exist (local Zobrist-correct builder added), worker
+  count capped at 4 per the load constraints of this investigation.
 - build_tests.bat gained entry [16/16]; build_tests.sh was resynced (it
   still built the deleted lazy_acc_parity.cpp and lacked three newer
   tests). Full suite green on this tree; runtimes of the pre-existing
@@ -233,9 +234,10 @@ Follow-up probes with 500 ms and 2000 ms budgets:
   and +0 in one case (own path unchanged too). The +0 case is ordinary
   heuristic noise in a won-looking position, not a logic defect.
 
-Verdict: no bug behind the symptom so far. In the solved regime the
-"first-row camping" is provably optimal play (delay when lost, forced
-pace otherwise). In the quasi regime it is wall-building or stalling
-while clearly ahead, and deeper searches mostly replace it. P7 below
-adds the dynamic confirmation (realized game length must equal the
-predicted DTM exactly, which caps cumulative suboptimality at zero).
+Verdict: no bug behind the symptom. In the solved regime the "first-row
+camping" is provably optimal play (delay when lost, forced pace
+otherwise). In the quasi regime it is wall-building or stalling while
+clearly ahead, and deeper searches mostly replace it. The phase F
+differential adds the dynamic confirmation: every decisive engine-vs-
+engine game ends in exactly the predicted DTM plies, so cumulative
+suboptimality inside the solved regime is zero.

@@ -132,7 +132,6 @@ struct Table {
                         for (int X = 0; X < 2; X++) {
                             std::array<uint8_t, NST>& win = (X == 0) ? win0 : win1;
                             if (win[s]) continue;
-                            int px = (X == 0) ? a : b;
                             if (t != X) {
                                 // universal: every successor must already win
                                 SuccGen g(wallsH, wallsV, a, b, t);

@@ -2,8 +2,8 @@
 // (inv/race-fuzz, priority-zero user symptom). Not wired into the build
 // scripts; compile standalone:
 //
-//   g++ -O3 -std=c++17 -march=native -mavx2 -mfma -Isrc -Itests \
-//       -o bin/bench_camping_survey.exe benchmarks/bench_camping_survey.cpp
+//   g++ -O3 -std=c++17 -march=native -mavx2 -mfma -Isrc -Itests -o
+//       bin/bench_camping_survey.exe benchmarks/bench_camping_survey.cpp
 //
 // Symptom under test: "sometimes the engine in endgame seems not to
 // understand it has to go to the end of the board and STAYS ON THE FIRST
@@ -146,7 +146,7 @@ static bool forwardExists(uint64_t wh, uint64_t wv, int meCell, int oppCell, int
         }
         int r2 = r1 + dr[d], c2 = c1 + dc[d];
         if (inBounds(r2, c2) && !edgeBlocked(wh, wv, r1, c1, r2, c2)) {
-            int dest = cellIdx(r2, c2);
+            // straight jump over the opponent
             if ((side == 0) ? dr[d] > 0 : dr[d] < 0) return true;
         } else {
             int pdA = (d < 2) ? 2 : 0;
@@ -351,7 +351,6 @@ int main() {
         bool aheadBy2 = (dMe >= 0 && dOp >= 0 && dMe + 2 <= dOp);
         bool camps = false, fwd = false;
         if (chosen.a != root.pawn[side]) {
-            int newRow = rowOf((int)chosen.a);
             fwd = forwardExists(root.wallsH, root.wallsV, root.pawn[side],
                                 root.pawn[1 - side], side);
             camps = fwd && inBackTwoRows(side, (int)chosen.a);
