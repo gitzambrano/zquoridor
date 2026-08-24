@@ -88,8 +88,10 @@ relearn by experiment.
   wall stock of the SIDE TO MOVE at the root. At threshold 0 the rule fires
   only after that side spends its last wall, which is the reported
   condition, and it costs approximately 6% of the node rate. It plays the
-  repro position perfectly. `tests/test_mcab_endgame_leaf.cpp` pins the
-  default, the gate and the fixed behavior. Arena flags are
+  repro position perfectly. It measured +17.4 +/- 37.8 Elo over 300 games
+  at 200ms, which is inside the error margin and therefore neutral.
+  `tests/test_mcab_endgame_leaf.cpp` pins the default, the gate and the
+  fixed behavior. Arena flags are
   `--e1-mcab-endgame-mover-walls` and `--e1-mcab-endgame-leaf-depth`.
 
   Durable lesson: a position where the engine plays badly is not proof that

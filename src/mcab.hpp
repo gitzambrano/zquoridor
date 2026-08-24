@@ -280,9 +280,11 @@ struct McabParams {
     // most of the game and costs more than half the node rate. That variant
     // measured -88.7 +/- 86.7 Elo over 60 games at 200ms.
     //
+    // At threshold 0 the rule measured +17.4 +/- 37.8 Elo over 300 games at
+    // 200ms, which is inside the error margin and therefore neutral.
+    //
     // A negative threshold turns the rule off. Off is the default, so
-    // production stays bit-identical until an arena match measures the
-    // rule. Do NOT raise the threshold toward 10: that makes the rule
+    // production stays bit-identical. Do NOT raise the threshold toward 10: that makes the rule
     // global, which is the leafDepth >= 1 setting status.md already
     // rejected at approximately -250 Elo.
     int endgameMoverWallThreshold = -1;
