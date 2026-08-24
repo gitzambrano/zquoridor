@@ -26,6 +26,12 @@
 //      never produce these states (wall legality keeps both paths alive),
 //      but resolveEmptyHandedEndgame is a public inline utility and must
 //      stay sound for direct callers.
+//   F. Long-game differential (compact, deterministic): engine vs engine
+//      from hands-empty starts through the exact-solver root branch. The
+//      realized winner and the realized game length must equal the oracle
+//      prediction exactly (both sides play value-optimal moves there), and
+//      drawn pursuits must never finish. benchmarks/bench_race_differential
+//      runs the same check at larger scale on multiple threads.
 #include <cstdio>
 #include <cstdlib>
 #include <random>
@@ -715,6 +721,147 @@ int main() {
                 bool ok = prod.winner == -1 && dp.winner == -1 && oc.winner == -1;
                 if (!ok) reportMismatch("E3", wh, wv, p0, p1, turn, prod, dp, oc);
                 CHECK(ok, "two sealed pockets must be a draw in every path");
+            }
+        }
+        // E4: randomized degenerate sweep over real corpus topologies. For
+        // each sampled topology, probe (a) a pawn parked on its own goal
+        // row (rawDist == 0) against a live opponent, and (b) a pawn sealed
+        // in a fresh 4-wall pocket carved out of the topology (rawDist ==
+        // -1). Every answer must come from Service B and match the oracle;
+        // the gate must refuse to decide.
+        {
+            std::mt19937_64 erng(987654321ULL);
+            long degChecks = 0, degGateRefused = 0;
+            size_t stride = std::max<size_t>(1, cases.size() / 60);
+            for (size_t ci = 0; ci < cases.size(); ci += stride) {
+                TopoCase& tc = cases[ci];
+                race_oracle::Table orc;
+                orc.build(tc.wh, tc.wv);
+                // (a) root-side pawn already on its goal row: rawDist0 == 0.
+                // Truth is always an immediate dtm-0 win for player 0.
+                int goalCell0 = cellIdx(GOAL_ROW[0], (int)(erng() % N));
+                for (const PawnConfig& pc : tc.configs) {
+                    if (pc.p1 == goalCell0 || degChecks >= 400) continue;
+                    for (int turn = 0; turn < 2 && degChecks < 400; turn++) {
+                        RaceOutcome oc = orc.query(goalCell0, pc.p1, turn);
+                        RaceOutcome prod = resolveEmptyHandedEndgame(tc.wh, tc.wv, goalCell0, pc.p1, turn);
+                        bool ok = prod.winner == oc.winner && prod.dtm == oc.dtm &&
+                                  oc.winner == 0 && oc.dtm == 0;
+                        if (!ok) reportMismatch("E4a", tc.wh, tc.wv, goalCell0, pc.p1, turn, prod, prod, oc);
+                        CHECK(ok, "E4a: pawn on its goal row must stay a dtm-0 win");
+                        int gw, gd;
+                        bool decided = raceDisjointGate(tc.wh, tc.wv, goalCell0, pc.p1, turn,
+                                                        0, shortestPathLen(tc.wh, tc.wv, pc.p1, 1), gw, gd);
+                        if (!decided) degGateRefused++;
+                        else CHECK(false, "E4a: gate must refuse on rawDist 0");
+                        degChecks++;
+                    }
+                }
+                // (b) fresh sealed pocket around a random interior cell:
+                // rawDist(sealed) == -1. Truth comes from the oracle.
+                int R = 2 + (int)(erng() % (N - 3));
+                int C = 2 + (int)(erng() % (N - 3));
+                uint64_t needH = (1ull << slotIdx(R - 1, C)) | (1ull << slotIdx(R, C - 1));
+                uint64_t needV = (1ull << slotIdx(R, C - 1)) | (1ull << slotIdx(R - 1, C));
+                if (((tc.wh & needH) | (tc.wv & needV)) == 0) {
+                    uint64_t wh2 = tc.wh | needH;
+                    uint64_t wv2 = tc.wv | needV;
+                    int sealed = cellIdx(R, C);
+                    if (!hasPathToGoal(wh2, wv2, sealed, 0)) {
+                        race_oracle::Table orc2;
+                        orc2.build(wh2, wv2);
+                        for (const PawnConfig& pc : tc.configs) {
+                            if (pc.p1 == sealed || degChecks >= 600) continue;
+                            for (int turn = 0; turn < 2 && degChecks < 600; turn++) {
+                                RaceOutcome oc = orc2.query(sealed, pc.p1, turn);
+                                RaceOutcome prod = resolveEmptyHandedEndgame(wh2, wv2, sealed, pc.p1, turn);
+                                RaceOutcome dp = raceExactDTM(wh2, wv2, sealed, pc.p1, turn);
+                                bool ok = prod.winner == oc.winner && prod.dtm == oc.dtm &&
+                                          dp.winner == oc.winner && dp.dtm == oc.dtm;
+                                if (!ok) reportMismatch("E4b", wh2, wv2, sealed, pc.p1, turn, prod, dp, oc);
+                                CHECK(ok, "E4b: sealed-pocket state must match the oracle");
+                                degChecks++;
+                            }
+                        }
+                    }
+                }
+            }
+            std::printf("(info) E4: %ld randomized degenerate checks, gate refusals %ld\n",
+                        degChecks, degGateRefused);
+            CHECK(degChecks >= 300, "phase E4 coverage: expected hundreds of degenerate probes");
+        }
+    }
+
+    // ---- phase F: long-game differential (compact, deterministic) -----
+    {
+        std::mt19937_64 frng(424242ULL);
+        const int F_GAMES = 14;
+        long fDecisive = 0, fDrawn = 0, fBad = 0;
+        Negamax eng;
+        for (int g = 0; g < F_GAMES; ) {
+            State start;
+            if (!playoutToEmptyHands(frng, 400, start)) continue;
+            race_oracle::Table orc;
+            orc.build(start.wallsH, start.wallsV);
+            RaceOutcome pred = orc.query(start.pawn[0], start.pawn[1], start.turn);
+            State cur = start;
+            int played = 0;
+            bool illegal = false;
+            while (winner(cur) == -1 && played < 240) {
+                SearchStats st;
+                Move m = eng.chooseMove(cur, 12, 20, st);
+                MoveList ms = legalMoves(cur);
+                bool legal = false;
+                for (size_t i = 0; i < ms.size(); i++) if (ms[i] == m) { legal = true; break; }
+                if (!legal) { illegal = true; break; }
+                cur = applyMove(cur, m);
+                played++;
+                if (pred.winner == -1 && played >= 160) break;
+            }
+            g++;
+            if (illegal) { fBad++; continue; }
+            if (pred.winner == -1) {
+                fDrawn++;
+                if (winner(cur) != -1) fBad++;
+            } else {
+                fDecisive++;
+                if (winner(cur) != pred.winner || played != pred.dtm) {
+                    fBad++;
+                    std::printf("  DIFERENCIAL wallsH=0x%llx wallsV=0x%llx p0=%d p1=%d t=%d "
+                                "pred=(%d,%d) actual=(%d,%d)\n",
+                                (unsigned long long)start.wallsH, (unsigned long long)start.wallsV,
+                                start.pawn[0], start.pawn[1], start.turn,
+                                pred.winner, pred.dtm, winner(cur), played);
+                }
+            }
+        }
+        std::printf("(info) F: %ld decisive + %ld drawn differential games, contradictions %ld\n",
+                    fDecisive, fDrawn, fBad);
+        CHECK(fDecisive >= 8, "phase F coverage: expected mostly decisive starts");
+        CHECK(fBad == 0, "played-out race must match the oracle winner and length exactly");
+
+        // the known synthetic pursuit topology must never finish
+        {
+            const uint64_t dH = 0x48000008000000ull;
+            const uint64_t dV = 0x8014020000022000ull;
+            race_oracle::Table orc;
+            orc.build(dH, dV);
+            const int pairs[3][2] = {{57, 49}, {58, 48}, {58, 49}};
+            for (const auto& pr : pairs) {
+                for (int t = 0; t < 2; t++) {
+                    if (orc.query(pr[0], pr[1], t).winner != -1) continue;
+                    State cur = makeEmptyHanded(dH, dV, pr[0], pr[1], t);
+                    for (int ply = 0; ply < 160 && winner(cur) == -1; ply++) {
+                        SearchStats st;
+                        Move m = eng.chooseMove(cur, 12, 20, st);
+                        cur = applyMove(cur, m);
+                    }
+                    bool ok = winner(cur) == -1;
+                    if (!ok)
+                        std::printf("  PERSEGUICAO pair=(%d,%d) t=%d winner=%d\n",
+                                    pr[0], pr[1], t, winner(cur));
+                    CHECK(ok, "drawn pursuit must never finish under optimal play");
+                }
             }
         }
     }

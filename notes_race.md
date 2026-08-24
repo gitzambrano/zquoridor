@@ -94,6 +94,59 @@ multi-slot cache experiment (NSLOTS=1024).
   winner AND mate length must equal oracle prediction (engine plays
   optimally there, so game length == dtm exactly).
 
+## 3b. Plan closure -- session 2 results per phase
+
+All phases are closed. Counts come from the final run of
+`bin/test_endgame_race_fuzz.exe` (-O2 build, about 12 s wall on this
+machine) and one full run of `bin/bench_race_differential.exe`.
+
+| Phase | Verdict | Evidence and counts |
+|---|---|---|
+| P1 oracle agreement | PASS | Phase A: 8468 comparisons of the production pipeline (gate + Service B) AND bare raceExactDTM vs the oracle, zero divergence. Corpus: 586 topologies = 110 playout-born + 470 synthetic (4 to 34 walls) + constructed partition families with and without a gap + 32 hunted drawn-root cases. Pawn configs mix random pairs, head-on adjacencies, dead-end cells, same-column pairs. The gate itself decided 610 and was refused 7858 times; every decided case matched. |
+| P2 root-choice optimality | PASS | Phase B: 8468 roots (2765 won / 5671 lost / 32 drawn for the root side), 33872 chooseMove calls across all four toggle combos; every chosen move achieved the oracle-best child value and every reported root score equaled it. This pins the historical "value right, move wrong" class. |
+| P3 budget fallback | PASS | Phase C: forced g_raceExactUsedUs=2e18 over 24 roots returns finite sane scores; tiny-budget chooseMove (1 to 4 ms) returned a legal move in 60/60 tries. |
+| P4 cache soundness | PASS | Phase D: 960 interleaved production queries against remembered oracle answers under constant eviction pressure (1600 throwaway topologies over a 1024-slot table); zero divergence; misses grew 716 -> 2860 so evictions really happened. Slot keys compare wallsH/wallsV exactly after the hash mod, so a collision falls back to a rebuild by construction. |
+| P5 gate boundary + degenerates | PASS | Constructed partition-with-gap topologies sit right at the gate boundary. E1/E1b/E2/E3 pin the degenerate cases (rawDist 0 behind a partition, sealed pocket, two pockets). E4 adds 600 randomized degenerate probes over real corpus topologies (goal-row pawn: rawDist 0; freshly carved 4-wall pocket: rawDist -1), all answered exactly, gate refused on every rawDist-0 input. |
+| P6 toggle combos | PASS | Covered inside phase B: TB x parity in all 4 combinations, chosen value == oracle-best in every combo, score conventions match test_contempt_repetition (root-perspective contempt for draws). |
+| P7 long-game differential | PASS | Phase F (in-test, deterministic): 14 engine-vs-engine games from hands-empty starts; every decisive game ended with the predicted winner in EXACTLY the predicted DTM plies; synthetic pursuit draws never finished (6 games). Heavy scale-up benchmarks/bench_race_differential.cpp: 360 decisive + 6 drawn games on 4 workers, 360/360 exact lengths, zero contradictions, zero illegal moves, longest decisive 31 plies. |
+
+### Findings F5/F6/F7 -- closed as documented-only
+
+- F5 (budget globals): CONFIRMED by reading. g_raceExactBudgetUs and
+  g_raceExactUsedUs are plain global doubles (endgame_race.hpp). Selfplay
+  spawns cfg.numThreads workers (tools/selfplay/selfplay.hpp), each running
+  its own Negamax and calling chooseMove, which resets UsedUs and sets
+  Budget per move (search.hpp). Concurrent moves therefore erase each
+  other's accounting: one thread's reset reopens another thread's budget,
+  and one thread's solver time can exhaust another thread's budget
+  mid-move. Both effects only shift work between the exact solver and the
+  ordinary heuristic search. Correctness is untouched: the budget-exhausted
+  path is the pre-feature heuristic node, and the empty-handed ROOT branch
+  runs before any budget logic. Aligned doubles do not tear on x86-64 in
+  practice; a torn read would still only misprice one decision. Perf-only;
+  fix (thread_local or per-engine fields) belongs to a perf pass, not this
+  correctness hunt.
+- F6 (TT probe without depth check in the race hook): accepted tradeoff.
+  Any matching EXACT entry short-circuits the solver even when stored at a
+  shallow depth by an earlier unrelated search. The stored score is either
+  an exact race value or a heuristic full-window score that approximates
+  the truth; both keep the parent comparison sound within normal search
+  semantics. Documented; no action.
+- F7 (root branch ignores repetition history): confirmed inconsistency.
+  Internal nodes rank a real repetition above the solver result; the
+  empty-handed root branch never consults gameHistory. Practical impact is
+  limited because a position reached twice with both hands empty is rare
+  and the solver value stays exact. Documented; candidate future fix is to
+  pass gameHistory into the root branch and rank repetitions first there.
+
+### Build-script drift found while wiring the suite
+
+build_tests.sh still compiled tests/lazy_acc_parity.cpp, a file deleted by
+commit b48b59b, so the Linux suite aborted at entry 9 under `set -e`. The
+same script also lacked the three newer tests (wall_qextension, policy_ab,
+contempt_repetition). Fixed: both build_tests scripts now list the same 16
+entries and end with test_endgame_race_fuzz.
+
 ## 4. Log
 
 ### 2026-08-23 -- session 2: red->green re-verified from scratch
@@ -112,11 +165,34 @@ Rebuilt the harness at the pre-fix commit 858214c in a scratch directory
   corrected the pin together with the gate guard. The gate bug evidence
   stands on its own: production fabricated winners with negative dtm
   against BOTH the bare DP and the oracle.
-- HEAD: all green. Phase A 8468 comparisons (gate decided 610, refused
-  7858), phase B 8468 roots x 4 toggle combos = 33872 optimality checks,
-  all value-optimal, all score-convention hits, NNUE-vs-heuristic root
-  move agreement 8468/8468, cache stress 960 checks bad=0, tiny-budget
-  legality 60/60.
+### 2026-08-23 -- session 2: P1-P7 closed, permanent coverage wired
+
+- Phase E4 added to test_endgame_race_fuzz: 600 randomized degenerate
+  probes over real corpus topologies (rawDist-0 goal-row pawns and fresh
+  sealed pockets), all exact, gate refusal verified on every rawDist-0
+  input. This generalizes the F1 regression pins beyond the three
+  hand-written families.
+- Phase F added to test_endgame_race_fuzz: compact deterministic long-game
+  differential (14 playout-born decisive games + the synthetic pursuit
+  pairs). Every decisive game realized the oracle winner AND length
+  exactly; draws never finished.
+- Fate of benchmarks/bench_race_differential.cpp: FINISHED and committed,
+  not deleted. The in-test phase F keeps a fast deterministic floor in the
+  suite (whole fuzz binary runs in about 12 s); the bench scales the same
+  check to 366 games on 4 workers (about 4 min) and stays standalone like
+  tools/arena, since it costs minutes and spawns threads. Repairs applied:
+  aggregate built before the draw stage used it, makeState() did not exist
+  (local Zobrist-correct builder added), worker count capped at 4 per the
+  load constraints of this investigation.
+- build_tests.bat gained entry [16/16]; build_tests.sh was resynced (it
+  still built the deleted lazy_acc_parity.cpp and lacked three newer
+  tests). Full suite green on this tree; runtimes of the pre-existing
+  heavy tests recorded separately.
+- F5/F6/F7 finalized as documented-only (section above).
+
+Final suite status at commit time: all 16 test binaries compile under
+-O2 -std=c++17 and pass; nnue_verify needs explicit weight arguments and
+is unchanged from main.
 
 ### 2026-08-23 -- session 2: camping survey (priority-zero symptom)
 
