@@ -116,6 +116,18 @@ relearn by experiment.
     `buildLegalSets`/`refreshHud`, so the legal dots and the side-to-move
     ring appeared only after the NEXT render. Build all board state first,
     then paint once.
+  - `QBoard.fit` never assigned `this.S`, and `paintStatic` destructures
+    `{S}` from the instance: the rounded base fill and every frame style
+    drew with NaN coordinates -- silently ignored by canvas draw ops, so
+    the board looked fine while NO frame style ever rendered, and only the
+    beveled frame threw (createLinearGradient validates its arguments).
+    Per-element painting (cells, pawns, walls) hid the hole; a canvas-hash
+    sweep over every dressing option caught it in one pass.
+  - The `crown` pawn style shared the `pillar` branch, so the
+    distinct-shapes mapping (pillar -> crown for side 1) was a visual
+    no-op -- an accessibility feature that did nothing for exactly the
+    users who picked those styles. Crown now has its own crenellated
+    silhouette.
 - **Testing discipline for this GUI**: browser tests must drive the GUI
   entry points (`newGame()`, not `__w.newGame()`); calling C-level exports
   directly skips JS-side resets (humanSide, gameOver, clocks, level marks)
@@ -262,6 +274,16 @@ Premium interface per `gui-premium.md`. Phases P0-P5 (tokens, canvas board
   - The mcab play budget is node-based (~20k nodes), so engine replies are
     usually faster than the level's nominal time -- tests must not assume
     `engineThinking` stays true for the level duration.
+- **Per-feature sweep** (`gui_web/test_gui_features.py`, 2026-08-23): one
+  pass over EVERY settings control and dressing option (8 board themes,
+  6 pawn styles, frame/finish/surface/coords/scale, overlay toggles, UI
+  theme, sound controls, multi-PV + line preview + infinite depth + graph
+  scrub, SR live region, h/v/Esc keys, level modal, PNG/SVG content,
+  `#qgn=` cold load). It found the `this.S` hole and the crown/pillar
+  duplication above plus a paths-overlay settings lag (fixed: applySettings
+  now calls `togglePaths`). Canvas-hash comparisons need one caveat: a
+  value equal to the current default (coords `edges`, pawn `disc`) is a
+  no-op by definition -- start the sweep away from defaults.
 
 ---
 

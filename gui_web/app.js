@@ -1076,6 +1076,7 @@ function applySettings() {
     B.themeDirty = true;
     B.fit(); buildLegalSets();
     B.lastMove = S.lastMove ? plyToLastMove(W.cursor() - 1) : null;
+    togglePaths();   // rebuild (or clear) the path-hints overlay right away
     refreshHud(); B.render();
   }
 }

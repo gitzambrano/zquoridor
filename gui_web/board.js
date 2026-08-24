@@ -82,6 +82,9 @@ class QBoard {
     this._sideApplied = side;
     const dpr = Math.min(window.devicePixelRatio || 1, 3);
     this.cssSide = side;
+    this.S = side;   // paintStatic destructures {S}; leaving it unset made
+                     // every frame style draw with NaN coordinates and the
+                     // beveled frame throw on createLinearGradient
     if (!this.fixedSide) {
       this.cv.width = Math.round(side * dpr);
       this.cv.height = Math.round(side * dpr);
@@ -519,13 +522,25 @@ class QBoard {
             dir > 0 ? Math.PI * .75 : Math.PI * 1.75);
       g.lineWidth = Math.max(3, R * .38);
       g.strokeStyle = this.css('--gold2'); g.stroke();
-    } else if (style === 'pillar' || style === 'crown') {
+    } else if (style === 'pillar') {
       g.beginPath();
       g.arc(ctr.x, ctr.y - R * .25, R * .58, 0, 7);
       g.moveTo(ctr.x - R * .34, ctr.y + R * .05);
       g.quadraticCurveTo(ctr.x, ctr.y + R * .18, ctr.x + R * .34, ctr.y + R * .05);
       g.lineTo(ctr.x + R * .52, ctr.y + R * .62);
       g.quadraticCurveTo(ctr.x, ctr.y + R * .40, ctr.x - R * .52, ctr.y + R * .62);
+      g.closePath(); g.fill(); g.stroke();
+    } else if (style === 'crown') {
+      // crenellated crown: must differ from pillar in silhouette, or the
+      // distinct-shapes mapping (pillar -> crown for side 1) does nothing
+      g.beginPath();
+      g.moveTo(ctr.x - R * .55, ctr.y + R * .62);
+      g.lineTo(ctr.x - R * .55, ctr.y - R * .02);
+      g.lineTo(ctr.x - R * .27, ctr.y + R * .14);
+      g.lineTo(ctr.x, ctr.y - R * .40);
+      g.lineTo(ctr.x + R * .27, ctr.y + R * .14);
+      g.lineTo(ctr.x + R * .55, ctr.y - R * .02);
+      g.lineTo(ctr.x + R * .55, ctr.y + R * .62);
       g.closePath(); g.fill(); g.stroke();
     } else if (style === 'rune') {
       const k = R * .95;
