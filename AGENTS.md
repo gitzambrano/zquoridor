@@ -46,6 +46,7 @@ bin\test_repetition_diff.exe
 bin\test_policy_ab.exe
 bin\test_contempt_repetition.exe
 bin\test_wall_qextension.exe
+bin\test_endgame_race_fuzz.exe
 bin\nnue_verify.exe data\nnue\nnue_weights.bin data\nnue\nnue_weights_int8.bin
 ```
 
@@ -148,6 +149,7 @@ bin\test_repetition_diff.exe
 bin\test_policy_ab.exe
 bin\test_contempt_repetition.exe
 bin\test_wall_qextension.exe
+bin\test_endgame_race_fuzz.exe
 bin\nnue_verify.exe data\nnue\nnue_weights.bin data\nnue\nnue_weights_int8.bin
 ```
 
