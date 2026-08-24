@@ -116,6 +116,10 @@ relearn by experiment.
     `buildLegalSets`/`refreshHud`, so the legal dots and the side-to-move
     ring appeared only after the NEXT render. Build all board state first,
     then paint once.
+  - Importing an already-finished game (QGN file/hash or editor apply)
+    said "Game imported - your move" even though the position was won --
+    the quiet end-check never announces. Imports now run the loud
+    `checkEnd()`, so the result banner, toast and Recent entry appear.
   - `QBoard.fit` never assigned `this.S`, and `paintStatic` destructures
     `{S}` from the instance: the rounded base fill and every frame style
     drew with NaN coordinates -- silently ignored by canvas draw ops, so
@@ -284,6 +288,26 @@ Premium interface per `gui-premium.md`. Phases P0-P5 (tokens, canvas board
   now calls `togglePaths`). Canvas-hash comparisons need one caveat: a
   value equal to the current default (coords `edges`, pawn `disc`) is a
   no-op by definition -- start the sweep away from defaults.
+- **Full game simulation** (`gui_web/test_gameplay_sim.py`, 2026-08-23):
+  plays a complete game like a person -- pawn clicks, arm+click walls,
+  drag walls, keyboard walls, hint, flip mid-game, takeback+redo, review
+  round-trip, level cycle -- asserting turn ownership, ply parity, wall
+  conservation and ghost/dots state after EVERY engine reply; then runs
+  the full analysis pass mid-game (3 PVs, previews, scrub, blunder check,
+  accuracy card), resumes the same game to completion (proving analysis
+  leaves the game state intact), and hands the QGN to a second page via
+  `#qgn=`. First run reached ply 38 with zero desyncs: the turn machine,
+  wall placement and analysis isolation hold under real play.
+  Script-writing lessons that cost time:
+  - A "nudge" click on the board while the engine thinks can land AFTER
+    the reply arrives and then COMMIT a real move -- race, not bug. Nudge
+    clicks in tests must target elements outside the board.
+  - `B.dots` are display cells. `engPawnToDisp` is self-inverse, so a
+    double conversion cancels only when another `cell_pt` follows; an
+    inline `cellCenter(engPawnToDisp(d))` lands on the mirrored rank.
+  - The return-to-game chip lives in the analysis pane; reviewing from
+    the play tab goes back with the `End` key. The level chip opens the
+    NEW GAME modal -- mid-game level changes are the `S` key.
 
 ---
 

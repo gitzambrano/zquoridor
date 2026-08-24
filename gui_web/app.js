@@ -1256,7 +1256,8 @@ function commitScratchAsRoot(rootQfen) {
   clearGhost();
   humanSide = W.turn();              // play as the side to move
   syncAll();
-  setStatus('Position loaded - your move');
+  // a loaded position may already be won: announce it instead of a move
+  if (!checkEnd()) setStatus('Position loaded - your move');
   saveSettings();
 }
 
@@ -1312,9 +1313,12 @@ function importQGN(text) {
   g_lastImportApplied = applied;
   humanSide = W.turn();
   clearGhost(); syncAll();
-  setStatus(applied < tokens.length
-    ? `Loaded up to ply ${applied} of ${tokens.length}`
-    : 'Game imported - your move');
+  // a finished game must announce its result, not invite a move
+  if (!checkEnd()) {
+    setStatus(applied < tokens.length
+      ? `Loaded up to ply ${applied} of ${tokens.length}`
+      : 'Game imported - your move');
+  }
   toast('ok', `Imported ${applied} plies`);
   return true;
 }
