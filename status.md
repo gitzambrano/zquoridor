@@ -288,7 +288,39 @@ relearn by experiment.
 
 ---
 
-## 4. Module Reference
+## 4. Web GUI: NNUE weight loading
+
+`gui_web/app.js` now calls `qr_load_nnue_weights("/data/nnue/nnue_weights_int8.bin")`
+at boot. Before this change it never called the loader, so the published page
+ran `evalSimple` with the hybrid MCTS off, because the hybrid requires NNUE.
+That is a large strength loss, and it is the engine that produced the
+reported pawn wandering: those games came from the heuristic evaluation with
+pure alpha-beta, not from the MCTS.
+
+Verified on the built bundle in headless Chrome: `qr_eval_mode_is_nnue()`
+returns 1, `qr_mcab_active()` returns 1, and the console reports the load.
+When the load fails the engine stays in the heuristic mode and a banner names
+the path it tried, because a tooltip on a hidden checkbox is not a report.
+
+Still open: the bundled `zquoridor.wasm` was compiled before
+`McabParams::endgameMoverWallThreshold` existed, so the endgame wandering fix
+reaches the native binaries only. One rebuild carries it into the page:
+
+```bash
+build/build_wasm.sh          # needs an active emsdk
+cd gui_web && python3 build_standalone.py
+```
+
+Note for anyone rebuilding: `gui_web/zquoridor.wasm` is gitignored, so a
+stale copy from another branch survives a `git checkout` and silently pairs a
+mismatched binary with `zquoridor.js`. The symptom is a bundle that boots but
+returns nonsense (`qr_walls_left` gave `undefined`). Delete the file, or
+recover the matching one with `gui_web/extract_wasm_from_bundle.py`, before
+running `build_standalone.py`.
+
+---
+
+## 5. Module Reference
 
 - **`src/rules.hpp`**: `State`, bitboard walls, move generation, four BFS
   variants sharing one engine, `evalSimple`, BFS node cache
@@ -312,7 +344,7 @@ relearn by experiment.
   round-trip proof, nodes-to-depth bench, single-process pairwise arena,
   match orchestrator `run_wallext.ps1`).
 
-## 5. Evaluation Conventions
+## 6. Evaluation Conventions
 
 | Stage | Function | Range | Perspective |
 | --- | --- | --- | --- |

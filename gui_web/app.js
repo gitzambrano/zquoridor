@@ -38,6 +38,13 @@ function setupWasmBindings(Module) {
         moveA: w("qr_legal_move_a", "number", ["number"]),
         moveB: w("qr_legal_move_b", "number", ["number"]),
         moveC: w("qr_legal_move_c", "number", ["number"]),
+        // Pesos NNUE e modo de avaliacao. O bundle sempre exporta estas
+        // quatro funcoes; o build embute os pesos em /data/nnue via
+        // --preload-file (ver build_wasm.sh).
+        loadNnueWeights: w("qr_load_nnue_weights", "number", ["string"]),
+        evalModeIsNnue: w("qr_eval_mode_is_nnue", "number", []),
+        setEvalHeuristic: w("qr_set_eval_heuristic", null, []),
+        mcabActive: w("qr_mcab_active", "number", []),
         applyPawn: w("qr_apply_pawn_move", "number", ["number"]),
         applyWall: w("qr_apply_wall_move", "number", ["number", "number", "number"]),
         engineMove: w("qr_engine_move", "number", ["number", "number"]),
@@ -623,8 +630,50 @@ function wireControls() {
     }
 }
 
+// Caminho dos pesos dentro do sistema de arquivos virtual do Emscripten.
+// build_wasm.sh embute o arquivo nesse caminho com --preload-file.
+const NNUE_PATH = "/data/nnue/nnue_weights_int8.bin";
+
+// Sem esta chamada o motor fica em EvalMode::Heuristic, e o MCTS hibrido
+// nao liga, porque ele exige NNUE. A interface publicada rodou assim desde
+// o inicio: avaliacao heuristica com alpha-beta puro, muito mais fraca do
+// que a pagina anuncia. Carrega os pesos e avisa se falhar.
+function loadNnueOrWarn() {
+    let ok = 0;
+    try {
+        ok = Q.loadNnueWeights(NNUE_PATH);
+    } catch (err) {
+        console.error("[zq] falha ao carregar os pesos NNUE:", err);
+        ok = 0;
+    }
+    if (ok === 1) {
+        console.log("[zq] NNUE carregada; MCTS hibrido " +
+                    (Q.mcabActive() === 1 ? "ativo" : "inativo"));
+        return true;
+    }
+    try { Q.setEvalHeuristic(); } catch (err) { /* ja esta em heuristico */ }
+    showEngineWarning();
+    return false;
+}
+
+// Aviso persistente. O motor continua jogando, mas com a avaliacao
+// heuristica e sem o MCTS hibrido, portanto o jogador precisa saber.
+function showEngineWarning() {
+    const el = document.createElement("div");
+    el.id = "engineWarn";
+    el.setAttribute("role", "alert");
+    el.innerHTML = '<strong>Motor em modo heuristico.</strong> ' +
+        'Os pesos NNUE (' + NNUE_PATH + ') nao carregaram, portanto a ' +
+        'avaliacao neural e o MCTS hibrido estao desligados e o motor joga ' +
+        'bem mais fraco.<button type="button" aria-label="Fechar">&times;</button>';
+    document.body.appendChild(el);
+    const close = el.querySelector("button");
+    if (close) close.addEventListener("click", () => { el.remove(); });
+}
+
 ZquoridorModule().then((Module) => {
     Q = setupWasmBindings(Module);
+    loadNnueOrWarn();
     applyTheme(theme);
     flipped = (humanSide === 0);
     buildBoardDom();

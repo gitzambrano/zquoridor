@@ -373,5 +373,21 @@
 
 <script src="zquoridor.js"></script>
 <script src="app.js"></script>
+<style>
+  /* Aviso de motor degradado, criado por showEngineWarning() em app.js */
+  #engineWarn {
+    position: fixed; left: 0; right: 0; bottom: 0; z-index: 90;
+    display: flex; align-items: flex-start; gap: .6rem;
+    padding: .7rem calc(.9rem + env(safe-area-inset-right))
+             calc(.7rem + env(safe-area-inset-bottom)) calc(.9rem + env(safe-area-inset-left));
+    background: #3a1016; border-top: 1px solid #c0394a;
+    color: #f6e4e6; font-size: .78rem; line-height: 1.45;
+  }
+  #engineWarn strong { color: #f2a6ae; }
+  #engineWarn button {
+    margin-left: auto; flex: 0 0 auto; min-width: 44px; min-height: 44px;
+    background: none; border: 0; color: #f2a6ae; font-size: 1.3rem; cursor: pointer;
+  }
+</style>
 </body>
 </html>
