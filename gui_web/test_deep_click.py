@@ -547,6 +547,10 @@ def run_suite(failures, n_ok):
 
         # recent games lifecycle (resign -> sheet -> load -> delete last)
         page.evaluate("localStorage.removeItem('zq.recent')")
+        def open_recent():
+            page.click("#btnMenu"); page.wait_for_timeout(200)
+            page.click("#menuDrop button:has-text('Recent games')")
+
         click_pawn_to(22)   # a resigned game needs plies to be recorded
         page.click("#btnMenu"); page.wait_for_timeout(200)
         page.click("#menuDrop button:has-text('Resign')")
@@ -554,11 +558,11 @@ def run_suite(failures, n_ok):
         page.click("#cfYes"); page.wait_for_timeout(500)
         check("resign recorded in recent", page.evaluate(
             "JSON.parse(localStorage.getItem('zq.recent')||'[]').length") == 1)
-        page.click("#movesChip"); page.wait_for_timeout(300)
+        open_recent(); page.wait_for_timeout(300)
         check("recent sheet lists entry", page.locator("[data-rload='0']").count() == 1)
         page.click("[data-rload='0']"); page.wait_for_timeout(400)
         check("recent Load restores game", page.evaluate("window.__w.cursor()") > 0)
-        page.click("#movesChip"); page.wait_for_timeout(300)
+        open_recent(); page.wait_for_timeout(300)
         page.click("[data-rdel='0']"); page.wait_for_timeout(300)
         check("delete-last clears list and closes sheet",
               page.evaluate("JSON.parse(localStorage.getItem('zq.recent')||'[]').length") == 0 and

@@ -403,6 +403,38 @@ Premium interface per `gui-premium.md`. Phases P0-P5 (tokens, canvas board
     bundled `zquoridor.html`, therefore `build_standalone.py` must run
     before that suite reports on current code.
 
+- **GUI v2 review pass (2026-08-25)**: a second user review asked for a
+  denser HUD and a desktop layout closer to a chess interface.
+  - Each player strip is now one line: name, clock, wall pips with a count,
+    then the distance to goal as a bare number behind a hairline. The engine
+    level left the strip, because the header chip already names it.
+  - Desktop moves the status line and the button row into the side rail, so
+    the board keeps the full height of its column. `layoutReflow()` moves the
+    same nodes across the 900px breakpoint. There is one copy of each
+    control, never two.
+  - The move log follows the same reflow. On a phone it fills the space under
+    the button row, which was empty before. It is selectable text in both
+    layouts.
+  - The evaluation bar is a vertical bar on the board's left edge with a gold
+    balance line and a numeric readout in a 30px gutter. The gutter is
+    desktop only. On a phone the bar is a 4px hairline and the number stands
+    down, because every pixel of width is board there.
+  - `QBoard.fit()` measured `clientWidth`, which counts the zone padding, and
+    it ignored the evaluation bar's share of the row. The board was therefore
+    sized larger than its box and spilled over its neighbours at
+    width-limited desktop sizes. It now measures the real content box.
+  - The player strips align to the board, not to the column. The evaluation
+    bar and its gutter sit inside the board zone, so a centred strip was
+    visibly off by half of that width.
+  - `.btn` forces a 36px width. The two wall buttons carry a live count, so
+    they size to glyph plus number. The corner badge was too small to read.
+  - `packedToTok()` read the low byte of a packed move for both kinds of
+    move. A pawn move carries its destination in bits 16 to 23, so every pawn
+    move in an analysis line printed as `a1`, and every wall printed as a
+    bare `H`. The decoder now matches `plyNotation`.
+  - The move count is a reading, not a control. Recent games is reached
+    through the header menu, which already lists it.
+
 ---
 
 ## 5. Evaluation Conventions

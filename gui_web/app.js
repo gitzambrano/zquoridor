@@ -21,10 +21,15 @@ const FILES = 'abcdefghi';
 // Absolute notation (plan 5.8 / 16.2): pawn e5, wall Hc6/Vf3. Rank 1 is
 // player 0's home row, matching the QFEN and the board coordinates.
 function engCellAlg(cell) { return FILES[cell % 9] + (Math.floor(cell / 9) + 1); }
+// Packed layout is isWall<<24 | a<<16 | b<<8 | c. A pawn move carries its
+// destination cell in a, not in c, and a wall needs its file and rank as well
+// as its orientation. The previous version read the low byte for both, so
+// every pawn move in a line printed as "a1" and every wall as a bare "H".
 function packedToTok(packed) {
   const isWall = (packed >> 24) & 1;
-  if (!isWall) return engCellAlg(packed & 255);
-  return ((packed >> 16) & 255) === 0 ? 'H' : 'V';
+  const a = (packed >> 16) & 255, b = (packed >> 8) & 255, c = packed & 255;
+  if (!isWall) return engCellAlg(a);
+  return (a === 0 ? 'H' : 'V') + FILES[c] + (b + 1);
 }
 function plyNotation(i) {
   const isWall = W.plyIsWall(i);
@@ -330,14 +335,12 @@ function refreshHud() {
     el.dataset.player = pl;
     const nm = el.querySelector('.nm');
     if (nm) nm.textContent = pl === humanSide ? 'You' : 'Zquoridor';
-    const lb = el.querySelector('.lvl');
-    if (lb) lb.textContent = pl === humanSide ? '' : LEVELS[S.level].label;
     const wn = el.querySelector('.wn');
     if (wn) wn.textContent = wl[pl];
     pips(el.querySelector('.pips'), wl[pl]);
     const dEl = el.querySelector('.dist');
     if (dEl) {
-      dEl.innerHTML = '<small>DIST</small><b>' + d[pl] + '</b>';
+      dEl.innerHTML = '<b>' + d[pl] + '</b>';
       dEl.classList.toggle('lead', d[pl] < d[1 - pl]);
       dEl.classList.toggle('behind', d[pl] > d[1 - pl]);
     }
@@ -378,6 +381,13 @@ function setEval(score) {   // score mover-relative from the engine's last move
   const abs = humanSide === 0 ? score : -score;      // de-mirror to colour 0 view
   const share = 50 + 50 * Math.tanh(abs / 400);
   $('evalFill').style.height = share.toFixed(1) + '%';
+  const num = $('evalNum'), bar = $('evalStrip');
+  if (!num || !bar) return;
+  // Your share fills from the bottom, so the label sits at that boundary.
+  const yours = humanSide === 0 ? share : 100 - share;
+  num.textContent = (abs >= 0 ? '+' : '') + (abs / 100).toFixed(1);
+  num.style.top = (bar.offsetTop + bar.offsetHeight * (1 - yours / 100)) + 'px';
+  num.style.display = 'block';
 }
 
 // ===================== 6. board bridge =================================
@@ -1113,10 +1123,6 @@ function applyLevelChip() {
   $('lvlName').textContent = lv.label;
   const dot = $('lvlChip').querySelector('.dot');
   if (dot) dot.style.background = lv.color;
-  for (const pos of ['top', 'bottom']) {
-    const el = strip(pos), lb = el && el.querySelector('.lvl');
-    if (lb && Number(el.dataset.player) !== humanSide) lb.textContent = lv.label;
-  }
 }
 function modalSettings() {
   const seg = (key, opts, labels) =>
@@ -1854,7 +1860,7 @@ function refreshHudFromScratch() {
     if (wn) wn.textContent = wl[pl];
     pips(el.querySelector('.pips'), wl[pl]);
     const dEl = el.querySelector('.dist');
-    if (dEl && d[pl] >= 0) dEl.innerHTML = '<small>DIST</small><b>' + d[pl] + '</b>';
+    if (dEl && d[pl] >= 0) dEl.innerHTML = '<b>' + d[pl] + '</b>';
   }
 }
 function edBoardDown(ev) {
@@ -2487,6 +2493,27 @@ function showHint() {
   }, 4000);
 }
 
+// ===================== 12b. layout reflow ==============================
+let g_wideLayout = null;
+function layoutReflow() {
+  const wide = matchMedia('(min-width:900px)').matches;
+  if (wide === g_wideLayout) return;
+  g_wideLayout = wide;
+  const slot = $('controlsSlot'), under = $('underBoard');
+  if (!slot || !under) return;
+  const target = wide ? slot : under;
+  for (const id of ['statusRow', 'controls']) {
+    const el = $(id);
+    if (el && el.parentElement !== target) target.appendChild(el);
+  }
+  // The move log follows the same rule. On a phone it fills the space under
+  // the button row, which is otherwise dead. On a wide screen it returns to
+  // its card in the side rail.
+  const log = $('moveLog'), home = $('moveLogHome');
+  const logTarget = wide ? home : under;
+  if (log && logTarget && log.parentElement !== logTarget) logTarget.appendChild(log);
+}
+
 // ===================== 13. boot ========================================
 function boot() {
   loadSettings();
@@ -2498,11 +2525,21 @@ function boot() {
   // them.
   B.onChange = () => {
     $('evalStrip').style.height = (B.cssSide - 4) + 'px';
-    const zone = $('boardZone');
-    const extra = zone ? Math.max(0, Math.min(zone.clientWidth - B.cssSide, 20)) : 0;
-    for (const id of ['hudTop', 'hudBottom']) {
+    // The player strips and the race meter align to the board itself, not to
+    // the column. The evaluation bar and its gutter sit inside the board zone,
+    // so the board is not centred on the column and a centred strip would be
+    // visibly off by half of that width.
+    const col = $('boardCol'), wrap = B.cv.parentElement;
+    if (!col || !wrap) return;
+    const left = Math.max(0, Math.round(wrap.getBoundingClientRect().left -
+                                        col.getBoundingClientRect().left));
+    for (const id of ['hudTop', 'hudBottom', 'raceMeterM']) {
       const el = $(id);
-      if (el) el.style.maxWidth = (B.cssSide + extra) + 'px';
+      if (!el) continue;
+      el.style.width = B.cssSide + 'px';
+      el.style.maxWidth = '100%';
+      el.style.marginLeft = left + 'px';
+      el.style.marginRight = 'auto';
     }
   };
   applySettings();
@@ -2511,10 +2548,16 @@ function boot() {
   syncAll();
   startClock();
   setStatus(humanSide === 0 ? 'Your move' : 'Zquoridor starts');
+  // Layout reflow across the breakpoint. On a wide screen the status line and
+  // the button row belong beside the board, in the side rail, so the board
+  // keeps the full height of its column. On a phone they stay under the
+  // board, inside the thumb arc. The same nodes move; there is one copy of
+  // each control.
+  layoutReflow();
   // deferred re-fits: the first fit() may run before final layout; re-measure
   // once the flex layout settles, and on any viewport resize.
-  [200, 600, 1500].forEach(t => setTimeout(() => B.fit(), t));
-  window.addEventListener('resize', () => { B.fit(); drawGraph(); });
+  [200, 600, 1500].forEach(t => setTimeout(() => { layoutReflow(); B.fit(); }, t));
+  window.addEventListener('resize', () => { layoutReflow(); B.fit(); drawGraph(); });
 
   // analysis controls (plan section 5.6)
   $('anEngBtn').onclick = anToggle;
@@ -2536,7 +2579,8 @@ function boot() {
   wireEditor();
   wireDropTarget();
   if (!bootHashLoad()) checkAutosaveOnBoot();
-  $('movesChip').onclick = showRecentGames;
+  // The move count is a reading only. The move log is adjacent in both
+  // layouts, and Recent games is a header menu item.
   // prewarm the analysis worker while the user plays
   try { ANW.ensure(); } catch (e) {}
   updateMovesChip();

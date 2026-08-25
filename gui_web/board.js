@@ -92,7 +92,22 @@ class QBoard {
       const zone = this.cv.closest('#boardZone') ||
                    this.cv.parentElement.parentElement ||
                    this.cv.parentElement;
-      const zw = zone.clientWidth || 320, zh = zone.clientHeight || 320;
+      // clientWidth counts the zone's own padding, and the evaluation strip
+      // takes a share of the row. Subtract both, or the board is sized larger
+      // than the space it actually has and spills over its neighbours.
+      const cs = getComputedStyle(zone);
+      const px = (v) => parseFloat(v) || 0;
+      let zw = (zone.clientWidth || 320) - px(cs.paddingLeft) - px(cs.paddingRight);
+      const zh = (zone.clientHeight || 320) - px(cs.paddingTop) - px(cs.paddingBottom);
+      const gap = px(cs.columnGap) || px(cs.gap);
+      const wrap0 = this.cv.parentElement;
+      for (const ch of zone.children) {
+        if (ch === wrap0) continue;
+        const chs = getComputedStyle(ch);
+        if (chs.position === 'absolute' || chs.position === 'fixed') continue;
+        if (chs.display === 'none') continue;
+        zw -= ch.getBoundingClientRect().width + gap;
+      }
       const scale = Math.max(0.8, Math.min(1, parseFloat(this.ds().boardScale) || 1));
       // The floor must stay below what a phone in landscape can give, or the
       // board overflows its zone and covers the player strips.
