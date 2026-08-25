@@ -486,6 +486,33 @@ Premium interface per `gui-premium.md`. Phases P0-P5 (tokens, canvas board
     blunder check filling every ply, navigation, the editor, the settings modal
     and the level list. 30 checks, all passing.
 
+- **GUI v2 graph, wall matrix and analysis export (2026-08-25)**:
+  - **The evaluation graph auto-scales.** A whole game plotted over 0 to 1 is a
+    flat line in the middle for every position that is not already decided,
+    which shows nothing. The band is centred on 0.5 and opens only as far as
+    the data needs, with a floor of `+-8 %` so that noise is not magnified into
+    a swing, and a corner label names the band. A quiet game now reads at
+    `+-8 %` instead of flat.
+  - `--p0-soft` and `--p1-soft` did not exist in the rebuilt stylesheet. The
+    graph read them for its area fill, an empty string leaves `fillStyle`
+    unchanged, and the area silently never painted. Both tokens are defined,
+    and `drawGraph()` falls back to the solid player colour.
+  - **Two flexbox faults that swallowed clicks.** `#anGraph` could be shrunk by
+    the flex column while its canvas still painted 72px, and `#anLines` could
+    be shrunk below its content so its rows overflowed under the graph. In both
+    cases the block that painted last covered the controls under it. Only
+    `.card.grow` may take the leftover height now; every other child of a pane
+    keeps its content height.
+  - The Analysis tab has an EXPORT card: Copy QFEN, Copy game, Save .qgn and
+    Copy link. QFEN exports the position the cursor is on, so any position in a
+    game under review can be taken out. Verified: at the live end it gives
+    `e2 e8 10 10 - 0 2`, one ply back `e2 e9 10 10 - 1 1`.
+  - New `gui_web/test_wall_matrix.py`: 57 checks over wall placement with a
+    mouse and with touch. Drag direction sets the orientation, hovering a
+    groove previews that orientation, a cell body previews nothing, and every
+    corner and edge anchor accepts both orientations by drag and by press. The
+    asserted invariant is that the wall lands on the slot the ghost showed.
+
 ---
 
 ## 5. Evaluation Conventions

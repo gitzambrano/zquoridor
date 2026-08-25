@@ -2425,8 +2425,12 @@ function drawGraph() {
   const cs = getComputedStyle(document.documentElement);
   const gold2 = cs.getPropertyValue('--gold2').trim();
   const red = cs.getPropertyValue('--red').trim();
-  const p0s = cs.getPropertyValue('--p0-soft').trim();
-  const p1s = cs.getPropertyValue('--p1-soft').trim();
+  // A missing token leaves fillStyle unchanged and the area silently does not
+  // paint, so fall back to the solid player colour at low alpha.
+  const soft = (name, base) => cs.getPropertyValue(name).trim() ||
+    cs.getPropertyValue(base).trim() || 'rgba(255,255,255,.15)';
+  const p0s = soft('--p0-soft', '--p0');
+  const p1s = soft('--p1-soft', '--p1');
   // sample points: ply -> wp (side-0 view); missing plies carry the last value
   const pts = [];
   let lastWp = .5;
@@ -2436,7 +2440,18 @@ function drawGraph() {
     pts.push(lastWp);
   }
   const X = i => n ? (i / n) * (w - 6) + 3 : 3;
-  const Y = wpv => h - 4 - wpv * (h - 8);
+  // The curve is auto-scaled. A whole game inside 0 to 1 is a flat line in the
+  // middle for every position that is not already decided, which shows
+  // nothing. The band is centred on 0.5 and opens only as far as the data
+  // needs, with a floor so that noise is not magnified into a swing. The
+  // corner label names the band, so a zoomed wiggle is never read as a rout.
+  let dev = 0;
+  for (const wpv of pts) dev = Math.max(dev, Math.abs(wpv - .5));
+  const span = Math.min(.5, Math.max(.08, dev * 1.18));
+  const Y = wpv => {
+    const t = (wpv - (.5 - span)) / (2 * span);
+    return h - 4 - Math.max(0, Math.min(1, t)) * (h - 8);
+  };
   // area fill split at 50%
   g.beginPath();
   g.moveTo(X(0), Y(.5));
@@ -2476,6 +2491,11 @@ function drawGraph() {
   g.strokeStyle = cs.getPropertyValue('--gold').trim();
   g.lineWidth = 1.5;
   g.beginPath(); g.moveTo(X(cur), 2); g.lineTo(X(cur), h - 2); g.stroke();
+  // scale label
+  g.fillStyle = cs.getPropertyValue('--muted').trim();
+  g.font = "9px 'JetBrains Mono', monospace";
+  g.textAlign = 'right'; g.textBaseline = 'top';
+  g.fillText('±' + Math.round(span * 100) + '%', w - 4, 3);
 }
 function graphScrub(ev) {
   const rect = $('anGraph').getBoundingClientRect();
@@ -2667,6 +2687,14 @@ function boot() {
   $('anDepth').onchange = anRestart;
   $('anPvCount').onchange = anRestart;
   $('anBlunderBtn').onclick = blunderCheck;
+  // Export from the Analysis tab. QFEN exports the position the cursor is on,
+  // which is the one on the board, so a reader can take any position out of a
+  // game under review. The game text always covers the whole game.
+  $('anCopyQfen').onclick = () => copyText(W.qfenExportStr(), 'QFEN');
+  $('anCopyGame').onclick = () => copyText(qgnExport(), 'Game text');
+  $('anSaveGame').onclick = () =>
+    downloadText(gameFileName(), qgnExport(), 'application/x-zquoridor-game');
+  $('anCopyLink').onclick = () => copyText(shareLink(), 'Link');
   $('btnReturn').onclick = () => navGo(W.plyCount());
   $('navFirst').onclick = () => navGo(0);
   $('navPrev').onclick = () => navGo(W.cursor() - 1);
