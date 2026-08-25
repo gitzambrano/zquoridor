@@ -208,7 +208,7 @@ def main():
                     page.click("#btnFlip"); flips += 2; page.wait_for_timeout(400)
                 if mv == 9:
                     before = state()["ply"]
-                    page.click("#btnUndo"); page.wait_for_timeout(500)
+                    page.click("#btnTakeback"); page.wait_for_timeout(500)
                     after = state()
                     check(f"move {mv}: takeback rolled back", after["ply"] == before - 2
                           and after["turn"] == after["hs"])

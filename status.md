@@ -339,6 +339,70 @@ Premium interface per `gui-premium.md`. Phases P0-P5 (tokens, canvas board
     the play tab goes back with the `End` key. The level chip opens the
     NEW GAME modal -- mid-game level changes are the `S` key.
 
+- **GUI v2 rebuild (2026-08-25)**: the interface was rebuilt after a user
+  review. The complaints were a dark board that did not read as a board,
+  pawns that jumped between cells, a takeback button that did nothing, and
+  two colored streaks across the middle of the board. The rebuild keeps the
+  engine plumbing untouched. `engine_wasm.cpp` and the WASM exports did not
+  change.
+  - **Look**: a warm wooden board inside the dark Zchezz chrome. The board
+    tokens moved to a `wood` default: tan cells, a walnut frame, dark walnut
+    walls. `walnut` became a dark board with ivory walls, because its old
+    values failed the contrast gate at 1.40 against a required 3.0. Nine
+    board themes now exist.
+  - **Layout**: one player strip above the board and one below it. Each
+    strip carries the name on its outer edge, then the clock, the wall pips
+    with a count, and the distance to goal. The old dual HUD bar, the
+    desktop HUD rail and the wall dock are gone. The useful buttons sit in
+    one Zchezz-style row under the board. There is one breakpoint at 900px.
+  - **Wall placement without a mode**: `boardHit()` in `app.js` classifies a
+    pointer position as a cell body or as a groove, and names the
+    orientation of that groove. A hover over a groove paints a preview
+    through the new `QBoard.setHover`. A press starts the drag, and a drag
+    of more than `0.45*C` across the other axis flips the orientation. The
+    `H` and `V` buttons only force an orientation. They are no longer
+    required. The forced orientation expires after 6 seconds.
+  - **Anchor geometry**: `anchorFor(o, px, py)` uses floor along the wall's
+    own long axis and round across the groove. A first version subtracted 1
+    from the vertical row. That version resolved the exact center of a
+    groove crossing to the anchor above the correct one, and
+    `test_deep_click.py` caught it through 7 failed wall checks.
+  - **Pawn animation**: `QBoard.animateMove` tweens a pawn over 200ms and
+    arcs a jump. The tween starts before the state sync paints, therefore
+    the piece slides from the cell it left. A `requestAnimationFrame` loop
+    runs only while an animation is active.
+  - **Engine off the main thread**: `worker.js` accepts a new `bestmove`
+    command. The worker replays the recorded line into its own live game and
+    runs `qr_engine_move`, which is the hybrid search. The analysis path
+    cannot serve this: `qr_analyze` runs pure alpha-beta on the scratch
+    position, so it would silently change how the engine plays. Measured at
+    the Titan level, the worst main-thread stall during an 8 second search
+    fell to 5ms. A game from a custom position still searches locally,
+    because the worker has no replay root for it.
+  - **Takeback**: `#btnTakeback` was never wired to anything. The button is
+    wired now, and six further defects around it are fixed. The guard
+    refuses a takeback during review. `clockHist` gives the time back.
+    Entries in `AN.scores`, `AN.annots` and `levelMarks` past the new end
+    are dropped, because those keys are ply indexes and would otherwise
+    attach to different moves. The eval bar resets. `engineGen` invalidates
+    a search that is still running. `W.scratchFromLive()` restores the
+    scratch position that the search loop overwrites.
+  - **Path overlay**: the old version walked greedily in engine coordinates
+    and handed engine cells to a renderer that expects display cells.
+    Therefore both lines came out mirrored and crossed in the middle of the
+    board. Those were the streaks in the user report. `shortestPath()` is
+    now a real BFS, `recomputePaths()` runs on every state change, and the
+    cells are converted with `engPawnToDisp`.
+  - **Clock**: the default is 5+3 instead of none, so that the strip has a
+    clock to show. `addIncrement()` credits the increment, which the schema
+    declared but no code applied.
+  - **Modal buttons**: `.btn` forces a 36px width. Every button inside a
+    modal was clamped to that width, so the labeled buttons overlapped and
+    swallowed each other's clicks. `.modal .btn` now sizes to its label.
+  - Tests: all five browser suites pass. `test_deep_click.py` loads the
+    bundled `zquoridor.html`, therefore `build_standalone.py` must run
+    before that suite reports on current code.
+
 ---
 
 ## 5. Evaluation Conventions

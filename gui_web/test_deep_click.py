@@ -166,7 +166,7 @@ def run_suite(failures, n_ok):
             s = state()
             check(f"clicked pawn move to {eng_dst} committed + engine replied",
                   s["cur"] == 2 and s["turn"] == hs)
-            page.click("#btnUndo")
+            page.click("#btnTakeback")
             page.wait_for_timeout(400)
             check(f"takeback after {eng_dst}", page.evaluate("window.__w.cursor()") == 0)
 

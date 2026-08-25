@@ -14,7 +14,7 @@ const LEVELS = {
   sage:   { ms: 2500, label: 'Sage',   color: 'var(--amber)', desc: 'Sees the whole race' },
   titan:  { ms: 8000, label: 'Titan',  color: 'var(--gold)',  desc: 'Full strength' },
 };
-const BOARD_THEMES = ['obsidian', 'walnut', 'ivory', 'slate', 'emerald', 'parchment', 'marble', 'noir'];
+const BOARD_THEMES = ['wood', 'walnut', 'ivory', 'marble', 'parchment', 'obsidian', 'slate', 'emerald', 'noir'];
 const PAWN_STYLES = ['disc', 'pillar', 'crown', 'rune', 'pawnChess', 'beacon'];
 const FILES = 'abcdefghi';
 
@@ -137,7 +137,7 @@ function bindEngine(m) {
 const DEFAULTS = {
   v: 1,
   preset: 'premiumDark',
-  ui: 'dark', board: 'obsidian', pawn: 'disc',
+  ui: 'dark', board: 'wood', pawn: 'disc',
   accent: 'gold', fs: 1, density: 'comfortable',
   frame: 'hairline', wallFinish: 'beveled', cellSep: 'grooves',
   coords: 'edges', boardScale: 1,
@@ -150,7 +150,7 @@ const DEFAULTS = {
   confirmWalls: null, touchOffset: null, stickyArm: false, handedness: 'right',
   level: 'knight',
   custom: { mode: 'time', depth: 12, timeMs: 1000 },
-  clockMode: 'none', baseMin: 5, incSec: 3, side: 0,
+  clockMode: '5+3', baseMin: 5, incSec: 3, side: 0,
   flipped: false,
   worker: true, autosave: true,
 };
@@ -244,7 +244,14 @@ let lastMoveInfo = null;
 
 // ===================== 5. hud / clocks / race / eval ===================
 const $ = id => document.getElementById(id);
+
+// One player strip component, used twice. The top strip always carries the
+// opponent and the bottom strip always carries you, so every number keeps one
+// fixed place on the screen. The name sits on the outer edge of its strip:
+// at the very top for the top player, at the very bottom for the bottom one.
+function strip(pos) { return $(pos === 'top' ? 'hudTop' : 'hudBottom'); }
 function pips(el, n) {
+  if (!el) return;
   if (el.childElementCount !== 10) el.innerHTML = '<i></i>'.repeat(10);
   [...el.children].forEach((p, i) => p.classList.toggle('on', i < n));
 }
@@ -254,8 +261,12 @@ function fmtClock(ms) {
   return Math.floor(s / 60) + ':' + String(s % 60).padStart(2, '0');
 }
 let clockMs = [null, null], clockTimer = null, lastTickAt = 0;
+// Clock readings per ply count, so a takeback can give the time back. Index k
+// holds the reading reached after k plies.
+let clockHist = [];
 function startClock() {
   stopClock();
+  clockHist = [];
   if (S.clockMode === 'none') { renderClocks(); return; }
   clockMs = [S.baseMin * 60000, S.baseMin * 60000];
   lastTickAt = performance.now();
@@ -263,6 +274,20 @@ function startClock() {
   renderClocks();
 }
 function stopClock() { if (clockTimer) clearInterval(clockTimer); clockTimer = null; }
+// Fischer increment, credited to the side that has just moved.
+function addIncrement(side) {
+  if (S.clockMode === 'none' || !S.incSec || gameOver) return;
+  clockMs[side] += S.incSec * 1000;
+  renderClocks();
+}
+// Starts the ticker again for a game that runs again, for example after a
+// takeback of a move that lost on time. lastTickAt must be reset here or the
+// first tick charges the whole idle interval to the side to move.
+function resumeClock() {
+  if (S.clockMode === 'none' || gameOver || clockTimer) return;
+  lastTickAt = performance.now();
+  clockTimer = setInterval(clockTick, 200);
+}
 function clockTick() {
   const now = performance.now();
   const dt = now - lastTickAt; lastTickAt = now;
@@ -274,18 +299,23 @@ function clockTick() {
 function flagFall(side) {
   stopClock(); gameOver = true; engineThinking = false;
   setStatus((side === humanSide ? 'Your clock ran out' : 'Zquoridor flagged you'));
+  const el = strip(side === humanSide ? 'bottom' : 'top');
+  if (el) el.classList.add('flag');
   pushRecent('flag');
   sound('end'); haptic([80]);
 }
 function renderClocks() {
-  const pairs = [['clock0', 'mClock0'], ['clock1', 'mClock1']];
-  for (let pl = 0; pl < 2; pl++) {
-    const txt = fmtClock(S.clockMode === 'none' ? null : clockMs[pl]);
-    for (const id of pairs[pl]) {
-      const el = $(id); el.textContent = txt;
-      el.classList.toggle('low', S.clockMode !== 'none' && clockMs[pl] < 30000 && clockMs[pl] >= 10000);
-      el.classList.toggle('crit', S.clockMode !== 'none' && clockMs[pl] < 10000);
-    }
+  const none = S.clockMode === 'none';
+  for (const pos of ['top', 'bottom']) {
+    const el = strip(pos);
+    if (!el) continue;
+    const pl = Number(el.dataset.player || 0);
+    const c = el.querySelector('.clock');
+    if (!c) continue;
+    c.textContent = fmtClock(none ? null : clockMs[pl]);
+    c.classList.toggle('off', none);
+    c.classList.toggle('low', !none && clockMs[pl] < 30000 && clockMs[pl] >= 10000);
+    c.classList.toggle('crit', !none && clockMs[pl] < 10000);
   }
 }
 function refreshHud() {
@@ -293,46 +323,55 @@ function refreshHud() {
   const d = [W.dist(0), W.dist(1)];
   const t = W.turn();
   B.setTurn(t);
-  // desktop rail: opponent top, you bottom
-  $('walls1').textContent = wl[1 - humanSide]; pips($('pips1'), wl[1 - humanSide]);
-  $('walls0').textContent = wl[humanSide];     pips($('pips0'), wl[humanSide]);
-  // mobile bar
-  $('mWalls1').textContent = wl[1 - humanSide]; pips($('mPips1'), wl[1 - humanSide]);
-  $('mWalls0').textContent = wl[humanSide];     pips($('mPips0'), wl[humanSide]);
-  const dYou = d[humanSide], dOpp = d[1 - humanSide];
-  setDist('dist0', 'mDist0', dYou, dYou <= dOpp);
-  setDist('dist1', 'mDist1', dOpp, dOpp < dYou);
-  // turn highlight
-  const youTurn = t === humanSide && !gameOver;
-  $('hudYou').classList.toggle('turn', youTurn); $('mHudYou').classList.toggle('turn', youTurn);
-  $('hudOpp').classList.toggle('turn', !youTurn && !gameOver);
-  $('mHudOpp').classList.toggle('turn', !youTurn && !gameOver);
-  $('hudYou').classList.toggle('dim', !youTurn); $('mHudYou').classList.toggle('dim', !youTurn);
-  $('hudOpp').classList.toggle('dim', youTurn || gameOver); $('mHudOpp').classList.toggle('dim', youTurn || gameOver);
-  // dock badges
+  const seat = { top: 1 - humanSide, bottom: humanSide };
+  for (const pos of ['top', 'bottom']) {
+    const pl = seat[pos], el = strip(pos);
+    if (!el) continue;
+    el.dataset.player = pl;
+    const nm = el.querySelector('.nm');
+    if (nm) nm.textContent = pl === humanSide ? 'You' : 'Zquoridor';
+    const lb = el.querySelector('.lvl');
+    if (lb) lb.textContent = pl === humanSide ? '' : LEVELS[S.level].label;
+    const wn = el.querySelector('.wn');
+    if (wn) wn.textContent = wl[pl];
+    pips(el.querySelector('.pips'), wl[pl]);
+    const dEl = el.querySelector('.dist');
+    if (dEl) {
+      dEl.innerHTML = '<small>DIST</small><b>' + d[pl] + '</b>';
+      dEl.classList.toggle('lead', d[pl] < d[1 - pl]);
+      dEl.classList.toggle('behind', d[pl] > d[1 - pl]);
+    }
+    const toMove = t === pl && !gameOver;
+    el.classList.toggle('active', toMove);
+    el.classList.toggle('thinking', toMove && pl !== humanSide && engineThinking);
+  }
+  // The H and V buttons are only the orientation fallback, but they still
+  // carry the wall count because that is where the thumb is while placing.
   const myWalls = wl[humanSide];
-  $('badgeH').textContent = myWalls; $('badgeV').textContent = myWalls;
-  const noWalls = myWalls <= 0 || t !== humanSide || gameOver || engineThinking;
-  $('wallH').classList.toggle('off', noWalls); $('wallV').classList.toggle('off', noWalls);
-  $('btnUndo').classList.toggle('off', W.plyCount() === 0 || engineThinking || !atLiveEnd());
-  // race meter
-  const total = Math.max(1, dYou + dOpp);
-  const share = dOpp / total * 100;
-  $('raceFill0').style.setProperty('--share', (dOpp / total).toFixed(3));
-  $('raceFill0').style.width = share.toFixed(1) + '%';
-  $('raceDiv').style.left = share.toFixed(1) + '%';
-  $('raceLbl').textContent = dYou + ' : ' + dOpp;
-  // mobile meter
-  $('rf0M').style.width = share.toFixed(1) + '%';
-  $('rdvM').style.left = share.toFixed(1) + '%';
-  $('rlM').textContent = dYou + ' : ' + dOpp;
+  const bh = $('badgeH'), bv = $('badgeV');
+  if (bh) bh.textContent = myWalls;
+  if (bv) bv.textContent = myWalls;
+  const noWalls = myWalls <= 0 || t !== humanSide || gameOver || engineThinking || !atLiveEnd();
+  $('wallH').classList.toggle('off', noWalls);
+  $('wallV').classList.toggle('off', noWalls);
+  const noBack = W.plyCount() === 0 || engineThinking || !atLiveEnd();
+  for (const id of ['btnTakeback', 'btnUndo']) {
+    const el = $(id);
+    if (el) { el.classList.toggle('off', noBack); el.disabled = noBack; }
+  }
+  const dYou = d[humanSide], dOpp = d[1 - humanSide];
+  setRace(dOpp / Math.max(1, dYou + dOpp) * 100, dYou, dOpp);
   renderClocks();
 }
-function setDist(idM, idMob, v, lead) {
-  for (const id of [idM, idMob]) {
-    const el = $(id);
-    el.innerHTML = '<small>DIST</small>' + v;
-    el.classList.toggle('lead', lead); el.classList.toggle('behind', !lead);
+// The race meter is horizontal in every layout. Your share grows as the
+// opponent's path grows.
+function setRace(share, dYou, dOpp) {
+  const txt = dYou + ' : ' + dOpp;
+  for (const trio of [['raceFill0', 'raceDiv', 'raceLbl'], ['rf0M', 'rdvM', 'rlM']]) {
+    const fe = $(trio[0]), de = $(trio[1]), le = $(trio[2]);
+    if (fe) { fe.style.width = share.toFixed(1) + '%'; fe.style.setProperty('--share', (share / 100).toFixed(3)); }
+    if (de) de.style.left = share.toFixed(1) + '%';
+    if (le) le.textContent = txt;
   }
 }
 function setEval(score) {   // score mover-relative from the engine's last move
@@ -360,14 +399,17 @@ function syncFromEngine() {
   B.flipped = ((humanSide === 1) !== !!S.flipped);
   lastMoveInfo = plyToLastMove(W.cursor() - 1);
   B.linePreview = null;
+  B.selected = -1;
   // Dots and the side-to-move marker must be current BEFORE setData paints,
   // or they only appear on the render after this one.
   buildLegalSets();
   refreshHud();
   B.setData(pw, wh, wv, lastMoveInfo);
+  recomputePaths();
   renderMoveLog();
   updateNav();
   drawGraph();
+  if (atLiveEnd()) clockHist[W.plyCount()] = clockMs.slice();
   if (typeof AN !== 'undefined' && AN.on) anRestart();
 }
 function buildLegalSets() {
@@ -396,16 +438,27 @@ function scheduleEngineTurn(delay) {
   if (engineTimer) clearTimeout(engineTimer);
   engineTimer = setTimeout(() => { engineTimer = null; engineTurn(); }, delay);
 }
-function afterHumanMove() {
+function afterHumanMove(anim) {
   updateMovesChip();
-  checkEnd();
-  if (!gameOver) {
+  addIncrement(humanSide);
+  engineThinking = false;
+  refreshHud();
+  // The engine only starts to think once the piece has finished sliding, so
+  // the move you just played is always visible before the screen changes again.
+  const done = (anim && typeof anim.then === 'function') ? anim : Promise.resolve();
+  done.then(() => {
+    checkEnd();
+    if (gameOver) { refreshHud(); return; }
     engineThinking = true;
     refreshHud();
     setStatus('Zquoridor is thinking...');
-    scheduleEngineTurn(120);
-  }
+    scheduleEngineTurn(40);
+  });
 }
+// Generation counter for engine searches. A new game, a takeback or a jump
+// through the history bumps it, and any reply that belongs to an older
+// generation is dropped instead of being played into the new position.
+let engineGen = 0;
 function engineTurn() {
   if (!engineThinking) return;   // stale timer already superseded
   if (gameOver || W.winner() !== -1 || W.isDraw()) {
@@ -418,14 +471,60 @@ function engineTurn() {
     return;
   }
   const lv = LEVELS[S.level];
+  const gen = ++engineGen;
+  const pl = W.turn();
+  const from = B.engPawnToDisp(W.pawn(pl));
+
+  const finish = (packed, score, applied) => {
+    if (gen !== engineGen) return;
+    engineThinking = false;
+    if (packed == null) { syncAll(); setStatus('Your move'); return; }
+    const m = unpackMove(packed);
+    if (!applied) {
+      const ok = m.isWall ? W.applyWall(m.a, m.b, m.c) : W.applyPawn(m.a);
+      if (!ok) { syncAll(); setStatus('Your move'); return; }
+    }
+    let anim = null;
+    if (m.isWall) {
+      const dw = B.engWallToDisp(m.a, m.b, m.c);
+      anim = B.animateWall ? B.animateWall(dw[0], dw[1], dw[2]) : null;
+      sound('wall'); haptic(18);
+    } else {
+      anim = B.animateMove ? B.animateMove(pl, from, B.engPawnToDisp(W.pawn(pl))) : null;
+      sound('move'); haptic(10);
+    }
+    setEval(-score);
+    addIncrement(pl);
+    syncAll();
+    const done = (anim && typeof anim.then === 'function') ? anim : Promise.resolve();
+    done.then(() => {
+      checkEnd();
+      if (!gameOver) setStatus('Your move');
+      refreshHud();
+    });
+  };
+
+  // Off-thread search when the worker is available. The worker replays the
+  // recorded line into its own live game and runs the same hybrid search, so
+  // the engine plays exactly as it does here while this thread keeps painting.
+  // A game that started from a custom position has no replay root, so it stays
+  // local.
+  const offThread = !g_startedFromCustom() && ANW.bestMove(
+    { moves: allPliesPacked(), depth: 24, timeMs: lv.ms },
+    res => {
+      if (gen !== engineGen) return;
+      if (!res || res.move == null) { engineLocalMove(gen, finish); return; }
+      finish(res.move, res.score, false);
+    });
+  if (offThread) return;
+  engineLocalMove(gen, finish);
+}
+// Fallback search on this thread. It blocks for the whole time budget.
+function engineLocalMove(gen, finish) {
+  if (gen !== engineGen) return;
+  const lv = LEVELS[S.level];
   const ok = W.engineMove(24, lv.ms);
-  engineThinking = false;
-  if (!ok) { syncAll(); return; }
-  setEval(-W.lastEval());          // eval is from the engine's perspective
-  sound('move'); haptic(10);
-  syncAll();
-  checkEnd();
-  if (!gameOver) setStatus('Your move');
+  finish(ok ? packPly(W.plyCount() - 1) : null, W.lastEval(), true);
 }
 function checkEnd() {
   const w = W.winner();
@@ -463,6 +562,11 @@ function announceState() {
 function checkEndQuiet() { const w = W.winner(); return w !== -1 || W.isDraw(); }
 function newGame() {
   W.newGame(); gameOver = false; engineThinking = false;
+  engineGen++;                       // drop any reply from the previous game
+  for (const pos of ['top', 'bottom']) {
+    const el = strip(pos);
+    if (el) el.classList.remove('flag', 'win', 'lose');
+  }
   humanSide = S.side;
   AN.scores = {}; AN.annots = {}; AN.curDepth = 1;
   levelMarks = [];
@@ -505,6 +609,7 @@ function updateNav() {
 function takeback() {
   if (AN.bcRun) { toast('warn', 'Blunder check running - cancel it first'); return; }
   if (engineThinking) { toast('warn', 'Wait for the engine move'); return; }
+  if (!atLiveEnd()) { toast('info', 'Return to the game before you take a move back'); return; }
   const n = W.plyCount();
   if (!n) { toast('info', 'Nothing to take back'); return; }
   let target = 0;
@@ -513,33 +618,77 @@ function takeback() {
     if (W.scrTurn() === humanSide) { target = p; break; }
   }
   W.truncateHistory(target);
+  // The scratch position is shared with the editor and with the analysis
+  // fallback. The search loop above left it on a probe position, so put it
+  // back on the live game.
+  W.scratchFromLive();
+  engineGen++;             // any search still running belongs to the old line
+  // Analysis data is keyed by ply index. Entries past the new end describe
+  // moves that no longer exist and would otherwise be shown against the
+  // different moves played next.
+  for (const k of Object.keys(AN.scores)) if (Number(k) >= target) delete AN.scores[k];
+  for (const k of Object.keys(AN.annots)) if (Number(k) >= target) delete AN.annots[k];
+  if (Array.isArray(levelMarks)) {
+    levelMarks = levelMarks.filter(m => (m && m.afterPly != null ? m.afterPly : 0) < target);
+  }
+  // Give the time back, and start the clock again for a game that had ended.
+  if (clockHist[target]) clockMs = clockHist[target].slice();
+  clockHist.length = Math.min(clockHist.length, target + 1);
   gameOver = false;
+  for (const pos of ['top', 'bottom']) {
+    const el = strip(pos);
+    if (el) el.classList.remove('flag', 'win', 'lose');
+  }
   clearGhost();
+  $('evalFill').style.height = '50%';
+  resumeClock();
   setStatus('Takeback - your move');
   sound('arm');
   syncAll();
 }
-
 // ===================== 7. wall input (plan section 6) ==================
-// states: IDLE -> ARMED -> DRAGGING -> (PENDING) -> IDLE/COMMIT
-let wallState = 'IDLE', armedO = 0;
+// One gesture, no mode. Moving over the board hit-tests the pointer: over a
+// groove it shows a wall preview in that orientation, over a cell body it
+// shows nothing. Pressing a groove starts the drag, dragging across the other
+// axis flips the orientation, and a release over a legal slot places the wall.
+// The H and V buttons only force an orientation for people who want an
+// explicit control. They are never required.
+let wallState = 'IDLE';    // IDLE | DRAGGING | PENDING
+let armedO = 0;            // last used orientation
+let forcedO = null;        // orientation forced by the H / V buttons or keys
 let dragPtr = null;
+let dragFrom = null;
+let forcedTimer = null;
 
-function clearGhost() {
-  wallState = 'IDLE'; dragPtr = null;
-  B.ghost = null; B.ghostFrom = null;
-  $('wallH').classList.remove('armed'); $('wallV').classList.remove('armed');
-  $('confirmChip').style.display = 'none';
+function humanCanAct() {
+  return !gameOver && !engineThinking && atLiveEnd() && W.turn() === humanSide;
+}
+function releaseForced() {
+  forcedO = null;
+  if (forcedTimer) { clearTimeout(forcedTimer); forcedTimer = null; }
+  $('wallH').classList.remove('armed');
+  $('wallV').classList.remove('armed');
   hideLegalSlots();
 }
+function clearGhost() {
+  wallState = 'IDLE'; dragPtr = null; dragFrom = null;
+  B.ghost = null; B.ghostFrom = null;
+  if (B.setHover) B.setHover(null);
+  $('confirmChip').style.display = 'none';
+  releaseForced();
+}
 function armWall(o) {
-  if ($('wallH').classList.contains('off')) return;
-  if (wallState === 'ARMED' && armedO === o) { clearGhost(); return; }
+  if ($(o === 0 ? 'wallH' : 'wallV').classList.contains('off')) return;
+  const was = forcedO;
   clearGhost();
-  armedO = o; wallState = 'ARMED';
+  if (was === o) { B.render(); return; }      // second press releases it
+  forcedO = o; armedO = o;
   $(o === 0 ? 'wallH' : 'wallV').classList.add('armed');
   showLegalSlots(o);
+  // No mode you can get stuck in: the forced orientation expires by itself.
+  forcedTimer = setTimeout(() => { releaseForced(); B.render(); }, 6000);
   sound('arm'); haptic(6);
+  B.render();
 }
 let slotLayer = null;
 function showLegalSlots(o) {
@@ -564,16 +713,66 @@ function boardPoint(ev) {
   const rect = B.cv.getBoundingClientRect();
   return { x: ev.clientX - rect.left, y: ev.clientY - rect.top };
 }
+// The board is a lattice of cells of side C separated by grooves of width G,
+// repeating every U = C + G. Groove k has its centre at M + (k+1)*U - G/2, so
+// the nearest groove on an axis and the distance to it come straight from the
+// pointer position.
+function grooveNear(p, n) {
+  const U = B.U, G = B.G, M = B.M;
+  let k = Math.round((p - M + G / 2) / U) - 1;
+  k = Math.max(0, Math.min(n - 1, k));
+  return { k, d: Math.abs(p - (M + (k + 1) * U - G / 2)) };
+}
+// Anchor for one orientation. Along the wall's own long axis the anchor is the
+// cell the pointer is literally inside (floor); across the groove it snaps to
+// the nearest corridor (round). That asymmetry is what makes placement feel
+// right, because the wall always grows away from the cell you pointed at.
+function anchorFor(o, px, py) {
+  const M = B.M, U = B.U, C = B.C;
+  let r, c;
+  if (o === 0) { c = Math.floor((px - M) / U); r = Math.round((py - M - C) / U); }
+  else { r = Math.floor((py - M) / U); c = Math.round((px - M - C) / U); }
+  return { r: Math.max(0, Math.min(7, r)), c: Math.max(0, Math.min(7, c)) };
+}
+function cellAt(px, py) {
+  const raw = B.pointToCell(px, py);
+  if (raw == null || raw === -1 || raw === false) return null;
+  if (typeof raw === 'number') return { r: Math.floor(raw / 9), c: raw % 9, idx: raw };
+  return { r: raw.r, c: raw.c, idx: raw.r * 9 + raw.c };
+}
+// Decides what the pointer is over: a cell body, or a groove and which one.
+function boardHit(px, py) {
+  if (!B.U) return { kind: 'none' };
+  const reach = B.G / 2 + .26 * B.C;
+  const gv = grooveNear(px, 8), gh = grooveNear(py, 8);
+  const onV = gv.d <= reach, onH = gh.d <= reach;
+  const cell = cellAt(px, py);
+  if (!onV && !onH) return cell ? { kind: 'cell', cell: cell.idx } : { kind: 'none' };
+  // An exact crossing is ambiguous, so it keeps the orientation last used.
+  const o = (onV && onH) ? armedO : (onV ? 1 : 0);
+  const a = anchorFor(o, px, py);
+  return { kind: 'groove', o, r: a.r, c: a.c };
+}
+// The hover preview is what replaces the wall mode button: the board itself
+// tells you where the wall would go before you commit to anything.
+function updateHover(px, py) {
+  if (!B.setHover) return;
+  if (!humanCanAct() || currentPane === 'edPane') { B.setHover(null); B.render(); return; }
+  const hit = boardHit(px, py);
+  if (hit.kind !== 'groove') { B.setHover(null); B.render(); return; }
+  const o = forcedO != null ? forcedO : hit.o;
+  const a = forcedO != null ? anchorFor(o, px, py) : { r: hit.r, c: hit.c };
+  const legal = !!legalWall[o * 64 + a.r * 8 + a.c];
+  B.setHover(legal ? { o, r: a.r, c: a.c } : null);
+  B.render();
+}
 function snapGhost(px, py) {
   const off = touchOffsetPx();
   const p = { x: px, y: py - off };
-  // Always snap to the NEAREST anchor inside the board: a tap far from any
-  // groove still produces a concrete ghost (ok / assisted / bad with the
-  // reason), never a silent no-op.
-  let a = B.nearestAnchor(p.x, p.y);
-  if (!a) { B.ghost = null; setStatus('Tap between cells to place the wall'); B.render(); return; }
-  let [o, r, c] = [armedO, a.r, a.c];
-  const [eo, er, ec] = B.dispWallToEng(o, r, c);
+  const o = armedO;
+  const a = anchorFor(o, p.x, p.y);
+  let r = a.r, c = a.c;
+  const eng = B.dispWallToEng(o, r, c);
   let st = legalWall[o * 64 + r * 8 + c] ? 'ok' : null;
   if (!st) {   // magnetic assist: nearest LEGAL anchor around the pointer
     let best = null;
@@ -589,8 +788,9 @@ function snapGhost(px, py) {
   }
   if (!st) st = 'bad';
   B.ghost = { o, r, c, state: st, from: st === 'assisted' ? a : null };
-  if (st === 'bad') setStatus(illegalReason(eo, er, ec));
+  if (st === 'bad') setStatus(illegalReason(eng[0], eng[1], eng[2]));
   else setStatus(st === 'assisted' ? 'Snapped to the nearest legal slot' : '');
+  if (B.setHover) B.setHover(null);
   B.render();
 }
 function illegalReason(o, r, c) {
@@ -616,36 +816,28 @@ function onBoardPointerDown(ev) {
   if (engineThinking) { thinkNudge(); return; }
   if (!atLiveEnd()) { toast('info', 'Reviewing an earlier ply - press Return to game'); return; }
   const pt = boardPoint(ev);
-  const cell = B.pointToCell(pt.x, pt.y);
-  if (wallState === 'ARMED') { wallState = 'DRAGGING'; dragPtr = ev.pointerId; snapGhost(pt.x, pt.y); ev.preventDefault(); return; }
-  if (cell) {
-    const near = B.nearestAnchor(pt.x, pt.y);
-    // A press on a CELL CENTER belongs to the pawn; only presses hugging a
-    // groove intersection start the direct wall gesture (plan section 6.2).
-    let cellCenterPress = false;
-    if (cell) {
-      const cc2 = B.cellCenter(cell.r, cell.c);
-      cellCenterPress = Math.hypot(pt.x - cc2.x, pt.y - cc2.y) < .34 * B.U;
-    }
-    if (!near || cellCenterPress || near.dist > .55 * B.U || !nearAnchorHasLegal(near)) {
-      pawnDown(cell.r * 9 + cell.c, pt);   // pawnDown wants a display index
-      return;
-    }
-    // direct gesture: provisional orientation from the groove under the cursor
-    const fx = Math.abs((pt.x % B.U) - B.U / 2), fy = Math.abs((pt.y % B.U) - B.U / 2);
-    armedO = (fy < fx) ? 0 : (fx < fy ? 1 : lastArmO());
-    clearGhost(); armedO = armedO; wallState = 'DRAGGING'; dragPtr = ev.pointerId;
-    snapGhost(pt.x, pt.y); ev.preventDefault();
+  const hit = boardHit(pt.x, pt.y);
+  // With no orientation forced, a press on a cell body belongs to the pawn.
+  if (forcedO == null && hit.kind !== 'groove') {
+    if (hit.kind === 'cell') pawnDown(hit.cell, pt);
+    return;
   }
+  armedO = forcedO != null ? forcedO : hit.o;
+  wallState = 'DRAGGING'; dragPtr = ev.pointerId; dragFrom = pt;
+  try { B.cv.setPointerCapture(ev.pointerId); } catch (e) { /* no capture: still works */ }
+  snapGhost(pt.x, pt.y);
+  ev.preventDefault();
 }
-function nearAnchorHasLegal(a) {
-  for (const o of [0, 1]) if (legalWall[o * 64 + a.r * 8 + a.c]) return true;
-  return false;
-}
-function lastArmO() { return armedO; }
 function onBoardPointerMove(ev) {
-  if (wallState !== 'DRAGGING' || ev.pointerId !== dragPtr) return;
-  const pt = boardPoint(ev); snapGhost(pt.x, pt.y); ev.preventDefault();
+  const pt = boardPoint(ev);
+  if (wallState !== 'DRAGGING' || ev.pointerId !== dragPtr) { updateHover(pt.x, pt.y); return; }
+  // The drag vector is the flip gesture: pull along the wall you want.
+  if (forcedO == null && dragFrom) {
+    const dx = Math.abs(pt.x - dragFrom.x), dy = Math.abs(pt.y - dragFrom.y);
+    if (Math.max(dx, dy) > .45 * B.C) armedO = dx > dy ? 0 : 1;
+  }
+  snapGhost(pt.x, pt.y);
+  ev.preventDefault();
 }
 function onBoardPointerUp(ev) {
   if (wallState !== 'DRAGGING' || ev.pointerId !== dragPtr) return;
@@ -659,14 +851,15 @@ function onBoardPointerUp(ev) {
   }
 }
 function commitGhost(gh) {
-  if (!gh || engineThinking || gameOver || W.turn() !== humanSide) {
+  if (!gh || !humanCanAct()) {
     clearGhost(); B.render(); return;   // stale ghost: never apply out of turn
   }
-  const [eo, er, ec] = B.dispWallToEng(gh.o, gh.r, gh.c);
-  if (W.applyWall(eo, er, ec)) {
+  const eng = B.dispWallToEng(gh.o, gh.r, gh.c);
+  if (W.applyWall(eng[0], eng[1], eng[2])) {
+    const anim = B.animateWall ? B.animateWall(gh.o, gh.r, gh.c) : null;
     clearGhost();
     sound('wall'); haptic(18);
-    afterHumanMove();
+    afterHumanMove(anim);
   } else { clearGhost(); B.render(); }
 }
 function showConfirmChip(gh) {
@@ -680,33 +873,33 @@ function showConfirmChip(gh) {
 $('ccOk').addEventListener('click', () => { if (B.ghost) commitGhost(B.ghost); });
 $('ccNo').addEventListener('click', () => { clearGhost(); B.render(); });
 
-// dock events: press-and-drag (M1) vs click-to-arm (M2)
-for (const [id, o] of [['wallH', 0], ['wallV', 1]]) {
-  const el = $(id);
+// H and V: a press and drag carries the ghost onto the board, a plain press
+// forces the orientation for the next placement.
+for (const pair of [['wallH', 0], ['wallV', 1]]) {
+  const el = $(pair[0]), o = pair[1];
   el.addEventListener('pointerdown', ev => {
-    el.setPointerCapture(ev.pointerId);
+    try { el.setPointerCapture(ev.pointerId); } catch (e) { /* ignore */ }
     el._downAt = performance.now(); el._dragging = false;
   });
   el.addEventListener('pointermove', ev => {
     if (!el._downAt) return;
-    // Keep tracking AFTER the drag engages: pointer capture retargets every
-    // move to the dock, so this handler is the only channel that can carry
-    // the ghost across the board. An early return here left M1 dead -- the
-    // ghost froze off-board and the release could never commit.
+    // Pointer capture retargets every move to the button, so this handler is
+    // the only channel that can carry the ghost across the board.
     if (!el._dragging &&
         (Math.abs(ev.movementX) + Math.abs(ev.movementY) > 3 ||
          performance.now() - el._downAt > 150)) el._dragging = true;
-    if (el._dragging && wallState !== 'DRAGGING') { armWall(o); wallState = 'DRAGGING'; dragPtr = ev.pointerId; }
+    if (el._dragging && wallState !== 'DRAGGING') {
+      if ($(pair[0]).classList.contains('off')) return;
+      armedO = o; wallState = 'DRAGGING'; dragPtr = ev.pointerId; dragFrom = null;
+    }
     if (wallState === 'DRAGGING' && ev.pointerId === dragPtr) {
-      // ghost over the board while the pointer is still on the dock is not
-      // visible; forward to board coordinates anyway so entering the board flows
       const br = B.cv.getBoundingClientRect();
       snapGhost(ev.clientX - br.left, ev.clientY - br.top);
     }
   });
   el.addEventListener('pointerup', ev => {
     if (wallState === 'DRAGGING' && ev.pointerId === dragPtr) { onBoardPointerUp(ev); }
-    else if (performance.now() - el._downAt < 300) armWall(o);   // click = arm
+    else if (performance.now() - el._downAt < 300) armWall(o);
     el._downAt = null; el._dragging = false;
   });
 }
@@ -718,16 +911,19 @@ function pawnDown(dispCell, pt) {
   const isMyTurn = W.turn() === humanSide && !engineThinking;
   if (!atLiveEnd()) { toast('info', 'Reviewing an earlier ply - press Return to game'); return; }
   if (dispCell === myPawnDisp && isMyTurn) { B.selected = dispCell; B.dots = [...legalPawn]; B.render(); return; }
-  if (isMyTurn && legalPawn.has(dispCell)) {
-    const engCell = B.dispPawnToEng(Math.floor(dispCell / 9), dispCell % 9);
-    if (W.applyPawn(engCell)) {
-      B.selected = -1; B.dots = [];
-      sound('move'); haptic(10);
-      afterHumanMove();
-    }
-    return;
-  }
+  if (isMyTurn && legalPawn.has(dispCell)) { playPawn(dispCell); return; }
   if (B.selected >= 0) { B.selected = -1; buildLegalSets(); B.render(); }
+}
+// The tween starts before the state sync paints, so the piece slides from the
+// square it left instead of appearing at the new one.
+function playPawn(dispCell) {
+  const engCell = B.dispPawnToEng(Math.floor(dispCell / 9), dispCell % 9);
+  const from = B.engPawnToDisp(W.pawn(humanSide));
+  if (!W.applyPawn(engCell)) return;
+  B.selected = -1; B.dots = [];
+  const anim = B.animateMove ? B.animateMove(humanSide, from, dispCell) : null;
+  sound('move'); haptic(10);
+  afterHumanMove(anim);
 }
 
 // ===================== 10. sound & haptics ==============================
@@ -915,11 +1111,13 @@ function setClockFromLabel(l) {
 function applyLevelChip() {
   const lv = LEVELS[S.level];
   $('lvlName').textContent = lv.label;
-  $('lvlChip').querySelector('.dot').style.background = lv.color;
-  $('oppLvl').textContent = '\u00b7 ' + lv.label;
-  $('mOppLvl').textContent = '\u00b7 ' + lv.label;
+  const dot = $('lvlChip').querySelector('.dot');
+  if (dot) dot.style.background = lv.color;
+  for (const pos of ['top', 'bottom']) {
+    const el = strip(pos), lb = el && el.querySelector('.lvl');
+    if (lb && Number(el.dataset.player) !== humanSide) lb.textContent = lv.label;
+  }
 }
-
 function modalSettings() {
   const seg = (key, opts, labels) =>
     `<div class="seg" data-set="${key}">${opts.map((o, i) =>
@@ -1552,6 +1750,19 @@ const ANW = {
       this.wk.onerror = () => { this.failed = true; };
     } catch (e) { this.failed = true; }
   },
+  // Asks the worker for the engine's own move. It replays the recorded line
+  // into its own live game and runs qr_engine_move, which is the hybrid search
+  // the main thread would run. qr_analyze cannot serve this: it is pure
+  // alpha-beta on the scratch position and would change how the engine plays.
+  bestMove(req, cb) {
+    this.ensure();
+    if (!this.ok() || !this.ready) return false;
+    const id = this.nextId++;
+    this.pending.set(id, res => cb(res && res.type !== 'error' ? res : null));
+    this.wk.postMessage({ id, cmd: 'bestmove', moves: req.moves,
+                          depth: req.depth, timeMs: req.timeMs });
+    return true;
+  },
   analyze(req, cb) {
     this.ensure();
     if (!this.ok() || !this.ready) return false;
@@ -1630,12 +1841,21 @@ function renderScratchToBoard() {
   B.setData(pw, wh, wv, null);
   refreshHudFromScratch();
 }
+// The editor paints in absolute coordinates, so player 0 always sits in the
+// bottom strip and player 1 in the top one.
 function refreshHudFromScratch() {
   const wl = [W.scrWallsLeft(0), W.scrWallsLeft(1)];
-  pips($('pips0'), wl[0]); pips($('pips1'), wl[1]);
-  pips($('mPips0'), wl[0]); pips($('mPips1'), wl[1]);
-  $('walls0').textContent = wl[0]; $('walls1').textContent = wl[1];
-  $('mWalls0').textContent = wl[0]; $('mWalls1').textContent = wl[1];
+  const d = [W.scrDist(0), W.scrDist(1)];
+  for (const seat of [['bottom', 0], ['top', 1]]) {
+    const el = strip(seat[0]), pl = seat[1];
+    if (!el) continue;
+    el.dataset.player = pl;
+    const wn = el.querySelector('.wn');
+    if (wn) wn.textContent = wl[pl];
+    pips(el.querySelector('.pips'), wl[pl]);
+    const dEl = el.querySelector('.dist');
+    if (dEl && d[pl] >= 0) dEl.innerHTML = '<small>DIST</small><b>' + d[pl] + '</b>';
+  }
 }
 function edBoardDown(ev) {
   ev.preventDefault();
@@ -1830,11 +2050,12 @@ function doFlip() {
   B.render();
 }
 $('btnFlip').onclick = doFlip;
-$('btnUndo').onclick = takeback;
+for (const id of ['btnTakeback', 'btnUndo']) { const el = $(id); if (el) el.onclick = takeback; }
 $('btnHint').onclick = showHint;
 $('btnNew').onclick = modalNewGame;
 $('lvlChip').onclick = modalNewGame;
 $('btnSettings').onclick = modalSettings;
+const _bs2 = $('btnSettings2'); if (_bs2) _bs2.onclick = modalSettings;
 $('logo').onclick = () => openModal(`<h3>ABOUT <span class="x" data-close>&#10005;</span></h3>
   <p style="line-height:1.7;color:var(--txt2)">Zquoridor plays with an NNUE evaluation network
   (354 inputs, hybrid PUCT MCTS over alpha-beta) trained on self-play.
@@ -1845,46 +2066,60 @@ bcvs.addEventListener('pointerdown', onBoardPointerDown);
 bcvs.addEventListener('pointermove', onBoardPointerMove);
 bcvs.addEventListener('pointerup', onBoardPointerUp);
 bcvs.addEventListener('pointercancel', () => { clearGhost(); B.render(); });
+bcvs.addEventListener('pointerleave', () => { if (B.setHover) { B.setHover(null); B.render(); } });
 $('raceMeter').onclick = () => { S.paths = !S.paths; togglePaths(); saveSettings(); };
 $('btnPaths').onclick = () => { S.paths = !S.paths; togglePaths(); saveSettings(); };
-function togglePaths() {
-  if (!S.paths) { B.paths = null; B.render(); return; }
-  const mk = pl => {
-    const cells = []; let cell = W.pawn(pl); cells.push(cell);
-    let guard = 0;
-    while (guard++ < 40) {
-      const r = Math.floor(cell / 9), goal = pl === 0 ? 8 : 0;
-      if (r === goal) break;
-      // greedy step: pick the neighbour (open edge) closest to goal
-      let bestC = null, bestD = 99;
-      for (const [dr, dc] of [[-1, 0], [1, 0], [0, -1], [0, 1]]) {
-        const nr = r + dr, nc = c0(cell) + dc;
-        if (nr < 0 || nr > 8 || nc < 0 || nc > 8) continue;
-        const ncCell = nr * 9 + nc;
-        const dd = Math.abs(nr - goal);
-        if (dd < bestD && edgeOpen(cell, ncCell)) { bestD = dd; bestC = ncCell; }
-      }
-      if (bestC == null) break;
-      cells.push(bestC); cell = bestC;
-    }
-    return { cells, color: getComputedStyle(document.documentElement).getPropertyValue('--p' + pl).trim() };
-  };
-  function c0(cell) { return cell % 9; }
-  function edgeOpen(a, b) {
-    const ar = Math.floor(a / 9), ac = a % 9, br = Math.floor(b / 9), bc2 = b % 9;
-    if (ar === br) {  // horizontal step blocked by V walls at col min(ac,bc)
-      const cmin = Math.min(ac, bc2), r = ar;
-      const bit1 = r > 0 ? W.wallVBit((r - 1) * 8 + cmin) : 0;
-      const bit2 = r < 8 ? W.wallVBit(r * 8 + cmin) : 0;
-      return !(bit1 || bit2);
-    }
-    const rmin = Math.min(ar, br), c = ac;
-    const bit1 = c > 0 ? W.wallHBit(rmin * 8 + c - 1) : 0;
-    const bit2 = c < 8 ? W.wallHBit(rmin * 8 + c) : 0;
+// Shortest paths for the overlay, in DISPLAY coordinates. The previous
+// version walked greedily in engine coordinates and handed engine cells to a
+// renderer that expects display cells, so both lines came out mirrored and
+// crossed in the middle of the board.
+function edgeOpen(a, b) {
+  const ar = Math.floor(a / 9), ac = a % 9, br = Math.floor(b / 9), bc = b % 9;
+  if (ar === br) {          // horizontal step, blocked by vertical walls
+    const cmin = Math.min(ac, bc), r = ar;
+    const bit1 = r > 0 ? W.wallVBit((r - 1) * 8 + cmin) : 0;
+    const bit2 = r < 8 ? W.wallVBit(r * 8 + cmin) : 0;
     return !(bit1 || bit2);
   }
-  B.paths = [mk(0), mk(1)]; B.render();
+  const rmin = Math.min(ar, br), c = ac;   // vertical step, blocked by H walls
+  const bit1 = c > 0 ? W.wallHBit(rmin * 8 + c - 1) : 0;
+  const bit2 = c < 8 ? W.wallHBit(rmin * 8 + c) : 0;
+  return !(bit1 || bit2);
 }
+function shortestPath(pl) {
+  const start = W.pawn(pl), goalRow = pl === 0 ? 8 : 0;
+  const prev = new Int16Array(81).fill(-1);
+  const seen = new Uint8Array(81);
+  const q = [start];
+  seen[start] = 1;
+  let end = -1;
+  for (let i = 0; i < q.length && end < 0; i++) {
+    const cur = q[i];
+    if (Math.floor(cur / 9) === goalRow) { end = cur; break; }
+    const r = Math.floor(cur / 9), c = cur % 9;
+    const steps = [[-1, 0], [1, 0], [0, -1], [0, 1]];
+    for (const st of steps) {
+      const nr = r + st[0], nc = c + st[1];
+      if (nr < 0 || nr > 8 || nc < 0 || nc > 8) continue;
+      const nx = nr * 9 + nc;
+      if (seen[nx] || !edgeOpen(cur, nx)) continue;
+      seen[nx] = 1; prev[nx] = cur; q.push(nx);
+    }
+  }
+  if (end < 0) return null;
+  const cells = [];
+  for (let cur = end; cur !== -1; cur = prev[cur]) cells.push(B.engPawnToDisp(cur));
+  cells.reverse();
+  return { cells, player: pl,
+           color: getComputedStyle(document.documentElement).getPropertyValue('--p' + pl).trim() };
+}
+// Recomputed on every state change, so the lines can never go stale.
+function recomputePaths() {
+  if (!B) return;
+  const data = S.paths ? [shortestPath(0), shortestPath(1)].filter(Boolean) : null;
+  if (B.setPaths) B.setPaths(data); else B.paths = data;
+}
+function togglePaths() { recomputePaths(); B.render(); }
 
 // ===================== 10b. move log (plan section 5.8) =================
 function renderMoveLog() {
@@ -2257,7 +2492,19 @@ function boot() {
   loadSettings();
   B = new QBoard($('board'));
   window.__qb = B;   // test/debug handle
-  B.onChange = () => { $('evalStrip').style.height = (B.cssSide - 4) + 'px'; };
+  // The player strips must be exactly as wide as the board. On a phone in
+  // landscape the board is limited by height, not by width, so without this
+  // the strips stretch across the whole column and the board floats inside
+  // them.
+  B.onChange = () => {
+    $('evalStrip').style.height = (B.cssSide - 4) + 'px';
+    const zone = $('boardZone');
+    const extra = zone ? Math.max(0, Math.min(zone.clientWidth - B.cssSide, 20)) : 0;
+    for (const id of ['hudTop', 'hudBottom']) {
+      const el = $(id);
+      if (el) el.style.maxWidth = (B.cssSide + extra) + 'px';
+    }
+  };
   applySettings();
   W.newGame();
   humanSide = S.side;

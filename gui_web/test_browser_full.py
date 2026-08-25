@@ -105,7 +105,7 @@ def main():
             page.evaluate("window.__w.applyPawn(13); afterHumanMove();")
             page.wait_for_timeout(2800)
             before = page.evaluate("window.__w.plyCount()")
-            page.click("#btnUndo")
+            page.click("#btnTakeback")
             page.wait_for_timeout(500)
             check("takeback", page.evaluate("window.__w.plyCount()") < before)
 
@@ -303,7 +303,8 @@ def main():
             page.keyboard.press("Escape")
             # nav keys
             page.evaluate("newGame(); window.__w.applyPawn(13); afterHumanMove();")
-            page.wait_for_timeout(2600)
+            page.wait_for_function("() => !engineThinking", timeout=20000)
+            page.wait_for_timeout(300)
             page.keyboard.press(",")
             page.wait_for_timeout(200)
             cur2 = page.evaluate("window.__w.cursor()")
@@ -408,7 +409,7 @@ def main():
             page.wait_for_timeout(400)
             page.evaluate("S.confirmWalls = true")
             n1 = page.evaluate("window.__w.plyCount()")
-            armed = page.evaluate("(function(){ armWall(1); return wallState === 'ARMED'; })()")
+            armed = page.evaluate("(function(){ armWall(1); return forcedO === 1; })()")
             check("wallV armed for confirm", armed)
             pt2 = anchor_pt(1, 2, 2)
             page.mouse.click(pt2["x"], pt2["y"])
@@ -426,7 +427,7 @@ def main():
             # clock: 5+0 mode ticks and flag logic initializes
             page.evaluate("S.clockMode='5+0'; S.baseMin=5; startClock(); newGame()")
             page.wait_for_timeout(700)
-            clk = page.text_content("#clock0")
+            clk = page.text_content("#hudBottom .clock")
             check("clock ticking", clk not in ("--:--", ""))
             page.evaluate("stopClock(); S.clockMode='none'")
 
