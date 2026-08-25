@@ -199,8 +199,8 @@ html[data-anim="off"] *{animation-duration:0ms!important;transition-duration:0ms
 .pbar .clock.crit{color:var(--red)}
 .pbar .clock.off{display:none}
 .pbar .walls{display:flex;align-items:center;gap:7px}
-.pbar .pips{display:flex;gap:2px}
-.pbar .pips i{width:3px;height:11px;border-radius:1px;background:rgba(255,255,255,.10)}
+.pbar .pips{display:flex;gap:3px}
+.pbar .pips i{width:4px;height:14px;border-radius:1px;background:rgba(255,255,255,.12)}
 .pbar .pips i.on{background:var(--pc)}
 .pbar .wn{font-size:.78rem;font-weight:600;font-variant-numeric:tabular-nums}
 /* Distance to goal. The number stands alone at the right edge; a hairline
@@ -244,12 +244,12 @@ html[data-anim="off"] *{animation-duration:0ms!important;transition-duration:0ms
   pointer-events:none;white-space:nowrap;
 }
 /* vertical, beside the board */
-#boardZone > #evalWrap{height:min(100%,100cqh);max-height:100%}
-#boardZone > #evalWrap #evalStrip{width:12px;height:100%}
+#boardZone > #evalWrap{height:min(100%,100cqh);max-height:100%;margin-bottom:15px}
+#boardZone > #evalWrap #evalStrip{width:24px;height:100%}
 #boardZone > #evalWrap .fill{left:0;right:0;bottom:0}
 #boardZone > #evalWrap #evalStrip::after{left:0;right:0;top:50%;height:1px}
-#boardZone > #evalWrap #evalNum{left:0;width:26px;text-align:right;
-  transform:translateY(-50%)}
+#boardZone > #evalWrap #evalNum{left:0;right:0;bottom:-15px;text-align:center;
+  font-size:.5rem;letter-spacing:.02em}
 /* horizontal, under the board */
 #underBoard > #evalWrap{width:100%;height:12px}
 #underBoard > #evalWrap #evalStrip{width:100%;height:12px}
@@ -356,6 +356,22 @@ html[data-anim="off"] *{animation-duration:0ms!important;transition-duration:0ms
    space under the button row; on a wide screen it sits in the side rail. */
 #moveLog{font-size:.68rem;color:var(--txt2);line-height:1.85;min-height:52px;
   overflow-y:auto;letter-spacing:.02em}
+/* The analysis list carries a score for every ply. Four columns keep the
+   numbers under each other, which is what makes a swing visible. */
+#anMoveLog{font-size:.64rem;color:var(--txt2);overflow-y:auto;min-height:52px;
+  user-select:text;-webkit-user-select:text}
+#anMoveLog .alRow{display:grid;grid-template-columns:26px 1fr 46px 1fr 46px;
+  gap:4px;align-items:center;padding:2px 0;border-bottom:1px solid var(--bor)}
+#anMoveLog .alNum{color:var(--muted);font-size:.58rem}
+#anMoveLog .alMv{cursor:pointer;padding:1px 5px;border-radius:var(--r-sm);
+  transition:background var(--dur-fast),color var(--dur-fast)}
+#anMoveLog .alMv:hover{background:var(--surf2);color:var(--gold2)}
+#anMoveLog .alMv.cur{background:var(--surf2);color:var(--gold)}
+#anMoveLog .alEv{text-align:right;font-variant-numeric:tabular-nums;
+  font-size:.58rem;color:var(--muted)}
+#anMoveLog .alEv.good{color:var(--green)}
+#anMoveLog .alEv.bad{color:var(--red)}
+#anMoveLog .alHint{color:var(--muted);font-size:.56rem;padding:6px 0}
 #underBoard > #moveLog{flex:1 1 auto;min-height:0;margin-top:2px;
   padding-top:8px;border-top:1px solid var(--bor)}
 #panelBody .btn{width:auto;min-width:36px;padding:0 12px}
@@ -396,7 +412,7 @@ html[data-anim="off"] *{animation-duration:0ms!important;transition-duration:0ms
     max-width:1180px;width:100%;margin:0 auto;
   }
   #boardCol{height:100%;gap:8px}
-  #boardZone{padding-left:32px}
+  #boardZone{padding-left:6px}
   /* The button row and the status line move into the side rail, so the
      board keeps the full height of its column. */
   #controlsSlot{display:flex;flex-direction:column;gap:10px;
@@ -1013,6 +1029,9 @@ html[data-handed="left"] #controls{flex-direction:row-reverse}
           </div>
           <div id="bcSummary" style="display:none;font-size:.6rem;color:var(--txt2)"></div>
         </div>
+        <div class="card grow" id="anLogCard"><h4>MOVES AND EVALUATION</h4>
+          <div id="anMoveLog">No moves yet.</div>
+        </div>
       </div>
       <div class="pane" id="edPane">
         <div class="card">
@@ -1352,8 +1371,17 @@ class QBoard {
     return Promise.resolve();
   }
 
+  // Holds a pawn under the pointer while the reader drags it. Screen
+  // coordinates in CSS pixels, or null to release it back to its cell.
+  setDragPawn(pl, x, y) {
+    this._dragPawn = (pl == null) ? null : { pl: pl | 0, x: x, y: y };
+    this.render();
+  }
+
   // Interpolated screen position of an animating pawn, or null.
   _pawnPos(pl) {
+    const d = this._dragPawn;
+    if (d && d.pl === pl) return { x: d.x, y: d.y, scale: 1.06 };
     const a = this._pawnAnim[pl];
     if (!a) return null;
     const e = qrEase(Math.max(0, Math.min(1, a.t)));
@@ -1526,8 +1554,12 @@ class QBoard {
     // Coordinates, drawn on the frame margin.
     const coordsMode = ds.coords || 'edges';
     if (coordsMode !== 'off' && C >= 24) {
+      // The coordinates label the board, they do not compete with it, so they
+      // stay small and slightly transparent.
+      g.save();
       g.fillStyle = this.css('--coord');
-      g.font = `${Math.max(9, 0.42 * C)}px 'JetBrains Mono', monospace`;
+      g.globalAlpha = .72;
+      g.font = `${Math.max(8, 0.32 * C)}px 'JetBrains Mono', monospace`;
       g.textAlign = 'center'; g.textBaseline = 'middle';
       for (let c = 0; c < 9; c++) {
         g.fillText('abcdefghi'[c], this.cellCenter(0, c).x, S - M / 2);
@@ -1536,6 +1568,7 @@ class QBoard {
         // Absolute rank: display row r is engine row (flipped ? r : 8 - r).
         g.fillText(String(this.flipped ? r + 1 : 9 - r), M / 2, this.cellCenter(r, 0).y);
       }
+      g.restore();
       // Study mode: a faint file and rank in every cell corner.
       if (coordsMode === 'all' && C >= 40) {
         g.globalAlpha = .40;
@@ -2514,9 +2547,9 @@ function setEval(score) {   // score mover-relative from the engine's last move
   if (vertical) { fill.style.width = ''; fill.style.height = share.toFixed(1) + '%'; }
   else { fill.style.height = ''; fill.style.width = share.toFixed(1) + '%'; }
   if (!num) return;
-  num.textContent = (abs >= 0 ? '+' : '') + (abs / 100).toFixed(1);
-  // Player 0 fills from the bottom, so the label sits at that boundary.
-  if (vertical) num.style.top = (bar.offsetTop + bar.offsetHeight * (1 - share / 100)) + 'px';
+  num.textContent = Math.round(share) + '%';
+  num.style.top = '';
+  void bar;
 }
 
 // ===================== 6. board bridge =================================
@@ -2546,6 +2579,7 @@ function syncFromEngine() {
   B.setData(pw, wh, wv, lastMoveInfo);
   recomputePaths();
   renderMoveLog();
+  renderAnMoveLog();
   updateNav();
   drawGraph();
   if (atLiveEnd()) clockHist[W.plyCount()] = clockMs.slice();
@@ -2798,6 +2832,10 @@ let forcedO = null;        // orientation forced by the H / V buttons or keys
 let dragPtr = null;
 let dragFrom = null;
 let forcedTimer = null;
+// Pawn drag: press your own pawn and pull it onto a legal destination.
+// Tap to select and tap the destination keeps working; a press that does not
+// move is exactly that first tap.
+let pawnDrag = null;
 
 function humanCanAct() {
   return !gameOver && !engineThinking && atLiveEnd() && W.turn() === humanSide;
@@ -2812,6 +2850,8 @@ function releaseForced() {
 function clearGhost() {
   wallState = 'IDLE'; dragPtr = null; dragFrom = null;
   B.ghost = null; B.ghostFrom = null;
+  pawnDrag = null;
+  if (B.setDragPawn) B.setDragPawn(null);
   if (B.setHover) B.setHover(null);
   $('confirmChip').style.display = 'none';
   releaseForced();
@@ -2958,7 +2998,14 @@ function onBoardPointerDown(ev) {
   const hit = boardHit(pt.x, pt.y);
   // With no orientation forced, a press on a cell body belongs to the pawn.
   if (forcedO == null && hit.kind !== 'groove') {
-    if (hit.kind === 'cell') pawnDown(hit.cell, pt);
+    if (hit.kind !== 'cell') return;
+    pawnDown(hit.cell, pt);
+    const mine = B.engPawnToDisp(W.pawn(humanSide));
+    if (hit.cell === mine && humanCanAct()) {
+      pawnDrag = { ptr: ev.pointerId, from: hit.cell, moved: false };
+      try { B.cv.setPointerCapture(ev.pointerId); } catch (e) { /* no capture: taps still work */ }
+      ev.preventDefault();
+    }
     return;
   }
   armedO = forcedO != null ? forcedO : hit.o;
@@ -2969,6 +3016,12 @@ function onBoardPointerDown(ev) {
 }
 function onBoardPointerMove(ev) {
   const pt = boardPoint(ev);
+  if (pawnDrag && ev.pointerId === pawnDrag.ptr) {
+    pawnDrag.moved = true;
+    B.setDragPawn(humanSide, pt.x, pt.y);
+    ev.preventDefault();
+    return;
+  }
   if (wallState !== 'DRAGGING' || ev.pointerId !== dragPtr) { updateHover(pt.x, pt.y); return; }
   // The drag vector is the flip gesture: pull along the wall you want.
   if (forcedO == null && dragFrom) {
@@ -2979,6 +3032,16 @@ function onBoardPointerMove(ev) {
   ev.preventDefault();
 }
 function onBoardPointerUp(ev) {
+  if (pawnDrag && ev.pointerId === pawnDrag.ptr) {
+    const moved = pawnDrag.moved;
+    pawnDrag = null;
+    B.setDragPawn(null);
+    if (!moved) return;              // a press without movement was a tap
+    const hit = boardHit(boardPoint(ev).x, boardPoint(ev).y);
+    if (hit.kind === 'cell' && legalPawn.has(hit.cell) && humanCanAct()) playPawn(hit.cell);
+    else B.render();
+    return;
+  }
   if (wallState !== 'DRAGGING' || ev.pointerId !== dragPtr) return;
   const gh = B.ghost;
   if (gh && (gh.state === 'ok' || gh.state === 'assisted')) {
@@ -4287,6 +4350,43 @@ function renderMoveLog() {
   if (curEl) curEl.scrollIntoView({ block: 'nearest' });
 }
 
+// Move list for the analysis tab. Every ply shows its score, taken from
+// AN.scores, which the engine fills at the cursor and the blunder check fills
+// for the whole game. A ply with no score yet shows a dash.
+function renderAnMoveLog() {
+  const log = $('anMoveLog');
+  if (!log) return;
+  const n = W.plyCount(), cur = W.cursor();
+  if (!n) { log.innerHTML = '<div class="alHint">No moves yet.</div>'; return; }
+  const evCell = (ply) => {
+    const sc = AN.scores[ply];
+    if (sc == null) return '<span class="alEv">–</span>';
+    const abs = absScoreAt(sc, ply);
+    const cls = abs > 40 ? 'good' : abs < -40 ? 'bad' : '';
+    const ann = AN.annots[ply] ? AN.annots[ply].sym : '';
+    return `<span class="alEv ${cls}">${fmtScore(abs)}${ann}</span>`;
+  };
+  const mvCell = (ply) =>
+    `<span class="alMv ${cur === ply ? 'cur' : ''}" data-ply="${ply}">${plyNotation(ply)}</span>`;
+  let html = '';
+  for (let i = 0; i < n; i += 2) {
+    html += `<div class="alRow"><span class="alNum">${i / 2 + 1}.</span>` +
+      mvCell(i) + evCell(i) +
+      (i + 1 < n ? mvCell(i + 1) + evCell(i + 1) : '<span></span><span></span>') +
+      '</div>';
+  }
+  const missing = [];
+  for (let i = 0; i < n; i++) if (AN.scores[i] == null) missing.push(i);
+  if (missing.length) {
+    html += `<div class="alHint">${missing.length} of ${n} plies have no score yet. ` +
+            'Run Blunder check to score the whole game.</div>';
+  }
+  log.innerHTML = html;
+  log.querySelectorAll('.alMv').forEach(el => el.onclick = () => navGo(+el.dataset.ply));
+  const cel = log.querySelector('.alMv.cur');
+  if (cel) cel.scrollIntoView({ block: 'nearest' });
+}
+
 // ===================== 14. analysis (plan section 5.6) ==================
 const AN = {
   on: false, busy: false, sid: 0, timer: null,
@@ -4342,6 +4442,7 @@ function anKick() {
     // feed the eval graph with the root score at the current cursor
     if (linesData.length > 0) {
       AN.scores[W.cursor()] = linesData[0].score;
+      renderAnMoveLog();
       drawGraph();
     }
     if (isInf && linesData.length > 0) {
@@ -4455,6 +4556,8 @@ function anSetEval(moverScore) {
 
 // ---- eval graph --------------------------------------------------------
 function drawGraph() {
+  const gw = $('anGraph');
+  if (gw) gw.style.display = W.plyCount() >= 4 ? '' : 'none';
   const cv = $('anGraph');
   if (!cv || !cv.clientWidth) return;
   const dpr = Math.min(devicePixelRatio || 1, 3);
@@ -4561,6 +4664,7 @@ function blunderCheck() {
         }
       }
       AN.scores[i] = bestS;
+      renderAnMoveLog();
     }
     AN.annots[i] = { sym, drop };
     $('bcFill').style.width = ((i + 1) / n * 100).toFixed(1) + '%';

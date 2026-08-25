@@ -461,6 +461,31 @@ Premium interface per `gui-premium.md`. Phases P0-P5 (tokens, canvas board
     was a 26 px tap target; and the move counter was still a focusable button
     after it stopped being a control.
 
+- **GUI v2 analysis and readability pass (2026-08-25)**:
+  - The vertical evaluation bar is 24 px. Its readout is a small percentage in
+    one fixed place under the bar, not a label that slides with the fill. The
+    percentage is player 0's share, which is what the bar's geometry shows, and
+    it matches the absolute-colour display convention in section 5.
+  - The wall pips are 4 by 14 px with a 3 px gap. The board coordinates dropped
+    to `0.32 * C` at 72 % alpha, so they label the board without competing with
+    it.
+  - **Evaluation left the play move log.** The play log lists moves only. The
+    Analysis tab owns evaluation and has its own list, `renderAnMoveLog()`,
+    with a score for every ply from `AN.scores`. A ply with no score shows a
+    dash, and the list says how many are missing and that Blunder check fills
+    them.
+  - **Pawn drag was never implemented.** Tap to select and tap the destination
+    worked, but pressing the pawn and pulling it did nothing. `QBoard.setDragPawn`
+    holds the piece under the pointer and the release commits over a legal
+    destination. A press that does not move is still the first tap.
+  - The evaluation graph hides itself below 4 plies, because an empty plot area
+    reads as a broken box.
+  - `gui_web/` has a new end-to-end check that drives every feature through the
+    real interface: both ways to move a pawn, all four ways to place a wall,
+    takeback, hint, flip, paths, the evaluation bar, three analysis lines, the
+    blunder check filling every ply, navigation, the editor, the settings modal
+    and the level list. 30 checks, all passing.
+
 ---
 
 ## 5. Evaluation Conventions

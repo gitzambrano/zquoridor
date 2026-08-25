@@ -400,9 +400,9 @@ function setEval(score) {   // score mover-relative from the engine's last move
   if (vertical) { fill.style.width = ''; fill.style.height = share.toFixed(1) + '%'; }
   else { fill.style.height = ''; fill.style.width = share.toFixed(1) + '%'; }
   if (!num) return;
-  num.textContent = (abs >= 0 ? '+' : '') + (abs / 100).toFixed(1);
-  // Player 0 fills from the bottom, so the label sits at that boundary.
-  if (vertical) num.style.top = (bar.offsetTop + bar.offsetHeight * (1 - share / 100)) + 'px';
+  num.textContent = Math.round(share) + '%';
+  num.style.top = '';
+  void bar;
 }
 
 // ===================== 6. board bridge =================================
@@ -432,6 +432,7 @@ function syncFromEngine() {
   B.setData(pw, wh, wv, lastMoveInfo);
   recomputePaths();
   renderMoveLog();
+  renderAnMoveLog();
   updateNav();
   drawGraph();
   if (atLiveEnd()) clockHist[W.plyCount()] = clockMs.slice();
@@ -684,6 +685,10 @@ let forcedO = null;        // orientation forced by the H / V buttons or keys
 let dragPtr = null;
 let dragFrom = null;
 let forcedTimer = null;
+// Pawn drag: press your own pawn and pull it onto a legal destination.
+// Tap to select and tap the destination keeps working; a press that does not
+// move is exactly that first tap.
+let pawnDrag = null;
 
 function humanCanAct() {
   return !gameOver && !engineThinking && atLiveEnd() && W.turn() === humanSide;
@@ -698,6 +703,8 @@ function releaseForced() {
 function clearGhost() {
   wallState = 'IDLE'; dragPtr = null; dragFrom = null;
   B.ghost = null; B.ghostFrom = null;
+  pawnDrag = null;
+  if (B.setDragPawn) B.setDragPawn(null);
   if (B.setHover) B.setHover(null);
   $('confirmChip').style.display = 'none';
   releaseForced();
@@ -844,7 +851,14 @@ function onBoardPointerDown(ev) {
   const hit = boardHit(pt.x, pt.y);
   // With no orientation forced, a press on a cell body belongs to the pawn.
   if (forcedO == null && hit.kind !== 'groove') {
-    if (hit.kind === 'cell') pawnDown(hit.cell, pt);
+    if (hit.kind !== 'cell') return;
+    pawnDown(hit.cell, pt);
+    const mine = B.engPawnToDisp(W.pawn(humanSide));
+    if (hit.cell === mine && humanCanAct()) {
+      pawnDrag = { ptr: ev.pointerId, from: hit.cell, moved: false };
+      try { B.cv.setPointerCapture(ev.pointerId); } catch (e) { /* no capture: taps still work */ }
+      ev.preventDefault();
+    }
     return;
   }
   armedO = forcedO != null ? forcedO : hit.o;
@@ -855,6 +869,12 @@ function onBoardPointerDown(ev) {
 }
 function onBoardPointerMove(ev) {
   const pt = boardPoint(ev);
+  if (pawnDrag && ev.pointerId === pawnDrag.ptr) {
+    pawnDrag.moved = true;
+    B.setDragPawn(humanSide, pt.x, pt.y);
+    ev.preventDefault();
+    return;
+  }
   if (wallState !== 'DRAGGING' || ev.pointerId !== dragPtr) { updateHover(pt.x, pt.y); return; }
   // The drag vector is the flip gesture: pull along the wall you want.
   if (forcedO == null && dragFrom) {
@@ -865,6 +885,16 @@ function onBoardPointerMove(ev) {
   ev.preventDefault();
 }
 function onBoardPointerUp(ev) {
+  if (pawnDrag && ev.pointerId === pawnDrag.ptr) {
+    const moved = pawnDrag.moved;
+    pawnDrag = null;
+    B.setDragPawn(null);
+    if (!moved) return;              // a press without movement was a tap
+    const hit = boardHit(boardPoint(ev).x, boardPoint(ev).y);
+    if (hit.kind === 'cell' && legalPawn.has(hit.cell) && humanCanAct()) playPawn(hit.cell);
+    else B.render();
+    return;
+  }
   if (wallState !== 'DRAGGING' || ev.pointerId !== dragPtr) return;
   const gh = B.ghost;
   if (gh && (gh.state === 'ok' || gh.state === 'assisted')) {
@@ -2173,6 +2203,43 @@ function renderMoveLog() {
   if (curEl) curEl.scrollIntoView({ block: 'nearest' });
 }
 
+// Move list for the analysis tab. Every ply shows its score, taken from
+// AN.scores, which the engine fills at the cursor and the blunder check fills
+// for the whole game. A ply with no score yet shows a dash.
+function renderAnMoveLog() {
+  const log = $('anMoveLog');
+  if (!log) return;
+  const n = W.plyCount(), cur = W.cursor();
+  if (!n) { log.innerHTML = '<div class="alHint">No moves yet.</div>'; return; }
+  const evCell = (ply) => {
+    const sc = AN.scores[ply];
+    if (sc == null) return '<span class="alEv">–</span>';
+    const abs = absScoreAt(sc, ply);
+    const cls = abs > 40 ? 'good' : abs < -40 ? 'bad' : '';
+    const ann = AN.annots[ply] ? AN.annots[ply].sym : '';
+    return `<span class="alEv ${cls}">${fmtScore(abs)}${ann}</span>`;
+  };
+  const mvCell = (ply) =>
+    `<span class="alMv ${cur === ply ? 'cur' : ''}" data-ply="${ply}">${plyNotation(ply)}</span>`;
+  let html = '';
+  for (let i = 0; i < n; i += 2) {
+    html += `<div class="alRow"><span class="alNum">${i / 2 + 1}.</span>` +
+      mvCell(i) + evCell(i) +
+      (i + 1 < n ? mvCell(i + 1) + evCell(i + 1) : '<span></span><span></span>') +
+      '</div>';
+  }
+  const missing = [];
+  for (let i = 0; i < n; i++) if (AN.scores[i] == null) missing.push(i);
+  if (missing.length) {
+    html += `<div class="alHint">${missing.length} of ${n} plies have no score yet. ` +
+            'Run Blunder check to score the whole game.</div>';
+  }
+  log.innerHTML = html;
+  log.querySelectorAll('.alMv').forEach(el => el.onclick = () => navGo(+el.dataset.ply));
+  const cel = log.querySelector('.alMv.cur');
+  if (cel) cel.scrollIntoView({ block: 'nearest' });
+}
+
 // ===================== 14. analysis (plan section 5.6) ==================
 const AN = {
   on: false, busy: false, sid: 0, timer: null,
@@ -2228,6 +2295,7 @@ function anKick() {
     // feed the eval graph with the root score at the current cursor
     if (linesData.length > 0) {
       AN.scores[W.cursor()] = linesData[0].score;
+      renderAnMoveLog();
       drawGraph();
     }
     if (isInf && linesData.length > 0) {
@@ -2341,6 +2409,8 @@ function anSetEval(moverScore) {
 
 // ---- eval graph --------------------------------------------------------
 function drawGraph() {
+  const gw = $('anGraph');
+  if (gw) gw.style.display = W.plyCount() >= 4 ? '' : 'none';
   const cv = $('anGraph');
   if (!cv || !cv.clientWidth) return;
   const dpr = Math.min(devicePixelRatio || 1, 3);
@@ -2447,6 +2517,7 @@ function blunderCheck() {
         }
       }
       AN.scores[i] = bestS;
+      renderAnMoveLog();
     }
     AN.annots[i] = { sym, drop };
     $('bcFill').style.width = ((i + 1) / n * 100).toFixed(1) + '%';

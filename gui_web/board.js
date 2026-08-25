@@ -278,8 +278,17 @@ class QBoard {
     return Promise.resolve();
   }
 
+  // Holds a pawn under the pointer while the reader drags it. Screen
+  // coordinates in CSS pixels, or null to release it back to its cell.
+  setDragPawn(pl, x, y) {
+    this._dragPawn = (pl == null) ? null : { pl: pl | 0, x: x, y: y };
+    this.render();
+  }
+
   // Interpolated screen position of an animating pawn, or null.
   _pawnPos(pl) {
+    const d = this._dragPawn;
+    if (d && d.pl === pl) return { x: d.x, y: d.y, scale: 1.06 };
     const a = this._pawnAnim[pl];
     if (!a) return null;
     const e = qrEase(Math.max(0, Math.min(1, a.t)));
@@ -452,8 +461,12 @@ class QBoard {
     // Coordinates, drawn on the frame margin.
     const coordsMode = ds.coords || 'edges';
     if (coordsMode !== 'off' && C >= 24) {
+      // The coordinates label the board, they do not compete with it, so they
+      // stay small and slightly transparent.
+      g.save();
       g.fillStyle = this.css('--coord');
-      g.font = `${Math.max(9, 0.42 * C)}px 'JetBrains Mono', monospace`;
+      g.globalAlpha = .72;
+      g.font = `${Math.max(8, 0.32 * C)}px 'JetBrains Mono', monospace`;
       g.textAlign = 'center'; g.textBaseline = 'middle';
       for (let c = 0; c < 9; c++) {
         g.fillText('abcdefghi'[c], this.cellCenter(0, c).x, S - M / 2);
@@ -462,6 +475,7 @@ class QBoard {
         // Absolute rank: display row r is engine row (flipped ? r : 8 - r).
         g.fillText(String(this.flipped ? r + 1 : 9 - r), M / 2, this.cellCenter(r, 0).y);
       }
+      g.restore();
       // Study mode: a faint file and rank in every cell corner.
       if (coordsMode === 'all' && C >= 40) {
         g.globalAlpha = .40;
