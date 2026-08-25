@@ -435,6 +435,32 @@ Premium interface per `gui-premium.md`. Phases P0-P5 (tokens, canvas board
   - The move count is a reading, not a control. Recent games is reached
     through the header menu, which already lists it.
 
+- **GUI v2 element audit (2026-08-25)**: a per-element measurement pass, after
+  a review found faults that a per-category read had missed.
+  - **Levels are named after the chess pieces**, in order of material value:
+    Pawn 50 ms, Knight 150 ms, Bishop 400 ms, Rook 1 s, Queen 2.5 s, King 8 s.
+    The default is Rook, which holds the budget the old default held. Settings
+    schema 2 maps each old key to the piece with the same budget. `curLevel()`
+    falls back to the default, because an unknown key used to reach the search
+    and throw on a missing time budget.
+  - **One evaluation bar**, 12 px. It is vertical beside the board on a wide
+    screen and horizontal under the board on a phone, and it is the same
+    element in both. The mobile race strip is gone: it read as a second
+    evaluation bar. The race meter keeps its labelled place in the Play panel.
+    `setEval()` is the single writer and picks the axis; the analysis setter
+    and the takeback reset both call it.
+  - The wall count moved next to the player name. Beside the distance the two
+    numbers read as one.
+  - Every element in the board column now aligns to the board itself: both
+    player strips, the status row, the button row, the move log and the
+    horizontal evaluation bar, at every breakpoint.
+  - Faults the measurement pass found: the vertical bar was 35 px taller than
+    the board; the two wall buttons had different widths; the horizontal bar
+    was indented twice; the button row overflowed a 390 px screen by 4 px
+    because the settings gear was duplicated from the header; the level chip
+    was a 26 px tap target; and the move counter was still a focusable button
+    after it stopped being a control.
+
 ---
 
 ## 5. Evaluation Conventions

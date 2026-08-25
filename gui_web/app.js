@@ -6,14 +6,24 @@
 'use strict';
 
 // ===================== 1. constants ====================================
+// The levels are named after the chess pieces, in order of material value,
+// to match the sister project. A level is a search time budget. There is no
+// blunder injection at any level: a weak level is a short search.
 const LEVELS = {
-  pebble: { ms: 50,   label: 'Pebble', color: 'var(--muted)', desc: 'Learning the rules with you' },
-  sprite: { ms: 150,  label: 'Sprite', color: 'var(--txt2)',  desc: 'Quick and careless' },
-  squire: { ms: 400,  label: 'Squire', color: 'var(--green)', desc: 'Solid club player' },
-  knight: { ms: 1000, label: 'Knight', color: 'var(--blue)',  desc: 'Punishes loose walls' },
-  sage:   { ms: 2500, label: 'Sage',   color: 'var(--amber)', desc: 'Sees the whole race' },
-  titan:  { ms: 8000, label: 'Titan',  color: 'var(--gold)',  desc: 'Full strength' },
+  pawn:   { ms: 50,   label: 'Pawn',   color: 'var(--muted)', desc: '50 ms per move' },
+  knight: { ms: 150,  label: 'Knight', color: 'var(--txt2)',  desc: '150 ms per move' },
+  bishop: { ms: 400,  label: 'Bishop', color: 'var(--green)', desc: '400 ms per move' },
+  rook:   { ms: 1000, label: 'Rook',   color: 'var(--blue)',  desc: '1 s per move' },
+  queen:  { ms: 2500, label: 'Queen',  color: 'var(--amber)', desc: '2.5 s per move' },
+  king:   { ms: 8000, label: 'King',   color: 'var(--gold)',  desc: '8 s per move' },
 };
+// Level keys before the chess naming. A stored blob from that schema keeps its
+// search budget, which is what the reader chose, not its old name.
+const LEVEL_V1 = { pebble: 'pawn', sprite: 'knight', squire: 'bishop',
+                   knight: 'rook', sage: 'queen', titan: 'king' };
+// An unknown level key must never reach the search. It falls back to the
+// production default instead of throwing on a missing time budget.
+function curLevel() { return LEVELS[S.level] || LEVELS.rook; }
 const BOARD_THEMES = ['wood', 'walnut', 'ivory', 'marble', 'parchment', 'obsidian', 'slate', 'emerald', 'noir'];
 const PAWN_STYLES = ['disc', 'pillar', 'crown', 'rune', 'pawnChess', 'beacon'];
 const FILES = 'abcdefghi';
@@ -140,7 +150,7 @@ function bindEngine(m) {
 // blob resets to defaults with a toast. `preset` tracks which coherent
 // preset is active; touching any option flips it to 'custom'.
 const DEFAULTS = {
-  v: 1,
+  v: 2,
   preset: 'premiumDark',
   ui: 'dark', board: 'wood', pawn: 'disc',
   accent: 'gold', fs: 1, density: 'comfortable',
@@ -153,7 +163,7 @@ const DEFAULTS = {
   haptics: 'full',
   anim: 'full', animSpeed: 1,
   confirmWalls: null, touchOffset: null, stickyArm: false, handedness: 'right',
-  level: 'knight',
+  level: 'rook',
   custom: { mode: 'time', depth: 12, timeMs: 1000 },
   clockMode: '5+3', baseMin: 5, incSec: 3, side: 0,
   flipped: false,
@@ -165,8 +175,12 @@ function loadSettings() {
     const raw = localStorage.getItem('zq.settings');
     if (!raw) return;
     const parsed = JSON.parse(raw);
+    // Schema 1 named the levels after ranks and objects. Map the stored key to
+    // the chess piece that holds the same time budget.
+    if ((parsed.v || 1) < 2 && LEVEL_V1[parsed.level]) parsed.level = LEVEL_V1[parsed.level];
+    if (!LEVELS[parsed.level]) delete parsed.level;
     S = {
-      ...DEFAULTS, ...parsed,
+      ...DEFAULTS, ...parsed, v: DEFAULTS.v,
       custom: { ...DEFAULTS.custom, ...(parsed.custom || {}) },
       soundEvents: { ...DEFAULTS.soundEvents, ...(parsed.soundEvents || {}) },
     };
@@ -370,7 +384,7 @@ function refreshHud() {
 // opponent's path grows.
 function setRace(share, dYou, dOpp) {
   const txt = dYou + ' : ' + dOpp;
-  for (const trio of [['raceFill0', 'raceDiv', 'raceLbl'], ['rf0M', 'rdvM', 'rlM']]) {
+  for (const trio of [['raceFill0', 'raceDiv', 'raceLbl']]) {
     const fe = $(trio[0]), de = $(trio[1]), le = $(trio[2]);
     if (fe) { fe.style.width = share.toFixed(1) + '%'; fe.style.setProperty('--share', (share / 100).toFixed(3)); }
     if (de) de.style.left = share.toFixed(1) + '%';
@@ -380,14 +394,15 @@ function setRace(share, dYou, dOpp) {
 function setEval(score) {   // score mover-relative from the engine's last move
   const abs = humanSide === 0 ? score : -score;      // de-mirror to colour 0 view
   const share = 50 + 50 * Math.tanh(abs / 400);
-  $('evalFill').style.height = share.toFixed(1) + '%';
-  const num = $('evalNum'), bar = $('evalStrip');
-  if (!num || !bar) return;
-  // Your share fills from the bottom, so the label sits at that boundary.
-  const yours = humanSide === 0 ? share : 100 - share;
+  const fill = $('evalFill'), num = $('evalNum'), bar = $('evalStrip');
+  if (!fill || !bar) return;
+  const vertical = matchMedia('(min-width:900px)').matches;
+  if (vertical) { fill.style.width = ''; fill.style.height = share.toFixed(1) + '%'; }
+  else { fill.style.height = ''; fill.style.width = share.toFixed(1) + '%'; }
+  if (!num) return;
   num.textContent = (abs >= 0 ? '+' : '') + (abs / 100).toFixed(1);
-  num.style.top = (bar.offsetTop + bar.offsetHeight * (1 - yours / 100)) + 'px';
-  num.style.display = 'block';
+  // Player 0 fills from the bottom, so the label sits at that boundary.
+  if (vertical) num.style.top = (bar.offsetTop + bar.offsetHeight * (1 - share / 100)) + 'px';
 }
 
 // ===================== 6. board bridge =================================
@@ -480,7 +495,7 @@ function engineTurn() {
     setStatus('Your move');
     return;
   }
-  const lv = LEVELS[S.level];
+  const lv = curLevel();
   const gen = ++engineGen;
   const pl = W.turn();
   const from = B.engPawnToDisp(W.pawn(pl));
@@ -532,7 +547,7 @@ function engineTurn() {
 // Fallback search on this thread. It blocks for the whole time budget.
 function engineLocalMove(gen, finish) {
   if (gen !== engineGen) return;
-  const lv = LEVELS[S.level];
+  const lv = curLevel();
   const ok = W.engineMove(24, lv.ms);
   finish(ok ? packPly(W.plyCount() - 1) : null, W.lastEval(), true);
 }
@@ -650,7 +665,7 @@ function takeback() {
     if (el) el.classList.remove('flag', 'win', 'lose');
   }
   clearGhost();
-  $('evalFill').style.height = '50%';
+  setEval(0);
   resumeClock();
   setStatus('Takeback - your move');
   sound('arm');
@@ -1119,7 +1134,7 @@ function setClockFromLabel(l) {
 }
 
 function applyLevelChip() {
-  const lv = LEVELS[S.level];
+  const lv = curLevel();
   $('lvlName').textContent = lv.label;
   const dot = $('lvlChip').querySelector('.dot');
   if (dot) dot.style.background = lv.color;
@@ -1361,7 +1376,7 @@ function qgnExport() {
   lines.push('[Site "Zquoridor Web"]');
   lines.push(`[Date "${date}"]`);
   lines.push(`[Player0 "Player 0"]`);
-  lines.push(`[Player1 "Zquoridor ${LEVELS[S.level].label}"]`);
+  lines.push(`[Player1 "Zquoridor ${curLevel().label}"]`);
   lines.push(`[Result "${resultString()}"]`);
   if (S.clockMode !== 'none') lines.push(`[TimeControl "${S.baseMin}+${S.incSec}"]`);
   lines.push(`[Walls "10"]`);
@@ -1712,7 +1727,7 @@ function exportImageModal() {
   const opts = () => ({
     transparent: $('exTrans').checked,
     coords: $('exCoords').checked,
-    footer: $('exFooter').checked ? { name0: 'Player 0', name1: 'Zquoridor ' + LEVELS[S.level].label } : null,
+    footer: $('exFooter').checked ? { name0: 'Player 0', name1: 'Zquoridor ' + curLevel().label } : null,
   });
   $('exPng').onclick = () => {
     const cv = B.renderExport(opts());
@@ -2061,7 +2076,6 @@ $('btnHint').onclick = showHint;
 $('btnNew').onclick = modalNewGame;
 $('lvlChip').onclick = modalNewGame;
 $('btnSettings').onclick = modalSettings;
-const _bs2 = $('btnSettings2'); if (_bs2) _bs2.onclick = modalSettings;
 $('logo').onclick = () => openModal(`<h3>ABOUT <span class="x" data-close>&#10005;</span></h3>
   <p style="line-height:1.7;color:var(--txt2)">Zquoridor plays with an NNUE evaluation network
   (354 inputs, hybrid PUCT MCTS over alpha-beta) trained on self-play.
@@ -2322,9 +2336,7 @@ function showLinePreview(line, color) {
 }
 function anSetEval(moverScore) {
   const abs = absScoreAt(moverScore, W.cursor());   // side-0 view
-  const human = humanSide === 0 ? abs : -abs;
-  const share = 50 + 50 * Math.tanh(human / 400);
-  $('evalFill').style.height = share.toFixed(1) + '%';
+  setEval(humanSide === 0 ? abs : -abs);
 }
 
 // ---- eval graph --------------------------------------------------------
@@ -2501,6 +2513,13 @@ function layoutReflow() {
   g_wideLayout = wide;
   const slot = $('controlsSlot'), under = $('underBoard');
   if (!slot || !under) return;
+  // The single evaluation bar is vertical beside the board on a wide screen
+  // and horizontal under the board on a phone. It is the same element.
+  const zone = $('boardZone'), ew = $('evalWrap');
+  if (ew && zone && under) {
+    if (wide) { if (ew.parentElement !== zone) zone.insertBefore(ew, zone.firstChild); }
+    else if (ew.parentElement !== under) under.insertBefore(ew, under.firstChild);
+  }
   const target = wide ? slot : under;
   for (const id of ['statusRow', 'controls']) {
     const el = $(id);
@@ -2524,7 +2543,6 @@ function boot() {
   // the strips stretch across the whole column and the board floats inside
   // them.
   B.onChange = () => {
-    $('evalStrip').style.height = (B.cssSide - 4) + 'px';
     // The player strips and the race meter align to the board itself, not to
     // the column. The evaluation bar and its gutter sit inside the board zone,
     // so the board is not centred on the column and a centred strip would be
@@ -2533,7 +2551,21 @@ function boot() {
     if (!col || !wrap) return;
     const left = Math.max(0, Math.round(wrap.getBoundingClientRect().left -
                                         col.getBoundingClientRect().left));
-    for (const id of ['hudTop', 'hudBottom', 'raceMeterM']) {
+    const aligned = ['hudTop', 'hudBottom', 'underBoard'];
+    // The horizontal evaluation bar is part of the board block, so it takes
+    // the same width. The vertical one lives beside the board and keeps its
+    // own geometry.
+    const ew = $('evalWrap');
+    if (ew && ew.parentElement && ew.parentElement.id === 'underBoard') {
+      ew.style.height = '';
+      ew.style.width = '100%';
+      ew.style.marginLeft = '0';
+    } else if (ew) {
+      // Vertical: the bar reports on the board, so it is exactly as tall.
+      ew.style.width = ''; ew.style.marginLeft = ''; ew.style.maxWidth = '';
+      ew.style.height = B.cssSide + 'px';
+    }
+    for (const id of aligned) {
       const el = $(id);
       if (!el) continue;
       el.style.width = B.cssSide + 'px';

@@ -436,7 +436,7 @@ def main():
             page.wait_for_timeout(250)
             page.evaluate("window.__w.applyPawn(13); afterHumanMove();")
             page.wait_for_timeout(2600)
-            page.evaluate("setOpt('level', 'knight'); setLevelMidGame('sage')")
+            page.evaluate("setOpt('level', 'knight'); setLevelMidGame('queen')")
             seps = page.locator(".mlSep").count()
             check("level separator rendered", seps >= 1)
             if seps < 1:
