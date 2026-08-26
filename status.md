@@ -915,6 +915,48 @@ Also in this pass:
   scale on purpose: the label is bounded by the rail, not by the text
   hierarchy. At `--fs-xs` it touched both edges.
 
+### 2026-08-26: responsive sweep
+
+The presentation passes above were verified at two viewports. A sweep over
+thirteen found that the small and rotated layouts were already broken before
+this work, and that the type scale made them worse. The audit counts elements
+whose content exceeds their own box, and it skips scroll containers and
+elements that carry `text-overflow:ellipsis`, because clipped text reports an
+overflow by design.
+
+The count went from 41 to 0. Every landscape board is also larger than it was.
+
+| Viewport | Before | After | Board before | Board after |
+| --- | --- | --- | --- | --- |
+| 844x390 | 9 | 0 | 190 | 231 |
+| 740x360 | 11 | 0 | 156 | 202 |
+| 1000x440 | 4 | 0 | 246 | 246 |
+| 900x420 | 4 | 0 | 227 | 227 |
+| 375x667 | 6 | 0 | 283 | 270 |
+| 360x640 | 5 | 0 | 262 | 249 |
+| 1024x768 | 2 | 0 | 574 | 574 |
+
+The causes, in order of size:
+
+- **The landscape zone was sized from the viewport WIDTH.** The portrait rule
+  `#boardZone{height:calc(100vw - 14px)}` also applies in landscape, where it
+  asks for an 830px tall zone inside a 390px viewport. Landscape now sizes the
+  zone from `100dvh` minus the chrome. The height must be definite: with
+  `auto`, the zone measures the canvas while `fit()` measures the zone, and the
+  pair collapses to the 150px canvas floor.
+- **The button row never wrapped on a portrait phone.** `flex-wrap:wrap` was
+  set only inside the `min-width:900px` block, so at 360px the seven buttons
+  needed 341px in a 262px row and simply overflowed.
+- **`#statusRow` had a fixed `height:20px`** that is shorter than the chips'
+  own line box at the smaller viewports.
+- Landscape also drops the pips, the STEPS label, the under-board move log
+  home and the status row, and it shrinks the eval strip to 8px. Each of those
+  repeats information that the visible side rail already carries.
+
+`fit()` re-fills any height freed above it, so the last pixels cannot be
+subtracted away: freeing 7px of column grows the board by 6. The residual has
+to come from an element that does not feed that loop.
+
 One caution for a later pass. A single failure of `test_deep_click`
 ("crossing reason named") did not reproduce: the status text was correct when
 checked by hand, and two further runs passed 80 of 80. The check reads

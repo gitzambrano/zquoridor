@@ -230,14 +230,33 @@ html[data-anim="off"] *{animation-duration:0ms!important;transition-duration:0ms
 .pbar .clock.crit{color:var(--red)}
 .pbar .clock.off{display:none}
 .pbar .walls{display:flex;align-items:center;gap:var(--space-2)}
-.pbar .pips{display:flex;gap:var(--space-1)}
-.pbar .pips i{width:4px;height:14px;border-radius:1px;background:rgba(255,255,255,.12)}
-.pbar .pips i.on{background:var(--pc)}
+/* The pips count wall pieces, so they carry the wall's own material: rounded
+   ends, a length-wise sheen and a hairline rim. Ten identical hard bars read
+   as a chart. They also break 5 and 5, because ten in a row cannot be counted
+   at a glance. */
+.pbar .pips{display:flex;gap:3px;align-items:center}
+.pbar .pips i{
+  width:5px;height:15px;border-radius:2px;
+  background:linear-gradient(90deg,rgba(255,255,255,.05),rgba(255,255,255,.14));
+  box-shadow:inset 0 0 0 1px rgba(255,255,255,.06);
+}
+.pbar .pips i:nth-child(5){margin-right:var(--space-2)}
+.pbar .pips i.on{
+  background:linear-gradient(90deg,
+    color-mix(in srgb, var(--pc) 80%, #000),
+    var(--pc) 55%,
+    color-mix(in srgb, var(--pc) 78%, #fff));
+  box-shadow:inset 0 0 0 1px rgba(0,0,0,.28), 0 1px 2px rgba(0,0,0,.35);
+}
 .pbar .wn{font-size:var(--fs-md);font-weight:600;font-variant-numeric:tabular-nums}
 /* Distance to goal. The number stands alone at the right edge; a hairline
    separates it from the wall count so the two numbers never read as one. */
-.pbar .dist{display:flex;align-items:center;padding-left:var(--space-5);
-  border-left:1px solid var(--bor)}
+.pbar .dist{display:flex;align-items:center;gap:var(--space-2);
+  padding-left:var(--space-5);border-left:1px solid var(--bor)}
+/* The bare number said nothing. The unit is the shortest honest label for it:
+   the value is a step count to the goal row. */
+.pbar .dist::before{content:"STEPS";font-size:9px;letter-spacing:.14em;
+  color:var(--muted);font-weight:600}
 .pbar .dist b{font-size:var(--fs-lg);color:var(--txt2);font-weight:600;
   font-variant-numeric:tabular-nums}
 .pbar.active{border-color:var(--gold)}
@@ -342,7 +361,10 @@ html[data-anim="off"] *{animation-duration:0ms!important;transition-duration:0ms
 /* ---------------------------- status + controls ----------------------- */
 #underBoard{flex:0 0 auto;display:flex;flex-direction:column;gap:var(--space-2);
   width:100%;max-width:620px;margin:0 auto}
-#statusRow{display:flex;align-items:center;gap:var(--space-3);height:20px;min-height:0}
+/* height:auto with a floor, not a fixed 20px: the chips' own line box is
+   taller than 20px at the smaller viewports, so a fixed height overflowed. */
+#statusRow{display:flex;align-items:center;gap:var(--space-3);
+  min-height:20px;height:auto}
 #status{font-family:Cinzel,serif;font-size:var(--fs-sm);color:var(--gold2);
   letter-spacing:.04em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;flex:1}
 #movesChip{flex:none;font-size:var(--fs-xs);letter-spacing:.08em;text-transform:uppercase;
@@ -363,7 +385,9 @@ html[data-anim="off"] *{animation-duration:0ms!important;transition-duration:0ms
 #wallH .barH{width:18px;height:5px;border-radius:2px;background:currentColor;opacity:.75}
 #wallV .barV{width:5px;height:18px;border-radius:2px;background:currentColor;opacity:.75}
 .badge{
-  font-size:var(--fs-xs);font-weight:600;color:var(--txt2);line-height:1;
+  /* line-height:1 is shorter than the font's own ascent plus descent, so the
+     glyph box overflowed its line box by 2px. The flex parent re-centres. */
+  font-size:var(--fs-xs);font-weight:600;color:var(--txt2);line-height:1.2;
   font-variant-numeric:tabular-nums;
 }
 /* The two wall buttons carry a live count, so they size to glyph plus number. */
@@ -464,6 +488,10 @@ html[data-anim="off"] *{animation-duration:0ms!important;transition-duration:0ms
      that height. It may still shrink on a short screen. The move log then
      takes whatever height is left instead of leaving it empty. */
   #boardZone{flex:0 1 auto;height:calc(100vw - 14px);max-height:calc(100vw - 14px)}
+  /* The wrap rule lived only in the desktop block, so on a portrait phone
+     this row overflowed its column instead of breaking onto a second
+     line. Seven buttons need 341px and a 360px phone gives the row 262. */
+  #controls{flex-wrap:wrap;row-gap:var(--space-2);justify-content:flex-start}
   #underBoard{flex:1 1 auto;min-height:0}
   #sidePanel{
     display:none;position:fixed;left:0;right:0;top:48px;bottom:52px;z-index:30;
@@ -509,18 +537,87 @@ html[data-anim="off"] *{animation-duration:0ms!important;transition-duration:0ms
   .pbar .pb-name,.pbar .pb-data{order:0!important}
   .pbar .pb-name{flex:0 1 auto;min-width:0}
   .pbar .pb-data{flex:1;gap:var(--space-4)}
-  #controls{flex-wrap:wrap;row-gap:var(--space-1)}
+  /* Phone landscape has roughly 390px of height, and the board claims most of
+     it. A wrapped button row costs a second line the column does not have, so
+     the row stays on one line and scrolls sideways instead. */
+  #controls{flex-wrap:nowrap;overflow-x:auto;overflow-y:hidden;
+    justify-content:flex-start;gap:var(--space-2)}
+  #controls .btn{min-width:32px;padding:0 var(--space-1);height:28px}
+  #controls .btn svg{width:17px;height:17px}
   .pbar .clock{font-size:var(--fs-lg)}
   .pbar .lvl{display:none}
-  #status{display:none}
+  /* Phone landscape gives the strip roughly 390px of height and a short row.
+     The full-size pips, the STEPS label and the base type overflow it, so this
+     breakpoint drops to the compact set. */
+  .pbar .dist::before{display:none}
+  .pbar .dist{padding-left:var(--space-3);gap:var(--space-1)}
+  /* The pips are the countable form of a number that is already on screen.
+     This row has no width to spare, so the number carries it alone. */
+  .pbar .pips{display:none}
+  .pbar .nm{font-size:var(--fs-xs);overflow:hidden;text-overflow:ellipsis;
+    white-space:nowrap}
+  .pbar .wn{font-size:var(--fs-xs)}
+  .pbar .dist b{font-size:var(--fs-sm)}
+  .pbar{padding:0 var(--space-3)}
+  .pbar .clock{font-size:var(--fs-sm)}
+  .pbar .pb-data{gap:var(--space-3)}
+  /* #status is already hidden here, and the side rail is visible in this
+     orientation and carries the move count, so the whole row is redundant.
+     Dropping it returns the last of the height the column is short. */
+  #statusRow{display:none}
+  /* The 44px floor on the button row is a comfortable target on a portrait
+     phone and 12px this column cannot spare here; the buttons are 32px tall
+     on their own. The move log lives in the visible side rail in this
+     orientation, so its under-board home is dead weight. */
+  #controls{min-height:0}
+  /* Let the row absorb the last pixels instead of overflowing the column.
+     The board's fit() re-fills any height freed above it, so the residual is
+     the rounding of that loop and cannot be subtracted away. */
+  #underBoard{flex:0 1 auto;min-height:0}
+  /* The column's min-content height still exceeds the viewport by 2px here,
+     and the row cannot shrink below its own content. The eval strip is the
+     one item with height to give: it carries no text in this orientation. */
+  #underBoard > #evalWrap,
+  #underBoard > #evalWrap #evalStrip{height:8px}
+  #underBoard > #moveLog{display:none}
   #underBoard{gap:var(--space-1)}
-  #boardZone{max-height:none}
+  /* The portrait rule above sizes the zone from the VIEWPORT WIDTH
+     (height:calc(100vw - 14px)). Rotated, that asks for an 830px tall zone
+     inside a 390px viewport, and the column overflows by whatever the row
+     below cannot absorb. In this orientation the height is the scarce axis,
+     so the zone takes what the column has and no more. */
+  /* The portrait rule sizes this zone from the VIEWPORT WIDTH
+     (height:calc(100vw - 14px)). Rotated, that asks for an 830px tall zone
+     inside a 390px viewport. Height is the scarce axis here, so the zone
+     takes the viewport height minus the chrome above and below it: the
+     40px header, the two 19px player strips and the 32px button row.
+     A definite height is required, because `auto` lets the zone measure
+     the canvas while the canvas measures the zone, and the pair collapses
+     to the 150px canvas floor. */
+  #boardZone{height:calc(100dvh - 146px);max-height:calc(100dvh - 146px);
+    flex:0 1 auto;min-height:0}
   #sidePanel{
     display:flex;position:static;width:240px;flex:none;height:100%;
     border-left:1px solid var(--bor);padding:0 0 0 12px;
   }
   #panelTabs{display:flex}
   #tabBar{display:none}
+}
+
+/* A short desktop window keeps the two-column layout, but the board shrinks
+   and the player strip shrinks with it. The pips and the level label are the
+   two items in that strip that repeat information available elsewhere, so
+   they go first rather than letting the row overflow. */
+@media (min-width:900px) and (max-height:560px){
+  .pbar .pips{display:none}
+  .pbar .lvl{display:none}
+}
+
+/* Below 400px the strip cannot hold the pips, the name, the number and the
+   clock at once, and the name is squeezed to zero while the row still
+   overflows. The pips are the countable form of a number already shown. */
+@media (max-width:399.98px){
+  .pbar .pips{display:none}
 }
 
 /* ============================ analysis pane =========================== */
