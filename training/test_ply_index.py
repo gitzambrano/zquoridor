@@ -17,7 +17,7 @@ import numpy as np
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from read_selfplay import (  # noqa: E402
-    SAMPLE_DTYPE, game_start_mask, load_selfplay, ply_index,
+    SAMPLE_DTYPE, game_start_mask, load_selfplay, plies_remaining, ply_index,
 )
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -60,6 +60,8 @@ def test_synthetic():
     check(int(starts.sum()) == 2, f"2 inicios detectados (obtido {int(starts.sum())})")
     ply = ply_index(arr)
     check(list(ply) == [0, 1, 2, 0, 1, 2, 3], f"ply esperado, obtido {list(ply)}")
+    rem = plies_remaining(arr)
+    check(list(rem) == [2, 1, 0, 3, 2, 1, 0], f"plies_remaining esperado, obtido {list(rem)}")
 
 
 def test_real_shard(path):
@@ -91,6 +93,17 @@ def test_real_shard(path):
             ok_alt += 1
     frac_alt = ok_alt / max(1, len(bounds))
     check(frac_alt == 1.0, f"mover alterna em 100% dos jogos (obtido {frac_alt:.4%})")
+
+    # plies_remaining must mirror ply_index inside each game: the two add up
+    # to the game length minus one, and the last record of a game gets 0.
+    rem = plies_remaining(arr)
+    ends = np.append(bounds[1:], len(arr)) - 1
+    check(bool((rem[ends] == 0).all()), "todo fim de jogo tem plies_remaining 0")
+    lens_per_record = np.repeat(lengths, lengths)
+    check(bool((ply + rem == lens_per_record - 1).all()),
+          "ply + plies_remaining == comprimento do jogo - 1")
+    check(int(rem.max()) == int(lengths.max()) - 1,
+          f"maior plies_remaining ({rem.max()}) == maior jogo - 1 ({lengths.max() - 1})")
 
     frac_open = float((ply < OPENING_PLIES).mean())
     print(f"  info  comprimento medio {lengths.mean():.1f} plies, "

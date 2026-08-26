@@ -260,6 +260,34 @@ W_POLICY_DEFAULT = 1.0                # peso da loss de policy (CE)
 # on gen6: approximately 39.8 percent of all records fall in this window.
 # Set to 0 to train on every ply, which is the behavior before 2026-08-26.
 POLICY_OPENING_PLIES_DEFAULT = 26
+
+# --- gamma: desconto do alvo WL pela DURACAO ate o fim da partida ------------
+# O alvo WL vinha do resultado binario do jogo (game_result = +1/-1). Numa
+# partida ganha, estar a 5 passos da meta e estar a 2 passos tinham o MESMO
+# alvo: 1.0. A rede nunca recebeu gradiente para separar as duas, e por isso
+# a cabeca WL fica flat na corrida de peoes -- ela aprendeu a prever QUEM
+# ganha, nunca QUAO RAPIDO. Medido em benchmarks/diag_wander.cpp: 0.137,
+# 0.153, 0.191 e 0.281 para distancias 5, 4, 3 e 2. Ver a nota "MCTS endgame
+# wandering" em status.md.
+#
+# O gamma desconta o alvo pelo numero de lances que ainda faltam:
+#
+#   wl_lambda = k * resultado_real + (1-k) * eval_da_rede      (o lambda que
+#                                                               ja existia)
+#   wl_target = 0.5 + (wl_lambda - 0.5) * gamma ** plies_remaining
+#
+# O lambda entra PRIMEIRO e o seu resultado alimenta a equacao do gamma.
+# Uma vitoria que chega logo mantem quase todo o alvo; uma que demora muitos
+# lances anda para o 0.5 neutro. E isso que cria a diferenca entre estar a 2
+# passos e estar a 5.
+#
+# Com jogo medio de aproximadamente 65 lances:
+#   gamma=1.000 -> DESLIGADO, wl_target == wl_lambda (comportamento anterior)
+#   gamma=0.995 -> vitoria de 65 lances vale 0.86
+#   gamma=0.990 -> vitoria de 65 lances vale 0.76, de 5 lances vale 0.98
+#   gamma=0.980 -> vitoria de 65 lances vale 0.63  (agressivo demais, provavel
+#                  perda de forca geral: empurra quase tudo para o 0.5)
+WL_GAMMA_DEFAULT = 0.99
 QA_DEFAULT = 255                      # escala QAT do acumulador (int16)
 QB_DEFAULT = 64                       # escala QAT das cabecas (int8)
 LOG_EVERY_DEFAULT = 1                 # a cada quantos epochs imprime o resumo
@@ -371,7 +399,8 @@ class WeightClipper:
 
  
 # --- features -----------------------------------------------------------------
-def to_chunk_tensors(chunk: np.ndarray, k_chunk: np.ndarray, device, pw_chunk: np.ndarray = None):
+def to_chunk_tensors(chunk: np.ndarray, k_chunk: np.ndarray, device, pw_chunk: np.ndarray = None,
+                     pr_chunk: np.ndarray = None, wl_gamma: float = 1.0):
     """Converte um bloco de TrainingSample (array estruturado numpy) para
     tensores densos e transfere tudo para `device` de uma vez so. Chamar
     isso uma vez por bloco grande (em vez de uma vez por batch) e o que
@@ -428,7 +457,15 @@ def to_chunk_tensors(chunk: np.ndarray, k_chunk: np.ndarray, device, pw_chunk: n
     mover = chunk["mover"].astype(np.float32)
     ev_mover = np.where(mover == 0.0, ev_white, 1.0 - ev_white).astype(np.float32)
     k = k_chunk.astype(np.float32)
-    wl_target = k * result_prob_mover + (1.0 - k) * ev_mover
+    # O lambda (k) primeiro: mistura resultado real e opiniao da rede.
+    wl_lambda = k * result_prob_mover + (1.0 - k) * ev_mover
+    # O gamma depois, sobre o resultado do lambda: desconta pela duracao que
+    # ainda falta ate o fim da partida. gamma=1.0 nao altera nada.
+    if pr_chunk is not None and wl_gamma < 1.0:
+        decay = np.power(np.float32(wl_gamma), pr_chunk.astype(np.float32))
+        wl_target = np.float32(0.5) + (wl_lambda - np.float32(0.5)) * decay
+    else:
+        wl_target = wl_lambda
 
     if pw_chunk is None:
         pw = np.ones(len(chunk), dtype=np.float32)
@@ -444,7 +481,7 @@ def to_chunk_tensors(chunk: np.ndarray, k_chunk: np.ndarray, device, pw_chunk: n
 
 
 def iter_gpu_batches(chunk: np.ndarray, k_chunk: np.ndarray, device, batch_size: int, gpu_chunk_size: int,
-                     pw_chunk: np.ndarray = None):
+                     pw_chunk: np.ndarray = None, pr_chunk: np.ndarray = None, wl_gamma: float = 1.0):
     """Percorre `chunk` (e `k_chunk`, MESMA ordem/tamanho) em sub-blocos de
     ate `gpu_chunk_size` posicoes, transferindo cada sub-bloco para
     `device` uma unica vez (via `to_chunk_tensors`), e dentro dele fatia os
@@ -458,7 +495,8 @@ def iter_gpu_batches(chunk: np.ndarray, k_chunk: np.ndarray, device, batch_size:
         sub = chunk[gstart:gstart + gpu_chunk_size]
         k_sub = k_chunk[gstart:gstart + gpu_chunk_size]
         pw_sub = None if pw_chunk is None else pw_chunk[gstart:gstart + gpu_chunk_size]
-        t = to_chunk_tensors(sub, k_sub, device, pw_sub)
+        pr_sub = None if pr_chunk is None else pr_chunk[gstart:gstart + gpu_chunk_size]
+        t = to_chunk_tensors(sub, k_sub, device, pw_sub, pr_sub, wl_gamma)
         n_sub = len(sub)
         for start in range(0, n_sub, batch_size):
             end = min(start + batch_size, n_sub)
@@ -951,7 +989,7 @@ def weighted_policy_loss(policy_logits, policy_t, pw):
 # --- avaliacao em chunks (limitado por RAM/VRAM) -----------------------------
 @torch.no_grad()
 def run_eval(ds, indices, k_by_source, batch_size, chunk_size, gpu_chunk_size, model, device,
-             w_outcome, w_policy, pw_by_sample=None):
+             w_outcome, w_policy, pw_by_sample=None, pr_by_sample=None, wl_gamma=1.0):
     model.eval()
     total = dict(loss=0.0, outcome=0.0, policy=0.0, correct=0, pw=0.0)
     n_items = len(indices)
@@ -960,7 +998,9 @@ def run_eval(ds, indices, k_by_source, batch_size, chunk_size, gpu_chunk_size, m
         chunk = ds[chunk_idx]
         k_chunk = k_by_source[chunk_idx]
         pw_chunk = None if pw_by_sample is None else pw_by_sample[chunk_idx]
-        for t in iter_gpu_batches(chunk, k_chunk, device, batch_size, gpu_chunk_size, pw_chunk):
+        pr_chunk = None if pr_by_sample is None else pr_by_sample[chunk_idx]
+        for t in iter_gpu_batches(chunk, k_chunk, device, batch_size, gpu_chunk_size, pw_chunk,
+                                  pr_chunk, wl_gamma):
             policy_t = t["policy_target"]
             pw = t["policy_w"]
 
@@ -1251,6 +1291,21 @@ def train(args):
 
     policy_w_by_sample = build_policy_w(train_ds, "treino")
 
+    # Desconto por duracao: exige o numero de lances que ainda faltam ate o
+    # fim da partida de cada amostra. Sai da mesma segmentacao de jogos do
+    # ply_index, entao nao precisa de campo novo no .bin.
+    def build_plies_rem(ds, label):
+        if args.wl_gamma >= 1.0:
+            return None
+        pr = ds.plies_remaining()
+        med = float(np.median(pr))
+        print(f"gamma do alvo WL ({label}): {args.wl_gamma} -- desconto medio "
+              f"{args.wl_gamma ** med:.3f} na mediana de {med:.0f} lances restantes "
+              f"(maximo {int(pr.max())} lances)")
+        return pr
+
+    plies_rem_by_sample = build_plies_rem(train_ds, "treino")
+
     rng = np.random.default_rng(args.seed)
     torch.manual_seed(args.seed)
 
@@ -1266,6 +1321,7 @@ def train(args):
         # partida, nao contra a opiniao de uma NNUE anterior.
         val_k_by_source = np.ones(len(val_ds), dtype=np.float32)
         val_policy_w = build_policy_w(val_ds, "validacao")
+        val_plies_rem = build_plies_rem(val_ds, "validacao")
     else:
         n_total = len(base_idx)
         n_val = max(1, int(n_total * args.val_split))
@@ -1273,8 +1329,9 @@ def train(args):
         val_idx, train_idx = base_idx[perm[:n_val]], base_idx[perm[n_val:]]
         val_ds = train_ds
         val_k_by_source = k_by_source
-        # Same dataset as training, so the same per-sample mask applies.
+        # Same dataset as training, so the same per-sample arrays apply.
         val_policy_w = policy_w_by_sample
+        val_plies_rem = plies_rem_by_sample
         print(f"split treino/validacao: {len(train_idx):,} / {len(val_idx):,} (val-split={args.val_split})")
 
  
@@ -1408,13 +1465,17 @@ def train(args):
             chunk = train_ds[global_idx]
             k_chunk = k_by_source[global_idx]
             pw_chunk = None if policy_w_by_sample is None else policy_w_by_sample[global_idx]
+            pr_chunk = None if plies_rem_by_sample is None else plies_rem_by_sample[global_idx]
             perm = rng.permutation(len(chunk))  # embaralha uma vez por chunk
             chunk = chunk[perm]
             k_chunk = k_chunk[perm]
             if pw_chunk is not None:
                 pw_chunk = pw_chunk[perm]
+            if pr_chunk is not None:
+                pr_chunk = pr_chunk[perm]
 
-            for t in iter_gpu_batches(chunk, k_chunk, device, batch_size, gpu_chunk_size, pw_chunk):
+            for t in iter_gpu_batches(chunk, k_chunk, device, batch_size, gpu_chunk_size, pw_chunk,
+                                      pr_chunk, args.wl_gamma):
                 policy_t = t["policy_target"]
                 pw = t["policy_w"]
 
@@ -1481,7 +1542,7 @@ def train(args):
             print()  # fecha a linha viva (\r) antes de qualquer print permanente do epoch
 
         va = run_eval(val_ds, val_idx, val_k_by_source, batch_size, chunk_size, gpu_chunk_size, model, device,
-                      args.w_outcome, args.w_policy, val_policy_w)
+                      args.w_outcome, args.w_policy, val_policy_w, val_plies_rem, args.wl_gamma)
 
         history["epoch"].append(epoch)
         history["train_loss"].append(tr_total["loss"])
@@ -1777,6 +1838,9 @@ def parse_args(argv=None):
     g_loss = p.add_argument_group("pesos de loss / QAT")
     g_loss.add_argument("--w-outcome", type=float, default=W_OUTCOME_DEFAULT)
     g_loss.add_argument("--w-policy", type=float, default=W_POLICY_DEFAULT)
+    g_loss.add_argument("--wl-gamma", type=float, default=WL_GAMMA_DEFAULT,
+                        help=f"desconto do alvo WL pela duracao ate o fim da partida "
+                             f"(padrao: {WL_GAMMA_DEFAULT}). 1.0 = desligado, alvo = so o lambda.")
     g_loss.add_argument("--policy-opening-plies", type=int, default=POLICY_OPENING_PLIES_DEFAULT,
                         help=f"plies iniciais excluidos da loss de POLICY, mantidos na de valor "
                              f"(padrao: {POLICY_OPENING_PLIES_DEFAULT}). 0 = treina a policy em "

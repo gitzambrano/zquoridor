@@ -181,6 +181,36 @@ def ply_index(arr: np.ndarray) -> np.ndarray:
     return (pos - last_start).astype(np.int32)
 
 
+def plies_remaining(arr: np.ndarray) -> np.ndarray:
+    """Plies left until the end of each record's own game, as int32.
+
+    The last record of a game gets 0. This is the exponent of the gamma
+    discount in train_nnue.py: a win that arrives soon keeps almost the
+    whole target, and a win that takes many more plies moves toward the
+    neutral 0.5.
+
+    Self-play discards a game that does not finish (`selfplay.hpp`), so
+    every game in a shard has a real end, and this count never guesses.
+    """
+    n = len(arr)
+    if n == 0:
+        return np.zeros(0, dtype=np.int32)
+    starts = game_start_mask(arr)
+    bounds = np.flatnonzero(starts)
+    # A file that begins in the middle of a game (truncated) has no start
+    # marker at index 0. Treat index 0 as a start so that every record
+    # still belongs to a segment.
+    if bounds.size == 0 or bounds[0] != 0:
+        bounds = np.concatenate([[0], bounds])
+    # Last index of each segment.
+    ends = np.append(bounds[1:], n) - 1
+    game_id = np.cumsum(starts) - 1
+    if not starts[0]:
+        game_id += 1          # the synthetic start at index 0
+    np.clip(game_id, 0, len(ends) - 1, out=game_id)
+    return (ends[game_id] - np.arange(n, dtype=np.int64)).astype(np.int32)
+
+
 def _detect_format_by_size(size: int):
     """Devolve (dtype, itemsize, ambig) para um arquivo de `size` bytes.
     `ambig=True` quando o tamanho e divisivel por ambos 27 e 32 (multiplo
@@ -364,6 +394,17 @@ class MultiFileSelfPlay:
                 [ply_index(m) for m in self._maps]
             ).astype(np.int32) if self._maps else np.zeros(0, dtype=np.int32)
         return self._ply_index
+
+    def plies_remaining(self) -> np.ndarray:
+        """Plies left until the end of each record's own game, over the whole
+        concatenated view. Built one shard at a time and cached, for the same
+        reason as `ply_index`: a game never crosses a shard boundary.
+        """
+        if getattr(self, "_plies_remaining", None) is None:
+            self._plies_remaining = np.concatenate(
+                [plies_remaining(m) for m in self._maps]
+            ).astype(np.int32) if self._maps else np.zeros(0, dtype=np.int32)
+        return self._plies_remaining
 
     def _fancy(self, idx: np.ndarray) -> np.ndarray:
         idx = np.asarray(idx, dtype=np.int64)
