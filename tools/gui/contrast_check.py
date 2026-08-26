@@ -115,8 +115,14 @@ def main():
                 # flat slab, which is what obsidian and noir used to do.
                 ('cell-a/cell-b', get('--cell-a'), get('--cell-b'), 1.20),
             ]
-            if ui == 'dark':
-                pairs += [('txt/surf', get('--txt'), get('--surf'), 4.5)]
+            # Chrome text, checked in BOTH themes. The light theme used to go
+            # unchecked, and --muted in the dark theme sat at 2.54:1, which is
+            # the colour of the move-log numbers and the empty-state line.
+            pairs += [
+                ('txt/surf', get('--txt'), get('--surf'), 4.5),
+                ('txt2/surf', get('--txt2'), get('--surf'), 4.5),
+                ('muted/surf', get('--muted'), get('--surf'), 4.5),
+            ]
             for name, a, b, floor in pairs:
                 if a is None or b is None:
                     failures.append(f'{board}/{ui}: {name} - unresolvable colour')

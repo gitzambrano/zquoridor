@@ -13,7 +13,7 @@
   --bg:#0d0d12; --surf:#16161f; --surf2:#1c1c28; --surf3:#23233a;
   --bor:#252538; --bor2:#33334a;
   --gold:#c8a84b; --gold2:#e6c96e; --gold-dim:rgba(200,168,75,.16);
-  --txt:#e0e0f0; --txt2:#9a9ab8; --muted:#565672;
+  --txt:#e0e0f0; --txt2:#9a9ab8; --muted:#7d7d9d;
   --green:#4a9c6a; --red:#c0394a; --amber:#d99b3c; --blue:#4a7bc0;
   --green-dim:rgba(74,156,106,.16); --red-dim:rgba(192,57,74,.16);
 
@@ -70,7 +70,7 @@ html[data-ui="light"]{
   --bg:#f4f2ec; --surf:#ffffff; --surf2:#eeebe2; --surf3:#e2ded1;
   --bor:#dcd7c9; --bor2:#c2bba7;
   --gold:#8a6d22; --gold2:#a8842c; --gold-dim:rgba(138,109,34,.14);
-  --txt:#1c1b18; --txt2:#55524a; --muted:#8b8779;
+  --txt:#1c1b18; --txt2:#55524a; --muted:#7a7669;
   --green:#2f7a4c; --red:#a52c3c;
   --green-dim:rgba(47,122,76,.14); --red-dim:rgba(165,44,60,.12);
 }
@@ -527,9 +527,12 @@ html[data-anim="off"] *{animation-duration:0ms!important;transition-duration:0ms
   #controlsSlot #controls{flex-wrap:wrap;row-gap:var(--space-2)}
   #underBoard:empty{display:none}
   #underBoard{max-width:none}
+  /* Padding on both sides. With only padding-left, every control in the rail
+     ran to within 2px of the window edge, which reads as a clipped panel. */
   #sidePanel{
     width:clamp(300px,26vw,380px);flex:none;height:100%;
-    border-left:1px solid var(--bor);padding-left:var(--space-6);
+    border-left:1px solid var(--bor);
+    padding-left:var(--space-6);padding-right:var(--space-5);
   }
   #tabBar{display:none}
 }
@@ -4884,7 +4887,11 @@ function anToggle() {
   else {
     AN.sid++; AN.busy = false;
     if (AN.timer) clearTimeout(AN.timer), AN.timer = null;
-    $('anLines').innerHTML = '';
+    // Say why the list is empty. A bordered box with nothing in it reads as
+    // a failure, the same way the empty move log did.
+    $('anLines').innerHTML =
+      '<div class="mlEmpty"><span>Engine off</span>'
+      + '<small>Turn the engine on to see the lines it considers</small></div>';
     $('anInfo').textContent = 'Engine off';
   }
 }

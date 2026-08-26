@@ -2463,7 +2463,11 @@ function anToggle() {
   else {
     AN.sid++; AN.busy = false;
     if (AN.timer) clearTimeout(AN.timer), AN.timer = null;
-    $('anLines').innerHTML = '';
+    // Say why the list is empty. A bordered box with nothing in it reads as
+    // a failure, the same way the empty move log did.
+    $('anLines').innerHTML =
+      '<div class="mlEmpty"><span>Engine off</span>'
+      + '<small>Turn the engine on to see the lines it considers</small></div>';
     $('anInfo').textContent = 'Engine off';
   }
 }
