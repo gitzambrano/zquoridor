@@ -23,6 +23,10 @@ data/arena_*.bin
 # Checkpoints / Plots / Saídas de Treino (Fase 5)
 data/checkpoints/
 data/plots/
+# Qualquer pasta de plots de treino, nao so a default: um run com
+# --plot-dir proprio (data/plots_maskA/, por exemplo) reescreve o PNG a
+# cada N epochs e sujaria o indice durante todo o treino.
+data/plots*/
 training/plots/
 training/checkpoints/
 
