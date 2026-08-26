@@ -460,7 +460,16 @@ function buildLegalSets() {
 }
 
 // ===================== 9. play flow ====================================
-function setStatus(t) { $('status').textContent = t; }
+// The status line has two writers: the game flow, and the wall drag. The
+// engine's reply lands on a timer, so a routine "Your move" could arrive a few
+// milliseconds after the user had already pressed on an illegal groove, and
+// wipe the reason the ghost was red. While a drag owns the line, only the drag
+// writes it. Anything that ends the game still writes, because that outranks a
+// drag that is about to be cancelled anyway.
+function setStatus(t, fromDrag) {
+  if (!fromDrag && wallState === 'DRAGGING' && !gameOver) return;
+  $('status').textContent = t;
+}
 
 // Single-owner engine timer: scheduling a new engine turn cancels any stale
 // one, and engineTurn refuses to act unless it really is the engine's move.
@@ -909,8 +918,8 @@ function snapGhost(px, py) {
   }
   if (!st) st = 'bad';
   B.ghost = { o, r, c, state: st, from: st === 'assisted' ? a : null };
-  if (st === 'bad') setStatus(illegalReason(eng[0], eng[1], eng[2]));
-  else setStatus(st === 'assisted' ? 'Snapped to the nearest legal slot' : '');
+  if (st === 'bad') setStatus(illegalReason(eng[0], eng[1], eng[2]), true);
+  else setStatus(st === 'assisted' ? 'Snapped to the nearest legal slot' : '', true);
   if (B.setHover) B.setHover(null);
   B.render();
 }

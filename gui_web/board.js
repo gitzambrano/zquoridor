@@ -31,8 +31,11 @@ const QR_WALL_RIM_MS = 900;  // gold rim decay after a wall lands
 
 // Silhouette that side 1 takes when distinct shapes are on. Every entry maps
 // to a different shape, so the two sides never share a silhouette.
+// The default piece is a ball for BOTH sides. Distinct shapes marks side 1
+// with a ring cut into the same sphere instead of swapping the silhouette for
+// a crown, so the board never shows a piece that is not a pawn.
 const QR_PAWN_ALT = {
-  disc: 'crown', pillar: 'crown', crown: 'disc',
+  disc: 'discRing', discRing: 'disc', pillar: 'crown', crown: 'disc',
   rune: 'pawnChess', pawnChess: 'rune', beacon: 'pillar'
 };
 
@@ -534,14 +537,20 @@ class QBoard {
 
     if (this.lastMove) {
       if (this.lastMove.type === 'pawn') {
-        const p = this.cellXY(this.lastMove.r, this.lastMove.c);
-        g.fillStyle = this.css('--gold-dim');
-        this.rr(g, p.x, p.y, C, C, 0.10 * C); g.fill();
-        g.strokeStyle = this.css('--gold'); g.lineWidth = 1.5;
-        this.rr(g, p.x + 0.75, p.y + 0.75, C - 1.5, C - 1.5, 0.10 * C); g.stroke();
+        // No mark on a pawn's square. The filled gold tile read as a second
+        // piece on the board and fought with the pawn standing on it. A wall
+        // still takes its gold rim below, because a wall has no other way to
+        // say it was the move just played.
       } else {
         const [o, r, c] = this.engWallToDisp(this.lastMove.o, this.lastMove.r, this.lastMove.c);
-        this.drawWall(g, o, r, c, false, this.css('--gold'));
+        // Frame the rail from outside. Stroking the beam itself put a gold
+        // line through a piece only a few pixels wide, which read as a stripe
+        // painted on the wall rather than as a mark on the move.
+        const rc = this.wallDrawRect(o, r, c);
+        g.save();
+        g.strokeStyle = this.css('--gold'); g.lineWidth = 1.5; g.globalAlpha = .9;
+        this.rr(g, rc.x - 1.75, rc.y - 1.75, rc.w + 3.5, rc.h + 3.5, 3.5); g.stroke();
+        g.restore();
       }
     }
 
@@ -648,7 +657,7 @@ class QBoard {
     // 0.46 of the groove, not 0.32: at 0.32 the rail leaves a brown margin on
     // both sides of its own channel and reads as a thin strip laid over the
     // board instead of a piece seated in the groove.
-    const inf = Math.max(2, this.G * 0.46);
+    const inf = Math.max(1.5, this.G * 0.36);
     return o === 0
       ? { x: rc.x, y: rc.y - inf, w: rc.w, h: rc.h + 2 * inf }
       : { x: rc.x - inf, y: rc.y, w: rc.w + 2 * inf, h: rc.h };
@@ -703,6 +712,42 @@ class QBoard {
     }
     this.rr(g, rc.x, rc.y, rc.w, rc.h, rad); g.fill();
     g.shadowColor = 'rgba(0,0,0,0)'; g.shadowBlur = 0; g.shadowOffsetY = 0;
+    if (finish !== 'flat') {
+      // Moulded surface. A plain gradient reads as a flat painted strip, so
+      // the beam gets a lit top edge, a shaded bottom edge and a few hairlines
+      // of grain along its length. All three are clipped to the beam, so the
+      // rail keeps its rounded corners.
+      g.save();
+      this.rr(g, rc.x, rc.y, rc.w, rc.h, rad); g.clip();
+      const along = o === 0;                       // beam runs left to right
+      const thick = along ? rc.h : rc.w;
+      // lit edge and shaded edge, one thin band each
+      g.fillStyle = 'rgba(255,255,255,.28)';
+      if (along) g.fillRect(rc.x, rc.y, rc.w, Math.max(1, thick * .16));
+      else g.fillRect(rc.x, rc.y, Math.max(1, thick * .16), rc.h);
+      g.fillStyle = 'rgba(0,0,0,.20)';
+      if (along) g.fillRect(rc.x, rc.y + rc.h - Math.max(1, thick * .20), rc.w, Math.max(1, thick * .20));
+      else g.fillRect(rc.x + rc.w - Math.max(1, thick * .20), rc.y, Math.max(1, thick * .20), rc.h);
+      // grain: evenly spaced hairlines, alternating light and dark
+      g.lineWidth = 1;
+      // Two hairlines, not three, and faint: at full strength the beam reads
+      // as a striped bar instead of a moulded one.
+      const lines = 2;
+      for (let i = 1; i <= lines; i++) {
+        const f = i / (lines + 1);
+        g.strokeStyle = (i % 2) ? 'rgba(255,255,255,.09)' : 'rgba(0,0,0,.06)';
+        g.beginPath();
+        if (along) {
+          const y = Math.round(rc.y + f * rc.h) + .5;
+          g.moveTo(rc.x + 1, y); g.lineTo(rc.x + rc.w - 1, y);
+        } else {
+          const x = Math.round(rc.x + f * rc.w) + .5;
+          g.moveTo(x, rc.y + 1); g.lineTo(x, rc.y + rc.h - 1);
+        }
+        g.stroke();
+      }
+      g.restore();
+    }
     g.lineWidth = outlineOverride ? 1.5 : 1;
     g.strokeStyle = outlineOverride || edge;
     g.stroke();
@@ -821,12 +866,12 @@ class QBoard {
     // stays readable without colour.
     const dsv = this.ds().distinctShapes;
     if ((dsv === '1' || dsv === 'true') && pl === 1) {
-      style = QR_PAWN_ALT[style] || 'crown';
+      style = QR_PAWN_ALT[style] || 'disc';
     }
     this.drawPawnShape(g, style, ctr, R, pl, grd);
     // Specular highlight. It sits well inside the silhouette, so it needs no
     // clip, and it is what sells the body as a sphere lit from the upper left.
-    if (style === 'disc' || style === 'beacon') {
+    if (style === 'disc' || style === 'discRing' || style === 'beacon') {
       const hx = ctr.x - R * .34, hy = ctr.y - R * .38;
       const spec = g.createRadialGradient(hx, hy, 0, hx, hy, R * .46);
       spec.addColorStop(0, 'rgba(255,255,255,.55)');
@@ -920,6 +965,17 @@ class QBoard {
     }
     // disc: the default polished counter.
     g.beginPath(); g.arc(ctr.x, ctr.y, R, 0, 7); g.fill(); g.stroke();
+    if (style === 'discRing') {
+      // Same ball, one incised ring. It reads without colour, which is what
+      // distinct shapes is for, and it is still a pawn.
+      g.save();
+      g.globalAlpha = .55; g.lineWidth = Math.max(1, R * .10);
+      g.strokeStyle = 'rgba(0,0,0,.75)';
+      g.beginPath(); g.arc(ctr.x, ctr.y, R * .56, 0, 7); g.stroke();
+      g.globalAlpha = .38; g.strokeStyle = 'rgba(255,255,255,.85)';
+      g.beginPath(); g.arc(ctr.x, ctr.y, R * .56 - g.lineWidth * .7, 0, 7); g.stroke();
+      g.restore();
+    }
   }
 
   // ---- pointer geometry --------------------------------------------------
