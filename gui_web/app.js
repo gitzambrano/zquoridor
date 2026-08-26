@@ -724,13 +724,41 @@ function armWall(o) {
   const was = forcedO;
   clearGhost();
   if (was === o) { B.render(); return; }      // second press releases it
-  forcedO = o; armedO = o;
+  forcedO = o; armedO = o; gestureO = o;
   $(o === 0 ? 'wallH' : 'wallV').classList.add('armed');
   showLegalSlots(o);
+  // Arming shows the wall right away, translucent, so the button answers with
+  // the thing it is about to place instead of only a lit border. It lands
+  // where the pointer last was, or at the middle of the board before the
+  // pointer has ever entered it.
+  previewArmed(o);
   // No mode you can get stuck in: the forced orientation expires by itself.
   forcedTimer = setTimeout(() => { releaseForced(); B.render(); }, 6000);
   sound('arm'); haptic(6);
   B.render();
+}
+// Translucent preview for the armed orientation. B.setHover draws the wall at
+// 0.35 alpha, which is the same preview the board shows on hover, so arming
+// and hovering answer with one visual language.
+function previewArmed(o) {
+  if (!B.setHover || !humanCanAct()) return;
+  const p = lastPt || { x: B.cssSide / 2, y: B.cssSide / 2 };
+  const a = anchorFor(o, p.x, p.y);
+  let r = a.r, c = a.c;
+  if (!legalWall[o * 64 + r * 8 + c]) {
+    // Nearest legal slot of this orientation, so the preview is never a wall
+    // the user cannot actually place.
+    let best = null;
+    for (let rr = 0; rr < 8; rr++) for (let cc = 0; cc < 8; cc++) {
+      if (!legalWall[o * 64 + rr * 8 + cc]) continue;
+      const ctr = B.anchorCenter(rr, cc);
+      const d = Math.hypot(p.x - ctr.x, p.y - ctr.y);
+      if (!best || d < best.d) best = { r: rr, c: cc, d };
+    }
+    if (!best) return;
+    r = best.r; c = best.c;
+  }
+  B.setHover({ o, r, c });
 }
 let slotLayer = null;
 function showLegalSlots(o) {
@@ -754,6 +782,42 @@ function hideLegalSlots() { if (slotLayer) { slotLayer.remove(); slotLayer = nul
 function boardPoint(ev) {
   const rect = B.cv.getBoundingClientRect();
   return { x: ev.clientX - rect.left, y: ev.clientY - rect.top };
+}
+
+// ---- sweep direction ---------------------------------------------------
+// The direction the pointer travels asks for an orientation: a sideways sweep
+// asks for a horizontal wall, a vertical sweep for a vertical one. It reads
+// pointermove deltas only, so it behaves the same with the button down and
+// with it up, and the same for a finger as for a mouse.
+//
+// The accumulators decay instead of resetting. A decaying sum answers within a
+// few samples but ignores the one stray pixel that a finger produces when it
+// lifts, which a raw last-delta test does not.
+let gestureO = 0;
+let lastPt = null;
+let travelX = 0, travelY = 0;
+function trackTravel(pt) {
+  if (lastPt) {
+    // One sample is capped at half a cell. Without the cap a single jump --
+    // the pointer entering the board, or a synthetic event that teleports --
+    // outweighs every sample of the sweep that follows it, and the wall comes
+    // out perpendicular to the gesture the user actually made.
+    const cap = .5 * B.C;
+    const dx = Math.min(cap, Math.abs(pt.x - lastPt.x));
+    const dy = Math.min(cap, Math.abs(pt.y - lastPt.y));
+    travelX = travelX * .72 + dx;
+    travelY = travelY * .72 + dy;
+    // Below the threshold the pointer is resting, and a resting pointer must
+    // not flip the orientation under the user.
+    if (Math.max(travelX, travelY) > .06 * B.C) gestureO = travelX > travelY ? 0 : 1;
+  }
+  lastPt = { x: pt.x, y: pt.y };
+}
+// A press starts a fresh gesture: what the pointer did on its way to the board
+// is not part of the drag the user is making now.
+function resetTravel(pt) {
+  travelX = 0; travelY = 0;
+  lastPt = pt ? { x: pt.x, y: pt.y } : null;
 }
 // The board is a lattice of cells of side C separated by grooves of width G,
 // repeating every U = C + G. Groove k has its centre at M + (k+1)*U - G/2, so
@@ -785,13 +849,28 @@ function cellAt(px, py) {
 // Decides what the pointer is over: a cell body, or a groove and which one.
 function boardHit(px, py) {
   if (!B.U) return { kind: 'none' };
-  const reach = B.G / 2 + .26 * B.C;
   const gv = grooveNear(px, 8), gh = grooveNear(py, 8);
-  const onV = gv.d <= reach, onH = gh.d <= reach;
   const cell = cellAt(px, py);
+  // The groove the sweep is asking for reaches further than the other one, so
+  // a deliberate sideways sweep catches a horizontal groove even when the
+  // pointer sits slightly nearer a vertical one. gestureO 0 = horizontal.
+  const reachOn = B.G / 2 + .22 * B.C;    // orientation the sweep asks for
+  const reachOff = B.G / 2 + .10 * B.C;   // the other one
+  const onV = gv.d <= (gestureO === 1 ? reachOn : reachOff);
+  const onH = gh.d <= (gestureO === 0 ? reachOn : reachOff);
   if (!onV && !onH) return cell ? { kind: 'cell', cell: cell.idx } : { kind: 'none' };
-  // An exact crossing is ambiguous, so it keeps the orientation last used.
-  const o = (onV && onH) ? armedO : (onV ? 1 : 0);
+  // A click meant for the pawn must never place a wall. Outside the groove
+  // proper, a cell the pawn can legally reach wins over the groove: the old
+  // reach of .26*C ran roughly a quarter of a cell deep on all four sides, so
+  // aiming at a destination square regularly armed a wall instead.
+  const insideGroove = Math.min(gv.d, gh.d) <= B.G / 2;
+  if (!insideGroove && cell && legalPawn.has(cell.idx)) {
+    return { kind: 'cell', cell: cell.idx };
+  }
+  // At a crossing both orientations fit, so the sweep decides. Where only one
+  // groove is in range, geometry decides: the other wall would land somewhere
+  // the pointer never was.
+  const o = (onV && onH) ? gestureO : (onV ? 1 : 0);
   const a = anchorFor(o, px, py);
   return { kind: 'groove', o, r: a.r, c: a.c };
 }
@@ -859,6 +938,7 @@ function onBoardPointerDown(ev) {
   if (!atLiveEnd()) { toast('info', 'Reviewing an earlier ply - press Return to game'); return; }
   const pt = boardPoint(ev);
   const hit = boardHit(pt.x, pt.y);
+  resetTravel(pt);
   // With no orientation forced, a press on a cell body belongs to the pawn.
   if (forcedO == null && hit.kind !== 'groove') {
     if (hit.kind !== 'cell') return;
@@ -879,6 +959,7 @@ function onBoardPointerDown(ev) {
 }
 function onBoardPointerMove(ev) {
   const pt = boardPoint(ev);
+  trackTravel(pt);
   if (pawnDrag && ev.pointerId === pawnDrag.ptr) {
     pawnDrag.moved = true;
     B.setDragPawn(humanSide, pt.x, pt.y);
@@ -886,11 +967,12 @@ function onBoardPointerMove(ev) {
     return;
   }
   if (wallState !== 'DRAGGING' || ev.pointerId !== dragPtr) { updateHover(pt.x, pt.y); return; }
-  // The drag vector is the flip gesture: pull along the wall you want.
-  if (forcedO == null && dragFrom) {
-    const dx = Math.abs(pt.x - dragFrom.x), dy = Math.abs(pt.y - dragFrom.y);
-    if (Math.max(dx, dy) > .45 * B.C) armedO = dx > dy ? 0 : 1;
-  }
+  // Pull along the wall you want. This is the same sweep test that decides the
+  // orientation on hover, so the gesture does not change meaning when the
+  // button goes down. The old rule compared the drag against its own origin
+  // and needed .45 of a cell of travel before it would flip, which made a
+  // change of mind mid-drag feel stuck.
+  if (forcedO == null && dragFrom) armedO = gestureO;
   snapGhost(pt.x, pt.y);
   ev.preventDefault();
 }
@@ -1103,8 +1185,14 @@ function toast(kind, msg) {
 }
 function openModal(html) { $('modalBox').innerHTML = html; $('overlay').classList.add('open'); }
 function closeModal() { $('overlay').classList.remove('open'); }
-$('overlay').addEventListener('click', e => { if (e.target.id === 'overlay') closeModal(); });
-$('overlay').addEventListener('click', e => { if (e.target.dataset.close) closeModal(); });
+// One handler for both ways out: the backdrop, and any element carrying
+// data-close. The test is hasAttribute, not dataset.close: the markup writes a
+// bare `data-close`, whose value is the empty string, and an empty string is
+// falsy, so the close button never fired. closest() lets the button hold an
+// icon or a span without losing the click.
+$('overlay').addEventListener('click', e => {
+  if (e.target.id === 'overlay' || e.target.closest('[data-close]')) closeModal();
+});
 
 // Small helpers shared by the settings / IO / editor surfaces.
 function confirmModal(title, body, onYes) {

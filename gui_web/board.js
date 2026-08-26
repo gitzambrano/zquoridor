@@ -419,6 +419,20 @@ class QBoard {
         }
       }
     }
+    // Goal rows: a light neutral wash over rank 1 and rank 9, the two rows a
+    // game can end on. Drawn over the cells so it follows their shape, and
+    // under everything else so a pawn or a wall still reads normally.
+    {
+      const wash = this.css('--goal-wash');
+      if (wash) {
+        g.fillStyle = wash;
+        for (const r of [0, 8]) for (let c = 0; c < 9; c++) {
+          const p = this.cellXY(r, c);
+          if (cellSep === 'grooves') { this.rr(g, p.x, p.y, C, C, rad); g.fill(); }
+          else g.fillRect(p.x - G / 2, p.y - G / 2, C + G, C + G);
+        }
+      }
+    }
     if (cellSep === 'grooves') {
       // Groove centre lines, so the grid still reads when the cells are too
       // small for the gap alone to carry it. On a large board the gap is
@@ -476,12 +490,17 @@ class QBoard {
       g.globalAlpha = .92;
       g.font = `600 ${Math.max(10, 0.235 * C)}px 'JetBrains Mono', monospace`;
       g.textAlign = 'center'; g.textBaseline = 'middle';
+      // Centre of the margin band, not M/2. The play area starts at bx, so the
+      // left band is [0, bx] and the bottom band is [bx + bw, S]. Both are
+      // M - G/2 wide, and M/2 sits G/4 short of their middle, which pushed
+      // every label a little way onto the board.
+      const bandX = bx / 2, bandY = (bx + bw + S) / 2;
       for (let c = 0; c < 9; c++) {
-        g.fillText('abcdefghi'[c], this.cellCenter(0, c).x, S - M / 2);
+        g.fillText('abcdefghi'[c], this.cellCenter(0, c).x, bandY);
       }
       for (let r = 0; r < 9; r++) {
         // Absolute rank: display row r is engine row (flipped ? r : 8 - r).
-        g.fillText(String(this.flipped ? r + 1 : 9 - r), M / 2, this.cellCenter(r, 0).y);
+        g.fillText(String(this.flipped ? r + 1 : 9 - r), bandX, this.cellCenter(r, 0).y);
       }
       g.restore();
       // Study mode: a faint file and rank in every cell corner.
@@ -696,20 +715,9 @@ class QBoard {
       this.rr(g, rc.x + 2.5, rc.y + 2.5, rc.w - 3, rc.h - 3, 1); g.stroke();
       g.globalAlpha = 1;
     }
-    if (finish !== 'flat') {
-      // Seam at the midpoint, where the two halves of the beam meet.
-      g.strokeStyle = edge; g.globalAlpha = .75; g.lineWidth = 1;
-      g.beginPath();
-      if (o === 0) {
-        const mx = rc.x + rc.w / 2;
-        g.moveTo(mx, rc.y + 1); g.lineTo(mx, rc.y + rc.h - 1);
-      } else {
-        const my = rc.y + rc.h / 2;
-        g.moveTo(rc.x + 1, my); g.lineTo(rc.x + rc.w - 1, my);
-      }
-      g.stroke();
-      g.globalAlpha = 1;
-    }
+    // No seam at the midpoint. The two halves of a beam are one piece to the
+    // player, and a line across the middle made the rail read as two shorter
+    // walls that happen to touch.
     g.restore();
   }
 

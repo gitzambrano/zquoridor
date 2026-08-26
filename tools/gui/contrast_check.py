@@ -109,6 +109,11 @@ def main():
                 # small by design, so they need the full text ratio to stay
                 # readable.
                 ('coord/frame', get('--coord'), get('--frame'), 4.5),
+                # The two cell tones. This floor is deliberately low: the
+                # chequer must be readable without becoming a second pattern
+                # competing with the pieces. Below it the board reads as one
+                # flat slab, which is what obsidian and noir used to do.
+                ('cell-a/cell-b', get('--cell-a'), get('--cell-b'), 1.20),
             ]
             if ui == 'dark':
                 pairs += [('txt/surf', get('--txt'), get('--surf'), 4.5)]

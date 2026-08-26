@@ -20,8 +20,7 @@
   --green-dim:rgba(74,156,106,.16); --red-dim:rgba(192,57,74,.16);
 
   /* board: wood (default) */
-  --cell-a:#e3cca4;
-  --cell-b:#dcc196;
+  --cell-a:#e6d1ab; --cell-b:#d9bb8f;
   --groove:#7c5a3a;
   --frame:#4b3722;
   --frame-hi:#6b5236;
@@ -57,6 +56,11 @@
   /* Wall depth. The beam's shading used to be hardcoded in board.js, so a
      light board got a shadow built for a dark board. Each theme now sets
      its own depth. */
+  /* Goal rows. Rank 1 and rank 9 are where a game ends, so they carry a very
+     light neutral wash: enough to read as the target rows, not enough to
+     become a second board colour. */
+  --goal-wash:rgba(120,122,132,.14);
+
   --wall-shadow:rgba(0,0,0,.42);
   --wall-gloss:rgba(255,255,255,.50);
   --wall-etch-dark:rgba(0,0,0,.80);
@@ -75,39 +79,39 @@ html[data-ui="light"]{
 
 /* board only */
 html[data-board="walnut"]{
-  --cell-a:#5a4432; --cell-b:#4e3b2b; --groove:#2a1e16; --frame:#3a2a1e;
+  --cell-a:#5f4835; --cell-b:#493728; --groove:#2a1e16; --frame:#3a2a1e;
   --frame-hi:#5a4530; --coord:#c9a878;
   --wall:#efe2c2; --wall-hi:#fff8e2; --wall-edge:#9a8256;
 }
 html[data-board="ivory"]{
-  --cell-a:#f2ecdd; --cell-b:#e8e0cd; --groove:#c0b394; --frame:#a2937a;
+  --cell-a:#f6f1e4; --cell-b:#e4dbc6; --groove:#c0b394; --frame:#a2937a;
   --frame-hi:#bdaf93; --coord:#312b21;
   --wall:#6f512f; --wall-hi:#8e6b41; --wall-edge:#3d2c18;
 }
 html[data-board="obsidian"]{
-  --cell-a:#20202c; --cell-b:#252533; --groove:#12121a; --frame:#2a2a3e;
+  --cell-a:#1a1a24; --cell-b:#2b2b3b; --groove:#12121a; --frame:#2a2a3e;
   --frame-hi:#3a3a52; --coord:#9191aa;
   --wall:#d8d3c4; --wall-hi:#f0ece0; --wall-edge:#7d7768;
 }
 html[data-board="marble"]{
-  --cell-a:#e9e7e2;--cell-b:#dedbd4;--groove:#9a978f;--frame:#54524d;--frame-hi:#75736c;
+  --cell-a:#eeece8; --cell-b:#d9d6ce;--groove:#9a978f;--frame:#54524d;--frame-hi:#75736c;
   --coord:#c8c6c2;--wall:#3c3a36;--wall-hi:#5a5852;--wall-edge:#1d1c1a;
 }
 html[data-board="parchment"]{
-  --cell-a:#faf6ec;--cell-b:#f1ead9;--groove:#b3a68b;--frame:#a2937a;--frame-hi:#c4b89f;
+  --cell-a:#fefcf5; --cell-b:#ede4d0;--groove:#b3a68b;--frame:#a2937a;--frame-hi:#c4b89f;
   --coord:#2f2b24;--wall:#3f3a2e;--wall-hi:#5c5646;--wall-edge:#201d16;
 }
 html[data-board="noir"]{
-  --cell-a:#171719;--cell-b:#1c1c1f;--groove:#0a0a0b;--frame:#232326;--frame-hi:#35353a;
+  --cell-a:#0f0f10; --cell-b:#232328;--groove:#0a0a0b;--frame:#232326;--frame-hi:#35353a;
   --coord:#8a8a93;--wall:#e6e6ea;--wall-hi:#ffffff;--wall-edge:#8d8d96;
 }
 html[data-board="slate"]{
-  --cell-a:#31465e; --cell-b:#2b3e53; --groove:#16212e; --frame:#1d2a39;
+  --cell-a:#344963; --cell-b:#283b4e; --groove:#16212e; --frame:#1d2a39;
   --frame-hi:#33475f; --coord:#8ba2bc;
   --wall:#d3ddea; --wall-hi:#eef3fa; --wall-edge:#6d7d92;
 }
 html[data-board="emerald"]{
-  --cell-a:#2b5a4c; --cell-b:#265246; --groove:#123027; --frame:#0f2820;
+  --cell-a:#2d5d4f; --cell-b:#244f43; --groove:#123027; --frame:#0f2820;
   --frame-hi:#265246; --coord:#7fbda8;
   --wall:#ecdfc0; --wall-hi:#fbf3dd; --wall-edge:#8a7a56;
 }
@@ -317,11 +321,12 @@ html[data-anim="off"] *{animation-duration:0ms!important;transition-duration:0ms
 #boardZone > #evalWrap #evalStrip::after{left:0;right:0;top:50%;height:1px}
 /* The readout sits inside the strip, not below it. Below, it needed a
    reserved margin that pushed the whole bar off the board's top edge. */
-/* Off the type scale on purpose: this label is bounded by the 24px rail, not
-   by the text hierarchy. At --fs-xs it touches both edges of the strip. */
-#boardZone > #evalWrap #evalNum{left:0;right:0;bottom:var(--space-1);
-  text-align:center;font-size:9px;letter-spacing:0;color:var(--txt);
-  text-shadow:0 1px 2px rgba(0,0,0,.7)}
+/* The readout sits below the bar, in space the zone reserves for it (see the
+   padding-bottom in the wide layout). Inside the 24px rail it had to shrink to
+   9px to clear both edges, which was too small to read. */
+#boardZone > #evalWrap #evalNum{left:50%;transform:translateX(-50%);right:auto;
+  bottom:-17px;text-align:center;font-size:11px;letter-spacing:.02em;
+  color:var(--txt2);white-space:nowrap}
 /* horizontal, under the board */
 #underBoard > #evalWrap{width:100%;height:12px}
 #underBoard > #evalWrap #evalStrip{width:100%;height:12px}
@@ -512,8 +517,11 @@ html[data-anim="off"] *{animation-duration:0ms!important;transition-duration:0ms
   /* The evaluation bar needs air between it and the board edge; the wider gap
      is read back by the board fitter, which subtracts it from the board size. */
   /* The bar belongs to the board. A wide gap reads as a separate element
-     floating beside it. */
-  #boardZone{padding-left:var(--space-2);gap:var(--space-4)}
+     floating beside it. The bottom padding is the readout's room: fit()
+     subtracts the zone's padding before sizing the board, so reserving it here
+     keeps the strip exactly as tall as the board instead of letting the label
+     overhang whatever sits underneath. */
+  #boardZone{padding-left:var(--space-2);padding-bottom:18px;gap:var(--space-4)}
   /* The button row and the status line move into the side rail, so the
      board keeps the full height of its column. */
   #controlsSlot{display:flex;flex-direction:column;gap:var(--space-4);
