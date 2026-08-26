@@ -179,11 +179,25 @@ DATA_SOURCES_DEFAULT = [
       {"path": "selfplay/gen4", "frac": 1.0, "k": 0.7},
       {"path": "selfplay/gen5-epsilon", "frac": 1.0, "k": 0.7},
       {"path": "selfplay/gen5-montecarlo", "frac": 1.0, "k": 0.65},
+      # gen6 usa o mesmo modo de geracao do gen5-montecarlo, entao herda o
+      # mesmo k. Adicionado em 2026-08-26: antes disso o gen6 nao entrava em
+      # treino nenhum, porque --data e IGNORADO enquanto esta lista nao
+      # estiver vazia (ver load_training_population).
+      {"path": "selfplay/gen6-montecarlo", "frac": 1.0, "k": 0.65},
       {"path": "arena/gen1",    "frac": 0.3, "k": 1.0},
       {"path": "arena/gen2",    "frac": 0.2, "k": 1.0},
 ]
  
 OUT_DEFAULT = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data", "nnue", "nnue_weights.bin")
+
+# Pasta dos graficos de treino. None = nao gera grafico nenhum.
+PLOT_DIR_DEFAULT = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data", "plots")
+
+# Saida sem buffer. Quando o stdout vai para um arquivo ou um pipe, o Python
+# usa buffer de bloco e nada aparece ate acumular alguns KB -- um treino de
+# horas fica sem telemetria nenhuma ate o fim. True forca line buffering, o
+# mesmo efeito de rodar `python -u`, sem precisar da flag na linha de comando.
+UNBUFFERED_OUTPUT_DEFAULT = True
  
 # --- treino / otimizacao -----------------------------------------------------
 EPOCHS_DEFAULT = 120
@@ -1789,7 +1803,7 @@ def parse_args(argv=None):
     g_out.add_argument("--out", default=OUT_DEFAULT, help="caminho de saida dos pesos treinados (.bin)")
     g_out.add_argument("--no-quantize", action="store_true")
     g_out.add_argument("--quant-out", default=None)
-    g_out.add_argument("--plot-dir", default=None,
+    g_out.add_argument("--plot-dir", default=PLOT_DIR_DEFAULT,
                         help="diretorio para salvar plots de convergencia/validacao (PNG). Regravado "
                              "periodicamente durante o treino (ver --plot-every-epochs), nao so no "
                              "final -- da pra abrir e acompanhar com o treino ainda rodando.")
@@ -1884,4 +1898,13 @@ def parse_args(argv=None):
  
  
 if __name__ == "__main__":
+    if UNBUFFERED_OUTPUT_DEFAULT:
+        # Mesmo efeito de `python -u`, sem depender da linha de comando.
+        # reconfigure() existe a partir do Python 3.7; se faltar, o treino
+        # roda igual, so com a telemetria em buffer.
+        try:
+            sys.stdout.reconfigure(line_buffering=True)
+            sys.stderr.reconfigure(line_buffering=True)
+        except AttributeError:
+            pass
     train(parse_args())
