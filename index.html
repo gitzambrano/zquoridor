@@ -405,6 +405,14 @@ html[data-anim="off"] *{animation-duration:0ms!important;transition-duration:0ms
 
 /* quiet cards: a title, a hairline, and space. no nested boxes. */
 .card{display:flex;flex-direction:column;gap:var(--space-3)}
+/* The growing card is the move log, which is nearly empty for the first
+   several plies. Without a surface behind it, that emptiness is bare page
+   background and reads as missing content rather than as a waiting panel. */
+#sidePanel .card.grow{
+  background:var(--surf);border:1px solid var(--bor);border-radius:var(--r-lg);
+  padding:var(--space-4) var(--space-4) var(--space-3);
+}
+#sidePanel .card.grow h4{border-bottom-color:var(--bor2)}
 .card h4{font-family:Cinzel,serif;color:var(--gold);font-size:var(--fs-xs);
   letter-spacing:.16em;font-weight:600;padding-bottom:var(--space-2);
   border-bottom:1px solid var(--bor)}
