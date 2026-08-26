@@ -462,11 +462,13 @@ class QBoard {
     const coordsMode = ds.coords || 'edges';
     if (coordsMode !== 'off' && C >= 24) {
       // The coordinates label the board, they do not compete with it, so they
-      // stay small and slightly transparent.
+      // stay small and quiet. They must still be readable: the size holds a
+      // 10px floor, and --coord clears 4.5:1 against --frame in every theme,
+      // which tools/gui/contrast_check.py enforces at build time.
       g.save();
       g.fillStyle = this.css('--coord');
-      g.globalAlpha = .72;
-      g.font = `${Math.max(7, 0.16 * C)}px 'JetBrains Mono', monospace`;
+      g.globalAlpha = .92;
+      g.font = `600 ${Math.max(10, 0.235 * C)}px 'JetBrains Mono', monospace`;
       g.textAlign = 'center'; g.textBaseline = 'middle';
       for (let c = 0; c < 9; c++) {
         g.fillText('abcdefghi'[c], this.cellCenter(0, c).x, S - M / 2);
@@ -478,8 +480,8 @@ class QBoard {
       g.restore();
       // Study mode: a faint file and rank in every cell corner.
       if (coordsMode === 'all' && C >= 40) {
-        g.globalAlpha = .40;
-        g.font = `${Math.max(7, 0.12 * C)}px 'JetBrains Mono', monospace`;
+        g.globalAlpha = .55;
+        g.font = `${Math.max(9, 0.135 * C)}px 'JetBrains Mono', monospace`;
         g.textAlign = 'left'; g.textBaseline = 'top';
         for (let r = 0; r < 9; r++) for (let c = 0; c < 9; c++) {
           const p = this.cellXY(r, c);
@@ -634,11 +636,14 @@ class QBoard {
     const rc = this.wallDrawRect(o, r, c);
     const wall = this.css('--wall'), edge = this.css('--wall-edge');
     const hi = this.css('--wall-hi');
+    // Depth cues come from the theme, not from literals. A light board needs
+    // a different shadow than a dark board.
+    const shadow = this.css('--wall-shadow'), gloss = this.css('--wall-gloss');
     const finish = this.ds().wallFinish || 'beveled';
     const rad = finish === 'flat' ? 0 : 2;
     g.save();
     if (finish !== 'flat') {
-      g.shadowColor = 'rgba(0,0,0,.45)';
+      g.shadowColor = shadow;
       g.shadowBlur = 5;
       g.shadowOffsetY = 2;
     }
@@ -651,7 +656,7 @@ class QBoard {
       if (finish === 'glossy') {
         grad.addColorStop(0, edge);
         grad.addColorStop(.16, hi);
-        grad.addColorStop(.34, 'rgba(255,255,255,.55)');
+        grad.addColorStop(.34, gloss);
         grad.addColorStop(.52, hi);
         grad.addColorStop(.78, wall);
         grad.addColorStop(1, edge);
@@ -676,9 +681,9 @@ class QBoard {
     if (finish === 'etched') {
       // Engraved inset: a dark line inside the rim with a light line under it.
       g.globalAlpha = .55; g.lineWidth = 1;
-      g.strokeStyle = 'rgba(0,0,0,.85)';
+      g.strokeStyle = this.css('--wall-etch-dark');
       this.rr(g, rc.x + 1.5, rc.y + 1.5, rc.w - 3, rc.h - 3, 1); g.stroke();
-      g.strokeStyle = 'rgba(255,255,255,.35)';
+      g.strokeStyle = this.css('--wall-etch-light');
       this.rr(g, rc.x + 2.5, rc.y + 2.5, rc.w - 3, rc.h - 3, 1); g.stroke();
       g.globalAlpha = 1;
     }
@@ -770,11 +775,23 @@ class QBoard {
     const R = 0.30 * C * sizeMul * mul;
     g.save();
     // Elliptical contact shadow, kept on the ground while the pawn arcs.
+    // The falloff is a radial gradient, not a solid ellipse. A hard edged
+    // ellipse this close under the body reads as a plinth, which is what made
+    // the pawn look like it stands on a base.
     const shadow = this.ds().pawnShadow || 'soft';
     if (shadow !== 'off') {
-      g.fillStyle = 'rgba(0,0,0,' + (shadow === 'deep' ? '.45' : '.32') + ')';
-      g.beginPath();
-      g.ellipse(ctr.x, ctr.y + R * .60, R * .92, R * .34, 0, 0, 7); g.fill();
+      const a = shadow === 'deep' ? .40 : .26;
+      const sy = ctr.y + R * .74;
+      g.save();
+      g.translate(ctr.x, sy);
+      g.scale(1, .30);
+      const sh = g.createRadialGradient(0, 0, 0, 0, 0, R * 1.15);
+      sh.addColorStop(0, 'rgba(0,0,0,' + a + ')');
+      sh.addColorStop(.50, 'rgba(0,0,0,' + (a * .55).toFixed(3) + ')');
+      sh.addColorStop(1, 'rgba(0,0,0,0)');
+      g.fillStyle = sh;
+      g.beginPath(); g.arc(0, 0, R * 1.15, 0, 7); g.fill();
+      g.restore();
     }
     const grd = g.createRadialGradient(
       ctr.x - R * .30, ctr.y - R * .35, R * .12, ctr.x, ctr.y, R * 1.05);
@@ -790,6 +807,17 @@ class QBoard {
       style = QR_PAWN_ALT[style] || 'crown';
     }
     this.drawPawnShape(g, style, ctr, R, pl, grd);
+    // Specular highlight. It sits well inside the silhouette, so it needs no
+    // clip, and it is what sells the body as a sphere lit from the upper left.
+    if (style === 'disc' || style === 'beacon') {
+      const hx = ctr.x - R * .34, hy = ctr.y - R * .38;
+      const spec = g.createRadialGradient(hx, hy, 0, hx, hy, R * .46);
+      spec.addColorStop(0, 'rgba(255,255,255,.55)');
+      spec.addColorStop(.6, 'rgba(255,255,255,.13)');
+      spec.addColorStop(1, 'rgba(255,255,255,0)');
+      g.fillStyle = spec;
+      g.beginPath(); g.arc(hx, hy, R * .46, 0, 7); g.fill();
+    }
     // No side-to-move ring here: the legal-move dots already say whose turn
     // it is, and a permanent halo around the pawn reads as noise.
     g.restore();

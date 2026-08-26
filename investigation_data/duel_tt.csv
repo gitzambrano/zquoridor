@@ -1,3 +1,0 @@
-corpus,mode,tc,tt,contempt,games,a_wins,b_wins,rep_draws,timeouts,avg_plies,shuffle_rate,cycle4_rate,back_rate,progress_per_move,illegal
-mid,nnue,time,persist,-30,80,31,47,1,1,53.04,0.00000,0.00283,0.09946,0.54490,0
-empty,nnue,time,persist,-30,160,80,80,0,0,11.80,0.00000,0.00000,0.22564,0.54979,0

@@ -134,6 +134,53 @@ def dist_bucket(dist: np.ndarray) -> np.ndarray:
     return np.minimum(dist.astype(np.int64), DIST_BUCKETS - 1)
 
 
+# --- per-game ply index -----------------------------------------------------
+# selfplay.hpp writes one game for each fwrite call, so the samples of one
+# game stay contiguous in the file and keep their ply order. That makes the
+# per-game ply index recoverable without a ply field in the record.
+#
+# A ply 0 record is the initial position: no wall on the board, ten walls for
+# each player, and a BFS distance of 8 for each player (both pawns still sit
+# on their start rows). By ply 1 the first player has already moved, so
+# opp_dist differs, unless move 1 placed a wall, which makes walls_h or
+# walls_v non-zero. Either way, ply 1 cannot match the mask.
+#
+# Validated on 2026-08-25 over four shards and 9000 games: the mover field
+# alternates strictly inside 100 percent of the detected games, and no game
+# is degenerate or exceeds the 300 ply safety cut. See
+# docs/superpowers/specs/2026-08-25-policy-visit-distribution-design.md.
+
+def game_start_mask(arr: np.ndarray) -> np.ndarray:
+    """Boolean mask that marks the first record of every game in `arr`."""
+    return (
+        (arr["walls_h"] == 0)
+        & (arr["walls_v"] == 0)
+        & (arr["walls_left_own"] == 10)
+        & (arr["walls_left_opp"] == 10)
+        & (arr["own_dist"] == 8)
+        & (arr["opp_dist"] == 8)
+    )
+
+
+def ply_index(arr: np.ndarray) -> np.ndarray:
+    """Per-record ply index inside its own game, as int32.
+
+    `arr` must hold whole games in file order. A record before the first
+    detected game start gets its ply counted from the start of the array,
+    which only happens for a truncated file.
+    """
+    n = len(arr)
+    if n == 0:
+        return np.zeros(0, dtype=np.int32)
+    starts = game_start_mask(arr)
+    # Index of the most recent game start at or before each position.
+    pos = np.arange(n, dtype=np.int64)
+    last_start = np.maximum.accumulate(np.where(starts, pos, -1))
+    # No start seen yet: count from 0 instead of from -1.
+    last_start = np.where(last_start < 0, 0, last_start)
+    return (pos - last_start).astype(np.int32)
+
+
 def _detect_format_by_size(size: int):
     """Devolve (dtype, itemsize, ambig) para um arquivo de `size` bytes.
     `ambig=True` quando o tamanho e divisivel por ambos 27 e 32 (multiplo
@@ -301,6 +348,22 @@ class MultiFileSelfPlay:
 
     def sizes(self):
         return list(zip(self.paths, self._lens))
+
+    def ply_index(self) -> np.ndarray:
+        """Per-record ply index over the whole concatenated view, as int32.
+
+        The index is built one shard at a time, in file order, because a
+        game never crosses a shard boundary. The result therefore lines up
+        with the global index space of this view, so the caller can permute
+        or subsample it exactly like `k_by_source` in train_nnue.py.
+
+        The array is built once and cached.
+        """
+        if getattr(self, "_ply_index", None) is None:
+            self._ply_index = np.concatenate(
+                [ply_index(m) for m in self._maps]
+            ).astype(np.int32) if self._maps else np.zeros(0, dtype=np.int32)
+        return self._ply_index
 
     def _fancy(self, idx: np.ndarray) -> np.ndarray:
         idx = np.asarray(idx, dtype=np.int64)

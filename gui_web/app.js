@@ -2189,9 +2189,13 @@ function doFlip() {
 $('btnFlip').onclick = doFlip;
 for (const id of ['btnTakeback', 'btnUndo']) { const el = $(id); if (el) el.onclick = takeback; }
 $('btnHint').onclick = showHint;
-$('btnNew').onclick = modalNewGame;
-$('lvlChip').onclick = modalNewGame;
-$('btnSettings').onclick = modalSettings;
+// Wrap every modal opener in an arrow function. A direct assignment passes
+// the MouseEvent as the first argument, and modalSettings(tab) treats any
+// truthy first argument as a tab name. That made the first open of the
+// settings modal render an empty body.
+$('btnNew').onclick = () => modalNewGame();
+$('lvlChip').onclick = () => modalNewGame();
+$('btnSettings').onclick = () => modalSettings();
 $('logo').onclick = () => openModal(`<h3>ABOUT <span class="x" data-close>&#10005;</span></h3>
   <p style="line-height:1.7;color:var(--txt2)">Zquoridor plays with an NNUE evaluation network
   (354 inputs, hybrid PUCT MCTS over alpha-beta) trained on self-play.

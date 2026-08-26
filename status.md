@@ -801,6 +801,54 @@ Premium interface per `gui-premium.md`. Phases P0-P5 (tokens, canvas board
     `test_wall_matrix`, `test_gameplay_sim`, `test_browser_full` and
     `test_standalone`.
 
+### 2026-08-26: presentation pass
+
+Design plan in `docs/superpowers/specs/2026-08-26-gui-refactor-plan.md`. All
+seven browser suites pass after the change.
+
+- **Settings modal opened empty (bug).** `$('btnSettings').onclick =
+  modalSettings` passed the `MouseEvent` as the `tab` argument, and
+  `modalSettings(tab)` starts with `if (tab) settingsTab = tab`. A
+  `MouseEvent` is truthy, so `settingsTab` became the event object and every
+  later lookup (`cards[...]`, `SETTINGS_TAB_HINT[...]`, the `on` class) missed.
+  The first open rendered 45 characters of text; a click on any tab passed a
+  real string and the same modal then rendered 459. Every modal opener is now
+  wrapped in an arrow function. `modalNewGame()` takes no argument, so it never
+  showed the defect.
+- **Type and space tokens.** `:root` gained `--space-1` to `--space-8` and
+  `--fs-xs` to `--fs-xl`. The type steps use `clamp()`, so they answer to both
+  the viewport and the root font-size percentage that the text-size setting
+  writes. 58 hardcoded `rem` sizes moved onto the scale. The body base went
+  from `.7rem` to `--fs-md`, which measures 13.68 px at 1280 px wide against
+  11.2 px before. `.btn` moved from a fixed `width:36px` to `min-width`, and
+  `#controls` from `height` to `min-height`, because the larger labels
+  overflowed the button row by 26 px.
+- **Coordinates.** They were 8.6 px at 72 percent alpha, in a `--coord` that
+  measured 2.26:1 against `--frame` in the default wood theme. Six of the nine
+  board themes were below 4.5:1. The size is now `max(10, 0.235 * C)` at 92
+  percent alpha, which measures 12.7 px on a 600 px board, and the six failing
+  `--coord` values moved on lightness only, so the hue and the saturation are
+  unchanged. `tools/gui/contrast_check.py` gained a `coord/frame` pair at 4.5,
+  so the build fails if this regresses.
+- **Evaluation bar.** `#boardZone > #evalWrap` carried `margin-bottom:15px` to
+  reserve room for the `#evalNum` label. `#boardZone` centres its children, so
+  the margin was centred with the strip and pushed the bar 7.5 px above the
+  board's top edge. The label moved inside the strip, the margin is gone, and
+  the bar now shares the board's top and bottom edge exactly.
+- **Wall depth.** `board.js` hardcoded the shadow, the glossy highlight and the
+  two etched inset lines, so a light board got a shadow built for a dark board.
+  They are now `--wall-shadow`, `--wall-gloss`, `--wall-etch-dark` and
+  `--wall-etch-light`.
+- **Pawn.** The pawn never varied with engine strength. `LEVELS` maps a level
+  to a search time budget only. The reported base was the contact shadow: a
+  hard edged ellipse of radius `R*.92`, drawn at `R*.60` under the centre,
+  which reads as a plinth. It is now a radial gradient that fades to zero, and
+  the `disc` and `beacon` styles gained a specular highlight. The `pillar` and
+  `pawnChess` styles still draw a flared foot, because that is their design.
+- **Modal on desktop.** `#overlay` used `align-items:flex-end` at every width,
+  so the sheet stuck to the bottom edge of a desktop window. Above 900 px it is
+  now a centred dialog with four corners and a `fadeZoom` enter.
+
 ---
 
 ## 7. Evaluation Conventions

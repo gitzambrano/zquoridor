@@ -105,6 +105,10 @@ def main():
             pairs = [
                 ('wall/cell', get('--wall'), get('--cell-a'), 3.0),
                 ('wall/groove', get('--wall'), get('--groove'), 3.0),
+                # The rank and file labels sit on the frame margin. They are
+                # small by design, so they need the full text ratio to stay
+                # readable.
+                ('coord/frame', get('--coord'), get('--frame'), 4.5),
             ]
             if ui == 'dark':
                 pairs += [('txt/surf', get('--txt'), get('--surf'), 4.5)]

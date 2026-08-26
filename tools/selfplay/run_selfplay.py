@@ -76,7 +76,11 @@ EPSILON_MIDGAME  = 0.01   # prob. de desvio no midgame: escolhe 2º ou 3º melho
 # (EPSILON_MIDGAME -> 2º/3º melhor lance; senão busca completa).
 MC_OBVIOUS_PLIES    = 6      # nº de lances iniciais (obvios no Quoridor) com temperatura fixa e baixa
 MC_TEMP_OBVIOUS      = 0.3  # temperatura da fase 1 (baixa -> quase argmax, pouca variancia de proposito)
-MC_TEMP_OPENING     = 1.00   # temperatura no inicio da fase 2 (>1 achata -- mais uniforme/exploratório)
+MC_TEMP_OPENING     = 0.60   # temperatura no inicio da fase 2 (<1 afia -- mais perto do argmax da politica)
+                             # 2026-08-25: era 1.00. Valores >1 achatam a softmax, entao o lance
+                             # amostrado fica em media PIOR que o argmax da propria politica -- e
+                             # esse lance vira o policyTarget gravado (selfplay.hpp:533), treinando
+                             # a cabeca de politica a imitar uma versao degradada de si mesma.
 MC_TEMP_END         = 0.12   # temperatura ao fim da fase 2 (<1 afia -- quase argmax)
 MC_TEMP_DECAY_PLIES = 20     # nº de lances da fase 2 (logo apos MC_OBVIOUS_PLIES) sobre os quais a temperatura decai
  

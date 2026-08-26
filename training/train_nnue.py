@@ -236,6 +236,16 @@ CHUNK_SIZE_MAX_DEFAULT = 20_000_000
 # --- pesos de loss / QAT / logging -------------------------------------------
 W_OUTCOME_DEFAULT = 1.0               # peso da loss da cabeca de resultado (BCE)
 W_POLICY_DEFAULT = 1.0                # peso da loss de policy (CE)
+# Opening plies excluded from the POLICY loss (they still train the value
+# head). In montecarlo mode selfplay runs no search during the temperature
+# window: it samples the move from the policy head itself and records that
+# sampled move as the policy target (selfplay.hpp:474 and selfplay.hpp:533).
+# Training on those targets teaches the policy head to imitate its own
+# output, so this masks them out. The value equals MC_OBVIOUS_PLIES +
+# MC_TEMP_DECAY_PLIES in tools/selfplay/run_selfplay.py (6 + 20). Measured
+# on gen6: approximately 39.8 percent of all records fall in this window.
+# Set to 0 to train on every ply, which is the behavior before 2026-08-26.
+POLICY_OPENING_PLIES_DEFAULT = 26
 QA_DEFAULT = 255                      # escala QAT do acumulador (int16)
 QB_DEFAULT = 64                       # escala QAT das cabecas (int8)
 LOG_EVERY_DEFAULT = 1                 # a cada quantos epochs imprime o resumo
@@ -347,7 +357,7 @@ class WeightClipper:
 
  
 # --- features -----------------------------------------------------------------
-def to_chunk_tensors(chunk: np.ndarray, k_chunk: np.ndarray, device):
+def to_chunk_tensors(chunk: np.ndarray, k_chunk: np.ndarray, device, pw_chunk: np.ndarray = None):
     """Converte um bloco de TrainingSample (array estruturado numpy) para
     tensores densos e transfere tudo para `device` de uma vez so. Chamar
     isso uma vez por bloco grande (em vez de uma vez por batch) e o que
@@ -406,14 +416,21 @@ def to_chunk_tensors(chunk: np.ndarray, k_chunk: np.ndarray, device):
     k = k_chunk.astype(np.float32)
     wl_target = k * result_prob_mover + (1.0 - k) * ev_mover
 
+    if pw_chunk is None:
+        pw = np.ones(len(chunk), dtype=np.float32)
+    else:
+        pw = pw_chunk.astype(np.float32)
+
     return {
         "x": torch.from_numpy(x).to(device, non_blocking=True),
         "wl_target": torch.from_numpy(wl_target).to(device, non_blocking=True),
         "policy_target": torch.from_numpy(chunk["policy_target"].astype(np.int64)).to(device, non_blocking=True),
+        "policy_w": torch.from_numpy(pw).to(device, non_blocking=True),
     }
 
 
-def iter_gpu_batches(chunk: np.ndarray, k_chunk: np.ndarray, device, batch_size: int, gpu_chunk_size: int):
+def iter_gpu_batches(chunk: np.ndarray, k_chunk: np.ndarray, device, batch_size: int, gpu_chunk_size: int,
+                     pw_chunk: np.ndarray = None):
     """Percorre `chunk` (e `k_chunk`, MESMA ordem/tamanho) em sub-blocos de
     ate `gpu_chunk_size` posicoes, transferindo cada sub-bloco para
     `device` uma unica vez (via `to_chunk_tensors`), e dentro dele fatia os
@@ -426,7 +443,8 @@ def iter_gpu_batches(chunk: np.ndarray, k_chunk: np.ndarray, device, batch_size:
     for gstart in range(0, n, gpu_chunk_size):
         sub = chunk[gstart:gstart + gpu_chunk_size]
         k_sub = k_chunk[gstart:gstart + gpu_chunk_size]
-        t = to_chunk_tensors(sub, k_sub, device)
+        pw_sub = None if pw_chunk is None else pw_chunk[gstart:gstart + gpu_chunk_size]
+        t = to_chunk_tensors(sub, k_sub, device, pw_sub)
         n_sub = len(sub)
         for start in range(0, n_sub, batch_size):
             end = min(start + batch_size, n_sub)
@@ -434,6 +452,7 @@ def iter_gpu_batches(chunk: np.ndarray, k_chunk: np.ndarray, device, batch_size:
                 "x": t["x"][start:end],
                 "wl_target": t["wl_target"][start:end],
                 "policy_target": t["policy_target"][start:end],
+                "policy_w": t["policy_w"][start:end],
             }
 
 
@@ -898,33 +917,59 @@ def _default_quant_path(out_path: str) -> str:
     return out_path + "_int8.bin"
  
  
+def weighted_policy_loss(policy_logits, policy_t, pw):
+    """Cross entropy of the policy head, weighted for each sample.
+
+    A weight of 0 removes the sample from the policy loss. The same sample
+    still trains the value head, because this weight never touches
+    `loss_outcome`. This is what excludes the montecarlo opening plies,
+    whose recorded policy target is a move that the policy head itself
+    sampled, with no search behind it.
+
+    When every weight in the batch is 0, the numerator is also 0, so the
+    term is 0 and adds no gradient. The clamp only avoids a division by
+    zero, it never changes a real value.
+    """
+    per = F.cross_entropy(policy_logits, policy_t, reduction="none")
+    return (per * pw).sum() / pw.sum().clamp(min=1e-8)
+
+
 # --- avaliacao em chunks (limitado por RAM/VRAM) -----------------------------
 @torch.no_grad()
 def run_eval(ds, indices, k_by_source, batch_size, chunk_size, gpu_chunk_size, model, device,
-             w_outcome, w_policy):
+             w_outcome, w_policy, pw_by_sample=None):
     model.eval()
-    total = dict(loss=0.0, outcome=0.0, policy=0.0, correct=0)
+    total = dict(loss=0.0, outcome=0.0, policy=0.0, correct=0, pw=0.0)
     n_items = len(indices)
     for start in range(0, n_items, chunk_size):
         chunk_idx = indices[start:start + chunk_size]
         chunk = ds[chunk_idx]
         k_chunk = k_by_source[chunk_idx]
-        for t in iter_gpu_batches(chunk, k_chunk, device, batch_size, gpu_chunk_size):
+        pw_chunk = None if pw_by_sample is None else pw_by_sample[chunk_idx]
+        for t in iter_gpu_batches(chunk, k_chunk, device, batch_size, gpu_chunk_size, pw_chunk):
             policy_t = t["policy_target"]
+            pw = t["policy_w"]
 
             value_wl, policy_logits = model(t["x"])
             loss_outcome = F.binary_cross_entropy_with_logits(value_wl, t["wl_target"])
-            loss_policy = F.cross_entropy(policy_logits, policy_t)
+            loss_policy = weighted_policy_loss(policy_logits, policy_t, pw)
             loss = w_outcome * loss_outcome + w_policy * loss_policy
 
             nb = len(t["x"])
+            # The policy metrics are averaged over the samples that the
+            # policy loss actually saw, so a masked opening ply does not
+            # dilute them. The value metrics keep the full count.
+            nbw = pw.sum().item()
             total["loss"] += loss.item() * nb
             total["outcome"] += loss_outcome.item() * nb
-            total["policy"] += loss_policy.item() * nb
-            total["correct"] += (policy_logits.argmax(dim=-1) == policy_t).sum().item()
-    for key in ("loss", "outcome", "policy"):
+            total["policy"] += loss_policy.item() * nbw
+            total["pw"] += nbw
+            hit = (policy_logits.argmax(dim=-1) == policy_t).float()
+            total["correct"] += (hit * pw).sum().item()
+    for key in ("loss", "outcome"):
         total[key] /= max(1, n_items)
-    total["policy_acc"] = total["correct"] / max(1, n_items)
+    total["policy"] /= max(1.0, total["pw"])
+    total["policy_acc"] = total["correct"] / max(1.0, total["pw"])
     return total
 
  
@@ -1174,6 +1219,24 @@ def train(args):
         for p, n in train_ds.sizes():
             print(f"  - {p}: {n:,} posicoes")
 
+    # Policy-loss mask: the opening plies of a montecarlo game carry a
+    # policy target that the policy head itself sampled, with no search
+    # behind it. Excluding them keeps the value head untouched.
+    def build_policy_w(ds, label):
+        if args.policy_opening_plies <= 0:
+            return None
+        ply = ds.ply_index()
+        w = (ply >= args.policy_opening_plies).astype(np.float32)
+        kept, total = float(w.sum()), float(len(w))
+        print(f"mascara de policy ({label}): plies < {args.policy_opening_plies} excluidos da loss "
+              f"de policy -- {total - kept:,.0f} de {total:,.0f} posicoes ({1 - kept / max(1.0, total):.1%}) "
+              f"treinam so a cabeca de valor")
+        if kept == 0:
+            raise SystemExit("--policy-opening-plies removeu TODAS as posicoes da loss de policy")
+        return w
+
+    policy_w_by_sample = build_policy_w(train_ds, "treino")
+
     rng = np.random.default_rng(args.seed)
     torch.manual_seed(args.seed)
 
@@ -1188,6 +1251,7 @@ def train(args):
         # validacao: mede a rede contra o que realmente aconteceu na
         # partida, nao contra a opiniao de uma NNUE anterior.
         val_k_by_source = np.ones(len(val_ds), dtype=np.float32)
+        val_policy_w = build_policy_w(val_ds, "validacao")
     else:
         n_total = len(base_idx)
         n_val = max(1, int(n_total * args.val_split))
@@ -1195,6 +1259,8 @@ def train(args):
         val_idx, train_idx = base_idx[perm[:n_val]], base_idx[perm[n_val:]]
         val_ds = train_ds
         val_k_by_source = k_by_source
+        # Same dataset as training, so the same per-sample mask applies.
+        val_policy_w = policy_w_by_sample
         print(f"split treino/validacao: {len(train_idx):,} / {len(val_idx):,} (val-split={args.val_split})")
 
  
@@ -1313,7 +1379,7 @@ def train(args):
             torch.cuda.reset_peak_memory_stats(device)
  
         model.train()
-        tr_total = dict(loss=0.0, outcome=0.0, policy=0.0, correct=0)
+        tr_total = dict(loss=0.0, outcome=0.0, policy=0.0, correct=0, pw=0.0)
         n_train_items = len(train_idx)
         epoch_start_time = time.time()
         last_progress_print = epoch_start_time
@@ -1327,16 +1393,20 @@ def train(args):
             global_idx = train_idx[chunk_idx]
             chunk = train_ds[global_idx]
             k_chunk = k_by_source[global_idx]
+            pw_chunk = None if policy_w_by_sample is None else policy_w_by_sample[global_idx]
             perm = rng.permutation(len(chunk))  # embaralha uma vez por chunk
             chunk = chunk[perm]
             k_chunk = k_chunk[perm]
+            if pw_chunk is not None:
+                pw_chunk = pw_chunk[perm]
 
-            for t in iter_gpu_batches(chunk, k_chunk, device, batch_size, gpu_chunk_size):
+            for t in iter_gpu_batches(chunk, k_chunk, device, batch_size, gpu_chunk_size, pw_chunk):
                 policy_t = t["policy_target"]
+                pw = t["policy_w"]
 
                 value_wl, policy_logits = model(t["x"])
                 loss_outcome = F.binary_cross_entropy_with_logits(value_wl, t["wl_target"])
-                loss_policy = F.cross_entropy(policy_logits, policy_t)
+                loss_policy = weighted_policy_loss(policy_logits, policy_t, pw)
                 loss = args.w_outcome * loss_outcome + args.w_policy * loss_policy
 
                 opt.zero_grad(set_to_none=True)
@@ -1347,10 +1417,13 @@ def train(args):
                 clipper(model)
 
                 nb = len(t["x"])
+                nbw = pw.sum().item()
                 tr_total["loss"] += loss.item() * nb
                 tr_total["outcome"] += loss_outcome.item() * nb
-                tr_total["policy"] += loss_policy.item() * nb
-                tr_total["correct"] += (policy_logits.argmax(dim=-1) == policy_t).sum().item()
+                tr_total["policy"] += loss_policy.item() * nbw
+                tr_total["pw"] += nbw
+                hit = (policy_logits.argmax(dim=-1) == policy_t).float()
+                tr_total["correct"] += (hit * pw).sum().item()
                 positions_done += nb
 
                 now = time.time()
@@ -1383,15 +1456,18 @@ def train(args):
                         print(line + " " * 8, end="\r", flush=True)
                         last_progress_was_inline = True
  
-        for k in ("loss", "outcome", "policy"):
+        for k in ("loss", "outcome"):
             tr_total[k] /= max(1, n_train_items)
-        tr_total["policy_acc"] = tr_total["correct"] / max(1, n_train_items)
+        # Same rule as run_eval: the policy metrics are averaged over the
+        # samples that the policy loss saw, not over every sample.
+        tr_total["policy"] /= max(1.0, tr_total["pw"])
+        tr_total["policy_acc"] = tr_total["correct"] / max(1.0, tr_total["pw"])
 
         if last_progress_was_inline:
             print()  # fecha a linha viva (\r) antes de qualquer print permanente do epoch
 
         va = run_eval(val_ds, val_idx, val_k_by_source, batch_size, chunk_size, gpu_chunk_size, model, device,
-                      args.w_outcome, args.w_policy)
+                      args.w_outcome, args.w_policy, val_policy_w)
 
         history["epoch"].append(epoch)
         history["train_loss"].append(tr_total["loss"])
@@ -1687,6 +1763,10 @@ def parse_args(argv=None):
     g_loss = p.add_argument_group("pesos de loss / QAT")
     g_loss.add_argument("--w-outcome", type=float, default=W_OUTCOME_DEFAULT)
     g_loss.add_argument("--w-policy", type=float, default=W_POLICY_DEFAULT)
+    g_loss.add_argument("--policy-opening-plies", type=int, default=POLICY_OPENING_PLIES_DEFAULT,
+                        help=f"plies iniciais excluidos da loss de POLICY, mantidos na de valor "
+                             f"(padrao: {POLICY_OPENING_PLIES_DEFAULT}). 0 = treina a policy em "
+                             f"todos os plies, comportamento anterior a 2026-08-26.")
     g_loss.add_argument("--qa", type=int, default=QA_DEFAULT)
     g_loss.add_argument("--qb", type=int, default=QB_DEFAULT)
     g_loss.add_argument("--grad-clip-norm", type=float, default=GRAD_CLIP_NORM_DEFAULT,
