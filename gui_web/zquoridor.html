@@ -540,8 +540,13 @@ html[data-anim="off"] *{animation-duration:0ms!important;transition-duration:0ms
   /* Phone landscape has roughly 390px of height, and the board claims most of
      it. A wrapped button row costs a second line the column does not have, so
      the row stays on one line and scrolls sideways instead. */
+  /* No mask-image on this row. A trailing fade would read better than a
+     half-cut button, but a mask here made test_browser_full's M3 board
+     gesture fail reproducibly (2 of 2 runs failing with it, passing without),
+     so the row keeps a hard edge. A working gesture beats a nicer edge. */
   #controls{flex-wrap:nowrap;overflow-x:auto;overflow-y:hidden;
-    justify-content:flex-start;gap:var(--space-2)}
+    justify-content:flex-start;gap:var(--space-2);scrollbar-width:none}
+  #controls::-webkit-scrollbar{display:none}
   #controls .btn{min-width:32px;padding:0 var(--space-1);height:28px}
   #controls .btn svg{width:17px;height:17px}
   .pbar .clock{font-size:var(--fs-lg)}
