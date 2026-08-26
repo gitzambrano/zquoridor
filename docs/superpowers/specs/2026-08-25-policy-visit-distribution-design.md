@@ -25,10 +25,27 @@ larger than approximately 20 Elo are ruled out.
 This weakens the case for task (c), and it does not settle it. Task (a)
 deletes samples. Task (c) replaces the target with the visit
 distribution, which adds information that no sample in the dataset
-carries today. The two are not the same intervention. However, task (c)
-now rests on the argument in "Background" below, not on a measured
-result, and the format break is therefore a bet. Do not start task (c)
-without saying so explicitly.
+carries today. The two are not the same intervention, and task (c) never
+depended on task (a).
+
+Two corrections to an earlier reading of this document.
+
+First, task (c) is not a proposal that this document invented. Item 1 of
+"Future Plans" in `status.md` already listed "root visit distribution as
+policy target" as part of the Gen 6 work, before this document existed.
+This document only specifies the record format and the top-8 truncation.
+
+Second, and more important: **task (c) does not address the reported
+wandering.** The measured cause of the wandering is the WL head, not the
+policy head. `benchmarks/diag_wander.cpp` shows that the WL head reads
+the remaining-wall counts and is almost blind to the pawn race, while
+"the policy head stays correct and gives the advancing move a prior of
+0.73". See the note "MCTS endgame wandering" in `status.md`. Any work on
+the policy target improves a component that is already correct in the
+failing position.
+
+Task (c) therefore stands on its own merit for general strength, as the
+roadmap intended. It must not be sold as a fix for the wandering.
 
 ## Purpose
 
