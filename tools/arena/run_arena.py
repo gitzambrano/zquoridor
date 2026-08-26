@@ -23,7 +23,10 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 #     GIT_REF2 = "HEAD~3"      -> 3 commits atrás
 #     GIT_REF2 = "minha-branch"-> Outra branch
 GIT_REF1 = None               # None = versão local não comitada (ou passe string de ref git)
-GIT_REF2 = 'main'             # Ref Git base para o confronto (ex: 'main', 'v1.0', 'HEAD')
+GIT_REF2 = None               # 2026-08-26: os DOIS engines rodam o mesmo código local de
+                              # propósito. O confronto isola UMA variável: os pesos NNUE
+                              # (E1_WEIGHTS_DIR vs E2_WEIGHTS_DIR abaixo). Qualquer
+                              # diferença de ref aqui contaminaria a medição.
 
 INVERT_COLORS = True          # Se True, joga cada abertura 2x invertendo as cores (par). Se False, joga apenas 1x por abertura.
 CREATE_BIN = True             # Se True, salva os dados das partidas em data/arena/ no formato .bin de treino
@@ -234,8 +237,10 @@ MCAB_FLAG_KNOBS = [
 # (procura nnue_weights_int8.bin dentro dela, ou aceita caminho de arquivo
 # .bin direto). --e1-nnue/--e2-nnue (arquivo exato) continuam tendo
 # prioridade sobre isto quando passados.
-E1_WEIGHTS_DIR = "default"
-E2_WEIGHTS_DIR = "default"
+# 2026-08-26, tarefa (a) do spec de policy: candidato = rede treinada com os
+# plies de abertura excluídos da loss de policy; base = produção.
+E1_WEIGHTS_DIR = "data/nnue/nnue_weights_maskA_int8.bin"
+E2_WEIGHTS_DIR = "data/nnue/nnue_weights_int8.bin"
 # ==============================================================================
 
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))

@@ -1,7 +1,34 @@
 # Policy target from the MCab root visit distribution
 
 Date: 2026-08-25
-Status: approved design, not implemented
+Status: task (a) done and measured. Task (c) is on hold, see "Result of
+task (a)" below.
+
+## Result of task (a), 2026-08-26
+
+Task (a) is complete and it produced a negative result.
+
+The mask excluded 26,725,366 of 66,458,326 positions, which is 40.2
+percent, from the policy loss. Training ran 120 epochs and reached a best
+`val_loss` of 1.9028 at epoch 114. The arena then measured 1000 games at
+150 ms for each move, with the same local code on both sides so that the
+NNUE weights were the only variable.
+
+The candidate won 466 games, the production network won 464, and 70 games
+drew. The difference is **+0.7 Elo with a margin of +/-20.8**, which the
+arena reports as inconclusive.
+
+The conclusion is that the self-imitating policy target is real, and that
+removing it changes nothing measurable at this time control. Effects
+larger than approximately 20 Elo are ruled out.
+
+This weakens the case for task (c), and it does not settle it. Task (a)
+deletes samples. Task (c) replaces the target with the visit
+distribution, which adds information that no sample in the dataset
+carries today. The two are not the same intervention. However, task (c)
+now rests on the argument in "Background" below, not on a measured
+result, and the format break is therefore a bet. Do not start task (c)
+without saying so explicitly.
 
 ## Purpose
 

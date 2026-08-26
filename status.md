@@ -47,6 +47,41 @@ relearn by experiment.
 
 ## 3. History Notes (durable lessons only)
 
+- **Opening plies removed from the policy loss: NO measurable Elo
+  (2026-08-26)**: in montecarlo self-play the temperature window runs no
+  search. It samples the move from the policy head itself
+  (`selfplay.hpp:474`) and then records that sampled move as the policy
+  target (`selfplay.hpp:533`). The policy head therefore trains to imitate
+  its own output. On gen6 that window covers 39.8 percent of every shard,
+  and `MC_TEMP_OPENING` was 1.00, which flattens the softmax and makes the
+  sampled move worse on average than the head's own argmax.
+
+  The fix excluded those samples from the policy loss and kept them in the
+  value loss. A new field was not needed: self-play writes one game for
+  each `fwrite` call, so the per-game ply index is recoverable from the
+  existing shards (`ply_index` in `read_selfplay.py`, tested by
+  `training/test_ply_index.py`, 100 percent mover alternation over 9000
+  games).
+
+  Training ran 120 epochs over 66,458,326 positions from 469 shards. The
+  mask removed 26,725,366 positions (40.2 percent) from the policy loss.
+  Best `val_loss` was 1.9028 at epoch 114.
+
+  The arena measured 1000 games at 150 ms for each move, with the same
+  local code on both sides so that the weights were the only variable.
+  The result was 466 wins against 464, with 70 draws: **+0.7 Elo, margin
+  +/-20.8, inconclusive**.
+
+  The lesson: removing a self-referential policy target changes nothing
+  measurable at this time control. Effects larger than approximately 20
+  Elo are ruled out. Do not repeat this experiment. A stronger test needs
+  a different intervention, not more games of the same one. The visit
+  distribution proposed in
+  `docs/superpowers/specs/2026-08-25-policy-visit-distribution-design.md`
+  is a different change, because it replaces the target instead of
+  deleting samples, so this result weakens its case but does not settle
+  it.
+
 - **MCTS endgame wandering (2026-08-24, branch
   `claude/zquoridor-mcts-bug-hf6uqv`)**: a user reported that the engine
   spends its walls fast, then shuffles its pawn sideways forever in a won
