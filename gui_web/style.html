@@ -386,7 +386,7 @@ html[data-anim="off"] *{animation-duration:0ms!important;transition-duration:0ms
 /* min-height, not height: the row is allowed to wrap onto a second line
    without overflowing its own box. */
 #controls{display:flex;align-items:center;justify-content:space-between;
-  gap:var(--space-2);min-height:44px;flex:none;
+  gap:var(--space-1);min-height:44px;flex:none;
   padding-bottom:2px;touch-action:none}
 #wallH,#wallV{position:relative}
 #wallH .barH{width:18px;height:5px;border-radius:2px;background:currentColor;opacity:.75}
@@ -526,7 +526,10 @@ html[data-anim="off"] *{animation-duration:0ms!important;transition-duration:0ms
      board keeps the full height of its column. */
   #controlsSlot{display:flex;flex-direction:column;gap:var(--space-4);
     padding-bottom:12px;border-bottom:1px solid var(--bor)}
-  #controlsSlot #controls{flex-wrap:wrap;row-gap:var(--space-2)}
+  /* The seven buttons need about 331px and the rail gives less than that
+     below roughly 1400px wide, so the row wraps. Centred, a wrapped row reads
+     as two balanced rows; left-aligned it reads as one button that fell off. */
+  #controlsSlot #controls{flex-wrap:wrap;row-gap:var(--space-2);justify-content:center}
   #underBoard:empty{display:none}
   #underBoard{max-width:none}
   /* Padding on both sides. With only padding-left, every control in the rail

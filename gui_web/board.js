@@ -654,13 +654,19 @@ class QBoard {
   // geometry of record for hit tests, ghosts and chip positioning.
   wallDrawRect(o, r, c) {
     const rc = this.wallRect(o, r, c);
-    // 0.46 of the groove, not 0.32: at 0.32 the rail leaves a brown margin on
-    // both sides of its own channel and reads as a thin strip laid over the
-    // board instead of a piece seated in the groove.
+    // Across the corridor: a little fatter than the slot, so the rail seats in
+    // its channel instead of looking laid on top of the board.
     const inf = Math.max(1.5, this.G * 0.36);
+    // Along its length: half a corridor past each end. The slot stops at the
+    // cell edges, so two walls in line stopped short of the crossing between
+    // them and left a gap. Half a corridor each takes both to the exact centre
+    // of that crossing, where they meet and read as one continuous rail. The
+    // ends still land inside the play area: at the outermost slot the
+    // extension reaches the frame edge and no further.
+    const ext = this.G / 2;
     return o === 0
-      ? { x: rc.x, y: rc.y - inf, w: rc.w, h: rc.h + 2 * inf }
-      : { x: rc.x - inf, y: rc.y, w: rc.w + 2 * inf, h: rc.h };
+      ? { x: rc.x - ext, y: rc.y - inf, w: rc.w + 2 * ext, h: rc.h + 2 * inf }
+      : { x: rc.x - inf, y: rc.y - ext, w: rc.w + 2 * inf, h: rc.h + 2 * ext };
   }
 
   // Wall beam: dark walnut, a rim, a drop shadow and a seam at the midpoint.
