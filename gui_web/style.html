@@ -1,393 +1,807 @@
 <!doctype html>
-<html lang="pt-br">
+<html lang="en" data-ui="dark" data-board="wood" data-pawn="disc"
+      data-coords="edges" data-pawn-shadow="soft">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
-<title>Quoridor — motor C++/WASM</title>
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+<title>Zquoridor</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@600;700&family=JetBrains+Mono:wght@300;400;500;600;700&display=swap" rel="stylesheet">
 <style>
-  :root {
-    --bg: #2b2b31;
-    --panel: #38383f;
-    --panel-2: #424249;
-    --border: #4a4a53;
-    --text: #f3f4f6;
-    --text-dim: #a7a9b3;
-    /* tema padrão: "xadrez" (peças em tons de madeira, brancas x pretas) */
-    --p0: #d9b872;
-    --p0-deep: #a9843f;
-    --p0-light: #f0dfa8;
-    --p0-soft: rgba(217,184,114,.16);
-    --p1: #d6402c;
-    --p1-deep: #8f2417;
-    --p1-light: #f28468;
-    --p1-soft: rgba(214,64,44,.18);
-    --wall: #e9e4d7;
-    --wall-dim: #b6b0a2;
-    --active: #34d399;
-    --active-deep: #0f8f68;
-    --board-bg: #34363d;
-    --cell-bg: #34363d;
-    --cell-border: rgba(255,255,255,.16);
-    --wall-ghost-ok: rgba(52,211,153,.60);
-    --wall-ghost-bad: rgba(239,68,68,.60);
-    --gold: #e8c777;
-  }
-  /* tema alternativo: azul x vermelho (o esquema original) */
-  [data-theme="classic"] {
-    --p0: #3b82f6;
-    --p0-deep: #1d4ed8;
-    --p0-light: #9cc3fd;
-    --p0-soft: rgba(59,130,246,.16);
-    --p1: #ef4444;
-    --p1-deep: #b91c1c;
-    --p1-light: #f8b3b3;
-    --p1-soft: rgba(239,68,68,.16);
-    --wall: #f1f2f5;
-    --wall-dim: #c3c5cc;
-  }
-  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
-  html, body { height: 100%; overscroll-behavior: none; }
-  body {
-    margin: 0;
-    background: #000;
-    color: var(--text);
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-    display: flex;
-    justify-content: center;
-    height: 100dvh;
-    overflow: hidden;
-    user-select: none;
-  }
+/* ============================== tokens ================================ */
+:root{
+  /* chrome */
+  --bg:#0d0d12; --surf:#16161f; --surf2:#1c1c28; --surf3:#23233a;
+  --bor:#252538; --bor2:#33334a;
+  --gold:#c8a84b; --gold2:#e6c96e; --gold-dim:rgba(200,168,75,.16);
+  --txt:#e0e0f0; --txt2:#9a9ab8; --muted:#565672;
+  --green:#4a9c6a; --red:#c0394a; --amber:#d99b3c; --blue:#4a7bc0;
+  --green-dim:rgba(74,156,106,.16); --red-dim:rgba(192,57,74,.16);
 
-  .app {
-    width: 100%;
-    max-width: 620px;
-    height: 100%;
-    display: flex;
-    flex-direction: column;
-    padding: 10px 10px calc(10px + env(safe-area-inset-bottom));
-    gap: 6px;
-  }
+  /* board: wood (default) */
+  --cell-a:#e3cca4;
+  --cell-b:#dcc196;
+  --groove:#7c5a3a;
+  --frame:#4b3722;
+  --frame-hi:#6b5236;
+  --coord:#8a6a45;
+  /* Walls are pale plaster rails: bright against the wood bed, with a warm
+     grey rim so they keep a premium, matte look instead of pure white. */
+  --wall:#ecebe5;
+  --wall-hi:#faf9f4;
+  --wall-edge:#a6a49a;
+  --p0:#d94f37; --p0-light:#f0836b; --p0-deep:#8c2a18;
+  --p1:#3b82f6; --p1-light:#7daefc; --p1-deep:#1c4c9c;
+  /* Translucent player tints, used by the evaluation graph area fill. */
+  --p0-soft:rgba(217,79,55,.20); --p1-soft:rgba(59,130,246,.20);
 
-  /* --- topo: cartões "premium" dos jogadores --- */
-  .players-row { display: flex; gap: 8px; flex: 0 0 auto; }
-  .player-card {
-    flex: 1;
-    position: relative;
-    background: linear-gradient(180deg, var(--panel-2), var(--panel));
-    border: 1px solid var(--border);
-    border-radius: 14px;
-    padding: 10px 12px;
-    display: flex;
-    flex-direction: column;
-    gap: 6px;
-    min-width: 0;
-    overflow: hidden;
-    box-shadow: 0 1px 0 rgba(255,255,255,.03) inset, 0 6px 14px rgba(0,0,0,.25);
-    transition: border-color .18s ease, box-shadow .18s ease, transform .15s ease;
-  }
-  .player-card::before {
-    content: ""; position: absolute; inset: 0 0 auto 0; height: 3px;
-    background: var(--accent, transparent); opacity: .85;
-  }
-  .player-card.p0 { --accent: linear-gradient(90deg, var(--p0-deep), var(--p0)); }
-  .player-card.p1 { --accent: linear-gradient(90deg, var(--p1-deep), var(--p1)); }
-  .player-card.active {
-    border-color: var(--active);
-    box-shadow: 0 0 0 1px var(--active), 0 6px 18px rgba(52,211,153,.18);
-    transform: translateY(-1px);
-  }
-  .player-card.thinking .name .dot { animation: qr-pulse 1.1s ease-in-out infinite; }
-  @keyframes qr-pulse { 0%,100% { opacity: 1; transform: scale(1); } 50% { opacity: .3; transform: scale(.65); } }
-  .player-card.winner {
-    border-color: var(--gold);
-    box-shadow: 0 0 0 1px var(--gold), 0 6px 18px rgba(232,199,119,.25);
-  }
-  .player-card.winner .name::after { content: "\1F3C6"; margin-left: 4px; font-size: .8em; }
-  .player-card.draw {
-    border-color: var(--text-dim);
-    box-shadow: 0 0 0 1px var(--text-dim), 0 6px 14px rgba(0,0,0,.15);
-  }
-  .player-card.draw .name::after { content: " 🤝"; margin-left: 4px; font-size: .8em; }
-  .player-card .name {
-    font-size: .84rem; font-weight: 700; letter-spacing: .01em; white-space: nowrap; overflow: hidden;
-    text-overflow: ellipsis; display: flex; align-items: center; gap: 7px;
-  }
-  .player-card .name .dot {
-    width: 9px; height: 9px; border-radius: 50%; flex: none;
-    box-shadow: 0 0 0 3px rgba(255,255,255,.05);
-  }
-  .player-card.p0 .name .dot { background: radial-gradient(circle at 35% 30%, var(--p0-light), var(--p0)); }
-  .player-card.p1 .name .dot { background: radial-gradient(circle at 35% 30%, var(--p1-light), var(--p1)); }
-  .player-card .meta {
-    display: flex; align-items: center; justify-content: space-between; gap: 6px;
-    font-size: .76rem; color: var(--text-dim);
-  }
-  .walls-pill {
-    display: inline-flex; align-items: center; gap: 5px; font-weight: 700; font-size: .8rem; color: var(--text);
-    background: rgba(255,255,255,.04); border-radius: 7px; padding: 3px 7px 3px 6px;
-  }
-  .walls-pill .bars { display: inline-flex; gap: 2px; }
-  .walls-pill .bars i {
-    display: block; width: 4px; height: 11px; border-radius: 2px; background: rgba(255,255,255,.12);
-  }
-  .player-card.p0 .walls-pill .bars i.on { background: linear-gradient(180deg, var(--p0-light), var(--p0)); }
-  .player-card.p1 .walls-pill .bars i.on { background: linear-gradient(180deg, var(--p1-light), var(--p1)); }
-  .dist-tag {
-    display: flex; flex-direction: column; align-items: center; justify-content: flex-start;
-    font-variant-numeric: tabular-nums; color: var(--text-dim);
-    background: rgba(255,255,255,.04); border-radius: 7px; padding: 2px 8px 3px;
-    line-height: 1.05;
-  }
-  .dist-tag .lbl { font-size: .56rem; text-transform: uppercase; letter-spacing: .04em; opacity: .75; }
-  .dist-tag b { color: var(--text); font-weight: 700; font-size: .95rem; }
+  --r-sm:5px; --r-md:7px; --r-lg:12px; --r-xl:18px;
+  --dur-fast:110ms; --dur:180ms; --dur-slow:320ms;
+  --ease:cubic-bezier(.22,.61,.36,1);
+}
 
-  /* --- tabuleiro --- */
-  .board-wrap { flex: 1 1 auto; min-height: 0; display: flex; align-items: center; justify-content: flex-end; position: relative; }
-  #board {
-    --cell: 48px; --gap: 8px; --unit: calc(var(--cell) + var(--gap));
-    display: grid;
-    grid-template-columns: repeat(9, var(--cell));
-    grid-template-rows: repeat(9, var(--cell));
-    gap: var(--gap);
-    background: #17181b;
-    padding: 0;
-    border-radius: 10px;
-    position: relative;
-    box-shadow: 0 8px 24px rgba(0,0,0,.55);
-  }
-  #board.wall-mode { cursor: crosshair; box-shadow: 0 8px 24px rgba(0,0,0,.55), 0 0 0 2px var(--active-deep); }
-  .cell {
-    background: linear-gradient(150deg, #3c3f48 0%, #33353d 100%);
-    border-radius: 5px;
-    box-shadow: inset 0 0 0 1px var(--cell-border);
-    position: relative;
-    display: flex; align-items: center; justify-content: center;
-    cursor: default;
-  }
-  .cell.dest-hint { cursor: pointer; }
-  .cell.dest-hint.p0 { box-shadow: inset 0 0 0 2px var(--p0-soft); background: linear-gradient(150deg, var(--p0-soft), #33353d 65%); }
-  .cell.dest-hint.p1 { box-shadow: inset 0 0 0 2px var(--p1-soft); background: linear-gradient(150deg, var(--p1-soft), #33353d 65%); }
-  .cell.dest-hint.p0::after { content: ""; width: 28%; height: 28%; border-radius: 50%; background: var(--p0); opacity: .38; }
-  .cell.dest-hint.p1::after { content: ""; width: 28%; height: 28%; border-radius: 50%; background: var(--p1); opacity: .38; }
-  .pawn {
-    width: 64%; height: 64%; border-radius: 50%;
-    box-shadow: 0 3px 6px rgba(0,0,0,.5), inset 0 -3px 6px rgba(0,0,0,.2);
-    transition: transform .15s ease;
-  }
-  .pawn.p0 { background: radial-gradient(circle at 35% 30%, var(--p0-light), var(--p0)); }
-  .pawn.p1 { background: radial-gradient(circle at 35% 30%, var(--p1-light), var(--p1)); }
+/* chrome only */
+html[data-ui="light"]{
+  --bg:#f4f2ec; --surf:#ffffff; --surf2:#eeebe2; --surf3:#e2ded1;
+  --bor:#dcd7c9; --bor2:#c2bba7;
+  --gold:#8a6d22; --gold2:#a8842c; --gold-dim:rgba(138,109,34,.14);
+  --txt:#1c1b18; --txt2:#55524a; --muted:#8b8779;
+  --green:#2f7a4c; --red:#a52c3c;
+  --green-dim:rgba(47,122,76,.14); --red-dim:rgba(165,44,60,.12);
+}
 
-  .wall-slot-h, .wall-slot-v { position: absolute; background: transparent; z-index: 3; border-radius: 3px; pointer-events: none; transition: background .06s ease, box-shadow .06s ease; }
-  .wall-slot-h { width: calc(2 * var(--cell) + var(--gap)); height: var(--gap); }
-  .wall-slot-v { height: calc(2 * var(--cell) + var(--gap)); width: var(--gap); }
-  .wall-slot-h.placed, .wall-slot-v.placed { background: var(--wall) !important; box-shadow: 0 1px 3px rgba(0,0,0,.4); }
-  .wall-slot-h.legal, .wall-slot-v.legal { background: rgba(232,199,119,.22) !important; }
-  .wall-slot-h.ghost-ok, .wall-slot-v.ghost-ok {
-    background: rgba(215,217,222,.55) !important;
-    box-shadow: 0 0 0 2px rgba(52,211,153,.85), 0 0 10px rgba(52,211,153,.35);
-  }
-  .wall-slot-h.ghost-bad, .wall-slot-v.ghost-bad {
-    background: rgba(215,217,222,.22) !important;
-    box-shadow: 0 0 0 2px rgba(239,68,68,.85);
-  }
+/* board only */
+html[data-board="walnut"]{
+  --cell-a:#5a4432; --cell-b:#4e3b2b; --groove:#2a1e16; --frame:#3a2a1e;
+  --frame-hi:#5a4530; --coord:#c9a878;
+  --wall:#efe2c2; --wall-hi:#fff8e2; --wall-edge:#9a8256;
+}
+html[data-board="ivory"]{
+  --cell-a:#f2ecdd; --cell-b:#e8e0cd; --groove:#c0b394; --frame:#a2937a;
+  --frame-hi:#bdaf93; --coord:#7a6c52;
+  --wall:#6f512f; --wall-hi:#8e6b41; --wall-edge:#3d2c18;
+}
+html[data-board="obsidian"]{
+  --cell-a:#20202c; --cell-b:#252533; --groove:#12121a; --frame:#2a2a3e;
+  --frame-hi:#3a3a52; --coord:#6c6c8c;
+  --wall:#d8d3c4; --wall-hi:#f0ece0; --wall-edge:#7d7768;
+}
+html[data-board="marble"]{
+  --cell-a:#e9e7e2;--cell-b:#dedbd4;--groove:#9a978f;--frame:#54524d;--frame-hi:#75736c;
+  --coord:#6e6b64;--wall:#3c3a36;--wall-hi:#5a5852;--wall-edge:#1d1c1a;
+}
+html[data-board="parchment"]{
+  --cell-a:#faf6ec;--cell-b:#f1ead9;--groove:#b3a68b;--frame:#a2937a;--frame-hi:#c4b89f;
+  --coord:#7d7360;--wall:#3f3a2e;--wall-hi:#5c5646;--wall-edge:#201d16;
+}
+html[data-board="noir"]{
+  --cell-a:#171719;--cell-b:#1c1c1f;--groove:#0a0a0b;--frame:#232326;--frame-hi:#35353a;
+  --coord:#6b6b74;--wall:#e6e6ea;--wall-hi:#ffffff;--wall-edge:#8d8d96;
+}
+html[data-board="slate"]{
+  --cell-a:#31465e; --cell-b:#2b3e53; --groove:#16212e; --frame:#1d2a39;
+  --frame-hi:#33475f; --coord:#8ba2bc;
+  --wall:#d3ddea; --wall-hi:#eef3fa; --wall-edge:#6d7d92;
+}
+html[data-board="emerald"]{
+  --cell-a:#2b5a4c; --cell-b:#265246; --groove:#123027; --frame:#0f2820;
+  --frame-hi:#265246; --coord:#7fbda8;
+  --wall:#ecdfc0; --wall-hi:#fbf3dd; --wall-edge:#8a7a56;
+}
 
-  /* --- barra de controles: 4 botões largos, texto sempre colado na base --- */
-  .controls { flex: 0 0 auto; display: flex; flex-direction: column; gap: 6px; margin-top: -8px; }
-  .toolbar { display: flex; gap: 8px; align-items: stretch; }
-  .tbtn {
-    flex: 1 1 0; min-width: 0;
-    display: flex; flex-direction: column; align-items: center; justify-content: flex-end;
-    height: 56px;
-    border-radius: 12px;
-    border: 1.5px solid var(--border);
-    background: linear-gradient(180deg, var(--panel-2), var(--panel));
-    color: var(--text);
-    font-size: .74rem; font-weight: 600;
-    cursor: pointer;
-    transition: background .12s ease, border-color .12s ease, transform .08s ease, box-shadow .12s ease;
-    touch-action: none;
-    padding: 4px 4px 6px;
-  }
-  .tbtn:active { transform: scale(.96); }
-  .tbtn .icon-wrap { flex: 1 1 auto; min-height: 0; display: flex; align-items: center; justify-content: center; }
-  .tbtn .tbtn-label { flex: 0 0 auto; line-height: 1; }
-  .tbtn .swatch { border-radius: 3px; background: var(--wall-dim); }
-  .tbtn.wall.h .swatch { width: 22px; height: 6px; }
-  .tbtn.wall.v .swatch { width: 6px; height: 22px; }
-  .tbtn.wall.selected {
-    border-color: var(--text-dim); background: linear-gradient(180deg, var(--panel-2), var(--border));
-    box-shadow: 0 0 0 1px rgba(255,255,255,.28) inset;
-  }
-  .tbtn.wall.selected .swatch { background: var(--text); }
-  .tbtn.wall:disabled, .tbtn.wall.disabled { opacity: .35; cursor: default; pointer-events: none; }
-  .tbtn.primary {
-    background: linear-gradient(180deg, var(--panel-2), var(--panel));
-    border-color: var(--border); color: var(--text);
-  }
-  .tbtn.primary .tbtn-label { font-weight: 800; }
+/* ============================== base ================================== */
+*{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent}
+html,body{height:100%;overflow:hidden}
+body{
+  background:var(--bg);color:var(--txt);
+  font-family:'JetBrains Mono',ui-monospace,Consolas,monospace;
+  font-size:.7rem;line-height:1.4;touch-action:manipulation;
+  overscroll-behavior:none;height:100dvh;display:flex;flex-direction:column;
+}
+button{font:inherit;color:inherit;background:none;border:none;cursor:pointer}
+.num{font-variant-numeric:tabular-nums}
+.cinzel{font-family:Cinzel,'Times New Roman',serif}
+.sronly{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0)}
+:focus-visible{outline:1px solid var(--gold2);outline-offset:2px}
+::-webkit-scrollbar{width:4px;height:4px}
+::-webkit-scrollbar-track{background:transparent}
+::-webkit-scrollbar-thumb{background:var(--bor2);border-radius:2px}
+@media (prefers-reduced-motion:reduce){*{animation-duration:0ms!important;transition-duration:0ms!important}}
+html[data-anim="off"] *{animation-duration:0ms!important;transition-duration:0ms!important}
 
-  /* --- histórico de lances --- */
-  .movelist {
-    flex: 0 0 auto;
-    background: var(--panel);
-    border: 1.5px solid var(--border);
-    border-radius: 10px;
-    padding: 6px 10px;
-    height: 116px;
-    overflow-y: auto;
-    font-size: .82rem;
-    font-variant-numeric: tabular-nums;
-  }
-  .movelist .row { display: flex; align-items: baseline; gap: 6px; padding: 2px 0; }
-  .movelist .num { color: var(--text-dim); flex: 0 0 auto; width: 20px; }
-  .movelist .mv { padding: 1px 6px; border-radius: 5px; color: var(--text-dim); }
-  .movelist .mv.p0 { color: var(--p0-light); }
-  .movelist .mv.p1 { color: var(--p1-light); }
-  .movelist .mv.last { background: var(--panel-2); font-weight: 700; color: var(--text); }
-  .movelist .ev { color: var(--gold); font-size: .74rem; margin-left: 3px; font-weight: 700; }
-  .movelist .empty { color: var(--text-dim); text-align: center; padding: 8px 0; }
+/* ============================== buttons =============================== */
+.btn{
+  display:inline-flex;align-items:center;justify-content:center;flex:none;
+  width:36px;height:32px;border:1px solid var(--bor);background:var(--surf);
+  color:var(--txt);font-size:.56rem;letter-spacing:.05em;text-transform:uppercase;
+  border-radius:var(--r-md);transition:border-color var(--dur-fast),color var(--dur-fast),background var(--dur-fast);
+  user-select:none;white-space:nowrap;
+}
+.btn:hover{border-color:var(--gold);color:var(--gold)}
+.btn:active{background:var(--surf2)}
+.btn.on{border-color:var(--gold);color:var(--gold);background:var(--surf2)}
+.btn.off{opacity:.3;pointer-events:none}
+.btn svg{width:20px;height:20px;stroke:currentColor;fill:none;stroke-width:1.6;
+  stroke-linecap:round;stroke-linejoin:round}
+.btn-wide{width:auto;padding:0 11px}
+.btn.gld,.btn.gold{border-color:var(--gold);color:var(--gold)}
+.btn.gld:hover,.btn.gold:hover{background:var(--gold);color:#14100a}
+.btn.danger{border-color:var(--bor);color:var(--red)}
+.btn.danger:hover{border-color:var(--red);color:var(--red)}
 
-  /* --- modal: nova partida --- */
-  .modal-overlay {
-    position: fixed; inset: 0; background: rgba(0,0,0,.6); backdrop-filter: blur(2px);
-    display: flex; align-items: center; justify-content: center; z-index: 1000; padding: 16px;
-  }
-  .modal-overlay[hidden] { display: none; }
-  .modal-card {
-    width: 100%; max-width: 380px; background: linear-gradient(180deg, var(--panel-2), var(--panel));
-    border: 1px solid var(--border); border-radius: 16px; padding: 18px;
-    box-shadow: 0 20px 50px rgba(0,0,0,.5);
-  }
-  .modal-card h2 { margin: 0 0 4px; font-size: 1.05rem; }
-  .modal-label { margin: 14px 0 8px; font-size: .78rem; color: var(--text-dim); font-weight: 600; text-transform: uppercase; letter-spacing: .04em; }
-  .modal-choices { display: flex; gap: 8px; }
-  .choice-btn {
-    flex: 1; display: flex; flex-direction: column; align-items: center; gap: 4px;
-    padding: 10px 6px; border-radius: 12px; border: 1.5px solid var(--border);
-    background: var(--panel); color: var(--text); font-size: .82rem; font-weight: 600; cursor: pointer;
-  }
-  .choice-btn .choice-dot { width: 16px; height: 16px; border-radius: 50%; }
-  .choice-btn.p0 .choice-dot { background: radial-gradient(circle at 35% 30%, var(--p0-light), var(--p0)); }
-  .choice-btn.p1 .choice-dot { background: radial-gradient(circle at 35% 30%, var(--p1-light), var(--p1)); }
-  .choice-btn .choice-sub { font-size: .68rem; color: var(--text-dim); font-weight: 500; }
-  .choice-btn.selected { border-color: var(--active); box-shadow: 0 0 0 1px var(--active) inset; background: rgba(52,211,153,.1); }
-  .modal-choices.strength .choice-btn { font-size: .95rem; padding: 10px 4px; }
-  .theme-swatch { display: flex; gap: 3px; }
-  .theme-swatch .sw { width: 14px; height: 14px; border-radius: 50%; box-shadow: inset 0 0 0 1px rgba(0,0,0,.25); }
-  .theme-btn[data-theme="chess"] .sw:first-child { background: radial-gradient(circle at 35% 30%, #f0dfa8, #d9b872); }
-  .theme-btn[data-theme="chess"] .sw:last-child { background: radial-gradient(circle at 35% 30%, #c9856a, #a1503c); }
-  .theme-btn[data-theme="classic"] .sw:first-child { background: radial-gradient(circle at 35% 30%, #9cc3fd, #3b82f6); }
-  .theme-btn[data-theme="classic"] .sw:last-child { background: radial-gradient(circle at 35% 30%, #f8b3b3, #ef4444); }
-  .modal-confirm {
-    margin-top: 18px; width: 100%; height: 46px; border-radius: 12px; border: none;
-    background: linear-gradient(180deg, var(--active), var(--active-deep)); color: #06231a;
-    font-weight: 800; font-size: .95rem; cursor: pointer;
-  }
-  .modal-confirm:active { transform: scale(.98); }
+/* ============================== header ================================ */
+#hdr{
+  flex:0 0 auto;height:48px;display:flex;align-items:center;gap:10px;
+  padding-top:env(safe-area-inset-top);
+  padding-left:calc(14px + env(safe-area-inset-left));
+  padding-right:calc(10px + env(safe-area-inset-right));
+  border-bottom:1px solid var(--bor);position:relative;
+}
+#logo{font-family:Cinzel,serif;font-weight:700;font-size:.8rem;color:var(--gold);
+  letter-spacing:.18em;cursor:pointer;user-select:none;transition:color var(--dur-fast)}
+#logo:hover{color:var(--gold2)}
+#lvlChip{
+  margin-left:auto;font-family:Cinzel,serif;font-size:.62rem;color:var(--txt2);
+  border:1px solid var(--bor);border-radius:999px;height:32px;
+  padding:0 11px;display:flex;align-items:center;gap:7px;letter-spacing:.06em;
+  transition:border-color var(--dur-fast),color var(--dur-fast);
+}
+#lvlChip:hover{border-color:var(--gold);color:var(--gold)}
+#lvlChip .dot{width:6px;height:6px;border-radius:50%;background:var(--gold);flex:none}
+.hbtn{
+  width:32px;height:32px;border-radius:var(--r-md);display:flex;flex:none;
+  align-items:center;justify-content:center;color:var(--txt2);
+  transition:color var(--dur-fast);
+}
+.hbtn:hover{color:var(--gold)}
+.hbtn svg{width:20px;height:20px;stroke:currentColor;fill:none;stroke-width:1.6;
+  stroke-linecap:round;stroke-linejoin:round}
+#menuDrop{
+  display:none;position:absolute;top:calc(100% + 4px);right:10px;min-width:236px;z-index:50;
+  background:var(--surf);border:1px solid var(--bor2);border-radius:var(--r-md);
+  box-shadow:0 18px 44px rgba(0,0,0,.55);padding:6px;
+}
+#menuDrop.open{display:block}
+#menuDrop button{display:flex;width:100%;text-align:left;padding:10px 12px;
+  border-radius:var(--r-sm);font-size:.68rem;color:var(--txt);gap:8px;align-items:center}
+#menuDrop button:hover{background:var(--surf2);color:var(--gold)}
+#menuDrop button.danger{color:var(--red)}
+#menuDrop hr{border:none;border-top:1px solid var(--bor);margin:4px 6px}
+.menuHead{font-size:.54rem;letter-spacing:.16em;text-transform:uppercase;
+  color:var(--muted);padding:9px 12px 3px;user-select:none}
 
-  @media (max-width: 639px) {
-    .controls { margin-top: -10px; }
-    .movelist { height: 128px; }
+/* ============================== layout ================================ */
+#main{
+  flex:1 1 auto;min-height:0;display:flex;flex-direction:column;
+  padding:8px calc(8px + env(safe-area-inset-right)) 0 calc(8px + env(safe-area-inset-left));
+  gap:8px;
+}
+#boardCol{flex:1 1 auto;min-height:0;min-width:0;display:flex;flex-direction:column;gap:6px}
+
+/* ---------------------------- player strip ---------------------------- */
+.pbar{
+  flex:0 0 auto;display:flex;flex-direction:row;align-items:center;gap:12px;width:100%;
+  margin-left:auto;margin-right:auto;
+  padding:7px 12px;border:1px solid var(--bor);border-radius:var(--r-lg);
+  background:var(--surf);min-width:0;
+  transition:border-color var(--dur),opacity var(--dur);
+}
+/* One line: identity on the left, live numbers on the right. */
+.pbar .pb-name{flex:1 1 auto}
+.pbar .pb-data{flex:0 0 auto}
+.pbar .pb-name{display:flex;align-items:center;gap:10px;min-width:0}
+/* The name may be cut, the wall stock may not. */
+.pbar .nm{flex:0 1 auto}
+.pbar .walls{flex:none;margin-left:2px}
+.pbar .dot{width:9px;height:9px;border-radius:50%;flex:none;
+  background:radial-gradient(circle at 34% 30%,var(--pc-light),var(--pc))}
+.pbar .nm{font-size:.74rem;font-weight:600;color:var(--txt);
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.pbar .lvl{font-size:.56rem;color:var(--muted);letter-spacing:.07em;
+  text-transform:uppercase;white-space:nowrap}
+.pbar .pb-data{display:flex;align-items:center;gap:13px;min-width:0}
+.pbar .clock{font-size:1.06rem;font-weight:600;letter-spacing:.03em;
+  font-variant-numeric:tabular-nums;color:var(--txt)}
+.pbar .clock.low{color:var(--amber)}
+.pbar .clock.crit{color:var(--red)}
+.pbar .clock.off{display:none}
+.pbar .walls{display:flex;align-items:center;gap:7px}
+.pbar .pips{display:flex;gap:3px}
+.pbar .pips i{width:4px;height:14px;border-radius:1px;background:rgba(255,255,255,.12)}
+.pbar .pips i.on{background:var(--pc)}
+.pbar .wn{font-size:.78rem;font-weight:600;font-variant-numeric:tabular-nums}
+/* Distance to goal. The number stands alone at the right edge; a hairline
+   separates it from the wall count so the two numbers never read as one. */
+.pbar .dist{display:flex;align-items:center;padding-left:13px;
+  border-left:1px solid var(--bor)}
+.pbar .dist b{font-size:.82rem;color:var(--txt2);font-weight:600;
+  font-variant-numeric:tabular-nums}
+.pbar.active{border-color:var(--gold)}
+.pbar.active .dist b{color:var(--txt)}
+.pbar:not(.active){opacity:.72}
+.pbar.thinking .dot{animation:pulse 1.1s ease-in-out infinite}
+.pbar.win{border-color:var(--green)}
+.pbar.lose{border-color:var(--bor2)}
+.pbar.flag .clock{color:var(--red)}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.35}}
+#hudTop{--pc:var(--p1);--pc-light:var(--p1-light)}
+#hudBottom{--pc:var(--p0);--pc-light:var(--p0-light)}
+
+/* ---------------------------- board zone ------------------------------ */
+#boardZone{
+  flex:1 1 auto;min-height:0;min-width:0;position:relative;
+  display:flex;align-items:center;justify-content:center;gap:8px;
+  container-type:size;
+}
+/* One evaluation bar. It is vertical beside the board on a wide screen, as a
+   chess interface places it, and horizontal under the board on a phone.
+   Player 0 fills from the bottom or from the left. A gold hairline marks the
+   balance point. */
+#evalWrap{flex:none;position:relative;display:flex;align-items:center}
+#evalStrip{
+  border-radius:6px;background:var(--p1);overflow:hidden;position:relative;
+  box-shadow:inset 0 0 0 1px rgba(0,0,0,.35);
+}
+#evalStrip .fill{position:absolute;background:var(--p0);
+  transition:height var(--dur-slow) var(--ease),width var(--dur-slow) var(--ease)}
+#evalStrip::after{content:"";position:absolute;background:var(--gold);opacity:.85}
+#evalNum{
+  position:absolute;font-size:.54rem;font-weight:600;
+  font-variant-numeric:tabular-nums;color:var(--txt2);
+  pointer-events:none;white-space:nowrap;
+}
+/* vertical, beside the board */
+#boardZone > #evalWrap{height:min(100%,100cqh);max-height:100%;margin-bottom:15px}
+#boardZone > #evalWrap #evalStrip{width:24px;height:100%}
+#boardZone > #evalWrap .fill{left:0;right:0;bottom:0}
+#boardZone > #evalWrap #evalStrip::after{left:0;right:0;top:50%;height:1px}
+#boardZone > #evalWrap #evalNum{left:0;right:0;bottom:-15px;text-align:center;
+  font-size:.5rem;letter-spacing:.02em}
+/* horizontal, under the board */
+#underBoard > #evalWrap{width:100%;height:12px}
+#underBoard > #evalWrap #evalStrip{width:100%;height:12px}
+#underBoard > #evalWrap .fill{top:0;bottom:0;left:0}
+#underBoard > #evalWrap #evalStrip::after{top:0;bottom:0;left:50%;width:1px}
+#underBoard > #evalWrap #evalNum{display:none}
+#boardWrap{
+  position:relative;flex:none;aspect-ratio:1/1;
+  width:min(100%,100cqh);max-width:100%;
+  border-radius:14px;box-shadow:0 10px 30px rgba(0,0,0,.55);
+}
+#board{display:block;width:100%;height:100%;border-radius:14px;touch-action:none}
+#confirmChip{position:absolute;display:none;gap:8px;z-index:5}
+#confirmChip button{width:42px;height:42px;border-radius:50%;display:flex;
+  align-items:center;justify-content:center;box-shadow:0 6px 16px rgba(0,0,0,.5)}
+#confirmChip .ok{background:var(--green);color:#fff}
+#confirmChip .no{background:var(--surf2);border:1px solid var(--bor2);color:var(--txt2)}
+#dropOverlay{
+  display:none;position:absolute;inset:-6px;z-index:8;pointer-events:none;
+  border:1px dashed var(--gold);border-radius:16px;align-items:center;justify-content:center;
+  font-family:Cinzel,serif;font-size:.72rem;color:var(--gold2);background:rgba(200,168,75,.06);
+}
+#dropOverlay.on{display:flex}
+
+/* ---------------------------- race meters ----------------------------- */
+#raceMeter{
+  height:6px;border-radius:3px;overflow:hidden;display:flex;position:relative;
+  background:var(--surf2);cursor:pointer;
+}
+/* The two distances belong beside the bar, not on top of it. */
+.raceRow{display:flex;align-items:center;gap:10px}
+.raceRow #raceMeter{flex:1}
+#raceFill0{background:var(--p0);height:100%;transition:width var(--dur) var(--ease)}
+#raceFill1{background:var(--p1);height:100%;flex:1}
+#raceDiv{position:absolute;top:0;bottom:0;width:1px;background:var(--gold)}
+#raceLbl{flex:none;font-size:.6rem;font-weight:600;color:var(--txt2);
+  font-variant-numeric:tabular-nums;letter-spacing:.04em}
+
+/* ---------------------------- status + controls ----------------------- */
+#underBoard{flex:0 0 auto;display:flex;flex-direction:column;gap:6px;
+  width:100%;max-width:620px;margin:0 auto}
+#statusRow{display:flex;align-items:center;gap:8px;height:20px;min-height:0}
+#status{font-family:Cinzel,serif;font-size:.66rem;color:var(--gold2);
+  letter-spacing:.04em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;flex:1}
+#movesChip{flex:none;font-size:.54rem;letter-spacing:.08em;text-transform:uppercase;
+  color:var(--muted);cursor:default;font-variant-numeric:tabular-nums}
+#resumeChip{
+  flex:none;font-size:.54rem;letter-spacing:.06em;text-transform:uppercase;
+  color:var(--txt2);border:1px solid var(--bor);border-radius:999px;padding:2px 10px;
+  transition:border-color var(--dur-fast),color var(--dur-fast);
+}
+#movesChip:hover,#resumeChip:hover{border-color:var(--gold);color:var(--gold)}
+#resumeChip{color:var(--gold2);border-color:var(--gold)}
+#controls{display:flex;align-items:center;justify-content:space-between;gap:6px;height:44px;flex:none;
+  padding-bottom:2px;touch-action:none}
+#wallH,#wallV{position:relative}
+#wallH .barH{width:18px;height:5px;border-radius:2px;background:currentColor;opacity:.75}
+#wallV .barV{width:5px;height:18px;border-radius:2px;background:currentColor;opacity:.75}
+.badge{
+  font-size:.6rem;font-weight:600;color:var(--txt2);line-height:1;
+  font-variant-numeric:tabular-nums;
+}
+/* The two wall buttons carry a live count, so they size to glyph plus number. */
+/* Both wall buttons keep one width. The glyphs differ, the buttons must not. */
+#wallH,#wallV{width:60px;padding:0;gap:7px;justify-content:center}
+#wallH.armed .badge,#wallV.armed .badge{color:var(--gold2)}
+#wallH.off .badge,#wallV.off .badge{color:var(--muted)}
+
+/* ---------------------------- tab bar (mobile) ------------------------ */
+#tabBar{
+  flex:0 0 auto;height:52px;display:flex;border-top:1px solid var(--bor);
+  padding-bottom:env(safe-area-inset-bottom);
+}
+#tabBar .tab{flex:1;display:flex;flex-direction:column;gap:3px;align-items:center;
+  justify-content:center;color:var(--muted);font-size:.52rem;letter-spacing:.09em;
+  transition:color var(--dur-fast)}
+#tabBar .tab svg{width:19px;height:19px;stroke:currentColor;fill:none;stroke-width:1.6;
+  stroke-linecap:round;stroke-linejoin:round}
+#tabBar .tab.on{color:var(--gold)}
+
+/* ---------------------------- side panel ------------------------------ */
+#sidePanel{display:flex;flex-direction:column;min-height:0;overflow:hidden}
+#panelTabs{display:flex;flex:none;border-bottom:1px solid var(--bor)}
+#panelTabs .tab{
+  flex:1;height:38px;font-size:.56rem;letter-spacing:.1em;color:var(--muted);
+  border-bottom:1px solid transparent;margin-bottom:-1px;
+  transition:color var(--dur-fast),border-color var(--dur-fast);
+}
+#panelTabs .tab.on{color:var(--gold);border-bottom-color:var(--gold)}
+#panelBody{flex:1 1 auto;min-height:0;overflow-y:auto;padding:12px 2px 16px;
+  display:flex;flex-direction:column;gap:14px}
+.pane{display:none;flex-direction:column;gap:16px}
+.pane.on{display:flex;flex:1 1 auto;min-height:0}
+/* Only the card marked grow may take the leftover height. Everything else
+   keeps its content height. A shrunk block overflows its box and lands under
+   the block after it, which then swallows the clicks meant for it. */
+.pane.on > *{flex:0 0 auto}
+.pane.on > .grow{flex:1 1 auto;min-height:0}
+
+/* quiet cards: a title, a hairline, and space. no nested boxes. */
+.card{display:flex;flex-direction:column;gap:8px}
+.card h4{font-family:Cinzel,serif;color:var(--gold);font-size:.6rem;
+  letter-spacing:.16em;font-weight:600;padding-bottom:6px;
+  border-bottom:1px solid var(--bor)}
+.row{display:flex;align-items:center;gap:8px;min-height:36px}
+.row label{color:var(--txt2);font-size:.64rem;flex:1;letter-spacing:.04em}
+#controlsSlot{display:none}
+/* The move log is the same element in both layouts. On a phone it fills the
+   space under the button row; on a wide screen it sits in the side rail. */
+#moveLog{font-size:.68rem;color:var(--txt2);line-height:1.85;min-height:52px;
+  overflow-y:auto;letter-spacing:.02em}
+/* The analysis list carries a score for every ply. Four columns keep the
+   numbers under each other, which is what makes a swing visible. */
+#anMoveLog{font-size:.64rem;color:var(--txt2);overflow-y:auto;min-height:52px;
+  user-select:text;-webkit-user-select:text}
+#anMoveLog .alRow{display:grid;grid-template-columns:26px 1fr 46px 1fr 46px;
+  gap:4px;align-items:center;padding:2px 0;border-bottom:1px solid var(--bor)}
+#anMoveLog .alNum{color:var(--muted);font-size:.58rem}
+#anMoveLog .alMv{cursor:pointer;padding:1px 5px;border-radius:var(--r-sm);
+  transition:background var(--dur-fast),color var(--dur-fast)}
+#anMoveLog .alMv:hover{background:var(--surf2);color:var(--gold2)}
+#anMoveLog .alMv.cur{background:var(--surf2);color:var(--gold)}
+#anMoveLog .alEv{text-align:right;font-variant-numeric:tabular-nums;
+  font-size:.58rem;color:var(--muted)}
+#anMoveLog .alEv.good{color:var(--green)}
+#anMoveLog .alEv.bad{color:var(--red)}
+#anMoveLog .alHint{color:var(--muted);font-size:.56rem;padding:6px 0}
+#underBoard > #moveLog{flex:1 1 auto;min-height:0;margin-top:2px;
+  padding-top:8px;border-top:1px solid var(--bor)}
+#panelBody .btn{width:auto;min-width:36px;padding:0 12px}
+.card.grow{flex:1 1 auto;min-height:0}
+.card.grow #moveLog{flex:1 1 auto;min-height:0}
+/* The move log and the engine lines are text, so they stay selectable. */
+#moveLog,#anLines,#anInfo,#bcSummary{user-select:text;-webkit-user-select:text}
+/* Buttons inside a modal carry words, not glyphs, so they size to their
+   label. The fixed 36px pill is for the icon row only. */
+.modal .btn{width:auto;min-width:36px;padding:0 12px}
+.seg{display:flex;border:1px solid var(--bor);border-radius:var(--r-md);overflow:hidden}
+.seg button{padding:8px 12px;font-size:.62rem;color:var(--txt2)}
+.seg button.on{background:var(--surf2);color:var(--gold)}
+.sel,select{
+  background:var(--surf2);border:1px solid var(--bor);border-radius:var(--r-md);
+  color:var(--txt);font:inherit;font-size:.6rem;padding:5px 7px;outline:none;cursor:pointer;
+}
+.sel:focus,select:focus{border-color:var(--gold)}
+
+/* ============================ breakpoint ============================== */
+@media (max-width:899.98px){
+  /* The board is limited by the viewport width, so the zone asks for exactly
+     that height. It may still shrink on a short screen. The move log then
+     takes whatever height is left instead of leaving it empty. */
+  #boardZone{flex:0 1 auto;height:calc(100vw - 14px);max-height:calc(100vw - 14px)}
+  #underBoard{flex:1 1 auto;min-height:0}
+  #sidePanel{
+    display:none;position:fixed;left:0;right:0;top:48px;bottom:52px;z-index:30;
+    background:var(--bg);padding:0 12px;
   }
-  @media (min-width: 640px) { .app { padding-top: 18px; gap: 12px; } }
+  #sidePanel.open{display:flex}
+  #panelTabs{display:none}
+}
+@media (min-width:900px){
+  #main{
+    flex-direction:row;align-items:flex-start;gap:22px;
+    padding:16px calc(22px + env(safe-area-inset-right)) 16px calc(22px + env(safe-area-inset-left));
+    max-width:1180px;width:100%;margin:0 auto;
+  }
+  #boardCol{height:100%;gap:8px}
+  /* The evaluation bar needs air between it and the board edge; the wider gap
+     is read back by the board fitter, which subtracts it from the board size. */
+  #boardZone{padding-left:6px;gap:18px}
+  /* The button row and the status line move into the side rail, so the
+     board keeps the full height of its column. */
+  #controlsSlot{display:flex;flex-direction:column;gap:10px;
+    padding-bottom:12px;border-bottom:1px solid var(--bor)}
+  #controlsSlot #controls{flex-wrap:wrap;row-gap:6px}
+  #underBoard:empty{display:none}
+  #underBoard{max-width:none}
+  #sidePanel{
+    width:clamp(300px,26vw,380px);flex:none;height:100%;
+    border-left:1px solid var(--bor);padding-left:20px;
+  }
+  #tabBar{display:none}
+}
+/* phone landscape: same two columns, narrower panel. Height is the scarce
+   axis here, so each player strip collapses to a single row and the status
+   line steps aside. Every number stays on screen. */
+@media (max-width:899.98px) and (orientation:landscape){
+  #main{flex-direction:row;align-items:flex-start;gap:12px;padding-bottom:8px}
+  #boardCol{height:100%}
+  #hdr{height:40px}
+  .pbar{flex-direction:row;align-items:center;gap:10px;padding:3px 10px;
+    border-radius:var(--r-md)}
+  .pbar .pb-name,.pbar .pb-data{order:0!important}
+  .pbar .pb-name{flex:0 1 auto;min-width:0}
+  .pbar .pb-data{flex:1;gap:10px}
+  #controls{flex-wrap:wrap;row-gap:5px}
+  .pbar .clock{font-size:.84rem}
+  .pbar .lvl{display:none}
+  #status{display:none}
+  #underBoard{gap:4px}
+  #boardZone{max-height:none}
+  #sidePanel{
+    display:flex;position:static;width:240px;flex:none;height:100%;
+    border-left:1px solid var(--bor);padding:0 0 0 12px;
+  }
+  #panelTabs{display:flex}
+  #tabBar{display:none}
+}
+
+/* ============================ analysis pane =========================== */
+.anInfo{font-size:.54rem;color:var(--muted);min-height:14px;letter-spacing:.04em;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+#anLines{display:flex;flex-direction:column;gap:0;min-height:44px}
+.pvRow{
+  display:grid;grid-template-columns:auto 1fr auto auto;align-items:center;gap:9px;
+  padding:7px 2px;cursor:pointer;border-bottom:1px solid var(--bor);
+  transition:background var(--dur-fast);
+}
+.pvRow:last-child{border-bottom:none}
+.pvRow:hover{background:var(--surf)}
+.pvChip{font-weight:600;font-size:.64rem;color:var(--gold2);min-width:46px;
+  font-variant-numeric:tabular-nums}
+.pvChip.good{color:var(--green)}
+.pvChip.bad{color:var(--red)}
+.pvMoves{font-size:.62rem;color:var(--txt2);line-height:1.4;overflow:hidden;
+  display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical}
+.pvDist{font-size:.52rem;color:var(--muted);font-variant-numeric:tabular-nums}
+.pvTag{font-size:.48rem;color:var(--muted);letter-spacing:.08em}
+.pvRow.preview .pvMoves{color:var(--gold2)}
+/* flex:none matters: a shrunk canvas still paints its full height, so it
+   would cover the controls under it and swallow their clicks. */
+#anGraph{width:100%;height:72px;flex:none;display:block;border:1px solid var(--bor);border-radius:var(--r-md);
+  touch-action:none;cursor:crosshair}
+.anNav{display:flex;align-items:center;justify-content:center;gap:6px}
+.navb{width:40px;height:32px;border:1px solid var(--bor);border-radius:var(--r-md);
+  color:var(--txt2);font-size:.62rem;transition:border-color var(--dur-fast),color var(--dur-fast)}
+.navb:hover{border-color:var(--gold);color:var(--gold)}
+#navPly{font-size:.58rem;color:var(--muted);min-width:62px;text-align:center}
+.bcTrack{height:3px;border-radius:2px;background:var(--surf2);overflow:hidden}
+#bcFill{height:100%;width:0%;background:var(--gold);transition:width var(--dur) var(--ease)}
+#bcSummary b{color:var(--txt)}
+
+/* move log */
+#moveLog{display:flex;flex-direction:column;font-size:.66rem;color:var(--txt2)}
+.mlRow{display:flex;gap:10px;padding:3px 2px;align-items:baseline}
+.mlNum{color:var(--muted);min-width:24px;text-align:right;font-size:.58rem}
+.mlMv{cursor:pointer;color:var(--txt2);min-width:44px;
+  font-variant-numeric:tabular-nums;white-space:nowrap;padding:1px 4px;border-radius:var(--r-sm)}
+.mlMv:hover{color:var(--gold)}
+.mlMv.cur{color:var(--gold);background:var(--surf2)}
+.mlSep{text-align:center;color:var(--amber);font-size:.52rem;padding:4px 0;
+  font-family:Cinzel,serif;letter-spacing:.1em}
+
+/* ============================ editor pane ============================= */
+.etool{
+  border:1px solid var(--bor);border-radius:var(--r-md);padding:7px 10px;
+  font-size:.58rem;color:var(--muted);letter-spacing:.04em;
+  transition:border-color var(--dur-fast),color var(--dur-fast);
+}
+.etool:hover{border-color:var(--gold);color:var(--gold)}
+.etool.on{border-color:var(--gold);color:var(--gold);background:var(--surf2)}
+.stepper{display:inline-flex;align-items:center;border:1px solid var(--bor);
+  border-radius:var(--r-md);overflow:hidden}
+.stepper button{width:26px;height:26px;color:var(--muted)}
+.stepper button:hover{color:var(--gold)}
+.stepper b{min-width:24px;text-align:center;font-size:.68rem}
+.edValidity{border-radius:var(--r-md);padding:7px 10px;font-size:.6rem;
+  border:1px solid var(--bor);color:var(--txt2)}
+.edValidity.ok{color:var(--green);border-color:transparent;background:var(--green-dim)}
+.edValidity.bad{color:var(--red);border-color:transparent;background:var(--red-dim)}
+
+/* ======================= overlay, modal, toasts ======================= */
+#overlay{
+  position:fixed;inset:0;background:rgba(0,0,0,.72);backdrop-filter:blur(3px);
+  display:none;z-index:40;align-items:flex-end;justify-content:center;
+}
+#overlay.open{display:flex}
+.modal{
+  width:100%;max-width:480px;max-height:86dvh;overflow-y:auto;
+  background:var(--surf);border:1px solid var(--bor2);border-bottom:none;
+  border-radius:var(--r-xl) var(--r-xl) 0 0;
+  padding:20px 20px calc(26px + env(safe-area-inset-bottom));
+  display:flex;flex-direction:column;gap:14px;
+  animation:slideUp var(--dur-slow) var(--ease);
+}
+/* Settings tabs: one row of pills that swaps the cards below them. */
+.mTabs{display:flex;gap:6px;flex-wrap:wrap}
+.mTabs button{padding:8px 13px;border:1px solid var(--bor);border-radius:999px;
+  font-size:.64rem;color:var(--txt2);letter-spacing:.03em;
+  transition:border-color var(--dur-fast),color var(--dur-fast),background var(--dur-fast)}
+.mTabs button.on{border-color:var(--gold);color:var(--gold);background:var(--gold-dim)}
+.mHint{font-size:.6rem;color:var(--muted);margin-top:-8px;letter-spacing:.03em}
+@keyframes slideUp{from{transform:translateY(60px);opacity:0}to{transform:translateY(0);opacity:1}}
+.modal h3{font-family:Cinzel,serif;color:var(--gold);font-size:.86rem;
+  letter-spacing:.1em;padding-bottom:10px;border-bottom:1px solid var(--bor);
+  display:flex;justify-content:space-between;align-items:center}
+.modal h3 .x{color:var(--muted);cursor:pointer;font-family:'JetBrains Mono',monospace}
+.levels{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}
+.levels .lvl{border:1px solid var(--bor);border-radius:var(--r-md);padding:9px 4px;
+  text-align:center;cursor:pointer;transition:border-color var(--dur-fast)}
+.levels .lvl b{font-family:Cinzel,serif;font-size:.64rem;display:block}
+.levels .lvl span{font-size:.5rem;color:var(--muted)}
+.levels .lvl.on{border-color:var(--gold)}
+.levels .lvl .ldot{display:inline-block;width:6px;height:6px;border-radius:50%;margin-bottom:3px}
+.swatches{display:flex;gap:6px;flex-wrap:wrap}
+.swatch{width:32px;height:24px;border-radius:var(--r-sm);border:1px solid var(--bor);
+  cursor:pointer;font-size:.48rem;color:#fff;display:flex;align-items:center;justify-content:center;
+  text-shadow:0 1px 2px rgba(0,0,0,.8)}
+.swatch.on{border-color:var(--gold)}
+.ioArea{
+  width:100%;height:170px;background:var(--bg);color:var(--txt);
+  border:1px solid var(--bor);border-radius:var(--r-md);padding:9px;
+  font-family:'JetBrains Mono',monospace;font-size:.56rem;resize:vertical;outline:none;
+}
+.ioArea:focus{border-color:var(--gold)}
+.ioArea.err{border-color:var(--red)}
+#ioDiag{font-size:.58rem;color:var(--red);min-height:14px;white-space:pre-wrap}
+.kbdRow{display:flex;gap:10px;padding:3px 0;font-size:.6rem;color:var(--txt2)}
+.kbdRow kbd{background:var(--surf2);border:1px solid var(--bor2);border-radius:4px;
+  padding:1px 7px;font-family:'JetBrains Mono',monospace;font-size:.56rem;
+  color:var(--txt);min-width:32px;text-align:center}
+#toasts{position:fixed;left:50%;transform:translateX(-50%);bottom:96px;z-index:60;
+  display:flex;flex-direction:column-reverse;align-items:center;gap:6px;pointer-events:none}
+.toast{
+  background:var(--surf);border:1px solid var(--bor2);border-left:2px solid var(--gold);
+  padding:8px 13px;border-radius:var(--r-sm);font-size:.62rem;max-width:78vw;
+  box-shadow:0 8px 22px rgba(0,0,0,.5);animation:tIn var(--dur) var(--ease);
+}
+.toast.ok{border-left-color:var(--green)}
+.toast.err{border-left-color:var(--red)}
+.toast.warn{border-left-color:var(--amber)}
+@keyframes tIn{from{opacity:0;transform:translateY(8px)}to{opacity:1}}
+
+/* ======================= personalization switches ===================== */
+html[data-density="compact"] body{font-size:.66rem}
+html[data-density="compact"] .pbar{padding:5px 10px}
+html[data-density="compact"] #tabBar{height:46px}
+html[data-handed="left"] #toasts{left:14px;transform:none;align-items:flex-start}
+html[data-handed="left"] #controls{flex-direction:row-reverse}
 </style>
 </head>
 <body>
+<header id="hdr">
+  <span id="logo">ZQUORIDOR</span>
+  <button id="lvlChip" title="Change level"><span class="dot"></span><span id="lvlName">Knight</span></button>
+  <button class="hbtn" id="btnMenu" aria-label="Menu" aria-haspopup="true">
+    <svg viewBox="0 0 20 20"><path d="M3 5.5h14M3 10h14M3 14.5h14"/></svg>
+  </button>
+  <button class="hbtn" id="btnSettings" aria-label="Settings">
+    <svg viewBox="0 0 20 20"><circle cx="10" cy="10" r="2.7"/><path d="M16.1 12.1a1.4 1.4 0 00.28 1.55l.05.05a1.7 1.7 0 11-2.4 2.4l-.05-.05a1.4 1.4 0 00-1.55-.281.4 1.4 0 00-.85 1.28v.14a1.7 1.7 0 11-3.4 0v-.07a1.4 1.4 0 00-.92-1.28 1.4 1.4 0 00-1.55.28l-.05.05a1.7 1.7 0 11-2.4-2.4l.05-.05a1.4 1.4 0 00.28-1.55 1.4 1.4 0 00-1.28-.85h-.14a1.7 1.7 0 110-3.4h.07a1.4 1.4 0 001.28-.92 1.4 1.4 0 00-.28-1.55l-.05-.05a1.7 1.7 0 112.4-2.4l.05.05a1.4 1.4 0 001.55.28h.07a1.4 1.4 0 00.85-1.28v-.14a1.7 1.7 0 013.4 0v.07a1.4 1.4 0 00.85 1.28 1.4 1.4 0 001.55-.28l.05-.05a1.7 1.7 0 112.4 2.4l-.05.05a1.4 1.4 0 00-.28 1.55v.07a1.4 1.4 0 001.28.85h.14a1.7 1.7 0 010 3.4h-.07a1.4 1.4 0 00-1.28.85z"/></svg>
+  </button>
+  <div id="menuDrop" role="menu"></div>
+</header>
 
-<div class="app">
-  <div class="players-row">
-    <div class="player-card p0" id="cardP0">
-      <div class="name"><span class="dot"></span><span id="nameP0">Human</span></div>
-      <div class="meta">
-        <span class="walls-pill"><span class="bars" id="barsP0"></span><span id="walls0">10/10</span></span>
-        <span class="dist-tag"><span class="lbl">dist</span><b id="dist0">--</b></span>
+<div id="main">
+  <div id="boardCol">
+
+    <div class="pbar" id="hudTop" data-pos="top">
+      <div class="pb-name">
+        <i class="dot"></i><span class="nm">Zquoridor</span>
+        <span class="walls" title="Walls left"><span class="pips"></span><b class="wn">10</b></span>
+      </div>
+      <div class="pb-data">
+        <span class="clock num">5:00</span>
+        <span class="dist" title="Steps to goal"><b>8</b></span>
       </div>
     </div>
-    <div class="player-card p1" id="cardP1">
-      <div class="name"><span class="dot"></span><span id="nameP1">Zquoridor</span></div>
-      <div class="meta">
-        <span class="walls-pill"><span class="bars" id="barsP1"></span><span id="walls1">10/10</span></span>
-        <span class="dist-tag"><span class="lbl">dist</span><b id="dist1">--</b></span>
+
+    <div id="boardZone">
+      <div id="evalWrap"><div id="evalStrip" title="Evaluation"><div class="fill" id="evalFill"></div></div><span id="evalNum" class="num"></span></div>
+      <div id="boardWrap">
+        <canvas id="board" aria-label="Quoridor board. Use H or V to arm a wall, arrows to move the pawn."></canvas>
+        <div id="confirmChip">
+          <button class="ok" id="ccOk" aria-label="Confirm wall">&#10003;</button>
+          <button class="no" id="ccNo" aria-label="Cancel wall">&#10005;</button>
+        </div>
+      </div>
+      <div id="dropOverlay">Drop a .qgn / .qfen / .txt file</div>
+    </div>
+
+    <div class="pbar active" id="hudBottom" data-pos="bottom">
+      <div class="pb-name">
+        <i class="dot"></i><span class="nm">You</span>
+        <span class="walls" title="Walls left"><span class="pips"></span><b class="wn">10</b></span>
+      </div>
+      <div class="pb-data">
+        <span class="clock num">5:00</span>
+        <span class="dist" title="Steps to goal"><b>8</b></span>
       </div>
     </div>
-  </div>
 
-  <div class="board-wrap" id="boardWrap">
-    <div id="board"></div>
-  </div>
-
-  <div class="controls">
-    <div class="toolbar">
-      <button class="tbtn wall h" id="wallH" type="button" title="Horizontal wall — tap or drag on board" aria-label="Horizontal wall">
-        <span class="icon-wrap"><span class="swatch"></span></span><span class="tbtn-label">Horizontal</span>
-      </button>
-      <button class="tbtn wall v" id="wallV" type="button" title="Vertical wall — tap or drag on board" aria-label="Vertical wall">
-        <span class="icon-wrap"><span class="swatch"></span></span><span class="tbtn-label">Vertical</span>
-      </button>
-      <button class="tbtn" id="flipBtn" type="button" title="Flip board" aria-label="Flip board">
-        <span class="icon-wrap"><span style="font-size:1.2rem;line-height:1">⇅</span></span><span class="tbtn-label">Flip</span>
-      </button>
-      <button class="tbtn primary" id="newGame" type="button" title="New Game" aria-label="New Game">
-        <span class="icon-wrap"><span style="font-size:1.2rem;line-height:1">↺</span></span><span class="tbtn-label">New Game</span>
-      </button>
+    <div id="underBoard">
+      <div id="statusRow">
+        <span id="status" role="status">Loading engine...</span>
+        <button id="resumeChip" style="display:none">Resume game</button>
+        <span id="movesChip">Moves 0</span>
+      </div>
+      <div id="controls">
+        <button class="btn btn-wide gld" id="btnNew" aria-label="New game">New</button>
+        <button class="btn" id="btnTakeback" aria-label="Takeback">
+          <svg viewBox="0 0 20 20"><path d="M8 5L3 10l5 5"/><path d="M3 10h9a4 4 0 100-8"/></svg>
+        </button>
+        <button class="btn" id="btnHint" aria-label="Hint">
+          <svg viewBox="0 0 20 20"><path d="M10 2.5a5.5 5.5 0 013.6 9.7c-.7.6-1.1 1.4-1.1 2.3h-5c0-.9-.4-1.7-1.1-2.3A5.5 5.5 0 0110 2.5z"/><path d="M8.2 17.5h3.6"/></svg>
+        </button>
+        <button class="btn" id="btnFlip" aria-label="Flip board">
+          <svg viewBox="0 0 20 20"><path d="M6.5 3.5v13M6.5 3.5l-3 3M6.5 3.5l3 3M13.5 16.5v-13M13.5 16.5l-3-3M13.5 16.5l3-3"/></svg>
+        </button>
+        <button class="btn" id="btnPaths" aria-label="Shortest paths">
+          <svg viewBox="0 0 20 20"><path d="M4 16v-4h6V7h6" stroke-dasharray="2.6 2.2"/><circle cx="4" cy="16" r="1.7"/><circle cx="16" cy="7" r="1.7"/></svg>
+        </button>
+        <button class="btn" id="wallH" aria-label="Horizontal wall"><span class="barH"></span><span class="badge" id="badgeH">10</span></button>
+        <button class="btn" id="wallV" aria-label="Vertical wall"><span class="barV"></span><span class="badge" id="badgeV">10</span></button>
+      </div>
     </div>
 
-    <div class="movelist" id="movelist">
-      <div class="empty"></div>
+  </div>
+
+  <div id="sidePanel">
+    <div id="panelTabs">
+      <button class="tab on" data-pane="playPane">PLAY</button>
+      <button class="tab" data-pane="anPane">ANALYSIS</button>
+      <button class="tab" data-pane="edPane">EDITOR</button>
+    </div>
+    <div id="controlsSlot"></div>
+    <div id="panelBody">
+      <div class="pane on" id="playPane">
+        <div class="card"><h4>RACE</h4>
+          <div class="raceRow">
+            <div id="raceMeter" title="Race to goal">
+              <div id="raceFill0"></div><div id="raceDiv"></div><div id="raceFill1"></div>
+            </div>
+            <span id="raceLbl" class="num"></span>
+          </div>
+        </div>
+        <div class="card grow" id="moveLogHome"><h4>MOVE LOG</h4>
+          <div id="moveLog">No moves yet.</div>
+        </div>
+        <div class="row"><button class="btn danger btn-wide" id="btnResign">Resign</button></div>
+      </div>
+      <div class="pane" id="anPane">
+        <div class="card">
+          <div class="row" style="gap:6px">
+            <button class="btn gold" id="anEngBtn" style="flex:1">ENGINE OFF</button>
+          </div>
+          <div class="row">
+            <label>Depth</label>
+            <select class="sel" id="anDepth">
+              <option value="6">6</option>
+              <option value="10" selected>10</option>
+              <option value="14">14</option>
+              <option value="20">20</option>
+              <option value="0">&#8734;</option>
+            </select>
+            <label>Lines</label>
+            <select class="sel" id="anPvCount">
+              <option value="1">1</option>
+              <option value="2">2</option>
+              <option value="3" selected>3</option>
+              <option value="4">4</option>
+              <option value="5">5</option>
+            </select>
+          </div>
+        </div>
+        <div id="anInfo" class="anInfo num">Depth &#8211; &#183; nodes &#8211; &#183; nps &#8211;</div>
+        <div id="anLines"></div>
+        <canvas id="anGraph" height="72" aria-label="Evaluation graph"></canvas>
+        <div class="card anNavCard">
+          <div class="anNav">
+            <button class="navb" id="navFirst" aria-label="First ply">&#124;&#9668;</button>
+            <button class="navb" id="navPrev" aria-label="Previous ply">&#9664;</button>
+            <span class="num" id="navPly">0 / 0</span>
+            <button class="navb" id="navNext" aria-label="Next ply">&#9654;</button>
+            <button class="navb" id="navLast" aria-label="Last ply">&#9654;&#124;</button>
+          </div>
+          <div class="row" style="gap:6px">
+            <button class="btn" id="btnReturn" style="flex:1;display:none">Return to game</button>
+            <button class="btn" id="anBlunderBtn" style="flex:1.6">Blunder check</button>
+          </div>
+          <div id="bcBox" style="display:none">
+            <div id="bcLabel" style="font-size:.58rem;color:var(--muted);margin-bottom:4px"></div>
+            <div class="bcTrack"><div id="bcFill"></div></div>
+          </div>
+          <div id="bcSummary" style="display:none;font-size:.6rem;color:var(--txt2)"></div>
+        </div>
+        <div class="card grow" id="anLogCard"><h4>MOVES AND EVALUATION</h4>
+          <div id="anMoveLog">No moves yet.</div>
+        </div>
+        <div class="card"><h4>EXPORT</h4>
+          <div class="row" style="gap:6px;flex-wrap:wrap">
+            <button class="btn" id="anCopyQfen">Copy QFEN</button>
+            <button class="btn" id="anCopyGame">Copy game</button>
+            <button class="btn" id="anSaveGame">Save .qgn</button>
+            <button class="btn" id="anCopyLink">Copy link</button>
+          </div>
+        </div>
+      </div>
+      <div class="pane" id="edPane">
+        <div class="card">
+          <h4>EDITOR</h4>
+          <div class="row" style="gap:6px;flex-wrap:wrap">
+            <button class="etool on" id="etPawn0">Pawn 0</button>
+            <button class="etool" id="etPawn1">Pawn 1</button>
+            <button class="etool" id="etWallH">Wall H</button>
+            <button class="etool" id="etWallV">Wall V</button>
+            <button class="etool" id="etErase">Erase</button>
+          </div>
+          <div class="row"><label>Walls left</label>
+            <span class="stepper"><button data-st="w0-1">&#8722;</button><b id="edW0">10</b><button data-st="w0+1">+</button></span>
+            <span class="stepper"><button data-st="w1-1">&#8722;</button><b id="edW1">10</b><button data-st="w1+1">+</button></span>
+          </div>
+          <div class="row"><label>Side to move</label>
+            <div class="seg" id="edTurn">
+              <button data-t="0" class="on">Player 0</button>
+              <button data-t="1">Player 1</button>
+            </div>
+          </div>
+          <div id="edValidity" class="edValidity ok">Legal position</div>
+        </div>
+        <div class="row" style="gap:6px;flex-wrap:wrap">
+          <button class="btn gold" id="btnEdApply" style="flex:1.4">APPLY</button>
+          <button class="btn" id="btnEdClear">Clear</button>
+          <button class="btn" id="btnEdCopy">Copy QFEN</button>
+          <button class="btn" id="btnEdPaste">Paste QFEN</button>
+        </div>
+        <p style="font-size:.58rem;color:var(--muted);line-height:1.6">Clicks on the board apply the active
+        tool here. Apply starts a new game from the edited position.</p>
+      </div>
     </div>
   </div>
 </div>
 
-<div class="modal-overlay" id="newGameModal" hidden>
-  <div class="modal-card">
-    <h2>New Game</h2>
-    <div class="modal-label">Play as</div>
-    <div class="modal-choices" id="sideChoices">
-      <button class="choice-btn p0" data-side="0" type="button">
-        <span class="choice-dot"></span>First<span class="choice-sub" id="sideSubP0">light</span>
-      </button>
-      <button class="choice-btn p1" data-side="1" type="button">
-        <span class="choice-dot"></span>Second<span class="choice-sub" id="sideSubP1">dark</span>
-      </button>
-    </div>
-    <div class="modal-label">Piece Theme</div>
-    <div class="modal-choices" id="themeChoices">
-      <button class="choice-btn theme-btn" data-theme="chess" type="button">
-        <span class="theme-swatch"><span class="sw"></span><span class="sw"></span></span>Wood
-      </button>
-      <button class="choice-btn theme-btn" data-theme="classic" type="button">
-        <span class="theme-swatch"><span class="sw"></span><span class="sw"></span></span>Classic
-      </button>
-    </div>
-    <div class="modal-label">Engine Level</div>
-    <div class="modal-choices strength" id="strengthChoices">
-      <button class="choice-btn" data-ms="200" type="button">⚡</button>
-      <button class="choice-btn" data-ms="500" type="button">⚡⚡</button>
-      <button class="choice-btn" data-ms="1500" type="button">⚡⚡⚡</button>
-      <button class="choice-btn" data-ms="4000" type="button">⚡⚡⚡⚡</button>
-    </div>
-    <button class="modal-confirm" id="modalConfirm" type="button">Start</button>
-  </div>
-</div>
+<nav id="tabBar">
+  <button class="tab on" data-pane="playPane"><svg viewBox="0 0 20 20"><path d="M5 3l11 7-11 7z"/></svg>PLAY</button>
+  <button class="tab" data-pane="anPane"><svg viewBox="0 0 20 20"><path d="M3 16l4-6 3 3 4-7 3 4"/></svg>ANALYSIS</button>
+  <button class="tab" data-pane="edPane"><svg viewBox="0 0 20 20"><path d="M12 3l5 5-9 9H3v-5z"/></svg>EDITOR</button>
+</nav>
 
+<div id="overlay"><div class="modal" id="modalBox"></div></div>
+<div id="toasts"></div>
+<span class="sronly" id="srBoard" aria-live="polite"></span>
+
+<script src="board.js"></script>
 <script src="zquoridor.js"></script>
 <script src="app.js"></script>
-<style>
-  /* Aviso de motor degradado, criado por showEngineWarning() em app.js */
-  #engineWarn {
-    position: fixed; left: 0; right: 0; bottom: 0; z-index: 90;
-    display: flex; align-items: flex-start; gap: .6rem;
-    padding: .7rem calc(.9rem + env(safe-area-inset-right))
-             calc(.7rem + env(safe-area-inset-bottom)) calc(.9rem + env(safe-area-inset-left));
-    background: #3a1016; border-top: 1px solid #c0394a;
-    color: #f6e4e6; font-size: .78rem; line-height: 1.45;
-  }
-  #engineWarn strong { color: #f2a6ae; }
-  #engineWarn button {
-    margin-left: auto; flex: 0 0 auto; min-width: 44px; min-height: 44px;
-    background: none; border: 0; color: #f2a6ae; font-size: 1.3rem; cursor: pointer;
-  }
-</style>
 </body>
 </html>
