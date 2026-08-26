@@ -221,7 +221,11 @@ html[data-anim="off"] *{animation-duration:0ms!important;transition-duration:0ms
 .pbar .pb-data{flex:0 0 auto}
 .pbar .pb-name{display:flex;align-items:center;gap:var(--space-4);min-width:0}
 /* The name may be cut, the wall stock may not. */
-.pbar .nm{flex:0 1 auto}
+/* min-width:0 lets the flex item actually shrink; without it the name keeps
+   its full text width and overflows the strip on a 360px phone instead of
+   trimming. The name is the one item here that can lose characters without
+   losing information. */
+.pbar .nm{flex:0 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .pbar .walls{flex:none;margin-left:2px}
 .pbar .dot{width:9px;height:9px;border-radius:50%;flex:none;
   background:radial-gradient(circle at 34% 30%,var(--pc-light),var(--pc))}
@@ -634,12 +638,11 @@ html[data-anim="off"] *{animation-duration:0ms!important;transition-duration:0ms
   .pbar .lvl{display:none}
 }
 
-/* Below 400px the strip cannot hold the pips, the name, the number and the
-   clock at once, and the name is squeezed to zero while the row still
-   overflows. The pips are the countable form of a number already shown. */
-@media (max-width:399.98px){
-  .pbar .pips{display:none}
-}
+/* The pips used to be dropped below 400px, because the strip could not hold
+   them with the name, the number and the clock. Moving the strip's gaps onto
+   the spacing scale reclaimed enough width: measured at 360px the row needs
+   300px of a 338px strip, with the name at 44px rather than zero. The pips are
+   the countable form of the wall count, so they stay on a phone. */
 
 /* ============================ analysis pane =========================== */
 .anInfo{font-size:var(--fs-xs);color:var(--muted);min-height:14px;letter-spacing:.04em;
