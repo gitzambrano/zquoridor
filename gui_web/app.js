@@ -154,7 +154,9 @@ const DEFAULTS = {
   preset: 'premiumDark',
   ui: 'dark', board: 'wood', pawn: 'disc',
   accent: 'gold', fs: 1, density: 'comfortable',
-  frame: 'hairline', wallFinish: 'beveled', cellSep: 'grooves',
+  // 'beveled' by default: the hairline frame is a flat band with no depth,
+  // and the bevel gradient is what makes the board read as an object.
+  frame: 'beveled', wallFinish: 'beveled', cellSep: 'grooves',
   coords: 'edges', boardScale: 1,
   pawnSize: 'regular', pawnShadow: 'soft', distinctShapes: false,
   paths: false, dots: true, lastMove: true, evalGlow: true, evalBar: true,
@@ -402,10 +404,11 @@ function setEval(score) {   // score mover-relative from the engine's last move
   const vertical = matchMedia('(min-width:900px)').matches;
   if (vertical) { fill.style.width = ''; fill.style.height = share.toFixed(1) + '%'; }
   else { fill.style.height = ''; fill.style.width = share.toFixed(1) + '%'; }
+  // The vertical bar hides this label, so the tooltip carries the number there.
+  bar.title = 'Evaluation ' + Math.round(share) + '%';
   if (!num) return;
   num.textContent = Math.round(share) + '%';
   num.style.top = '';
-  void bar;
 }
 
 // ===================== 6. board bridge =================================
@@ -601,6 +604,10 @@ function newGame() {
   levelMarks = [];
   g_startedFromCustomFlag = false; g_rootQfen = '-';
   clearGhost();
+  // Seat the evaluation bar at even. Without this the fill keeps its 0% start
+  // and the bare track reads as "one side wins outright", which is a claim the
+  // engine never made. The opening position is even, so 50% is honest.
+  setEval(0);
   setStatus(humanSide === 0 ? 'Your move' : 'Zquoridor starts');
   syncAll();
   startClock();
@@ -2291,7 +2298,11 @@ function renderMoveLog() {
       .map(mk => `<div class="mlSep">\u2014 level \u2192 ${mk.label} \u2014</div>`).join('');
     if (tail) html += tail;
   }
-  log.innerHTML = html || 'No moves yet.';
+  // Designed empty state. A bare sentence in a tall empty column reads as a
+  // rendering failure, so the placeholder is centred and labelled.
+  log.innerHTML = html ||
+    '<div class="mlEmpty"><span>No moves yet</span>'
+    + '<small>Move a pawn or place a wall to begin</small></div>';
   log.querySelectorAll('.mlMv').forEach(el =>
     el.onclick = () => navGo(+el.dataset.ply));
   const curEl = log.querySelector('.mlMv.cur');
@@ -2764,6 +2775,7 @@ function boot() {
   W.newGame();
   humanSide = S.side;
   syncAll();
+  setEval(0);   // seat the bar at even, same reason as in newGame()
   startClock();
   setStatus(humanSide === 0 ? 'Your move' : 'Zquoridor starts');
   // Layout reflow across the breakpoint. On a wide screen the status line and

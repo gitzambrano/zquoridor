@@ -849,6 +849,42 @@ seven browser suites pass after the change.
   so the sheet stuck to the bottom edge of a desktop window. Above 900 px it is
   now a centred dialog with four corners and a `fadeZoom` enter.
 
+### 2026-08-26: second pass, from screenshots
+
+The first pass worked from measurements alone. This pass worked from rendered
+screenshots, captured with Playwright because the browser pane does not
+composite frames. Three defects were visible that no measurement had caught.
+
+- **The evaluation bar showed no evaluation (bug).** `setEval` runs only after
+  an engine move, on takeback, and in the analysis tab. A fresh game never
+  called it, so `#evalFill` kept its 0 percent start and the bare track read as
+  "one side wins outright". `newGame()` and `boot()` now seat the bar at even.
+  The opening position is even, so 50 percent is honest, and it leaks no engine
+  evaluation during play.
+- **The board frame had no depth.** The default frame style was `hairline`, a
+  flat band. `beveled` already existed, with a gradient and an inner rim, and is
+  now the default. The groove centre lines fade out as the cell grows: they
+  exist so the grid reads when cells are small, and on a large board they read
+  as an artefact instead.
+- **The walls sat on the board, not in it.** `wallDrawRect` inflated the beam by
+  0.32 of the groove, which left a brown margin on both sides of its own
+  channel. It is now 0.46.
+
+Also in this pass:
+
+- The move log's empty state is centred and labelled. A bare sentence at the
+  top of a 394 px empty column read as a rendering failure.
+- 79 hardcoded gap and padding values moved onto `--space-1` to `--space-8`.
+- The evaluation bar keeps its 24 px width, which `test_features_e2e` asserts.
+  Its readout sits inside the strip at a fixed 9 px, which is off the type
+  scale on purpose: the label is bounded by the rail, not by the text
+  hierarchy. At `--fs-xs` it touched both edges.
+
+One caution for a later pass. A single failure of `test_deep_click`
+("crossing reason named") did not reproduce: the status text was correct when
+checked by hand, and two further runs passed 80 of 80. The check reads
+`#status` 120 ms after `mousedown`, so it is timing sensitive.
+
 ---
 
 ## 7. Evaluation Conventions

@@ -371,7 +371,7 @@ class QBoard {
   paintStatic(g) {
     const { C, G, U, M, S } = this;
     const ds = this.ds();
-    const frameStyle = ds.frame || 'hairline';
+    const frameStyle = ds.frame || 'beveled';
     const cellSep = ds.cellSep || 'grooves';
     const bx = M - G / 2, bw = 9 * U;
     // Board frame and bed. The frame carries the coordinate margin. The bed
@@ -420,12 +420,18 @@ class QBoard {
       }
     }
     if (cellSep === 'grooves') {
-      // Groove centre lines, so the grid reads at any size.
-      g.strokeStyle = 'rgba(0,0,0,.22)'; g.lineWidth = 1;
+      // Groove centre lines, so the grid still reads when the cells are too
+      // small for the gap alone to carry it. On a large board the gap is
+      // already obvious, and the line then reads as an artefact, so it fades
+      // out as the cell grows.
+      const lineAlpha = Math.max(0, Math.min(.20, .20 * (34 - C) / 18));
+      if (lineAlpha > .01) {
+      g.strokeStyle = `rgba(0,0,0,${lineAlpha.toFixed(3)})`; g.lineWidth = 1;
       for (let i = 1; i < 9; i++) {
         const t = Math.round(M + i * U - G / 2) + 0.5;
         g.beginPath(); g.moveTo(bx, t); g.lineTo(bx + bw, t); g.stroke();
         g.beginPath(); g.moveTo(t, bx); g.lineTo(t, bx + bw); g.stroke();
+      }
       }
     }
 
@@ -620,7 +626,10 @@ class QBoard {
   // geometry of record for hit tests, ghosts and chip positioning.
   wallDrawRect(o, r, c) {
     const rc = this.wallRect(o, r, c);
-    const inf = Math.max(1.5, this.G * 0.32);
+    // 0.46 of the groove, not 0.32: at 0.32 the rail leaves a brown margin on
+    // both sides of its own channel and reads as a thin strip laid over the
+    // board instead of a piece seated in the groove.
+    const inf = Math.max(2, this.G * 0.46);
     return o === 0
       ? { x: rc.x, y: rc.y - inf, w: rc.w, h: rc.h + 2 * inf }
       : { x: rc.x - inf, y: rc.y, w: rc.w + 2 * inf, h: rc.h };
