@@ -76,13 +76,13 @@ EPSILON_MIDGAME  = 0.01   # prob. de desvio no midgame: escolhe 2º ou 3º melho
 # (EPSILON_MIDGAME -> 2º/3º melhor lance; senão busca completa).
 MC_OBVIOUS_PLIES    = 6      # nº de lances iniciais (obvios no Quoridor) com temperatura fixa e baixa
 MC_TEMP_OBVIOUS      = 0.3  # temperatura da fase 1 (baixa -> quase argmax, pouca variancia de proposito)
-MC_TEMP_OPENING     = 0.60   # temperatura no inicio da fase 2 (<1 afia -- mais perto do argmax da politica)
+MC_TEMP_OPENING     = 1.00   # temperatura no inicio da fase 2 (<1 afia -- mais perto do argmax da politica)
                              # 2026-08-25: era 1.00. Valores >1 achatam a softmax, entao o lance
                              # amostrado fica em media PIOR que o argmax da propria politica -- e
                              # esse lance vira o policyTarget gravado (selfplay.hpp:533), treinando
                              # a cabeca de politica a imitar uma versao degradada de si mesma.
 MC_TEMP_END         = 0.12   # temperatura ao fim da fase 2 (<1 afia -- quase argmax)
-MC_TEMP_DECAY_PLIES = 20     # nº de lances da fase 2 (logo apos MC_OBVIOUS_PLIES) sobre os quais a temperatura decai
+MC_TEMP_DECAY_PLIES = 16     # nº de lances da fase 2 (logo apos MC_OBVIOUS_PLIES) sobre os quais a temperatura decai
  
 # --- Segurança ---  
 MAX_PLIES     = 300     # corte: partidas que não terminam são descartadas
@@ -112,7 +112,7 @@ SEED          = 150    # semente base do RNG; chunks subsequentes variam automat
 # data/selfplay/montecarlo/...) pra dar pra treinar misturando as duas
 # fontes com pesos por-fonte (k diferentes) em train_nnue.py, sem que uma
 # rodada sobrescreva/misture shards da outra sem querer.
-OUT_TEMPLATE  = "data/selfplay/gen6-{mode}/selfplay_{shard:03d}.bin"
+OUT_TEMPLATE  = "data/selfplay/gen7-{mode}/selfplay_{shard:03d}.bin"
 
 # --- Avaliação de folha (NNUE vs. heurística) ---
 # NNUE é o default de avaliação deste binário desde 2026-08 (selfplay
