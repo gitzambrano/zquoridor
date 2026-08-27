@@ -962,6 +962,57 @@ One caution for a later pass. A single failure of `test_deep_click`
 checked by hand, and two further runs passed 80 of 80. The check reads
 `#status` 120 ms after `mousedown`, so it is timing sensitive.
 
+### 2026-08-26: audit of the surfaces nobody had opened
+
+The two passes above worked on the play screen. This one opened the rest:
+phone landscape, the settings and Text I/O modals, the toast, the end of a
+game, the editor in use, and the ply navigation. Every round found a defect,
+which is the reason the round happened at all.
+
+- **Phone landscape reached none of its wall buttons.** The reflow pins the
+  block under the board to the board's own width, so the player strips line up
+  with it. In landscape the board is limited by height and is far narrower than
+  its column: the button row needed about 331 px and had 246. The remainder
+  became a sideways scroll whose scrollbar is hidden, so 85 px of the row, both
+  wall buttons among it, sat off screen with nothing to say so. That block now
+  takes the width its buttons need, up to the column's.
+- **The evaluation bar then had to stop being flush left** inside that block,
+  or it sat 43 px off the board. It centres, and so does the block. Measured
+  offset is 0 in landscape and 0 in portrait.
+- **The move log sat in a container with no height** while the rail showed an
+  empty MOVE LOG card. The reflow sent it under the board whenever the window
+  was narrow, but narrow is not one-column: landscape is narrow AND two-column.
+  The target now reads the rail's own computed position.
+- **No ending said who won.** `.pbar.win` and `.pbar.lose` have been in the
+  stylesheet all along, a green border for the winner, and `newGame` clears
+  both. Nothing ever added them. One `markResult(side)` now marks both strips,
+  and the four endings call it. A draw passes -1 and marks neither.
+- **The ply navigation stayed lit at both ends.** At ply 0 the back pair did
+  nothing and looked available, and the same at the last ply for the forward
+  pair. `updateNav` now toggles `.btn.off`, the treatment the wall buttons
+  already use.
+- **`--muted` failed the text ratio in both themes** and nothing caught it,
+  because the gate tested only `txt/surf` and only in the dark theme. It sat at
+  2.54:1 in dark and 3.60:1 in light. Both clear 4.5:1 now, and the gate checks
+  `txt`, `txt2` and `muted` in both themes.
+- **The wall pips came back to the phone.** They were dropped below 400 px
+  because the strip could not hold them. Moving the strip's gaps onto the
+  spacing scale had reclaimed the width: at 360 px the row needs 300 px of a
+  338 px strip. The premise had expired, so the rule went.
+- **Touch targets.** Ten controls were 32 px tall on a phone. Portrait raises
+  them to 44 px tall and 40 px wide. 40, because seven buttons at 44 need
+  371 px and the row has 368 on a 390 px phone.
+
+Two results worth keeping because they say what NOT to do.
+
+- **The landscape button height stays at 28 px.** Raising it to 32 and to 36
+  both make `#boardCol` and `#underBoard` overflow their own height, measured
+  at 844x390 and at 740x360. It is under the 44 px a finger wants and it is
+  what fits.
+- **The settings groups were already consistent.** Every active item resolves
+  to the same gold and every inactive one to `--txt2`. The apparent
+  inconsistency was in how a screenshot rendered them.
+
 ---
 
 ## 7. Evaluation Conventions
