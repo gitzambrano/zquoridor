@@ -2785,6 +2785,20 @@ const $ = id => document.getElementById(id);
 // fixed place on the screen. The name sits on the outer edge of its strip:
 // at the very top for the top player, at the very bottom for the bottom one.
 function strip(pos) { return $(pos === 'top' ? 'hudTop' : 'hudBottom'); }
+// The strips carry .win and .lose styling -- a green border on the winner --
+// and newGame clears both. Nothing ever added them, so no ending marked who
+// had won: not a goal reached, not a resignation, not a flag. Pass -1 for a
+// draw, which marks neither.
+function markResult(winnerSide) {
+  const seat = { top: 1 - humanSide, bottom: humanSide };
+  for (const pos of ['top', 'bottom']) {
+    const el = strip(pos);
+    if (!el) continue;
+    el.classList.remove('win', 'lose');
+    if (winnerSide === -1) continue;
+    el.classList.add(seat[pos] === winnerSide ? 'win' : 'lose');
+  }
+}
 function pips(el, n) {
   if (!el) return;
   if (el.childElementCount !== 10) el.innerHTML = '<i></i>'.repeat(10);
@@ -2836,6 +2850,7 @@ function flagFall(side) {
   setStatus((side === humanSide ? 'Your clock ran out' : 'Zquoridor flagged you'));
   const el = strip(side === humanSide ? 'bottom' : 'top');
   if (el) el.classList.add('flag');
+  markResult(1 - side);   // whoever still had time on the clock
   pushRecent('flag');
   sound('end'); haptic([80]);
 }
@@ -3085,11 +3100,12 @@ function checkEnd() {
     const youWon = w === humanSide;
     setStatus(youWon ? 'You won - goal reached' : 'Zquoridor won');
     toast(youWon ? 'ok' : 'err', youWon ? 'Victory' : 'Defeat');
+    markResult(w);
     sound('end'); haptic(youWon ? [20, 60, 20, 60, 40] : [60]);
     pushRecent('played');
     refreshHud(); return true;
   }
-  if (W.isDraw()) { gameOver = true; setStatus('Draw by repetition'); pushRecent('draw'); return true; }
+  if (W.isDraw()) { gameOver = true; markResult(-1); setStatus('Draw by repetition'); pushRecent('draw'); return true; }
   return false;
 }
 function syncAll() {
@@ -3717,7 +3733,7 @@ $('overlay').addEventListener('click', e => {
 // Small helpers shared by the settings / IO / editor surfaces.
 function confirmModal(title, body, onYes) {
   openModal(`<h3>${title} <span class="x" data-close>&#10005;</span></h3>
-    <p style="color:var(--txt2);font-size:.68rem;margin-bottom:12px">${body}</p>
+    <p style="color:var(--txt2);font-size:var(--fs-sm);margin-bottom:12px">${body}</p>
     <div class="row" style="gap:8px">
       <button class="btn" id="cfNo" style="flex:1">Cancel</button>
       <button class="btn danger" id="cfYes" style="flex:1">Confirm</button>
@@ -3887,7 +3903,7 @@ function modalSettings(tab) {
           <button class="btn" id="packTest" style="padding:6px 10px">Test</button></div>
         <div class="row"><label>Volume</label><input type="range" id="volSlider" min="0" max="100" value="${Math.round(S.volume * 100)}" style="flex:1.2"></div>
         <div class="row"><label>Events</label><div class="seg" style="flex-wrap:wrap" id="evSeg">
-          ${Object.keys(S.soundEvents).map(k => `<button data-ev="${k}" class="${S.soundEvents[k] ? 'on' : ''}" style="font-size:.52rem;padding:5px 7px">${k}</button>`).join('')}</div></div>
+          ${Object.keys(S.soundEvents).map(k => `<button data-ev="${k}" class="${S.soundEvents[k] ? 'on' : ''}" style="font-size:var(--fs-xs);padding:5px 7px">${k}</button>`).join('')}</div></div>
       </div>
       <div class="card"><h4>HAPTICS</h4>
         <div class="row"><label>Vibration</label>${seg('haptics', ['full', 'light', 'off'],
@@ -4078,6 +4094,7 @@ function resignConfirm() {
   confirmModal('RESIGN?', 'The current game will be recorded as a loss.', () => {
     gameOver = true; engineThinking = false;
     pushRecent('resign');
+    markResult(1 - humanSide);
     setStatus('You resigned');
     toast('err', 'You resigned');
     sound('loss'); haptic([60]);
@@ -4422,10 +4439,10 @@ function showRecentGames() {
     const when = `${d.getDate()}/${d.getMonth() + 1}`;
     const nMoves = ((g.qgn.match(/\b\d+\./g) || []).length);
     return `<div class="mlRow" style="align-items:center">
-      <span style="flex:1;font-size:.62rem">#${i + 1} ${when} ${res} (${nMoves}m)</span>
-      <button class="btn" data-rload="${i}" style="padding:4px 8px;font-size:.56rem">Load</button>
-      <button class="btn" data-rcopy="${i}" style="padding:4px 8px;font-size:.56rem">Copy</button>
-      <button class="btn danger" data-rdel="${i}" style="padding:4px 8px;font-size:.56rem">&#10005;</button>
+      <span style="flex:1;font-size:var(--fs-xs)">#${i + 1} ${when} ${res} (${nMoves}m)</span>
+      <button class="btn" data-rload="${i}" style="padding:4px 8px;font-size:var(--fs-xs)">Load</button>
+      <button class="btn" data-rcopy="${i}" style="padding:4px 8px;font-size:var(--fs-xs)">Copy</button>
+      <button class="btn danger" data-rdel="${i}" style="padding:4px 8px;font-size:var(--fs-xs)">&#10005;</button>
     </div>`;
   }).join('');
   openModal(`<h3>RECENT GAMES <span class="x" data-close>&#10005;</span></h3>${rows}`);
