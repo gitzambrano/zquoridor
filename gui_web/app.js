@@ -2826,8 +2826,16 @@ function layoutReflow() {
   // The move log follows the same rule. On a phone it fills the space under
   // the button row, which is otherwise dead. On a wide screen it returns to
   // its card in the side rail.
-  const log = $('moveLog'), home = $('moveLogHome');
-  const logTarget = wide ? home : under;
+  // ...but "phone" here means the one-column layout, not merely a narrow
+  // window. Phone landscape is narrow AND two-column: the side rail is a real
+  // static column there. Reading the rail's own computed position says which
+  // layout is live without restating the media queries in JS. Without this the
+  // log went under the board, where that block has no height in landscape, and
+  // the rail showed a MOVE LOG card with nothing in it.
+  const log = $('moveLog'), home = $('moveLogHome'), panel = $('sidePanel');
+  const railIsColumn = !!panel && getComputedStyle(panel).display !== 'none' &&
+                       getComputedStyle(panel).position === 'static';
+  const logTarget = (wide || railIsColumn) ? home : under;
   if (log && logTarget && log.parentElement !== logTarget) logTarget.appendChild(log);
 }
 
@@ -2855,9 +2863,16 @@ function boot() {
     // own geometry.
     const ew = $('evalWrap');
     if (ew && ew.parentElement && ew.parentElement.id === 'underBoard') {
+      // Pinned to the board's width, not to its parent's. The parent may be
+      // wider than the board (see the button row below), and the bar reports
+      // on the board, so it matches the board.
       ew.style.height = '';
-      ew.style.width = '100%';
-      ew.style.marginLeft = '0';
+      ew.style.width = B.cssSide + 'px';
+      // Centred, not flush left: its parent can be wider than the board (see
+      // the button row below), and both parent and board are centred on the
+      // column, so centring is what keeps the bar under the board.
+      ew.style.marginLeft = 'auto';
+      ew.style.marginRight = 'auto';
     } else if (ew) {
       // Vertical: the bar reports on the board, so it is exactly as tall.
       ew.style.width = ''; ew.style.marginLeft = ''; ew.style.maxWidth = '';
@@ -2870,6 +2885,22 @@ function boot() {
       el.style.maxWidth = '100%';
       el.style.marginLeft = left + 'px';
       el.style.marginRight = 'auto';
+    }
+    // The button row sits under the board on a phone. In landscape the board
+    // is limited by height and can be much narrower than the column it sits
+    // in, and the row then overflowed the board's width into a scroll with no
+    // scrollbar, which left the wall buttons out of reach with nothing to say
+    // so. Give that block the width its buttons need, up to the column.
+    const under = $('underBoard'), ctrls = $('controls');
+    if (under && ctrls && ctrls.parentElement === under) {
+      const kids = [...ctrls.children].filter(e => getComputedStyle(e).display !== 'none');
+      const gap = parseFloat(getComputedStyle(ctrls).gap) || 0;
+      const need = kids.reduce((s, e) => s + e.getBoundingClientRect().width, 0) +
+                   gap * Math.max(0, kids.length - 1);
+      if (need > B.cssSide) {
+        under.style.width = Math.min(col.clientWidth, Math.ceil(need)) + 'px';
+        under.style.marginLeft = 'auto';
+      }
     }
   };
   applySettings();
