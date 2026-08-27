@@ -3264,7 +3264,7 @@ function releaseForced() {
   hideLegalSlots();
 }
 function clearGhost() {
-  wallState = 'IDLE'; dragPtr = null; dragFrom = null;
+  wallState = 'IDLE'; dragPtr = null; dragFrom = null; kbWall = null;
   B.ghost = null; B.ghostFrom = null;
   pawnDrag = null;
   if (B.setDragPawn) B.setDragPawn(null);
@@ -3293,6 +3293,10 @@ function armWall(o) {
 // Translucent preview for the armed orientation. B.setHover draws the wall at
 // 0.35 alpha, which is the same preview the board shows on hover, so arming
 // and hovering answer with one visual language.
+// Anchor the keyboard is pointing at while an orientation is armed. Arrow keys
+// move this instead of the pawn, and Enter commits it, which is what makes a
+// wall placeable without a pointer at all.
+let kbWall = null;
 function previewArmed(o) {
   if (!B.setHover || !humanCanAct()) return;
   const p = lastPt || { x: B.cssSide / 2, y: B.cssSide / 2 };
@@ -3311,7 +3315,16 @@ function previewArmed(o) {
     if (!best) return;
     r = best.r; c = best.c;
   }
+  kbWall = { o, r, c };
   B.setHover({ o, r, c });
+}
+// Repaint the keyboard preview after the cursor moves or the orientation flips.
+function kbWallShow() {
+  if (!kbWall || !B.setHover) return;
+  const ok = !!legalWall[kbWall.o * 64 + kbWall.r * 8 + kbWall.c];
+  B.setHover(ok ? { o: kbWall.o, r: kbWall.r, c: kbWall.c } : null);
+  setStatus(ok ? '' : illegalReason(...B.dispWallToEng(kbWall.o, kbWall.r, kbWall.c)), true);
+  B.render();
 }
 let slotLayer = null;
 function showLegalSlots(o) {
@@ -4731,9 +4744,24 @@ addEventListener('keydown', e => {
   }
   if (e.key === 'h' || e.key === 'H') { armWall(0); return; }
   if (e.key === 'v' || e.key === 'V') { armWall(1); return; }
-  if (e.key === 'r' || e.key === 'R') { armedO = 1 - armedO; if (B.ghost) { B.ghost.o = armedO; B.render(); } return; }
+  if (e.key === 'r' || e.key === 'R') {
+    armedO = 1 - armedO;
+    if (B.ghost) { B.ghost.o = armedO; B.render(); }
+    if (kbWall) { kbWall.o = armedO; if (forcedO != null) forcedO = armedO; kbWallShow(); }
+    return;
+  }
   if (e.key === 'f' || e.key === 'F') { doFlip(); return; }
-  if (e.key === 'Enter' && wallState === 'PENDING') { commitGhost(B.ghost); return; }
+  if (e.key === 'Enter' || e.key === ' ') {
+    if (wallState === 'PENDING') { commitGhost(B.ghost); return; }
+    // An armed orientation plus a keyboard anchor is a complete wall.
+    if (forcedO != null && kbWall && humanCanAct() &&
+        legalWall[kbWall.o * 64 + kbWall.r * 8 + kbWall.c]) {
+      e.preventDefault();
+      commitGhost({ o: kbWall.o, r: kbWall.r, c: kbWall.c, state: 'ok' });
+      return;
+    }
+    if (e.key === 'Enter') return;
+  }
   // plan section 14: , . Home End navigation, A engine toggle
   if (e.key === ',') { navGo(W.cursor() - 1); return; }
   if (e.key === '.') { navGo(W.cursor() + 1); return; }
@@ -4754,6 +4782,21 @@ addEventListener('keydown', e => {
   // arrow; Shift+Arrow picks a diagonal deflection.
   if (e.key.startsWith('Arrow')) {
     if (!atLiveEnd() || gameOver || engineThinking || W.turn() !== humanSide) return;
+    // With an orientation armed the arrows belong to the wall, not the pawn.
+    // Without this branch a keyboard-only player could arm a wall, watch the
+    // preview appear, and have no way to move or commit it: the arrows walked
+    // the pawn instead, so walls were unreachable without a pointer.
+    if (forcedO != null && kbWall) {
+      const d = { ArrowUp: [-1, 0], ArrowDown: [1, 0],
+                  ArrowLeft: [0, -1], ArrowRight: [0, 1] }[e.key];
+      if (d) {
+        e.preventDefault();
+        kbWall.r = Math.max(0, Math.min(7, kbWall.r + d[0]));
+        kbWall.c = Math.max(0, Math.min(7, kbWall.c + d[1]));
+        kbWallShow();
+        return;
+      }
+    }
     const cur = B.engPawnToDisp(W.pawn(humanSide));
     const row = Math.floor(cur / 9), col = cur % 9;
     let targets = [];
