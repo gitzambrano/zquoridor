@@ -15,7 +15,10 @@ O alvo de treino da cabeca WL (2026-08+) e um BLEND por posicao entre o
 resultado REAL do jogo e a avaliacao que a propria NNUE (de quando o
 self-play rodou) deu aquela posicao, gravada em TrainingSample::evalNNUE
 (ver read_selfplay.py/selfplay.hpp):
-    wl_target = k * game_result_prob + (1 - k) * ev_prob
+    wl_lambda = k * game_result_prob + (1 - k) * ev_prob
+Desde 2026-08-26 esse blend NAO e o alvo final: ele passa pelo desconto
+de duracao (gamma) antes de virar wl_target -- ver WL_GAMMA_DEFAULT.
+    wl_target = 0.5 + (wl_lambda - 0.5) * gamma ** plies_remaining
 "k" e configuravel POR FONTE em DATA_SOURCES_DEFAULT/--data-sources (ver
 nota la); k=1.0 ignora evalNNUE por completo (comportamento antigo, e o
 que qualquer fonte de dado anterior a esta mudanca de formato deve usar).
@@ -155,7 +158,9 @@ DATA_ROOT_DEFAULT = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath
 #     vs. a avaliacao da propria NNUE gravada no .bin (TrainingSample::
 #     evalNNUE, ver read_selfplay.py/selfplay.hpp) na hora de montar o alvo
 #     de treino da cabeca WL, POR POSICAO:
-#         wl_target = k * game_result_prob + (1 - k) * ev_prob
+#         wl_lambda = k * game_result_prob + (1 - k) * ev_prob
+#     Este blend e so a PRIMEIRA etapa: o alvo final aplica o desconto de
+#     duracao por cima dele (ver WL_GAMMA_DEFAULT).
 #     (ambos convertidos pra perspectiva do MOVER antes de misturar -- ver
 #     to_chunk_tensors). k=1.0 (default) = comportamento antigo, ignora
 #     ev_prob por completo -- e o que qualquer .bin gravado ANTES desta
