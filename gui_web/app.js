@@ -661,9 +661,19 @@ function navGo(ply) {
                 : 'Reviewing ply ' + W.cursor() + ' - Return to game');
 }
 function updateNav() {
-  $('navPly').textContent = W.cursor() + ' / ' + W.plyCount();
+  const cur = W.cursor(), n = W.plyCount();
+  $('navPly').textContent = cur + ' / ' + n;
   const end = atLiveEnd();
   $('btnReturn').style.display = end ? 'none' : 'flex';
+  // Dim what cannot move. All four stayed lit at both ends, so at ply 0 the
+  // back pair looked available and did nothing, and the same at the last ply
+  // for the forward pair. .btn.off is the same treatment the wall buttons use
+  // when a player is out of walls.
+  const off = (id, cond) => { const e = $(id); if (e) e.classList.toggle('off', cond); };
+  off('navFirst', cur <= 0);
+  off('navPrev', cur <= 0);
+  off('navNext', cur >= n);
+  off('navLast', cur >= n);
 }
 // Rolls back to the human's previous turn: the latest position before the
 // cursor where it is the human to move, then truncates the future.
