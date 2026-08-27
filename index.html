@@ -575,8 +575,10 @@ html[data-anim="off"] *{animation-duration:0ms!important;transition-duration:0ms
   .pbar .pb-name{flex:0 1 auto;min-width:0}
   .pbar .pb-data{flex:1;gap:var(--space-4)}
   /* Phone landscape has roughly 390px of height, and the board claims most of
-     it. A wrapped button row costs a second line the column does not have, so
-     the row stays on one line and scrolls sideways instead. */
+     it, so the row stays on one line. It no longer has to scroll to do that:
+     the block under the board takes the column's width now, not the board's,
+     which is what used to squeeze this row. The overflow rule below stays as a
+     backstop for a viewport narrower than any real phone. */
   /* No mask-image on this row. A trailing fade would read better than a
      half-cut button, but a mask here made test_browser_full's M3 board
      gesture fail reproducibly (2 of 2 runs failing with it, passing without),
@@ -584,6 +586,11 @@ html[data-anim="off"] *{animation-duration:0ms!important;transition-duration:0ms
   #controls{flex-wrap:nowrap;overflow-x:auto;overflow-y:hidden;
     justify-content:flex-start;gap:var(--space-2);scrollbar-width:none}
   #controls::-webkit-scrollbar{display:none}
+  /* 28px is the ceiling here, not a preference. Measured on 844x390 and on
+     740x360: at 32px and at 36px #boardCol and #underBoard both overflow their
+     own height, because landscape has no vertical slack left once the board
+     and the two player strips have taken theirs. It is under the 44px a finger
+     wants, and it is what fits. Do not raise it without re-measuring. */
   #controls .btn{min-width:32px;padding:0 var(--space-1);height:28px}
   #controls .btn svg{width:17px;height:17px}
   .pbar .clock{font-size:var(--fs-lg)}
