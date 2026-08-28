@@ -37,7 +37,7 @@ CHUNK_GAMES   = 3000    # partidas por arquivo .bin
 
 # --- Busca ---
 MAX_DEPTH     = 50      # profundidade máxima do negamax (iterative deepening)
-TIME_MS       = 40     # orçamento de tempo por lance em ms
+TIME_MS       = 80     # orçamento de tempo por lance em ms
                         # 200 ms = boa qualidade; reduza para 50-100 ms se quiser
                         # gerar muito volume rapidamente (em detrimento da força)
  
@@ -75,14 +75,14 @@ EPSILON_MIDGAME  = 0.01   # prob. de desvio no midgame: escolhe 2º ou 3º melho
 # Depois disso, mesmo comportamento do midgame do modo antigo
 # (EPSILON_MIDGAME -> 2º/3º melhor lance; senão busca completa).
 MC_OBVIOUS_PLIES    = 6      # nº de lances iniciais (obvios no Quoridor) com temperatura fixa e baixa
-MC_TEMP_OBVIOUS      = 0.3  # temperatura da fase 1 (baixa -> quase argmax, pouca variancia de proposito)
-MC_TEMP_OPENING     = 1.00   # temperatura no inicio da fase 2 (<1 afia -- mais perto do argmax da politica)
+MC_TEMP_OBVIOUS      = 0.4  # temperatura da fase 1 (baixa -> quase argmax, pouca variancia de proposito)
+MC_TEMP_OPENING     = 0.8   # temperatura no inicio da fase 2 (<1 afia -- mais perto do argmax da politica)
                              # 2026-08-25: era 1.00. Valores >1 achatam a softmax, entao o lance
                              # amostrado fica em media PIOR que o argmax da propria politica -- e
                              # esse lance vira o policyTarget gravado (selfplay.hpp:533), treinando
                              # a cabeca de politica a imitar uma versao degradada de si mesma.
 MC_TEMP_END         = 0.12   # temperatura ao fim da fase 2 (<1 afia -- quase argmax)
-MC_TEMP_DECAY_PLIES = 16     # nº de lances da fase 2 (logo apos MC_OBVIOUS_PLIES) sobre os quais a temperatura decai
+MC_TEMP_DECAY_PLIES = 12     # nº de lances da fase 2 (logo apos MC_OBVIOUS_PLIES) sobre os quais a temperatura decai
  
 # --- Segurança ---  
 MAX_PLIES     = 300     # corte: partidas que não terminam são descartadas
@@ -99,7 +99,7 @@ MAX_PLIES     = 300     # corte: partidas que não terminam são descartadas
 SEPARATE_TT   = False
 
 # --- Paralelismo ---
-THREADS       = 8       # 0 = auto (usa hardware_concurrency); ajuste se quiser
+THREADS       = 12       # 0 = auto (usa hardware_concurrency); ajuste se quiser
                         # reservar threads para outras tarefas
 
 # --- Semente ---

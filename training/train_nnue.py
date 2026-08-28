@@ -184,11 +184,8 @@ DATA_SOURCES_DEFAULT = [
       {"path": "selfplay/gen4", "frac": 1.0, "k": 0.7},
       {"path": "selfplay/gen5-epsilon", "frac": 1.0, "k": 0.7},
       {"path": "selfplay/gen5-montecarlo", "frac": 1.0, "k": 0.65},
-      # gen6 usa o mesmo modo de geracao do gen5-montecarlo, entao herda o
-      # mesmo k. Adicionado em 2026-08-26: antes disso o gen6 nao entrava em
-      # treino nenhum, porque --data e IGNORADO enquanto esta lista nao
-      # estiver vazia (ver load_training_population).
       {"path": "selfplay/gen6-montecarlo", "frac": 1.0, "k": 0.65},
+      {"path": "selfplay/gen7-montecarlo", "frac": 1.0, "k": 0.65},
       {"path": "arena/gen1",    "frac": 0.3, "k": 1.0},
       {"path": "arena/gen2",    "frac": 0.2, "k": 1.0},
 ]
@@ -220,7 +217,7 @@ WARMUP_EPOCHS_DEFAULT = 2
 # p/ treino do zero) e alto demais aqui: afastaria pesos ja convergidos do
 # otimo local em vez de so refina-los. So entra em uso quando --lr fica em
 # "auto"; --lr numerico explicito sempre tem prioridade.
-NEW_CYCLE_LR_DEFAULT = 1e-5
+NEW_CYCLE_LR_DEFAULT = 5e-5
 STEP_SIZE_DEFAULT = 10                # epochs por degrau em --lr-schedule=step
 STEP_GAMMA_DEFAULT = 0.5
 EXP_GAMMA_DEFAULT = 0.97
@@ -292,7 +289,7 @@ POLICY_OPENING_PLIES_DEFAULT = 26
 #   gamma=0.990 -> vitoria de 65 lances vale 0.76, de 5 lances vale 0.98
 #   gamma=0.980 -> vitoria de 65 lances vale 0.63  (agressivo demais, provavel
 #                  perda de forca geral: empurra quase tudo para o 0.5)
-WL_GAMMA_DEFAULT = 0.99
+WL_GAMMA_DEFAULT = 0.985
 QA_DEFAULT = 255                      # escala QAT do acumulador (int16)
 QB_DEFAULT = 64                       # escala QAT das cabecas (int8)
 LOG_EVERY_DEFAULT = 1                 # a cada quantos epochs imprime o resumo
