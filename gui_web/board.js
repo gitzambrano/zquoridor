@@ -454,7 +454,7 @@ class QBoard {
 
     // Carrara marble signature theme: deterministic veins baked into the
     // static layer, so they cost nothing per frame.
-    if ((ds.board || '') === 'marble') {
+    if ((ds.board || '') === 'marble' && (ds.boardTexture || 'subtle') !== 'off') {
       const rnd = qrMulberry32(0xCAFE);
       g.save();
       g.beginPath(); g.rect(bx, bx, bw, bw); g.clip();
@@ -491,13 +491,17 @@ class QBoard {
       g.save();
       g.fillStyle = this.css('--coord');
       g.globalAlpha = .92;
-      g.font = `600 ${Math.max(10, 0.235 * C)}px 'JetBrains Mono', monospace`;
+      g.font = `500 ${Math.max(10.5, 0.228 * C)}px 'JetBrains Mono', monospace`;
       g.textAlign = 'center'; g.textBaseline = 'middle';
       // Centre of the margin band, not M/2. The play area starts at bx, so the
       // left band is [0, bx] and the bottom band is [bx + bw, S]. Both are
       // M - G/2 wide, and M/2 sits G/4 short of their middle, which pushed
       // every label a little way onto the board.
-      const bandX = bx / 2, bandY = (bx + bw + S) / 2;
+      // Snap the two margin centres to half pixels. At common DPRs this
+      // keeps the small mono glyphs visually centred instead of one edge
+      // looking a fraction heavier.
+      const bandX = Math.round(bx / 2) + .5;
+      const bandY = Math.round((bx + bw + S) / 2) + .5;
       for (let c = 0; c < 9; c++) {
         g.fillText('abcdefghi'[c], this.cellCenter(0, c).x, bandY);
       }
@@ -548,8 +552,12 @@ class QBoard {
         // painted on the wall rather than as a mark on the move.
         const rc = this.wallDrawRect(o, r, c);
         g.save();
-        g.strokeStyle = this.css('--gold'); g.lineWidth = 1.5; g.globalAlpha = .9;
-        this.rr(g, rc.x - 1.75, rc.y - 1.75, rc.w + 3.5, rc.h + 3.5, 3.5); g.stroke();
+        const lm = this.ds().lastMoveStyle || 'subtle';
+        g.strokeStyle = this.css('--gold');
+        g.lineWidth = lm === 'clear' ? 1.75 : 1.15;
+        g.globalAlpha = lm === 'clear' ? .92 : .58;
+        const pad = lm === 'clear' ? 1.9 : 1.45;
+        this.rr(g, rc.x - pad, rc.y - pad, rc.w + 2 * pad, rc.h + 2 * pad, 3.5); g.stroke();
         g.restore();
       }
     }
@@ -557,7 +565,8 @@ class QBoard {
     // Hover ghost: the quiet wall preview that replaces the wall mode button.
     if (!this.ghost && this.hover && this.hover.kind === 'groove') {
       const h = this.hover;
-      g.save(); g.globalAlpha = 0.35;
+      const wp = this.ds().wallPreview || 'normal';
+      g.save(); g.globalAlpha = wp === 'strong' ? .52 : wp === 'subtle' ? .24 : .35;
       this.drawWall(g, h.o, h.r, h.c, true);
       g.restore();
     }
@@ -571,13 +580,18 @@ class QBoard {
         const ctr = this.cellCenter(Math.floor(d / 9), d % 9);
         const jump = Math.abs(ctr.x - me.x) + Math.abs(ctr.y - me.y) > this.U * 1.5;
         g.save();
-        g.globalAlpha = .38;
-        g.beginPath(); g.arc(ctr.x, ctr.y, 0.16 * C, 0, 7);
-        if (jump) {
-          g.lineWidth = Math.max(2, 0.045 * C);
-          g.strokeStyle = this.dotColor(); g.stroke();
+        const marker = this.ds().moveMarkers || 'ring';
+        const col = this.dotColor();
+        if (marker === 'dot' && !jump) {
+          g.globalAlpha = .34;
+          g.beginPath(); g.arc(ctr.x, ctr.y, 0.12 * C, 0, 7);
+          g.fillStyle = col; g.fill();
         } else {
-          g.fillStyle = this.dotColor(); g.fill();
+          const minimal = marker === 'minimal';
+          g.globalAlpha = minimal ? .28 : .44;
+          g.beginPath(); g.arc(ctr.x, ctr.y, (minimal ? .105 : .155) * C, 0, 7);
+          g.lineWidth = Math.max(minimal ? 1.2 : 1.6, (minimal ? .026 : .036) * C);
+          g.strokeStyle = col; g.stroke();
         }
         g.restore();
       }
@@ -656,14 +670,13 @@ class QBoard {
     const rc = this.wallRect(o, r, c);
     // Across the corridor: a little fatter than the slot, so the rail seats in
     // its channel instead of looking laid on top of the board.
-    const inf = Math.max(1.5, this.G * 0.36);
-    // Along its length: half a corridor past each end. The slot stops at the
-    // cell edges, so two walls in line stopped short of the crossing between
-    // them and left a gap. Half a corridor each takes both to the exact centre
-    // of that crossing, where they meet and read as one continuous rail. The
-    // ends still land inside the play area: at the outermost slot the
-    // extension reaches the frame edge and no further.
-    const ext = this.G / 2;
+    const profile = this.ds().wallProfile || 'standard';
+    const profileScale = profile === 'slim' ? .27 : profile === 'bold' ? .41 : .33;
+    const inf = Math.max(1.4, this.G * profileScale);
+    // Extend a fraction beyond the mathematical crossing centre. The overlap
+    // is visual only (wallRect still owns hit testing) and removes antialias
+    // hairlines where collinear rails or legal T/L junctions meet.
+    const ext = this.G * .54;
     return o === 0
       ? { x: rc.x - ext, y: rc.y - inf, w: rc.w + 2 * ext, h: rc.h + 2 * inf }
       : { x: rc.x - inf, y: rc.y - ext, w: rc.w + 2 * inf, h: rc.h + 2 * ext };
@@ -687,8 +700,8 @@ class QBoard {
     g.save();
     if (finish !== 'flat') {
       g.shadowColor = shadow;
-      g.shadowBlur = 5;
-      g.shadowOffsetY = 2;
+      g.shadowBlur = 4;
+      g.shadowOffsetY = 1.5;
     }
     if (finish === 'flat') {
       g.fillStyle = wall;
@@ -728,10 +741,10 @@ class QBoard {
       const along = o === 0;                       // beam runs left to right
       const thick = along ? rc.h : rc.w;
       // lit edge and shaded edge, one thin band each
-      g.fillStyle = 'rgba(255,255,255,.28)';
+      g.fillStyle = 'rgba(255,255,255,.18)';
       if (along) g.fillRect(rc.x, rc.y, rc.w, Math.max(1, thick * .16));
       else g.fillRect(rc.x, rc.y, Math.max(1, thick * .16), rc.h);
-      g.fillStyle = 'rgba(0,0,0,.20)';
+      g.fillStyle = 'rgba(0,0,0,.16)';
       if (along) g.fillRect(rc.x, rc.y + rc.h - Math.max(1, thick * .20), rc.w, Math.max(1, thick * .20));
       else g.fillRect(rc.x + rc.w - Math.max(1, thick * .20), rc.y, Math.max(1, thick * .20), rc.h);
       // grain: evenly spaced hairlines, alternating light and dark
@@ -741,7 +754,7 @@ class QBoard {
       const lines = 2;
       for (let i = 1; i <= lines; i++) {
         const f = i / (lines + 1);
-        g.strokeStyle = (i % 2) ? 'rgba(255,255,255,.09)' : 'rgba(0,0,0,.06)';
+        g.strokeStyle = (i % 2) ? 'rgba(255,255,255,.06)' : 'rgba(0,0,0,.045)';
         g.beginPath();
         if (along) {
           const y = Math.round(rc.y + f * rc.h) + .5;

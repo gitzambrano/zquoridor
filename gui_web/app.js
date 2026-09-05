@@ -150,13 +150,15 @@ function bindEngine(m) {
 // blob resets to defaults with a toast. `preset` tracks which coherent
 // preset is active; touching any option flips it to 'custom'.
 const DEFAULTS = {
-  v: 3,
+  v: 4,
   preset: 'premiumDark',
   ui: 'dark', board: 'wood', pawn: 'disc',
-  accent: 'gold', fs: 1, density: 'comfortable',
+  accent: 'gold', fs: 1, density: 'comfortable', uiFont: 'modern',
   // 'beveled' by default: the hairline frame is a flat band with no depth,
   // and the bevel gradient is what makes the board read as an object.
   frame: 'beveled', wallFinish: 'beveled', cellSep: 'grooves',
+  boardTexture: 'subtle', boardContrast: 'standard', wallProfile: 'standard', wallPreview: 'normal',
+  goalRows: 'subtle', moveMarkers: 'ring', lastMoveStyle: 'subtle',
   coords: 'edges', boardScale: 1,
   pawnSize: 'regular', pawnShadow: 'soft', distinctShapes: false,
   paths: false, dots: true, lastMove: true, evalGlow: true, evalBar: true,
@@ -183,6 +185,10 @@ function loadSettings() {
     // Schema 3 makes the shortest-path overlay strictly opt-in. Older blobs
     // that still carry paths=true lose it once, so the board starts clean.
     if ((parsed.v || 1) < 3) parsed.paths = false;
+    if ((parsed.v || 1) < 4) {
+      if (parsed.lastMoveStyle == null) parsed.lastMoveStyle = parsed.lastMove === false ? 'off' : 'subtle';
+      if (parsed.moveMarkers == null) parsed.moveMarkers = 'ring';
+    }
     if (!LEVELS[parsed.level]) delete parsed.level;
     S = {
       ...DEFAULTS, ...parsed, v: DEFAULTS.v,
@@ -212,17 +218,23 @@ const PRESETS = {
   classic: {
     ui: 'light', board: 'ivory', pawn: 'disc', accent: 'gold', frame: 'beveled',
     wallFinish: 'flat', cellSep: 'grooves', coords: 'edges', density: 'comfortable',
-    pawnShadow: 'deep', soundPack: 'wood', anim: 'full', fs: 1,
+    pawnShadow: 'deep', soundPack: 'wood', anim: 'full', fs: 1, uiFont: 'modern',
+    boardTexture: 'subtle', boardContrast: 'standard', wallProfile: 'standard', wallPreview: 'normal',
+    goalRows: 'subtle', moveMarkers: 'ring', lastMoveStyle: 'subtle',
   },
   premiumDark: {},
   highContrast: {
     ui: 'dark', board: 'noir', pawn: 'rune', distinctShapes: true, accent: 'gold',
     coords: 'all', fs: 1.12, cellSep: 'inlaid', wallFinish: 'beveled', anim: 'reduced',
+    boardTexture: 'subtle', boardContrast: 'strong', wallProfile: 'standard', wallPreview: 'strong',
+    goalRows: 'clear', moveMarkers: 'ring', lastMoveStyle: 'clear', uiFont: 'modern',
   },
   minimal: {
     ui: 'dark', board: 'slate', pawn: 'rune', frame: 'none', wallFinish: 'flat',
     cellSep: 'flat', coords: 'off', paths: false, dots: false, evalBar: false,
     evalGlow: false, sound: false, haptics: 'off', anim: 'reduced', density: 'compact',
+    boardTexture: 'off', boardContrast: 'soft', wallProfile: 'slim', wallPreview: 'subtle',
+    goalRows: 'off', moveMarkers: 'minimal', lastMoveStyle: 'off', uiFont: 'modern',
   },
 };
 function applyPreset(name) {
@@ -1379,11 +1391,12 @@ function modalSettings(tab) {
           <input type="color" id="accentPick" value="#c8a84b" style="width:34px;height:26px;background:none;border:none" title="Custom accent">
         </div></div>
         <div class="row"><label>Text size</label>${seg('fs', [1, 1.12, 1.25], ['Normal', 'Large', 'Larger'])}</div>
-        <div class="row"><label>Density</label>${seg('density', ['comfortable', 'compact'], ['Comfortable', 'Compact'])}</div>
-      </div>
-      <div class="card"><h4>MOTION</h4>
-        <div class="row"><label>Animations</label>${seg('anim', ['full', 'reduced', 'off'], ['Full', 'Reduced', 'Off'])}</div>
-        <div class="row"><label>Anim speed</label>${seg('animSpeed', [0.5, 1, 1.5], ['0.5x', '1x', '1.5x'])}</div>
+        <details class="advSettings"><summary>Advanced appearance</summary><div class="advBody">
+          <div class="row"><label>Interface font</label>${seg('uiFont', ['modern', 'technical'], ['Modern', 'Technical'])}</div>
+          <div class="row"><label>Density</label>${seg('density', ['comfortable', 'compact'], ['Comfortable', 'Compact'])}</div>
+          <div class="row"><label>Animations</label>${seg('anim', ['full', 'reduced', 'off'], ['Full', 'Reduced', 'Off'])}</div>
+          <div class="row"><label>Anim speed</label>${seg('animSpeed', [0.5, 1, 1.5], ['0.5x', '1x', '1.5x'])}</div>
+        </div></details>
       </div>`,
     board: `
       <div class="card"><h4>SURFACE</h4>
@@ -1392,20 +1405,30 @@ function modalSettings(tab) {
             <canvas width="30" height="24" data-mini="${t}"></canvas></button>`).join('')}</div></div>
         <div class="row"><label>Pawn style</label><div class="swatches" id="setPawns">
           ${PAWN_STYLES.map(t => `<button class="swatch ${S.pawn === t ? 'on' : ''}" data-b="${t}" title="${t}">&#9823;</button>`).join('')}</div></div>
-        <div class="row"><label>Pawn size</label>${seg('pawnSize', ['small', 'regular', 'large'], ['S', 'M', 'L'])}</div>
-        <div class="row"><label>Pawn shadow</label>${seg('pawnShadow', ['off', 'soft', 'deep'], ['Off', 'Soft', 'Deep'])}</div>
-        <div class="row"><label>Distinct shapes</label>${seg('distinctShapes', [true, false], ['On', 'Off'])}</div>
-        <div class="row"><label>Frame</label>${seg('frame', ['none', 'hairline', 'gilded', 'beveled'], ['None', 'Hairline', 'Gilded', 'Beveled'])}</div>
-        <div class="row"><label>Wall finish</label>${seg('wallFinish', ['flat', 'beveled', 'glossy', 'etched'], ['Flat', 'Beveled', 'Glossy', 'Etched'])}</div>
-        <div class="row"><label>Cell surface</label>${seg('cellSep', ['grooves', 'flat', 'inlaid'], ['Grooves', 'Flat', 'Inlaid'])}</div>
-        <div class="row"><label>Board scale</label>${seg('boardScale', [0.88, 0.94, 1], ['88%', '94%', '100%'])}</div>
+        <details class="advSettings"><summary>Advanced board appearance</summary><div class="advBody">
+          <div class="row"><label>Board texture</label>${seg('boardTexture', ['off', 'subtle', 'natural'], ['Off', 'Subtle', 'Natural'])}</div>
+          <div class="row"><label>Board contrast</label>${seg('boardContrast', ['soft', 'standard', 'strong'], ['Soft', 'Standard', 'Strong'])}</div>
+          <div class="row"><label>Pawn size</label>${seg('pawnSize', ['small', 'regular', 'large'], ['S', 'M', 'L'])}</div>
+          <div class="row"><label>Pawn shadow</label>${seg('pawnShadow', ['off', 'soft', 'deep'], ['Off', 'Soft', 'Deep'])}</div>
+          <div class="row"><label>Distinct shapes</label>${seg('distinctShapes', [true, false], ['On', 'Off'])}</div>
+          <div class="row"><label>Frame</label>${seg('frame', ['none', 'hairline', 'gilded', 'beveled'], ['None', 'Hairline', 'Gilded', 'Beveled'])}</div>
+          <div class="row"><label>Wall finish</label>${seg('wallFinish', ['flat', 'beveled', 'glossy', 'etched'], ['Flat', 'Soft relief', 'Glossy', 'Etched'])}</div>
+          <div class="row"><label>Wall profile</label>${seg('wallProfile', ['slim', 'standard', 'bold'], ['Slim', 'Standard', 'Bold'])}</div>
+          <div class="row"><label>Wall preview</label>${seg('wallPreview', ['subtle', 'normal', 'strong'], ['Subtle', 'Normal', 'Strong'])}</div>
+          <div class="row"><label>Cell surface</label>${seg('cellSep', ['grooves', 'flat', 'inlaid'], ['Grooves', 'Flat', 'Inlaid'])}</div>
+          <div class="row"><label>Board scale</label>${seg('boardScale', [0.88, 0.94, 1], ['88%', '94%', '100%'])}</div>
+        </div></details>
       </div>
       <div class="card"><h4>MARKS &amp; OVERLAYS</h4>
         <div class="row"><label>Coordinates</label>${seg('coords', ['off', 'edges', 'all'], ['Off', 'Edges', 'All cells'])}</div>
-        <div class="row"><label>Legal moves (dots)</label>${seg('dots', [true, false], ['On', 'Off'])}</div>
         <div class="row"><label>Shortest paths</label>${seg('paths', [false, true], ['Off', 'On'])}</div>
-        <div class="row"><label>Highlight last move</label>${seg('lastMove', [true, false], ['On', 'Off'])}</div>
         <div class="row"><label>Evaluation bar</label>${seg('evalBar', [true, false], ['On', 'Off'])}</div>
+        <details class="advSettings"><summary>Advanced markers</summary><div class="advBody">
+          <div class="row"><label>Legal moves</label>${seg('dots', [true, false], ['On', 'Off'])}</div>
+          <div class="row"><label>Move markers</label>${seg('moveMarkers', ['ring', 'dot', 'minimal'], ['Ring', 'Dot', 'Minimal'])}</div>
+          <div class="row"><label>Goal rows</label>${seg('goalRows', ['off', 'subtle', 'clear'], ['Off', 'Subtle', 'Clear'])}</div>
+          <div class="row"><label>Last move</label>${seg('lastMoveStyle', ['off', 'subtle', 'clear'], ['Off', 'Subtle', 'Clear'])}</div>
+        </div></details>
       </div>`,
     sound: `
       <div class="card"><h4>SOUND</h4>
@@ -1462,6 +1485,10 @@ function modalSettings(tab) {
 }
 function setOpt(key, val) {
   S[key] = val;
+  // Schema-v4 style controls and the legacy boolean stay bidirectionally
+  // compatible so old stored settings/tests/integrations keep their meaning.
+  if (key === 'lastMoveStyle') S.lastMove = val !== 'off';
+  if (key === 'lastMove') S.lastMoveStyle = val ? 'subtle' : 'off';
   S.preset = 'custom';
   saveSettings(); applySettings();
 }
@@ -1531,6 +1558,12 @@ function applySettings() {
   ds.ui = S.ui === 'auto' ? (matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark') : S.ui;
   ds.board = S.board; ds.pawn = S.pawn;
   ds.coords = S.coords;
+  ds.uiFont = S.uiFont || 'modern';
+  ds.boardTexture = S.boardTexture || 'subtle'; ds.boardContrast = S.boardContrast || 'standard';
+  ds.wallProfile = S.wallProfile || 'standard'; ds.wallPreview = S.wallPreview || 'normal';
+  ds.goalRows = S.goalRows || 'subtle'; ds.moveMarkers = S.moveMarkers || 'ring';
+  ds.lastMoveStyle = S.lastMoveStyle || 'subtle';
+  S.lastMove = ds.lastMoveStyle !== 'off';
   ds.frame = S.frame; ds.wallFinish = S.wallFinish; ds.cellSep = S.cellSep;
   ds.boardScale = String(S.boardScale);
   ds.pawnShadow = S.pawnShadow; ds.pawnSize = S.pawnSize;

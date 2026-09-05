@@ -313,6 +313,8 @@ def run_suite(failures, n_ok):
         page.wait_for_timeout(100)
         check("pawn style swatch applies", page.evaluate(
               "document.documentElement.dataset.pawn") == "beacon")
+        page.locator("#modalBox details.advSettings").first.locator("summary").click()
+        page.wait_for_timeout(100)
         page.click("#modalBox [data-set='frame'] [data-v='gilded']")
         page.wait_for_timeout(100)
         check("frame seg applies", page.evaluate(
@@ -322,6 +324,8 @@ def run_suite(failures, n_ok):
         page.wait_for_timeout(100)
         check("ui theme light", page.evaluate(
               "document.documentElement.dataset.ui") == "light")
+        page.locator("#modalBox details.advSettings").first.locator("summary").click()
+        page.wait_for_timeout(100)
         page.click("#modalBox [data-set='anim'] [data-v='off']")
         page.wait_for_timeout(100)
         check("animations off attr", page.evaluate(
