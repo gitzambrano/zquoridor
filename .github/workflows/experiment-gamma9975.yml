@@ -1,0 +1,99 @@
+name: experiment-gamma9975
+
+on:
+  push:
+    branches: [exp/bilateral-v2-gamma9975]
+    paths:
+      - .github/workflows/experiment-gamma9975.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  train-arena:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: exp/bilateral-v2-gamma9975
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install dependencies
+        run: |
+          python -m pip install --disable-pip-version-check numpy torch --index-url https://download.pytorch.org/whl/cpu
+          python -m pip install --disable-pip-version-check matplotlib
+      - name: Fetch comparison refs
+        run: git fetch origin '+refs/heads/*:refs/remotes/origin/*' --force
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: bilateral-teacher-*
+          path: data/selfplay/gamma9975
+          merge-multiple: true
+          github-token: ${{ github.token }}
+          repository: gitzambrano/zquoridor
+          run-id: 33992518366
+      - uses: actions/download-artifact@v4
+        with:
+          name: gen8-search-ci-completed
+          path: baseline
+          github-token: ${{ github.token }}
+          repository: gitzambrano/zquoridor
+          run-id: 33973129847
+      - name: Train
+        shell: bash
+        run: |
+          set -euo pipefail
+          python training/audit_selfplay.py data/selfplay/gamma9975 --fail-on-legacy
+          mapfile -t FILES < <(find data/selfplay/gamma9975 -type f -name '*.bin' | sort)
+          test ${#FILES[@]} -eq 10
+          VAL="${FILES[9]}"
+          SOURCES=$(python - <<'PY'
+          import glob,json
+          fs=sorted(glob.glob('data/selfplay/gamma9975/*.bin'))
+          print(json.dumps([{'path':f,'frac':1.0,'k':1.0} for f in fs[:-1]],separators=(',',':')))
+          PY
+          )
+          python training/train_nnue.py \
+            --fresh --data-sources "$SOURCES" --val-data "$VAL" \
+            --out data/nnue/candidates/gamma9975/nnue_weights.bin \
+            --ckpt-dir data/checkpoints/gamma9975 --plot-dir data/plots/gamma9975 \
+            --epochs 60 --batch-size 8192 --lr 3e-4 \
+            --wl-gamma 0.9975 --wall-poor-wl-weight 3.0 \
+            --policy-opening-plies 0 --monitor val_outcome \
+            | tee training.log
+      - name: Wandering and value diagnostics
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p bin results
+          g++ -std=c++17 -O3 -DNDEBUG -Isrc tests/wandering_race_suite.cpp -o bin/wandering_race_suite
+          g++ -std=c++17 -O3 -DNDEBUG -Isrc tools/diagnostics/probe_bilateral_value.cpp -o bin/probe_bilateral_value
+          ./bin/wandering_race_suite data/nnue/candidates/gamma9975/nnue_weights_int8.bin | tee results/wandering.txt
+          ./bin/probe_bilateral_value data/nnue/candidates/gamma9975/nnue_weights_int8.bin > results/value-probe.csv
+          python tools/diagnostics/analyze_bilateral_probe.py results/value-probe.csv | tee results/value-analysis.txt
+      - name: Arena vs Gen8 search baseline
+        shell: bash
+        run: |
+          set -o pipefail
+          BASE=$(find baseline -type f -path '*gen8-search-ci*' -name '*int8.bin' | head -1)
+          python tools/arena/run_arena.py \
+            --ref1 '' --ref2 'origin/fix/strong-selfplay-wandering' \
+            --games 1200 --time 20 --threads 4 --random-plies 4 \
+            --e1-nnue data/nnue/candidates/gamma9975/nnue_weights_int8.bin \
+            --e2-nnue "$BASE" \
+            | tee results/arena-vs-gen8.log
+      - uses: actions/upload-artifact@v4
+        with:
+          name: gamma9975-completed
+          path: |
+            data/nnue/candidates/gamma9975/*
+            data/checkpoints/gamma9975/*
+            data/plots/gamma9975/*
+            results/*
+            training.log
+          retention-days: 14
