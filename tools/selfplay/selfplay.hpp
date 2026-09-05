@@ -445,11 +445,11 @@ inline std::vector<TrainingSample> playOneGame(Negamax& engine0, Negamax& engine
         int mcTemperatureWindow = cfg.mcObviousPlies + cfg.mcTempDecayPlies;
         bool mcTemperaturePly = cfg.mcMode && ply < mcTemperatureWindow;
         {
-            AccumulatorQuant accMover = buildAccumulatorQuant(s, s.turn);
-            double probMoverWins = (double)nnueWinProbQuant(accMover);
+            AccPair evalPair = buildAccPairRoot(s, nullptr);
+            double probMoverWins = (double)nnueWinProbQuant(evalPair.acc[s.turn], evalPair.acc[1 - s.turn]);
             evalWhiteProb = (s.turn == 0) ? probMoverWins : (1.0 - probMoverWins);
             if (mcTemperaturePly) {
-                forwardPolicyQuant(accMover, policyOut);
+                forwardPolicyQuant(evalPair.acc[s.turn], policyOut);
             }
         }
 

@@ -231,9 +231,9 @@ struct NNUEWeights {
         if (!f) return false;
         for (auto& row : w1) std::fwrite(row.data(), sizeof(float), HIDDEN, f);
         std::fwrite(b1.data(), sizeof(float), HIDDEN, f);
-        for (auto& row : wv1_wl) std::fwrite(row.data(), sizeof(float), 32, f);
-        std::fwrite(bv1_wl.data(), sizeof(float), 32, f);
-        std::fwrite(wv2_wl.data(), sizeof(float), 32, f);
+        for (auto& row : wv1_wl) std::fwrite(row.data(), sizeof(float), VALUE_HIDDEN, f);
+        std::fwrite(bv1_wl.data(), sizeof(float), VALUE_HIDDEN, f);
+        std::fwrite(wv2_wl.data(), sizeof(float), VALUE_HIDDEN, f);
         std::fwrite(&bv2_wl, sizeof(float), 1, f);
         for (auto& row : wp) std::fwrite(row.data(), sizeof(float), HIDDEN, f);
         std::fwrite(bp.data(), sizeof(float), POLICY_OUT, f);

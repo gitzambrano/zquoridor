@@ -333,7 +333,9 @@ static constexpr uint16_t ARENA_EV_SCALE = 65535;
 template <typename Dummy = void>
 auto tryNnueWinProbE1(const qr_e1::State& s, int mover, int)
     -> decltype(qr_e1::nnueWinProbQuant(qr_e1::buildAccumulatorQuant(s, mover))) {
-    return qr_e1::nnueWinProbQuant(qr_e1::buildAccumulatorQuant(s, mover));
+    auto own = qr_e1::buildAccumulatorQuant(s, mover);
+    auto opp = qr_e1::buildAccumulatorQuant(s, 1 - mover);
+    return qr_e1::nnueWinProbQuant(own, opp);
 }
 inline float tryNnueWinProbE1(const qr_e1::State&, int, ...) { return 0.5f; }
 
