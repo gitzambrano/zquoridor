@@ -1,0 +1,84 @@
+name: antisym-v3-arena-rerun
+
+on:
+  push:
+    branches: [exp/antisym-value-v3]
+    paths:
+      - .github/workflows/antisym-v3-arena-rerun.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  arena:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: exp/antisym-value-v3
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: python -m pip install --disable-pip-version-check numpy
+      - name: Fetch all experiment refs
+        run: git fetch origin '+refs/heads/*:refs/remotes/origin/*' --force
+      - uses: actions/download-artifact@v4
+        with:
+          name: antisym-v3-completed
+          path: v3
+          github-token: ${{ github.token }}
+          repository: gitzambrano/zquoridor
+          run-id: 33993412820
+      - uses: actions/download-artifact@v4
+        with:
+          name: bilateral-v2-completed
+          path: v2
+          github-token: ${{ github.token }}
+          repository: gitzambrano/zquoridor
+          run-id: 33992518366
+      - uses: actions/download-artifact@v4
+        with:
+          name: gen8-search-ci-completed
+          path: baseline
+          github-token: ${{ github.token }}
+          repository: gitzambrano/zquoridor
+          run-id: 33973129847
+      - name: Locate weights
+        shell: bash
+        run: |
+          set -euo pipefail
+          V3=$(find v3 -type f -path '*antisym-v3*' -name '*int8.bin' | head -1)
+          V2=$(find v2 -type f -path '*bilateral-v2*' -name '*int8.bin' | head -1)
+          BASE=$(find baseline -type f -path '*gen8-search-ci*' -name '*int8.bin' | head -1)
+          test -n "$V3" && test -n "$V2" && test -n "$BASE"
+          echo "V3=$V3" >> "$GITHUB_ENV"
+          echo "V2=$V2" >> "$GITHUB_ENV"
+          echo "BASE=$BASE" >> "$GITHUB_ENV"
+      - name: Arena v3 vs Gen8 search baseline
+        shell: bash
+        run: |
+          set -o pipefail
+          mkdir -p results
+          python tools/arena/run_arena.py \
+            --ref1 '' --ref2 'origin/fix/strong-selfplay-wandering' \
+            --games 2000 --time 20 --threads 4 --random-plies 4 \
+            --e1-nnue "$V3" --e2-nnue "$BASE" \
+            | tee results/v3-vs-gen8.log
+      - name: Arena v3 vs bilateral v2
+        shell: bash
+        run: |
+          set -o pipefail
+          python tools/arena/run_arena.py \
+            --ref1 '' --ref2 'origin/exp/full-accumulator-v2' \
+            --games 1600 --time 20 --threads 4 --random-plies 4 \
+            --e1-nnue "$V3" --e2-nnue "$V2" \
+            | tee results/v3-vs-v2.log
+      - uses: actions/upload-artifact@v4
+        with:
+          name: antisym-v3-arena-rerun
+          path: results/*
+          retention-days: 14
