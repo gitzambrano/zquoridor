@@ -1,0 +1,53 @@
+name: antisym-value-v3-ci
+
+on:
+  push:
+    branches: [exp/antisym-value-v3]
+    paths:
+      - tools/dev/apply_antisym_value_v3.py
+      - tests/test_antisym_value_v3.cpp
+      - .github/workflows/antisym-value-v3-ci.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  implement:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: exp/antisym-value-v3
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Apply v3 architecture
+        run: python tools/dev/apply_antisym_value_v3.py
+      - name: Static and compile checks
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m py_compile training/train_nnue.py training/quantize_nnue.py tools/dev/apply_antisym_value_v3.py
+          grep -q 'VALUE_HIDDEN = 32' src/nnue.hpp
+          grep -q 'ab - ba' src/nnue.hpp
+          grep -q 'ordered(a, a_opp) - ordered(a_opp, a)' training/train_nnue.py
+          bash build/build_selfplay.sh
+          mkdir -p bin
+          g++ -std=c++17 -O3 -DNDEBUG -Isrc tests/test_bilateral_accumulator.cpp -o bin/test_bilateral_accumulator
+          g++ -std=c++17 -O3 -DNDEBUG -Isrc tests/test_antisym_value_v3.cpp -o bin/test_antisym_value_v3
+          ./bin/test_bilateral_accumulator
+          ./bin/test_antisym_value_v3
+      - name: Commit v3 source
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add src/nnue.hpp training/train_nnue.py training/quantize_nnue.py tools/selfplay/selfplay.hpp
+          if ! git diff --cached --quiet; then
+            git commit -m 'nnue: enforce antisymmetric bilateral value'
+            git push origin HEAD:exp/antisym-value-v3
+          fi
