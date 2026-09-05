@@ -1,0 +1,70 @@
+name: gen8-search-cpu-experiment
+
+on:
+  push:
+    branches:
+      - fix/strong-selfplay-wandering
+    paths:
+      - ".github/workflows/gen8-search-cpu-experiment.yml"
+
+jobs:
+  gen8-search-cpu-experiment:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install CPU training dependencies
+        run: |
+          python -m pip install --disable-pip-version-check numpy torch --index-url https://download.pytorch.org/whl/cpu
+
+      - name: Build self-play engine
+        run: bash build/build_selfplay.sh
+
+      - name: Run search-driven candidate cycle
+        run: |
+          python training/strong_cycle.py \
+            --generation gen8-search-ci \
+            --games 2000 \
+            --chunk-games 500 \
+            --time-ms 20 \
+            --threads 4 \
+            --focus-copies 2 \
+            --focus-max-fraction 0.10 \
+            --epochs 20 \
+            --lr 2e-5 \
+            --wl-gamma 0.99 \
+            --arena-games 300 \
+            --arena-time-ms 20 \
+            --arena-threads 4 \
+            --arena-random-plies 4
+
+      - name: Summarize generated artifacts
+        if: always()
+        run: |
+          echo 'Self-play:'
+          find data/selfplay/gen8-search-ci -maxdepth 1 -type f -name '*.bin' -printf '%f %s bytes\n' 2>/dev/null || true
+          echo 'Candidate:'
+          find data/nnue/candidates/gen8-search-ci -maxdepth 1 -type f -printf '%f %s bytes\n' 2>/dev/null || true
+          echo 'Logs:'
+          ls -lh data/logs/gen8-search-ci-* 2>/dev/null || true
+
+      - name: Upload experiment artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gen8-search-ci-experiment
+          if-no-files-found: warn
+          retention-days: 7
+          path: |
+            data/selfplay/gen8-search-ci/*.bin
+            data/selfplay/gen8-search-ci-focus/*.bin
+            data/nnue/candidates/gen8-search-ci/*.bin
+            data/nnue/champions/gen8-search-ci-*/*.bin
+            data/logs/gen8-search-ci-*.log
+            data/checkpoints/gen8-search-ci-candidate/train_config_*.json
