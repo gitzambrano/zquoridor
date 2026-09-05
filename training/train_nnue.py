@@ -335,7 +335,7 @@ WALLS_LEFT_BUCKETS = WALLS_PER_PLAYER + 1  # 11
 NUM_FEATURES = N * N + N * N + WS * WS * 2 + 2 * DIST_BUCKETS + 2 * WALLS_LEFT_BUCKETS  # 354
 HIDDEN = 256
 VALUE_INPUT = HIDDEN * 2
-VALUE_HIDDEN = 64
+VALUE_HIDDEN = 32
 POLICY_OUT = N * N + WS * WS * 2                                # 209
 # VALUE_SCALE (200.0) removida 2026-08: so era usada pra normalizar a loss
 # MSE da cabeca auxiliar (search_score/VALUE_SCALE), que nao existe mais --
@@ -376,8 +376,10 @@ class QuoridorNNUE(nn.Module):
     def forward(self, x: torch.Tensor, x_opp: torch.Tensor):
         a = screlu(self.fc1(x))
         a_opp = screlu(self.fc1(x_opp))
-        h_wl = clipped_relu(self.value1_wl(torch.cat((a, a_opp), dim=-1)))
-        value_wl = self.value2_wl(h_wl).squeeze(-1)
+        def ordered(lhs, rhs):
+            h = clipped_relu(self.value1_wl(torch.cat((lhs, rhs), dim=-1)))
+            return self.value2_wl(h).squeeze(-1)
+        value_wl = ordered(a, a_opp) - ordered(a_opp, a)
         policy_logits = self.policy(a)
         return value_wl, policy_logits
 

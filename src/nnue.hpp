@@ -72,7 +72,7 @@ inline int wallsLeftBucket(int n) {
 constexpr int NUM_FEATURES = N * N + N * N + WS * WS * 2 + 2 * DIST_BUCKETS + 2 * WALLS_LEFT_BUCKETS;  // 354
 constexpr int HIDDEN = 256;
 constexpr int VALUE_INPUT = HIDDEN * 2;
-constexpr int VALUE_HIDDEN = 64;
+constexpr int VALUE_HIDDEN = 32;
 constexpr int POLICY_OUT = N * N + WS * WS * 2;             // 81 destino peão + 128 muro = 209
 
 // Espelha a coordenada bruta do tabuleiro para a perspectiva do jogador 1
@@ -169,7 +169,8 @@ struct NNUEWeights {
     // camada 1 (acumulador): pesos por feature esparsa -> HIDDEN
     std::vector<std::array<float, HIDDEN>> w1;   // [NUM_FEATURES][HIDDEN]
     std::array<float, HIDDEN> b1{};
-    // Bilateral WL head: both perspective accumulators -> 64 -> 1.
+    // Antisymmetric bilateral WL scorer: shared F(own,opp), with
+    // V(own,opp)=F(own,opp)-F(opp,own). Exact zero-sum symmetry by construction.
     std::array<std::array<float, VALUE_HIDDEN>, VALUE_INPUT> wv1_wl;
     std::array<float, VALUE_HIDDEN> bv1_wl{};
     std::array<float, VALUE_HIDDEN> wv2_wl{};
@@ -350,7 +351,7 @@ inline float clippedRelu(float x) {
 // imitação de evalSimple foi removida 2026-08 -- ver nota em NNUEWeights
 // acima); é o logit de resultado (WL, sem empate) que a busca consome via
 // nnueEvalInt.
-inline float forwardValueWL(const Accumulator& own, const Accumulator& opp) {
+inline float forwardValueOrdered(const Accumulator& own, const Accumulator& opp) {
     std::array<float, VALUE_HIDDEN> h{};
     auto& W = weights();
     for (int i = 0; i < HIDDEN; i++) {
@@ -367,6 +368,10 @@ inline float forwardValueWL(const Accumulator& own, const Accumulator& opp) {
         out += hj * W.wv2_wl[j];
     }
     return out;
+}
+
+inline float forwardValueWL(const Accumulator& own, const Accumulator& opp) {
+    return forwardValueOrdered(own, opp) - forwardValueOrdered(opp, own);
 }
 
 // Compatibility helper for tools that probe one accumulator only. Production
@@ -790,18 +795,17 @@ inline uint8_t screluQuant(int32_t x, int32_t QA) {
 // bv2) é usado. Mantido como função livre (não template) pelos mesmos
 // motivos do par forwardValue*/forwardValue*Quant já discutidos no
 // restante do arquivo -- tipos explícitos nos pontos de chamada.
-inline float forwardValueHeadQuant(const AccumulatorQuant& own, const AccumulatorQuant& opp,
-                                    const std::array<std::array<int8_t, VALUE_HIDDEN>, VALUE_INPUT>& wv1,
-                                    const std::array<int32_t, VALUE_HIDDEN>& bv1,
-                                    const std::array<int8_t, VALUE_HIDDEN>& wv2,
-                                    int32_t bv2) {
+inline int64_t forwardValueOrderedQuantRaw(const AccumulatorQuant& own, const AccumulatorQuant& opp,
+                                             const std::array<std::array<int8_t, VALUE_HIDDEN>, VALUE_INPUT>& wv1,
+                                             const std::array<int32_t, VALUE_HIDDEN>& bv1,
+                                             const std::array<int8_t, VALUE_HIDDEN>& wv2,
+                                             int32_t bv2) {
     auto& W = weightsQuant();
     alignas(32) std::array<uint8_t, VALUE_INPUT> a{};
     for (int i = 0; i < HIDDEN; i++) {
         a[i] = screluQuant(own.v[i], W.QA);
         a[HIDDEN + i] = screluQuant(opp.v[i], W.QA);
     }
-
     std::array<int32_t, VALUE_HIDDEN> h{};
     const int8_t* wv1f = &wv1[0][0];
     for (int i = 0; i < VALUE_INPUT; i++) {
@@ -810,17 +814,26 @@ inline float forwardValueHeadQuant(const AccumulatorQuant& own, const Accumulato
         for (int j = 0; j < VALUE_HIDDEN; j++) h[j] += ai * (int32_t)row[j];
     }
     const int64_t QAQB = (int64_t)W.QA * (int64_t)W.QB;
-    std::array<int32_t, VALUE_HIDDEN> hj{};
+    int64_t out = bv2;
     for (int j = 0; j < VALUE_HIDDEN; j++) {
         int64_t hv = (int64_t)h[j] + (int64_t)bv1[j];
         if (hv < 0) hv = 0;
         if (hv > QAQB) hv = QAQB;
-        hj[j] = (int32_t)hv;
+        out += hv * (int64_t)wv2[j];
     }
-    int64_t out = bv2;
-    for (int j = 0; j < VALUE_HIDDEN; j++) out += (int64_t)hj[j] * (int64_t)wv2[j];
-    const int64_t denom = QAQB * (int64_t)W.QB;
-    return (float)((double)out / (double)denom);
+    return out;
+}
+
+inline float forwardValueHeadQuant(const AccumulatorQuant& own, const AccumulatorQuant& opp,
+                                    const std::array<std::array<int8_t, VALUE_HIDDEN>, VALUE_INPUT>& wv1,
+                                    const std::array<int32_t, VALUE_HIDDEN>& bv1,
+                                    const std::array<int8_t, VALUE_HIDDEN>& wv2,
+                                    int32_t bv2) {
+    auto& W = weightsQuant();
+    const int64_t ab = forwardValueOrderedQuantRaw(own, opp, wv1, bv1, wv2, bv2);
+    const int64_t ba = forwardValueOrderedQuantRaw(opp, own, wv1, bv1, wv2, bv2);
+    const int64_t denom = (int64_t)W.QA * (int64_t)W.QB * (int64_t)W.QB;
+    return (float)((double)(ab - ba) / (double)denom);
 }
 
 // forwardValueWLQuant é a única cabeça de valor quantizada -- a busca a
