@@ -14,7 +14,6 @@ permissions:
 
 jobs:
   implement-train-arena:
-    if: ${{ !contains(github.event.head_commit.message || '', 'train: add visit-policy targets') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 120
     steps:
@@ -102,17 +101,18 @@ jobs:
           s.build_focus_replay(train,out,2,0.10)
           print('validation', val)
           PY
-          python training/train_nnue.py \
-            --fresh \
-            --init-from data/baselines/gen8/nnue_weights.bin \
-            --data-sources "$(python - <<'PY'
+          SOURCES=$(python - <<'PY'
           import glob,json
           files=sorted(glob.glob('data/selfplay/gen10-visits/selfplay_*.bin'))
           src=[{'path':f,'frac':1.0,'k':1.0} for f in files[:-1]]
           src.append({'path':'data/selfplay/gen10-visits-focus/focus_000.bin','frac':1.0,'k':1.0})
           print(json.dumps(src,separators=(',',':')))
           PY
-          )" \
+          )
+          python training/train_nnue.py \
+            --fresh \
+            --init-from data/baselines/gen8/nnue_weights.bin \
+            --data-sources "$SOURCES" \
             --val-data data/selfplay/gen10-visits/selfplay_004.bin \
             --out data/nnue/candidates/gen10-visits/nnue_weights.bin \
             --ckpt-dir data/checkpoints/gen10-visits \
