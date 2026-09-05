@@ -1,0 +1,407 @@
+name: engine-promotion-loop
+
+on:
+  push:
+    branches: [fix/strong-selfplay-wandering]
+    paths:
+      - .github/workflows/engine-promotion-loop.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: read
+
+jobs:
+  confirm-gen10:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 75
+    outputs:
+      promote: ${{ steps.gate.outputs.promote }}
+      elo: ${{ steps.gate.outputs.elo }}
+      margin: ${{ steps.gate.outputs.margin }}
+      wander: ${{ steps.gate.outputs.wander }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install numpy
+        run: python -m pip install --disable-pip-version-check numpy
+      - name: Restore Gen10 candidate
+        uses: actions/download-artifact@v4
+        with:
+          name: gen10-policy-visits-experiment
+          path: gen10
+          github-token: ${{ github.token }}
+          repository: gitzambrano/zquoridor
+          run-id: 33986301109
+      - name: Restore Gen8 baseline
+        uses: actions/download-artifact@v4
+        with:
+          name: gen8-search-ci-completed
+          path: gen8
+          github-token: ${{ github.token }}
+          repository: gitzambrano/zquoridor
+          run-id: 33973129847
+      - name: Locate weights
+        run: |
+          set -euo pipefail
+          find gen10 -type f -name 'nnue_weights_int8.bin' -print
+          test -s gen10/nnue/candidates/gen10-visits/nnue_weights_int8.bin
+          test -s gen10/nnue/candidates/gen10-visits/nnue_weights.bin
+          test -s gen8/nnue/candidates/gen8-search-ci/nnue_weights_int8.bin
+      - name: Wandering regression
+        id: wander
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p bin data/confirm
+          g++ -std=c++17 -O3 -DNDEBUG -Isrc tests/repro_wandering.cpp -o bin/repro_wandering
+          ./bin/repro_wandering gen10/nnue/candidates/gen10-visits/nnue_weights_int8.bin | tee data/confirm/gen10-wandering.log
+          python - <<'PY'
+          from pathlib import Path
+          p=Path('data/confirm/gen10-wandering.log').read_text()
+          start=p.index('=== production MCAB NNUE, 500ms/move ===')
+          tail=p[start:]
+          end=tail.find('\n===', 4)
+          sec=tail if end < 0 else tail[:end]
+          ok='engine chegou! winner=0' in sec
+          moves=[line for line in sec.splitlines() if line.strip().startswith('mv')]
+          print('production MCAB moves:', len(moves), 'reached_goal:', ok)
+          if not ok:
+              raise SystemExit('wandering regression: production MCAB did not reach the goal in the scripted horizon')
+          PY
+      - name: Confirm Gen10 vs Gen8 over 3000 games
+        run: |
+          set -o pipefail
+          python tools/arena/run_arena.py \
+            --ref1 '' --ref2 '' \
+            --games 3000 --time 20 --threads 4 --random-plies 4 \
+            --e1-nnue gen10/nnue/candidates/gen10-visits/nnue_weights_int8.bin \
+            --e2-nnue gen8/nnue/candidates/gen8-search-ci/nnue_weights_int8.bin \
+            | tee data/confirm/gen10-vs-gen8-3000.log
+      - name: Statistical gate
+        id: gate
+        shell: bash
+        run: |
+          python - <<'PY' >> "$GITHUB_OUTPUT"
+          import re
+          from pathlib import Path
+          text=Path('data/confirm/gen10-vs-gen8-3000.log').read_text()
+          m=re.search(r'Diferenca Elo Engine 1 vs 2\s*:\s*([+-]?\d+(?:\.\d+)?)\s*\(Margem ±([0-9.]+)\)', text)
+          if not m: raise SystemExit('cannot parse Elo')
+          elo=float(m.group(1)); margin=float(m.group(2))
+          promote=elo-margin > 0.0
+          print(f'elo={elo}')
+          print(f'margin={margin}')
+          print('wander=true')
+          print(f'promote={str(promote).lower()}')
+          print(f'Gen10 gate: Elo {elo:+.1f} ±{margin:.1f}; lower={elo-margin:+.1f}; promote={promote}')
+          PY
+      - name: Upload confirmation logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gen10-confirmation
+          retention-days: 7
+          path: data/confirm/*
+
+  promote-gen10:
+    needs: confirm-gen10
+    if: needs.confirm-gen10.outputs.promote == 'true'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/strong-selfplay-wandering
+          fetch-depth: 0
+      - name: Restore Gen10 candidate
+        uses: actions/download-artifact@v4
+        with:
+          name: gen10-policy-visits-experiment
+          path: gen10
+          github-token: ${{ github.token }}
+          repository: gitzambrano/zquoridor
+          run-id: 33986301109
+      - name: Promote proven Gen10 weights
+        run: |
+          set -euo pipefail
+          cp gen10/nnue/candidates/gen10-visits/nnue_weights.bin data/nnue/nnue_weights.bin
+          cp gen10/nnue/candidates/gen10-visits/nnue_weights_int8.bin data/nnue/nnue_weights_int8.bin
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add data/nnue/nnue_weights.bin data/nnue/nnue_weights_int8.bin
+          git commit -m "nnue: promote Gen10 after Elo and wandering gates"
+          git push origin HEAD:fix/strong-selfplay-wandering
+
+  selfplay-gen11:
+    needs: confirm-gen10
+    if: needs.confirm-gen10.outputs.promote != 'true'
+    name: gen11-selfplay-${{ matrix.part }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        part: [0, 1, 2, 3]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install numpy
+        run: python -m pip install --disable-pip-version-check numpy
+      - name: Restore Gen10 bootstrap
+        uses: actions/download-artifact@v4
+        with:
+          name: gen10-policy-visits-experiment
+          path: gen10
+          github-token: ${{ github.token }}
+          repository: gitzambrano/zquoridor
+          run-id: 33986301109
+      - name: Build with Gen10 bootstrap
+        run: |
+          set -euo pipefail
+          cp gen10/nnue/candidates/gen10-visits/nnue_weights.bin data/nnue/nnue_weights.bin
+          cp gen10/nnue/candidates/gen10-visits/nnue_weights_int8.bin data/nnue/nnue_weights_int8.bin
+          bash build/build_selfplay.sh
+      - name: Generate 5000 V3 search-driven games
+        run: |
+          set -euo pipefail
+          python tools/selfplay/run_selfplay.py \
+            --games 5000 --chunk-games 1250 --time-ms 20 --threads 4 \
+            --seed $((20261000 + ${{ matrix.part }} * 100003)) \
+            --mode montecarlo --mc-obvious-plies 0 --mc-temp-decay-plies 0 \
+            --epsilon-midgame 0.01 \
+            --out "data/selfplay/gen11-part-${{ matrix.part }}/selfplay_{shard:03d}.bin"
+      - name: Validate V3 data
+        run: |
+          set -euo pipefail
+          mkdir -p upload
+          python - <<'PY'
+          import glob, os, numpy as np
+          from training.read_selfplay import load_selfplay, SAMPLE_DTYPE
+          files=sorted(glob.glob('data/selfplay/gen11-part-${{ matrix.part }}/selfplay_*.bin'))
+          assert len(files)==4, files
+          assert SAMPLE_DTYPE.itemsize==64
+          n=s=0
+          for f in files:
+              a=load_selfplay(f); n+=len(a); s+=int((a['policy_top_prob'][:,0]>0).sum())
+              sums=a['policy_top_prob'].astype(np.uint64).sum(axis=1)
+              assert np.all((sums==0)|(sums==65535))
+          print('positions',n,'searched',s,'fraction',s/max(1,n))
+          assert s>0.95*n
+          PY
+          i=0
+          for f in data/selfplay/gen11-part-${{ matrix.part }}/selfplay_*.bin; do
+            printf -v dst 'upload/selfplay_%02d_%03d.bin' '${{ matrix.part }}' "$i"
+            cp "$f" "$dst"; i=$((i+1))
+          done
+          test "$i" -eq 4
+      - uses: actions/upload-artifact@v4
+        with:
+          name: gen11-selfplay-${{ matrix.part }}
+          path: upload/*.bin
+          retention-days: 7
+
+  train-gen11:
+    needs: [confirm-gen10, selfplay-gen11]
+    if: needs.confirm-gen10.outputs.promote != 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    outputs:
+      promote: ${{ steps.final_gate.outputs.promote }}
+      candidate: ${{ steps.final_gate.outputs.candidate }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install training dependencies
+        run: |
+          python -m pip install --disable-pip-version-check numpy torch --index-url https://download.pytorch.org/whl/cpu
+          python -m pip install --disable-pip-version-check matplotlib
+      - name: Restore Gen10 bootstrap
+        uses: actions/download-artifact@v4
+        with:
+          name: gen10-policy-visits-experiment
+          path: gen10
+          github-token: ${{ github.token }}
+          repository: gitzambrano/zquoridor
+          run-id: 33986301109
+      - name: Restore Gen8 baseline
+        uses: actions/download-artifact@v4
+        with:
+          name: gen8-search-ci-completed
+          path: gen8
+          github-token: ${{ github.token }}
+          repository: gitzambrano/zquoridor
+          run-id: 33973129847
+      - name: Restore 20000 Gen11 games
+        uses: actions/download-artifact@v4
+        with:
+          pattern: gen11-selfplay-*
+          path: data/selfplay/gen11-search-20k
+          merge-multiple: true
+      - name: Prepare dataset and baselines
+        run: |
+          set -euo pipefail
+          test "$(find data/selfplay/gen11-search-20k -maxdepth 1 -name 'selfplay_*.bin' | wc -l)" -eq 16
+          mkdir -p data/baselines/gen7 data/baselines/gen8 data/baselines/gen10 data/selfplay/gen11-focus
+          cp data/nnue/nnue_weights.bin data/baselines/gen7/nnue_weights.bin
+          cp data/nnue/nnue_weights_int8.bin data/baselines/gen7/nnue_weights_int8.bin
+          cp gen8/nnue/candidates/gen8-search-ci/nnue_weights.bin data/baselines/gen8/nnue_weights.bin
+          cp gen8/nnue/candidates/gen8-search-ci/nnue_weights_int8.bin data/baselines/gen8/nnue_weights_int8.bin
+          cp gen10/nnue/candidates/gen10-visits/nnue_weights.bin data/baselines/gen10/nnue_weights.bin
+          cp gen10/nnue/candidates/gen10-visits/nnue_weights_int8.bin data/baselines/gen10/nnue_weights_int8.bin
+          python - <<'PY'
+          from pathlib import Path
+          import glob
+          import training.strong_cycle as s
+          shards=sorted(glob.glob('data/selfplay/gen11-search-20k/selfplay_*.bin'))
+          s.build_focus_replay(shards[:-1], Path('data/selfplay/gen11-focus/focus_000.bin'), 2, 0.10)
+          print('train shards',len(shards)-1,'validation',shards[-1])
+          PY
+          bash build/build_selfplay.sh
+      - name: Train three Gen11 candidates
+        shell: bash
+        run: |
+          set -euo pipefail
+          SOURCES=$(python - <<'PY'
+          import glob,json
+          files=sorted(glob.glob('data/selfplay/gen11-search-20k/selfplay_*.bin'))
+          src=[{'path':f,'frac':1.0,'k':1.0} for f in files[:-1]]
+          src.append({'path':'data/selfplay/gen11-focus/focus_000.bin','frac':1.0,'k':1.0})
+          print(json.dumps(src,separators=(',',':')))
+          PY
+          )
+          VAL=$(find data/selfplay/gen11-search-20k -maxdepth 1 -name 'selfplay_*.bin' | sort | tail -1)
+          train_one () {
+            name="$1"; wall="$2"; gamma="$3"; lr="$4"
+            python training/train_nnue.py \
+              --fresh --init-from data/baselines/gen10/nnue_weights.bin \
+              --data-sources "$SOURCES" --val-data "$VAL" \
+              --out "data/nnue/candidates/$name/nnue_weights.bin" \
+              --ckpt-dir "data/checkpoints/$name" --plot-dir "data/plots/$name" \
+              --epochs 40 --batch-size 16384 --lr "$lr" \
+              --wl-gamma "$gamma" --wall-poor-wl-weight "$wall" \
+              --policy-opening-plies 0 --monitor val_outcome
+          }
+          train_one gen11-a 1.5 0.997 1e-5
+          train_one gen11-b 2.0 0.995 1e-5
+          train_one gen11-c 3.0 0.997 7e-6
+      - name: Shortlist candidates against Gen10
+        run: |
+          set -euo pipefail
+          mkdir -p data/gen11-logs
+          for c in gen11-a gen11-b gen11-c; do
+            python tools/arena/run_arena.py \
+              --ref1 '' --ref2 '' --games 600 --time 20 --threads 4 --random-plies 4 \
+              --e1-nnue "data/nnue/candidates/$c/nnue_weights_int8.bin" \
+              --e2-nnue data/baselines/gen10/nnue_weights_int8.bin \
+              | tee "data/gen11-logs/$c-vs-gen10.log"
+          done
+      - name: Select best candidate
+        id: select
+        run: |
+          python - <<'PY' >> "$GITHUB_OUTPUT"
+          import re
+          from pathlib import Path
+          best=None
+          for c in ('gen11-a','gen11-b','gen11-c'):
+              t=Path(f'data/gen11-logs/{c}-vs-gen10.log').read_text()
+              m=re.search(r'Diferenca Elo Engine 1 vs 2\s*:\s*([+-]?\d+(?:\.\d+)?)\s*\(Margem ±([0-9.]+)\)',t)
+              if not m: raise SystemExit(f'cannot parse {c}')
+              elo=float(m.group(1)); margin=float(m.group(2))
+              score=elo-margin
+              print(f'{c}: {elo:+.1f} ±{margin:.1f}, lower={score:+.1f}', file=__import__('sys').stderr)
+              if best is None or score>best[0]: best=(score,elo,c)
+          print(f'candidate={best[2]}')
+          PY
+      - name: Wandering gate for selected candidate
+        run: |
+          set -euo pipefail
+          g++ -std=c++17 -O3 -DNDEBUG -Isrc tests/repro_wandering.cpp -o bin/repro_wandering
+          ./bin/repro_wandering "data/nnue/candidates/${{ steps.select.outputs.candidate }}/nnue_weights_int8.bin" | tee data/gen11-logs/wandering.log
+          python - <<'PY'
+          from pathlib import Path
+          p=Path('data/gen11-logs/wandering.log').read_text()
+          start=p.index('=== production MCAB NNUE, 500ms/move ===')
+          sec=p[start:]
+          end=sec.find('\n===',4)
+          if end>=0: sec=sec[:end]
+          if 'engine chegou! winner=0' not in sec:
+              raise SystemExit('selected candidate failed wandering gate')
+          PY
+      - name: Long arena selected candidate vs official Gen7
+        run: |
+          set -o pipefail
+          python tools/arena/run_arena.py \
+            --ref1 '' --ref2 '' --games 2500 --time 20 --threads 4 --random-plies 4 \
+            --e1-nnue "data/nnue/candidates/${{ steps.select.outputs.candidate }}/nnue_weights_int8.bin" \
+            --e2-nnue data/baselines/gen7/nnue_weights_int8.bin \
+            | tee data/gen11-logs/final-vs-gen7.log
+      - name: Cross-check selected candidate vs Gen8
+        run: |
+          set -o pipefail
+          python tools/arena/run_arena.py \
+            --ref1 '' --ref2 '' --games 1200 --time 20 --threads 4 --random-plies 4 \
+            --e1-nnue "data/nnue/candidates/${{ steps.select.outputs.candidate }}/nnue_weights_int8.bin" \
+            --e2-nnue data/baselines/gen8/nnue_weights_int8.bin \
+            | tee data/gen11-logs/final-vs-gen8.log
+      - name: Final statistical gate
+        id: final_gate
+        run: |
+          CAND='${{ steps.select.outputs.candidate }}' python - <<'PY' >> "$GITHUB_OUTPUT"
+          import os,re
+          from pathlib import Path
+          def parse(path):
+              t=Path(path).read_text(); m=re.search(r'Diferenca Elo Engine 1 vs 2\s*:\s*([+-]?\d+(?:\.\d+)?)\s*\(Margem ±([0-9.]+)\)',t)
+              if not m: raise SystemExit('cannot parse '+path)
+              return float(m.group(1)),float(m.group(2))
+          e7,m7=parse('data/gen11-logs/final-vs-gen7.log')
+          e8,m8=parse('data/gen11-logs/final-vs-gen8.log')
+          # Must be statistically stronger than official Gen7 and not show a material regression versus Gen8.
+          promote=(e7-m7>0.0) and (e8>-5.0)
+          print('candidate='+os.environ['CAND'])
+          print('promote='+str(promote).lower())
+          print(f'Gen7: {e7:+.1f} ±{m7:.1f}; Gen8: {e8:+.1f} ±{m8:.1f}; promote={promote}', file=__import__('sys').stderr)
+          PY
+      - name: Upload Gen11 experiment
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gen11-promotion-experiment
+          retention-days: 7
+          path: |
+            data/nnue/candidates/gen11-*/*.bin
+            data/gen11-logs/*
+            data/plots/gen11-*/*
+
+  promote-gen11:
+    needs: train-gen11
+    if: needs.train-gen11.outputs.promote == 'true'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/strong-selfplay-wandering
+          fetch-depth: 0
+      - name: Restore trained candidates
+        uses: actions/download-artifact@v4
+        with:
+          name: gen11-promotion-experiment
+          path: gen11
+      - name: Promote proven Gen11 weights
+        run: |
+          set -euo pipefail
+          C='${{ needs.train-gen11.outputs.candidate }}'
+          test -s "gen11/nnue/candidates/$C/nnue_weights.bin"
+          test -s "gen11/nnue/candidates/$C/nnue_weights_int8.bin"
+          cp "gen11/nnue/candidates/$C/nnue_weights.bin" data/nnue/nnue_weights.bin
+          cp "gen11/nnue/candidates/$C/nnue_weights_int8.bin" data/nnue/nnue_weights_int8.bin
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add data/nnue/nnue_weights.bin data/nnue/nnue_weights_int8.bin
+          git commit -m "nnue: promote $C after Elo and wandering gates"
+          git push origin HEAD:fix/strong-selfplay-wandering

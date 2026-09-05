@@ -1,0 +1,68 @@
+name: gen8-search-arena-1000
+
+on:
+  push:
+    branches:
+      - fix/strong-selfplay-wandering
+    paths:
+      - ".github/workflows/gen8-search-arena-1000.yml"
+
+jobs:
+  arena-1000:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install numpy
+        run: python -m pip install --disable-pip-version-check numpy
+
+      - name: Restore trained candidate and champion
+        uses: actions/download-artifact@v4
+        with:
+          name: gen8-search-ci-completed
+          path: data
+          github-token: ${{ github.token }}
+          repository: gitzambrano/zquoridor
+          run-id: 33973129847
+
+      - name: Locate weights
+        id: weights
+        shell: bash
+        run: |
+          CAND="data/nnue/candidates/gen8-search-ci/nnue_weights_int8.bin"
+          CHAMP="$(find data/nnue/champions -path '*gen8-search-ci-*' -name nnue_weights_int8.bin | head -n1)"
+          test -s "$CAND"
+          test -s "$CHAMP"
+          echo "candidate=$CAND" >> "$GITHUB_OUTPUT"
+          echo "champion=$CHAMP" >> "$GITHUB_OUTPUT"
+          echo "candidate: $CAND"
+          echo "champion: $CHAMP"
+
+      - name: Run 1000-game confirmation arena
+        run: |
+          python tools/arena/run_arena.py \
+            --ref1 "" \
+            --ref2 "" \
+            --games 1000 \
+            --time 20 \
+            --threads 4 \
+            --random-plies 4 \
+            --e1-nnue "${{ steps.weights.outputs.candidate }}" \
+            --e2-nnue "${{ steps.weights.outputs.champion }}" \
+            | tee data/gen8-search-arena-1000.log
+
+      - name: Upload arena log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gen8-search-arena-1000
+          retention-days: 7
+          path: |
+            data/gen8-search-arena-1000.log
+            data/arena/arena_LOCAL_LOCAL_1000_*.bin

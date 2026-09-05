@@ -1,4 +1,4 @@
-﻿// arena.cpp -- Arena de verdade entre DUAS engines distintas.
+// arena.cpp -- Arena de verdade entre DUAS engines distintas.
 //
 // Por que este arquivo substituiu a versao antiga de arena.cpp (guardada
 // em teste/arena_singleengine_old.cpp): a versao antiga compilava UM Ãºnico binÃ¡rio (a partir sÃ³ do ref1) e
@@ -305,9 +305,11 @@ struct TrainingSample {
     uint8_t  mover;         // 0/1 -- ver nota completa em selfplay.hpp
     int16_t  ownCatTotal;   // soma do calor de corredor (cat.hpp) do mover -- ver nota em selfplay.hpp
     int16_t  oppCatTotal;
+    uint16_t policyTopIdx[8];
+    uint16_t policyTopProb[8];
 };
 #pragma pack(pop)
-static_assert(sizeof(TrainingSample) == 32, "TrainingSample precisa ficar packed");
+static_assert(sizeof(TrainingSample) == 64, "TrainingSample must stay packed");
 
 static inline qr_e2::Move toE2(const qr_e1::Move& m) {
     qr_e2::Move r; r.isWall = m.isWall; r.a = m.a; r.b = m.b; r.c = m.c; return r;

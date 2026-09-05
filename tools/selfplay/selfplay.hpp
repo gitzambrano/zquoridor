@@ -136,10 +136,12 @@ struct TrainingSample {
     // 16200, bem abaixo de 32767) sem overflow nem precisar de clamp.
     int16_t  ownCatTotal;   // soma do calor de corredor do mover (perspectiva própria, já natural -- sem espelho a fazer: é escalar)
     int16_t  oppCatTotal;   // soma do calor de corredor do oponente
+    uint16_t policyTopIdx[8];   // top-8 policy indices by MCAB root visits, mirrored
+    uint16_t policyTopProb[8];  // top-8 visit probabilities, normalized to sum 65535
 };
 #pragma pack(pop)
-static_assert(sizeof(TrainingSample) == 32,
-    "TrainingSample precisa ficar packed/sem padding -- o layout é lido direto por numpy no treino");
+static_assert(sizeof(TrainingSample) == 64,
+    "TrainingSample must stay packed; Python reads the 64-byte layout directly");
 
 struct SelfPlayConfig {
     int numGames = 1000;
@@ -513,7 +515,7 @@ inline std::vector<TrainingSample> playOneGame(Negamax& engine0, Negamax& engine
             }
         }
 
-        TrainingSample rec;
+        TrainingSample rec{};
         int mover = s.turn, opp = 1 - s.turn;
         // Gravar já espelhado (ver nota em TrainingSample acima e em
         // mirroredPawnCell/mirrorWallBitboard/mirrorMoveForPerspective,
@@ -531,6 +533,36 @@ inline std::vector<TrainingSample> playOneGame(Negamax& engine0, Negamax& engine
         rec.evalNNUE = (uint16_t)std::lround(std::max(0.0, std::min(1.0, evalWhiteProb)) * (double)EV_SCALE);
         rec.gameResult = 0;  // preenchido abaixo, depois que a partida terminar
         rec.policyTarget = moveToPolicyIndex(mirrorMoveForPerspective(chosen, mover));
+        // Preserve the information produced by the MCAB teacher instead of
+        // collapsing ~20k simulations to one one-hot move label. A stale tree
+        // is rejected by hash, which also masks epsilon/shallow and exact
+        // no-wall fallback plies from the visit-policy loss.
+        if (cfg.mcabParams.enabled) {
+            const auto* rootNode = mcabRunner.search.rootNodeForInspection();
+            if (rootNode && rootNode->expanded && rootNode->state.hash == s.hash) {
+                struct VisitEdge { size_t edge; float visits; };
+                std::vector<VisitEdge> ranked;
+                size_t nm = std::min(rootNode->moves.size(), rootNode->N.size());
+                ranked.reserve(nm);
+                for (size_t i = 0; i < nm; ++i)
+                    if (rootNode->N[i] > 0.f) ranked.push_back({i, rootNode->N[i]});
+                std::stable_sort(ranked.begin(), ranked.end(),
+                    [](const VisitEdge& a, const VisitEdge& b) { return a.visits > b.visits; });
+                if (ranked.size() > 8) ranked.resize(8);
+                double sumVisits = 0.0;
+                for (const auto& e : ranked) sumVisits += (double)e.visits;
+                uint32_t assigned = 0;
+                for (size_t j = 0; j < ranked.size() && sumVisits > 0.0; ++j) {
+                    const Move& vm = rootNode->moves[ranked[j].edge];
+                    rec.policyTopIdx[j] = moveToPolicyIndex(mirrorMoveForPerspective(vm, mover));
+                    uint16_t q = (uint16_t)std::floor(65535.0 * ranked[j].visits / sumVisits);
+                    rec.policyTopProb[j] = q;
+                    assigned += q;
+                }
+                if (!ranked.empty() && sumVisits > 0.0)
+                    rec.policyTopProb[0] = (uint16_t)(rec.policyTopProb[0] + (65535u - assigned));
+            }
+        }
         rec.ownDist = (uint8_t)std::min(255, shortestPathLen(s.wallsH, s.wallsV, s.pawn[mover], mover));
         rec.oppDist = (uint8_t)std::min(255, shortestPathLen(s.wallsH, s.wallsV, s.pawn[opp], opp));
         rec.mover = (uint8_t)mover;

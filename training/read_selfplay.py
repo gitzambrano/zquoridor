@@ -73,7 +73,7 @@ SAMPLE_DTYPE_LEGACY = np.dtype([
 assert SAMPLE_DTYPE_LEGACY.itemsize == 27
 
 # --- formato atual (32 bytes/amostra, 2026-08+) ------------------------------
-SAMPLE_DTYPE = np.dtype([
+SAMPLE_DTYPE_V2 = np.dtype([
     ("own_pawn",       "<u1"),   # 0..80, já espelhado
     ("opp_pawn",       "<u1"),   # 0..80, já espelhado
     ("walls_h",        "<u8"),   # bitboard 64 bits, já espelhado
@@ -97,7 +97,15 @@ SAMPLE_DTYPE = np.dtype([
     ("opp_cat_total",  "<i2"),   # candidato a feature futura, NÃO usado em to_dense_features/
                                   # to_chunk_tensors ainda (ver plano-additional.md).
 ])
-assert SAMPLE_DTYPE.itemsize == 32
+assert SAMPLE_DTYPE_V2.itemsize == 32
+
+
+# --- formato V3 (64 bytes/amostra): V2 + top-8 MCAB visit policy -----------
+SAMPLE_DTYPE = np.dtype(SAMPLE_DTYPE_V2.descr + [
+    ("policy_top_idx",  "<u2", (8,)),
+    ("policy_top_prob", "<u2", (8,)),
+])
+assert SAMPLE_DTYPE.itemsize == 64
 
 # Campos comuns entre SAMPLE_DTYPE_LEGACY e SAMPLE_DTYPE (mesmos nomes, mesmos
 # offsets -- inclui "nnue_eval", que em ambos os dtypes ocupa os mesmos 2
@@ -116,6 +124,14 @@ def _upcast_legacy(arr27: np.ndarray) -> np.ndarray:
     out = np.zeros(len(arr27), dtype=SAMPLE_DTYPE)
     for field in _LEGACY_COMMON_FIELDS:
         out[field] = arr27[field]
+    return out
+
+
+def _upcast_v2(arr32: np.ndarray) -> np.ndarray:
+    """Upcast the 32-byte canonical format to the 64-byte V3 layout."""
+    out = np.zeros(len(arr32), dtype=SAMPLE_DTYPE)
+    for field in SAMPLE_DTYPE_V2.names:
+        out[field] = arr32[field]
     return out
 
 # Bucket one-hot da distancia BFS -- mesma constante/semantica de
@@ -211,92 +227,61 @@ def plies_remaining(arr: np.ndarray) -> np.ndarray:
     return (ends[game_id] - np.arange(n, dtype=np.int64)).astype(np.int32)
 
 
-def _detect_format_by_size(size: int):
-    """Devolve (dtype, itemsize, ambig) para um arquivo de `size` bytes.
-    `ambig=True` quando o tamanho e divisivel por ambos 27 e 32 (multiplo
-    de mmc(27,32)=864) e a leitura do conteudo e necessaria para desempatar."""
-    ok27 = size % 27 == 0
-    ok32 = size % 32 == 0
-    if ok27 and ok32:
-        return None, None, True   # ambiguo: precisa inspecionar conteudo
-    if ok27:
-        return SAMPLE_DTYPE_LEGACY, 27, False
-    if ok32:
-        return SAMPLE_DTYPE, 32, False
-    # Tamanho nao divisivel por nenhum: usa 32 como fallback (o caller ja
-    # filtrou arquivos vazios/muito pequenos em expand_data_paths)
-    return SAMPLE_DTYPE, 32, False
+def _valid_probe(arr, v3=False):
+    if len(arr) == 0:
+        return False
+    if int(arr["own_pawn"].max()) > 80 or int(arr["policy_target"].max()) > 208:
+        return False
+    if not v3:
+        return True
+    probs = arr["policy_top_prob"].astype(np.uint64)
+    sums = probs.sum(axis=1)
+    if not np.all((sums == 0) | (sums == 65535)):
+        return False
+    idx = arr["policy_top_idx"]
+    return not np.any((probs > 0) & (idx > 208))
 
 
-def _sniff_format(path: str, size: int) -> tuple:
-    """Para arquivos divisiveis por ambos 27 e 32 (ambiguos), amostra os
-    primeiros min(N, 100) registros em cada interpretacao e escolhe o formato
-    cujos campos ficam dentro do range valido (own_pawn 0..80, policy 0..208).
-    Se ambas passam ou ambas falham, prefere 27 (legado) como conservador --
-    jamais descarta amostras validas silenciosamente."""
-    n_probe = min(size // 32, 100)  # 32 >= 27, entao cabe em ambos
-    if n_probe == 0:
-        return SAMPLE_DTYPE_LEGACY, 27  # arquivo pequeno demais pra amostrar
-
-    probe32 = np.memmap(path, dtype=SAMPLE_DTYPE,        mode="r", shape=(size // 32,))[:n_probe]
-    probe27 = np.memmap(path, dtype=SAMPLE_DTYPE_LEGACY, mode="r", shape=(size // 27,))[:n_probe]
-
-    ok32 = (int(probe32["policy_target"].max()) <= 208 and int(probe32["own_pawn"].max()) <= 80)
-    ok27 = (int(probe27["policy_target"].max()) <= 208 and int(probe27["own_pawn"].max()) <= 80)
-
-    if ok32 and not ok27:
-        return SAMPLE_DTYPE, 32
-    # Nos demais casos (so 27 ok, nenhum ok, ou ambos ok) usa legado --
-    # e a escolha conservadora: se o arquivo for realmente novo e esse
-    # caminho nunca deveria acontecer (mmc=864 e raro E arquivo novo=32-byte).
-    return SAMPLE_DTYPE_LEGACY, 27
+def _detect_format(path: str):
+    size = os.path.getsize(path)
+    candidates = []
+    if size % 64 == 0:
+        candidates.append((SAMPLE_DTYPE, 64, True))
+    if size % 32 == 0:
+        candidates.append((SAMPLE_DTYPE_V2, 32, False))
+    if size % 27 == 0:
+        candidates.append((SAMPLE_DTYPE_LEGACY, 27, False))
+    for dtype, itemsize, is_v3 in candidates:
+        n = size // itemsize
+        if n == 0:
+            continue
+        probe = np.memmap(path, dtype=dtype, mode="r", shape=(n,))[:min(n, 64)]
+        if _valid_probe(probe, is_v3):
+            return dtype, itemsize
+    raise ValueError(f"self-play file has no supported 27/32/64-byte layout: {path}")
 
 
 def load_selfplay(path: str, quiet: bool = False) -> np.ndarray:
-    """Carrega um arquivo como array estruturado numpy. Detecta automaticamente
-    o formato (27 ou 32 bytes/amostra) e sempre devolve SAMPLE_DTYPE (32
-    bytes): arquivos legados sao upcast em memoria (copia unica por arquivo;
-    os 3 campos novos ficam zerados). Arquivos no formato atual sao
-    memory-mapped (zero-copy).
-
-    Deteccao de formato:
-      - Se o tamanho e divisivel so por 27: formato legado.
-      - Se o tamanho e divisivel so por 32: formato atual.
-      - Se divisivel por ambos (multiplo de 864): amostra o conteudo para
-        decidir (own_pawn/policy_target devem ser <= 80/208).
-
-    `quiet=True` suprime o aviso de formato legado (use quando o chamador
-    emitir um aviso consolidado, como MultiFileSelfPlay)."""
-    size = os.path.getsize(path)
-    dtype, itemsize, ambig = _detect_format_by_size(size)
-    if ambig:
-        dtype, itemsize = _sniff_format(path, size)
-    num_samples = size // itemsize
-    if num_samples == 0:
+    """Load 27, 32, or 64-byte self-play and return the 64-byte V3 dtype."""
+    dtype, itemsize = _detect_format(path)
+    n = os.path.getsize(path) // itemsize
+    if n == 0:
         return np.empty(0, dtype=SAMPLE_DTYPE)
-    raw = np.memmap(path, dtype=dtype, mode="r", shape=(num_samples,))
+    raw = np.memmap(path, dtype=dtype, mode="r", shape=(n,))
     if itemsize == 27:
         if not quiet:
-            sys.stderr.write(
-                f"[read_selfplay] aviso: formato legado (27 bytes) em {os.path.basename(path)} "
-                f"-- upcast para 32 bytes (mover/cat zerados). "
-                f"Regere o dataset para usar o formato atual.\n"
-            )
+            sys.stderr.write(f"[read_selfplay] legacy 27-byte format: {path}\n")
         return _upcast_legacy(raw)
+    if itemsize == 32:
+        return _upcast_v2(raw)
     return raw
 
 
 def _is_legacy_file(path: str) -> bool:
-    """Retorna True se o arquivo e formato legado (27 bytes/amostra)."""
-    size = os.path.getsize(path)
-    if size == 0:
+    if os.path.getsize(path) == 0:
         return False
-    _, itemsize, ambig = _detect_format_by_size(size)
-    if ambig:
-        _, itemsize = _sniff_format(path, size)
+    _, itemsize = _detect_format(path)
     return itemsize == 27
-
-
 
 
 def expand_data_paths(spec) -> list:
@@ -365,7 +350,7 @@ class MultiFileSelfPlay:
             sys.stderr.write(
                 f"[read_selfplay] aviso: {n_legacy} de {len(self.paths)} arquivo(s) "
                 f"no formato legado (27 bytes/amostra, coordenadas sem espelho de "
-                f"perspectiva) -- upcast automatico para 32 bytes aplicado. "
+                f"perspectiva) -- upcast automatico para 64 bytes aplicado. "
                 f"Regere o dataset com selfplay.exe para garantir perspectiva correta.\n"
             )
         self._lens = [len(m) for m in self._maps]
