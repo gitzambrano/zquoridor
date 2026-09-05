@@ -1,0 +1,48 @@
+name: bilateral-integration-fix-ci
+
+on:
+  push:
+    branches: [exp/full-accumulator-v2]
+    paths:
+      - tools/dev/fix_bilateral_integration.py
+      - .github/workflows/bilateral-integration-fix-ci.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  fix:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: exp/full-accumulator-v2
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Apply fixes
+        run: python tools/dev/fix_bilateral_integration.py
+      - name: Compile checks
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m py_compile tools/dev/fix_bilateral_integration.py
+          bash build/build_selfplay.sh
+          mkdir -p bin
+          g++ -std=c++17 -O3 -DNDEBUG -Isrc tests/test_bilateral_accumulator.cpp -o bin/test_bilateral_accumulator
+          ./bin/test_bilateral_accumulator
+          g++ -std=c++17 -O3 -DNDEBUG -Isrc tools/arena/arena.cpp -o bin/arena
+      - name: Commit fixes
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add src/nnue.hpp tools/selfplay/selfplay.hpp tools/arena/arena.cpp
+          if ! git diff --cached --quiet; then
+            git commit -m 'fix: use bilateral value consistently in data generation'
+            git push origin HEAD:exp/full-accumulator-v2
+          fi
