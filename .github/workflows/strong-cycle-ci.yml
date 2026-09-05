@@ -1,0 +1,57 @@
+name: strong-cycle-ci
+
+on:
+  push:
+    branches:
+      - fix/strong-selfplay-wandering
+  pull_request:
+    paths:
+      - "training/strong_cycle.py"
+      - "training/audit_selfplay.py"
+      - ".github/workflows/strong-cycle-ci.yml"
+
+jobs:
+  python-checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install runtime dependency
+        run: python -m pip install --disable-pip-version-check numpy
+
+      - name: Compile Python files
+        run: |
+          python -m py_compile training/strong_cycle.py
+          python -m py_compile training/audit_selfplay.py
+
+      - name: Run synthetic strong-cycle checks
+        run: |
+          PYTHONPATH=training python - <<'PY'
+          import numpy as np
+          import strong_cycle as sc
+          from read_selfplay import SAMPLE_DTYPE
+
+          # Elo parser must match the exact final line from run_arena.py.
+          text = "Diferenca Elo Engine 1 vs 2 : +17.4 (Margem ±37.8)"
+          assert sc.ELO_RE.findall(text) == [("+17.4", "37.8")]
+
+          # The reported failure family: mover has no walls, opponent keeps
+          # many walls, and the mover is ahead in path distance.
+          game = np.zeros(3, dtype=SAMPLE_DTYPE)
+          game["walls_left_own"] = [0, 2, 5]
+          game["walls_left_opp"] = [8, 7, 5]
+          game["own_dist"] = [5, 4, 7]
+          game["opp_dist"] = [13, 8, 6]
+          assert sc.risk_mask(game).tolist() == [True, True, False]
+
+          # A current-format shard must have a 32-byte record layout.
+          assert SAMPLE_DTYPE.itemsize == 32
+          print("synthetic checks passed")
+          PY
+
+      - name: Check audit CLI import
+        run: python training/audit_selfplay.py --help >/dev/null
