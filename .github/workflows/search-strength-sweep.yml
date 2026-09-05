@@ -1,0 +1,206 @@
+name: search-strength-sweep
+
+on:
+  push:
+    branches: [fix/strong-selfplay-wandering]
+    paths:
+      - .github/workflows/search-strength-sweep.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: read
+
+jobs:
+  sweep:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: cpuct-1p20
+            arg: "--e1-mcab-cpuct 1.20"
+          - name: cpuct-1p30
+            arg: "--e1-mcab-cpuct 1.30"
+          - name: cpuct-1p70
+            arg: "--e1-mcab-cpuct 1.70"
+          - name: cpuct-1p85
+            arg: "--e1-mcab-cpuct 1.85"
+          - name: scale-160
+            arg: "--e1-mcab-score-scale 160"
+          - name: scale-240
+            arg: "--e1-mcab-score-scale 240"
+          - name: visits-then-q
+            arg: "--e1-mcab-root-select visits-then-q"
+          - name: endgame-depth-3
+            arg: "--e1-mcab-endgame-leaf-depth 3"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: python -m pip install --disable-pip-version-check numpy
+      - name: Restore Gen8 weights
+        uses: actions/download-artifact@v4
+        with:
+          name: gen8-search-ci-completed
+          path: gen8
+          github-token: ${{ github.token }}
+          repository: gitzambrano/zquoridor
+          run-id: 33973129847
+      - name: Run candidate against production search
+        shell: bash
+        run: |
+          set -o pipefail
+          W=gen8/nnue/candidates/gen8-search-ci/nnue_weights_int8.bin
+          python tools/arena/run_arena.py \
+            --ref1 '' --ref2 '' --games 500 --time 20 --threads 4 --random-plies 4 \
+            --e1-nnue "$W" --e2-nnue "$W" \
+            ${{ matrix.arg }} \
+            | tee "${{ matrix.name }}.log"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: search-sweep-${{ matrix.name }}
+          path: ${{ matrix.name }}.log
+          retention-days: 7
+
+  select:
+    needs: sweep
+    runs-on: ubuntu-24.04
+    outputs:
+      name: ${{ steps.pick.outputs.name }}
+      arg: ${{ steps.pick.outputs.arg }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: search-sweep-*
+          path: logs
+          merge-multiple: true
+      - id: pick
+        shell: bash
+        run: |
+          python - <<'PY' >> "$GITHUB_OUTPUT"
+          import glob,re,sys
+          mapping={
+            'cpuct-1p20':'--e1-mcab-cpuct 1.20',
+            'cpuct-1p30':'--e1-mcab-cpuct 1.30',
+            'cpuct-1p70':'--e1-mcab-cpuct 1.70',
+            'cpuct-1p85':'--e1-mcab-cpuct 1.85',
+            'scale-160':'--e1-mcab-score-scale 160',
+            'scale-240':'--e1-mcab-score-scale 240',
+            'visits-then-q':'--e1-mcab-root-select visits-then-q',
+            'endgame-depth-3':'--e1-mcab-endgame-leaf-depth 3',
+          }
+          best=None
+          for p in glob.glob('logs/*.log'):
+              name=p.rsplit('/',1)[-1][:-4]
+              t=open(p).read()
+              m=re.search(r'Diferenca Elo Engine 1 vs 2\s*:\s*([+-]?\d+(?:\.\d+)?)\s*\(Margem ±([0-9.]+)\)',t)
+              if not m: continue
+              elo=float(m.group(1)); margin=float(m.group(2)); lower=elo-margin
+              print(f'{name}: {elo:+.1f} ±{margin:.1f}, lower={lower:+.1f}',file=sys.stderr)
+              # shortlist by point estimate; 500 games is screening only
+              if best is None or elo>best[0]: best=(elo,name)
+          if best is None: raise SystemExit('no sweep result')
+          print('name='+best[1])
+          print('arg='+mapping[best[1]])
+          PY
+
+  confirm:
+    needs: select
+    runs-on: ubuntu-24.04
+    timeout-minutes: 75
+    outputs:
+      promote: ${{ steps.gate.outputs.promote }}
+      name: ${{ needs.select.outputs.name }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: python -m pip install --disable-pip-version-check numpy
+      - name: Restore Gen8 weights
+        uses: actions/download-artifact@v4
+        with:
+          name: gen8-search-ci-completed
+          path: gen8
+          github-token: ${{ github.token }}
+          repository: gitzambrano/zquoridor
+          run-id: 33973129847
+      - name: Confirm selected search candidate
+        shell: bash
+        run: |
+          set -o pipefail
+          W=gen8/nnue/candidates/gen8-search-ci/nnue_weights_int8.bin
+          python tools/arena/run_arena.py \
+            --ref1 '' --ref2 '' --games 2500 --time 20 --threads 4 --random-plies 4 \
+            --e1-nnue "$W" --e2-nnue "$W" \
+            ${{ needs.select.outputs.arg }} \
+            | tee confirm.log
+      - id: gate
+        run: |
+          python - <<'PY' >> "$GITHUB_OUTPUT"
+          import re
+          t=open('confirm.log').read()
+          m=re.search(r'Diferenca Elo Engine 1 vs 2\s*:\s*([+-]?\d+(?:\.\d+)?)\s*\(Margem ±([0-9.]+)\)',t)
+          if not m: raise SystemExit('cannot parse Elo')
+          e=float(m.group(1)); d=float(m.group(2)); ok=e-d>0
+          print('promote='+str(ok).lower())
+          print(f'confirmed {e:+.1f} ±{d:.1f}; lower={e-d:+.1f}; promote={ok}',file=__import__('sys').stderr)
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: search-sweep-confirmation
+          path: confirm.log
+          retention-days: 7
+
+  commit-search:
+    needs: [select, confirm]
+    if: needs.confirm.outputs.promote == 'true'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/strong-selfplay-wandering
+          fetch-depth: 0
+      - name: Apply selected default and verify wandering
+        shell: bash
+        env:
+          CANDIDATE: ${{ needs.select.outputs.name }}
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import os
+          from pathlib import Path
+          name=os.environ['CANDIDATE']
+          p=Path('src/mcab.hpp')
+          t=p.read_text()
+          repl={
+            'cpuct-1p20':('double cPuct = 1.5;', 'double cPuct = 1.20;'),
+            'cpuct-1p30':('double cPuct = 1.5;', 'double cPuct = 1.30;'),
+            'cpuct-1p70':('double cPuct = 1.5;', 'double cPuct = 1.70;'),
+            'cpuct-1p85':('double cPuct = 1.5;', 'double cPuct = 1.85;'),
+            'scale-160':('double scoreScale = 200.0;', 'double scoreScale = 160.0;'),
+            'scale-240':('double scoreScale = 200.0;', 'double scoreScale = 240.0;'),
+            'visits-then-q':('RootSelectMode rootSelectMode = RootSelectMode::MaxVisits;', 'RootSelectMode rootSelectMode = RootSelectMode::MaxVisitsThenQ;'),
+            'endgame-depth-3':('int endgameLeafDepth = 2;', 'int endgameLeafDepth = 3;'),
+          }
+          old,new=repl[name]
+          if old not in t: raise SystemExit(f'expected default not found for {name}: {old}')
+          p.write_text(t.replace(old,new,1))
+          PY
+          mkdir -p bin
+          g++ -std=c++17 -O3 -DNDEBUG -Isrc tests/repro_wandering.cpp -o bin/repro_wandering
+          ./bin/repro_wandering data/nnue/nnue_weights_int8.bin | tee wandering-search.log
+          python - <<'PY'
+          p=open('wandering-search.log').read(); start=p.index('=== production MCAB NNUE, 500ms/move ==='); sec=p[start:]; end=sec.find('\n===',4); sec=sec if end<0 else sec[:end]
+          if 'engine chegou! winner=0' not in sec: raise SystemExit('search candidate regressed wandering')
+          PY
+      - name: Commit proven search improvement
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add src/mcab.hpp
+          git commit -m "search: promote ${{ needs.select.outputs.name }} after Elo gate"
+          git push origin HEAD:fix/strong-selfplay-wandering
