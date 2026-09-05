@@ -7,8 +7,10 @@ on:
       - src/nnue.hpp
       - src/rules.hpp
       - tests/test_bilateral_accumulator.cpp
+      - tests/wandering_race_suite.cpp
       - benchmarks/bench_bilateral_value.cpp
       - tools/diagnostics/probe_bilateral_value.cpp
+      - tools/diagnostics/analyze_bilateral_probe.py
       - .github/workflows/bilateral-diagnostics-ci.yml
   workflow_dispatch:
 
@@ -22,8 +24,10 @@ jobs:
         run: |
           mkdir -p bin
           g++ -std=c++17 -O3 -DNDEBUG -Isrc tests/test_bilateral_accumulator.cpp -o bin/test_bilateral_accumulator
+          g++ -std=c++17 -O3 -DNDEBUG -Isrc tests/wandering_race_suite.cpp -o bin/wandering_race_suite
           g++ -std=c++17 -O3 -DNDEBUG -Isrc benchmarks/bench_bilateral_value.cpp -o bin/bench_bilateral_value
           g++ -std=c++17 -O3 -DNDEBUG -Isrc tools/diagnostics/probe_bilateral_value.cpp -o bin/probe_bilateral_value
+          python -m py_compile tools/diagnostics/analyze_bilateral_probe.py
       - name: Run accumulator parity
         run: ./bin/test_bilateral_accumulator
       - name: Run value microbenchmark
