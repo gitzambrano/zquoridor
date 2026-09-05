@@ -334,6 +334,8 @@ WALLS_LEFT_BUCKETS = WALLS_PER_PLAYER + 1  # 11
 # já causou) em quantize_nnue.py.
 NUM_FEATURES = N * N + N * N + WS * WS * 2 + 2 * DIST_BUCKETS + 2 * WALLS_LEFT_BUCKETS  # 354
 HIDDEN = 256
+VALUE_INPUT = HIDDEN * 2
+VALUE_HIDDEN = 64
 POLICY_OUT = N * N + WS * WS * 2                                # 209
 # VALUE_SCALE (200.0) removida 2026-08: so era usada pra normalizar a loss
 # MSE da cabeca auxiliar (search_score/VALUE_SCALE), que nao existe mais --
@@ -367,14 +369,14 @@ class QuoridorNNUE(nn.Module):
     def __init__(self):
         super().__init__()
         self.fc1 = nn.Linear(NUM_FEATURES, HIDDEN)
-        self.value1_wl = nn.Linear(HIDDEN, 32)
-        self.value2_wl = nn.Linear(32, 1)
+        self.value1_wl = nn.Linear(VALUE_INPUT, VALUE_HIDDEN)
+        self.value2_wl = nn.Linear(VALUE_HIDDEN, 1)
         self.policy = nn.Linear(HIDDEN, POLICY_OUT)
 
-    def forward(self, x: torch.Tensor):
-        acc = self.fc1(x)
-        a = screlu(acc)
-        h_wl = clipped_relu(self.value1_wl(a))
+    def forward(self, x: torch.Tensor, x_opp: torch.Tensor):
+        a = screlu(self.fc1(x))
+        a_opp = screlu(self.fc1(x_opp))
+        h_wl = clipped_relu(self.value1_wl(torch.cat((a, a_opp), dim=-1)))
         value_wl = self.value2_wl(h_wl).squeeze(-1)
         policy_logits = self.policy(a)
         return value_wl, policy_logits
@@ -448,6 +450,23 @@ def to_chunk_tensors(chunk: np.ndarray, k_chunk: np.ndarray, device, pw_chunk: n
     x[np.arange(n), wl_base + own_wl_bucket] = 1.0
     x[np.arange(n), wl_base + WALLS_LEFT_BUCKETS + opp_wl_bucket] = 1.0
 
+    # Second canonical perspective. The sample is already canonical for the
+    # mover, so opponent perspective is a vertical board mirror plus an
+    # own/opp swap. No additional information is stored in the shard.
+    x_opp = np.zeros_like(x)
+    own_p = chunk["own_pawn"].astype(np.int64)
+    opp_p = chunk["opp_pawn"].astype(np.int64)
+    mir_own_p = (N - 1 - (opp_p // N)) * N + (opp_p % N)
+    mir_opp_p = (N - 1 - (own_p // N)) * N + (own_p % N)
+    x_opp[np.arange(n), mir_own_p] = 1.0
+    x_opp[np.arange(n), 81 + mir_opp_p] = 1.0
+    x_opp[:, 162:162 + 64] = bits_h.reshape(n, WS, WS)[:, ::-1, :].reshape(n, 64)
+    x_opp[:, 162 + 64:162 + 128] = bits_v.reshape(n, WS, WS)[:, ::-1, :].reshape(n, 64)
+    x_opp[np.arange(n), 290 + opp_bucket] = 1.0
+    x_opp[np.arange(n), 290 + DIST_BUCKETS + own_bucket] = 1.0
+    x_opp[np.arange(n), wl_base + opp_wl_bucket] = 1.0
+    x_opp[np.arange(n), wl_base + WALLS_LEFT_BUCKETS + own_wl_bucket] = 1.0
+
     # wl_target: blend por posicao entre o resultado REAL do jogo (na
     # perspectiva do MOVER, igual sempre foi) e a avaliacao da propria NNUE
     # gravada no .bin (nnue_eval, perspectiva ABSOLUTA das brancas --
@@ -484,6 +503,7 @@ def to_chunk_tensors(chunk: np.ndarray, k_chunk: np.ndarray, device, pw_chunk: n
     pw = pw * visit_valid
     return {
         "x": torch.from_numpy(x).to(device, non_blocking=True),
+        "x_opp": torch.from_numpy(x_opp).to(device, non_blocking=True),
         "wl_target": torch.from_numpy(wl_target).to(device, non_blocking=True),
         "wl_w": torch.from_numpy(wl_w).to(device, non_blocking=True),
         "policy_target": torch.from_numpy(chunk["policy_target"].astype(np.int64)).to(device, non_blocking=True),
@@ -516,6 +536,7 @@ def iter_gpu_batches(chunk: np.ndarray, k_chunk: np.ndarray, device, batch_size:
             end = min(start + batch_size, n_sub)
             yield {
                 "x": t["x"][start:end],
+                "x_opp": t["x_opp"][start:end],
                 "wl_target": t["wl_target"][start:end],
                 "wl_w": t["wl_w"][start:end],
                 "policy_target": t["policy_target"][start:end],
@@ -678,8 +699,8 @@ def compute_fingerprint(args):
     salvo tiver uma impressao diferente da rodada atual (mudou HIDDEN,
     trocou QA/QB etc.), ele e incompativel e nao pode ser usado pra
     resume -- os tensores nem teriam o shape certo."""
-    return dict(num_features=NUM_FEATURES, hidden=HIDDEN, policy_out=POLICY_OUT,
-                qa=args.qa, qb=args.qb)
+    return dict(num_features=NUM_FEATURES, hidden=HIDDEN, value_input=VALUE_INPUT,
+                value_hidden=VALUE_HIDDEN, policy_out=POLICY_OUT, qa=args.qa, qb=args.qb)
  
  
 # --- caminhos versionados (<ciclo>_ep<epoch>) em --ckpt-dir ------------------
@@ -959,7 +980,7 @@ def export_weights(model: QuoridorNNUE, path: str):
         bp = model.policy.bias.detach().cpu().numpy().astype(np.float32)
 
     assert w1.shape == (NUM_FEATURES, HIDDEN)
-    assert wv1_wl.shape == (HIDDEN, 32)
+    assert wv1_wl.shape == (VALUE_INPUT, VALUE_HIDDEN)
     assert wp.shape == (POLICY_OUT, HIDDEN)
 
     dir_name = os.path.dirname(os.path.abspath(path))
@@ -1017,7 +1038,7 @@ def run_eval(ds, indices, k_by_source, batch_size, chunk_size, gpu_chunk_size, m
             policy_t = t["policy_target"]
             pw = t["policy_w"]
 
-            value_wl, policy_logits = model(t["x"])
+            value_wl, policy_logits = model(t["x"], t["x_opp"])
             loss_outcome = weighted_outcome_loss(value_wl, t["wl_target"], t["wl_w"])
             loss_policy = weighted_policy_loss(policy_logits, t["policy_top_idx"], t["policy_top_prob"], pw)
             loss = w_outcome * loss_outcome + w_policy * loss_policy
@@ -1492,7 +1513,7 @@ def train(args):
                 policy_t = t["policy_target"]
                 pw = t["policy_w"]
 
-                value_wl, policy_logits = model(t["x"])
+                value_wl, policy_logits = model(t["x"], t["x_opp"])
                 loss_outcome = weighted_outcome_loss(value_wl, t["wl_target"], t["wl_w"])
                 loss_policy = weighted_policy_loss(policy_logits, t["policy_top_idx"], t["policy_top_prob"], pw)
                 loss = args.w_outcome * loss_outcome + args.w_policy * loss_policy

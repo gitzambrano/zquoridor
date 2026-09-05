@@ -71,6 +71,8 @@ inline int wallsLeftBucket(int n) {
 // É preciso retreinar do zero com training/train_nnue.py atualizado.
 constexpr int NUM_FEATURES = N * N + N * N + WS * WS * 2 + 2 * DIST_BUCKETS + 2 * WALLS_LEFT_BUCKETS;  // 354
 constexpr int HIDDEN = 256;
+constexpr int VALUE_INPUT = HIDDEN * 2;
+constexpr int VALUE_HIDDEN = 64;
 constexpr int POLICY_OUT = N * N + WS * WS * 2;             // 81 destino peão + 128 muro = 209
 
 // Espelha a coordenada bruta do tabuleiro para a perspectiva do jogador 1
@@ -167,10 +169,10 @@ struct NNUEWeights {
     // camada 1 (acumulador): pesos por feature esparsa -> HIDDEN
     std::vector<std::array<float, HIDDEN>> w1;   // [NUM_FEATURES][HIDDEN]
     std::array<float, HIDDEN> b1{};
-    // cabeça de RESULTADO (WL): HIDDEN -> 32 -> 1 (logit único, sem empate)
-    std::array<std::array<float, 32>, HIDDEN> wv1_wl;
-    std::array<float, 32> bv1_wl{};
-    std::array<float, 32> wv2_wl{};
+    // Bilateral WL head: both perspective accumulators -> 64 -> 1.
+    std::array<std::array<float, VALUE_HIDDEN>, VALUE_INPUT> wv1_wl;
+    std::array<float, VALUE_HIDDEN> bv1_wl{};
+    std::array<float, VALUE_HIDDEN> wv2_wl{};
     float bv2_wl = 0.f;
     // cabeça de política: HIDDEN -> POLICY_OUT
     std::vector<std::array<float, HIDDEN>> wp;   // [POLICY_OUT][HIDDEN] (transposto p/ dot direto)
@@ -209,9 +211,9 @@ struct NNUEWeights {
         w1.assign(NUM_FEATURES, {});
         for (auto& row : w1) ok = ok && std::fread(row.data(), sizeof(float), HIDDEN, f) == (size_t)HIDDEN;
         ok = ok && std::fread(b1.data(), sizeof(float), HIDDEN, f) == (size_t)HIDDEN;
-        for (auto& row : wv1_wl) ok = ok && std::fread(row.data(), sizeof(float), 32, f) == 32;
-        ok = ok && std::fread(bv1_wl.data(), sizeof(float), 32, f) == 32;
-        ok = ok && std::fread(wv2_wl.data(), sizeof(float), 32, f) == 32;
+        for (auto& row : wv1_wl) ok = ok && std::fread(row.data(), sizeof(float), VALUE_HIDDEN, f) == (size_t)VALUE_HIDDEN;
+        ok = ok && std::fread(bv1_wl.data(), sizeof(float), VALUE_HIDDEN, f) == (size_t)VALUE_HIDDEN;
+        ok = ok && std::fread(wv2_wl.data(), sizeof(float), VALUE_HIDDEN, f) == (size_t)VALUE_HIDDEN;
         ok = ok && std::fread(&bv2_wl, sizeof(float), 1, f) == 1;
         wp.assign(POLICY_OUT, {});
         for (auto& row : wp) ok = ok && std::fread(row.data(), sizeof(float), HIDDEN, f) == (size_t)HIDDEN;
@@ -348,20 +350,28 @@ inline float clippedRelu(float x) {
 // imitação de evalSimple foi removida 2026-08 -- ver nota em NNUEWeights
 // acima); é o logit de resultado (WL, sem empate) que a busca consome via
 // nnueEvalInt.
-inline float forwardValueWL(const Accumulator& acc) {
-    std::array<float, 32> h{};
+inline float forwardValueWL(const Accumulator& own, const Accumulator& opp) {
+    std::array<float, VALUE_HIDDEN> h{};
     auto& W = weights();
     for (int i = 0; i < HIDDEN; i++) {
-        float a = screlu(acc.v[i]);
-        for (int j = 0; j < 32; j++) h[j] += a * W.wv1_wl[i][j];
+        const float aOwn = screlu(own.v[i]);
+        const float aOpp = screlu(opp.v[i]);
+        for (int j = 0; j < VALUE_HIDDEN; j++) {
+            h[j] += aOwn * W.wv1_wl[i][j];
+            h[j] += aOpp * W.wv1_wl[HIDDEN + i][j];
+        }
     }
     float out = W.bv2_wl;
-    for (int j = 0; j < 32; j++) {
-        float hj = clippedRelu(h[j] + W.bv1_wl[j]);
+    for (int j = 0; j < VALUE_HIDDEN; j++) {
+        const float hj = clippedRelu(h[j] + W.bv1_wl[j]);
         out += hj * W.wv2_wl[j];
     }
     return out;
 }
+
+// Compatibility helper for tools that probe one accumulator only. Production
+// search uses the bilateral overload through nnueEvalInt(AccPair,...).
+inline float forwardValueWL(const Accumulator& acc) { return forwardValueWL(acc, acc); }
 
 inline void forwardPolicy(const Accumulator& acc, std::array<float, POLICY_OUT>& out) {
     auto& W = weights();
@@ -532,9 +542,9 @@ struct NNUEWeightsQuant {
 
     // cabeça de RESULTADO (WL) -- única cabeça de valor (cabeça auxiliar
     // de imitação de evalSimple removida 2026-08, ver nota em NNUEWeights)
-    std::array<std::array<int8_t, 32>, HIDDEN> wv1_wl{}; // escala QB
-    std::array<int32_t, 32> bv1_wl{};                      // escala QA*QB
-    std::array<int8_t, 32> wv2_wl{};                       // escala QB
+    std::array<std::array<int8_t, VALUE_HIDDEN>, VALUE_INPUT> wv1_wl{}; // escala QB
+    std::array<int32_t, VALUE_HIDDEN> bv1_wl{};                      // escala QA*QB
+    std::array<int8_t, VALUE_HIDDEN> wv2_wl{};                       // escala QB
     int32_t bv2_wl = 0;                                    // escala QA*QB*QB
 
     std::vector<std::array<int8_t, HIDDEN>> wp;   // [POLICY_OUT][HIDDEN], escala QB
@@ -587,9 +597,9 @@ struct NNUEWeightsQuant {
             (long)sizeof(int32_t) * 2                                  // QA, QB
             + (long)NUM_FEATURES * HIDDEN * sizeof(int16_t)            // w1
             + (long)HIDDEN * sizeof(int16_t)                           // b1
-            + (long)HIDDEN * 32 * sizeof(int8_t)                       // wv1_wl
-            + 32 * sizeof(int32_t)                                     // bv1_wl
-            + 32 * sizeof(int8_t)                                      // wv2_wl
+            + (long)VALUE_INPUT * VALUE_HIDDEN * sizeof(int8_t)        // wv1_wl
+            + VALUE_HIDDEN * sizeof(int32_t)                            // bv1_wl
+            + VALUE_HIDDEN * sizeof(int8_t)                             // wv2_wl
             + sizeof(int32_t)                                          // bv2_wl
             + (long)POLICY_OUT * HIDDEN * sizeof(int8_t)               // wp
             + (long)POLICY_OUT * sizeof(int32_t);                      // bp
@@ -612,9 +622,9 @@ struct NNUEWeightsQuant {
         for (auto& row : w1) ok = ok && std::fread(row.data(), sizeof(int16_t), HIDDEN, f) == (size_t)HIDDEN;
         ok = ok && std::fread(b1.data(), sizeof(int16_t), HIDDEN, f) == (size_t)HIDDEN;
 
-        for (auto& row : wv1_wl) ok = ok && std::fread(row.data(), sizeof(int8_t), 32, f) == 32;
-        ok = ok && std::fread(bv1_wl.data(), sizeof(int32_t), 32, f) == 32;
-        ok = ok && std::fread(wv2_wl.data(), sizeof(int8_t), 32, f) == 32;
+        for (auto& row : wv1_wl) ok = ok && std::fread(row.data(), sizeof(int8_t), VALUE_HIDDEN, f) == (size_t)VALUE_HIDDEN;
+        ok = ok && std::fread(bv1_wl.data(), sizeof(int32_t), VALUE_HIDDEN, f) == (size_t)VALUE_HIDDEN;
+        ok = ok && std::fread(wv2_wl.data(), sizeof(int8_t), VALUE_HIDDEN, f) == (size_t)VALUE_HIDDEN;
         ok = ok && std::fread(&bv2_wl, sizeof(int32_t), 1, f) == 1;
 
         wp.assign(POLICY_OUT, {});
@@ -780,58 +790,47 @@ inline uint8_t screluQuant(int32_t x, int32_t QA) {
 // bv2) é usado. Mantido como função livre (não template) pelos mesmos
 // motivos do par forwardValue*/forwardValue*Quant já discutidos no
 // restante do arquivo -- tipos explícitos nos pontos de chamada.
-inline float forwardValueHeadQuant(const AccumulatorQuant& acc,
-                                    const std::array<std::array<int8_t, 32>, HIDDEN>& wv1,
-                                    const std::array<int32_t, 32>& bv1,
-                                    const std::array<int8_t, 32>& wv2,
+inline float forwardValueHeadQuant(const AccumulatorQuant& own, const AccumulatorQuant& opp,
+                                    const std::array<std::array<int8_t, VALUE_HIDDEN>, VALUE_INPUT>& wv1,
+                                    const std::array<int32_t, VALUE_HIDDEN>& bv1,
+                                    const std::array<int8_t, VALUE_HIDDEN>& wv2,
                                     int32_t bv2) {
     auto& W = weightsQuant();
-    alignas(32) std::array<uint8_t, HIDDEN> a;
-    for (int i = 0; i < HIDDEN; i++) a[i] = screluQuant(acc.v[i], W.QA);
-
-    // value1 (256->32): escala QA*QB
-    // perf/speed-elo-100: sem o branch por linha (impedia vetorizar); a
-    // ordem de acumulação POR j não muda -> mesmo inteiro exato. Linhas
-    // com ai==0 só somam zeros, que o vetorizado absorve mais barato do
-    // que o custo de predição errada do branch antigo.
-    std::array<int32_t, 32> h{};
-    const int8_t* wv1f = &wv1[0][0];
+    alignas(32) std::array<uint8_t, VALUE_INPUT> a{};
     for (int i = 0; i < HIDDEN; i++) {
-        const int32_t ai = a[i];
-        const int8_t* row = wv1f + (size_t)i * 32;
-        for (int j = 0; j < 32; j++) h[j] += ai * (int32_t)row[j];
+        a[i] = screluQuant(own.v[i], W.QA);
+        a[HIDDEN + i] = screluQuant(opp.v[i], W.QA);
     }
-    // clippedRelu inteira: clamp(h+bv1, 0, QA*QB) -- mesma escala combinada
-    int64_t QAQB = (int64_t)W.QA * (int64_t)W.QB;
-    std::array<int32_t, 32> hj{};
-    for (int j = 0; j < 32; j++) {
+
+    std::array<int32_t, VALUE_HIDDEN> h{};
+    const int8_t* wv1f = &wv1[0][0];
+    for (int i = 0; i < VALUE_INPUT; i++) {
+        const int32_t ai = a[i];
+        const int8_t* row = wv1f + (size_t)i * VALUE_HIDDEN;
+        for (int j = 0; j < VALUE_HIDDEN; j++) h[j] += ai * (int32_t)row[j];
+    }
+    const int64_t QAQB = (int64_t)W.QA * (int64_t)W.QB;
+    std::array<int32_t, VALUE_HIDDEN> hj{};
+    for (int j = 0; j < VALUE_HIDDEN; j++) {
         int64_t hv = (int64_t)h[j] + (int64_t)bv1[j];
         if (hv < 0) hv = 0;
         if (hv > QAQB) hv = QAQB;
         hj[j] = (int32_t)hv;
     }
-    // value2 (32->1): hj (escala QA*QB) x wv2 (escala QB) -> escala QA*QB*QB
     int64_t out = bv2;
-    for (int j = 0; j < 32; j++) out += (int64_t)hj[j] * (int64_t)wv2[j];
-    int64_t denom = QAQB * (int64_t)W.QB;
-    // Des-escala final: divisão em PONTO FLUTUANTE, não inteira. Só a
-    // divisão da SCReLU (não-negativa, acima) precisa ser inteira de
-    // verdade -- é ela que fecha o loop de ida-e-volta pro domínio uint8
-    // usado no próximo produto interno. Esta aqui é só a conversão do
-    // resultado final pra um score comparável; truncar pra inteiro nesse
-    // ponto jogaria fora toda a parte fracionária do valor (erro medido
-    // de ~1 unidade em vez de ~0,01-0,03 -- bug pego na verificação de
-    // paridade da sessão anterior, ver Seção 7.8 do plano).
+    for (int j = 0; j < VALUE_HIDDEN; j++) out += (int64_t)hj[j] * (int64_t)wv2[j];
+    const int64_t denom = QAQB * (int64_t)W.QB;
     return (float)((double)out / (double)denom);
 }
 
 // forwardValueWLQuant é a única cabeça de valor quantizada -- a busca a
 // consome via nnueEvalInt (a cabeça auxiliar de imitação de evalSimple foi
 // removida 2026-08, ver nota em NNUEWeights).
-inline float forwardValueWLQuant(const AccumulatorQuant& acc) {
+inline float forwardValueWLQuant(const AccumulatorQuant& own, const AccumulatorQuant& opp) {
     auto& W = weightsQuant();
-    return forwardValueHeadQuant(acc, W.wv1_wl, W.bv1_wl, W.wv2_wl, W.bv2_wl);
+    return forwardValueHeadQuant(own, opp, W.wv1_wl, W.bv1_wl, W.wv2_wl, W.bv2_wl);
 }
+inline float forwardValueWLQuant(const AccumulatorQuant& acc) { return forwardValueWLQuant(acc, acc); }
 
 // Probabilidade (sigmoid do logit WL) de que `side` (perspectiva passada a
 // buildAccumulatorQuant) vença a partir desta posição -- usada por
@@ -839,10 +838,11 @@ inline float forwardValueWLQuant(const AccumulatorQuant& acc) {
 // avaliação da NNUE, não mais o score heurístico) nos .bin de self-play.
 // Não é chamada pela busca (que usa nnueEvalInt, em unidades inteiras
 // comparáveis a evalSimple, não em probabilidade).
-inline float nnueWinProbQuant(const AccumulatorQuant& acc) {
-    float logit = forwardValueWLQuant(acc);
+inline float nnueWinProbQuant(const AccumulatorQuant& own, const AccumulatorQuant& opp) {
+    float logit = forwardValueWLQuant(own, opp);
     return 1.0f / (1.0f + std::exp(-logit));
 }
+inline float nnueWinProbQuant(const AccumulatorQuant& acc) { return nnueWinProbQuant(acc, acc); }
 
 inline void forwardPolicyQuant(const AccumulatorQuant& acc, std::array<float, POLICY_OUT>& out) {
     auto& W = weightsQuant();
@@ -934,19 +934,17 @@ inline void resolvePending(AccPair& ap, int persp, PlayerPathCacheTable* xtable 
 inline void makeChildAccPair(AccPair& parent, AccPair& child, const State& before, const Move& m,
                               PlayerPathCacheTable* xtable = nullptr) {
     int mover = before.turn, opp = 1 - mover;
-    // Perspectiva de quem joga em `child` -- precisa estar pronta já.
+    // Bilateral value inference needs both perspectives at every evaluated
+    // leaf. Keep both accumulators eager in this experiment; the arena also
+    // measures the NPS cost of removing the old one-perspective lazy update.
     resolvePending(parent, opp, xtable);
+    resolvePending(parent, mover, xtable);
     child.acc[opp] = parent.acc[opp];
-    child.pending[opp] = false;
-    updateAccumulatorForMoveQuant(child.acc[opp], /*viewerIsMover=*/false, before, m, xtable);
-    // Perspectiva de quem jogou -- adia. parent.acc[mover] já está
-    // garantidamente resolvida (invariante da struct: é a perspectiva de
-    // s.turn no nó de `parent`, sempre eager).
     child.acc[mover] = parent.acc[mover];
-    child.pending[mover] = true;
-    child.pendBefore[mover] = before;
-    child.pendMove[mover] = m;
-    child.pendViewerIsMover[mover] = true;
+    child.pending[opp] = false;
+    child.pending[mover] = false;
+    updateAccumulatorForMoveQuant(child.acc[opp], /*viewerIsMover=*/false, before, m, xtable);
+    updateAccumulatorForMoveQuant(child.acc[mover], /*viewerIsMover=*/true, before, m, xtable);
 }
 
 // Constrói um AccPair "frio" (recompute do zero nas duas perspectivas,
@@ -972,7 +970,7 @@ inline AccPair buildAccPairRoot(const State& s, PlayerPathCacheTable* xtable = n
 // (WL); a cabeça auxiliar (imitação de evalSimple) nunca é chamada pela
 // busca.
 inline int nnueEvalInt(const AccPair& ap, int side) {
-    float logit = forwardValueWLQuant(ap.acc[side]);
+    float logit = forwardValueWLQuant(ap.acc[side], ap.acc[1 - side]);
     return (int)std::lround(logit * (float)NNUE_EVAL_SCALE);
 }
 

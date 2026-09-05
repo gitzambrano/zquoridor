@@ -75,6 +75,8 @@ WALLS_LEFT_BUCKETS = WALLS_PER_PLAYER + 1  # 11
 # repetir de novo).
 NUM_FEATURES = N * N + N * N + WS * WS * 2 + 2 * DIST_BUCKETS + 2 * WALLS_LEFT_BUCKETS  # 354
 HIDDEN = 256
+VALUE_INPUT = HIDDEN * 2
+VALUE_HIDDEN = 64
 POLICY_OUT = N * N + WS * WS * 2  # 209
 
 # QAT: constantes fixas -- devem bater com QA_DEFAULT/QB_DEFAULT em
@@ -95,40 +97,27 @@ _HEAD_FIELDS = ("wv1_wl", "bv1_wl", "wv2_wl", "bv2_wl")
 
 
 def load_float_weights(path):
-    head_floats = HIDDEN * 32 + 32 + 32 + 1  # wv1 + bv1 + wv2 + bv2 de UMA cabeça 256->32->1
+    head_floats = VALUE_INPUT * VALUE_HIDDEN + VALUE_HIDDEN + VALUE_HIDDEN + 1
     base = NUM_FEATURES * HIDDEN + HIDDEN + head_floats
     tail = POLICY_OUT * HIDDEN + POLICY_OUT
-    expected_new = base + tail                # sem cabeça auxiliar (2026-08+)
-    expected_old = base + head_floats + tail   # com cabeça auxiliar (formato antigo)
+    expected_new = base + tail
     expected_new_bytes = expected_new * 4
-    expected_old_bytes = expected_old * 4
     actual_bytes = os.path.getsize(path)
-    if actual_bytes not in (expected_new_bytes, expected_old_bytes):
+    if actual_bytes != expected_new_bytes:
         raise ValueError(
             f"'{path}' tem {actual_bytes} bytes -- não bate nem com o formato atual "
-            f"({expected_new_bytes} bytes / {expected_new} floats, sem cabeça auxiliar) nem com "
-            f"o formato antigo ({expected_old_bytes} bytes / {expected_old} floats, com cabeça "
-            f"auxiliar) para NUM_FEATURES={NUM_FEATURES} -- verifique se o arquivo foi gerado "
+            f"({expected_new_bytes} bytes / {expected_new} floats) para NUM_FEATURES={NUM_FEATURES} -- verifique se o arquivo foi gerado "
             f"com a MESMA arquitetura (NUM_FEATURES) deste script; ver nota sobre a constante "
             f"NUM_FEATURES estar duplicada em três lugares, no topo do arquivo.")
-    is_old_format = (actual_bytes == expected_old_bytes)
 
     with open(path, "rb") as f:
         w1 = np.fromfile(f, dtype="<f4", count=NUM_FEATURES * HIDDEN).reshape(NUM_FEATURES, HIDDEN)
         b1 = np.fromfile(f, dtype="<f4", count=HIDDEN)
 
-        def read_head():
-            wv1 = np.fromfile(f, dtype="<f4", count=HIDDEN * 32).reshape(HIDDEN, 32)
-            bv1 = np.fromfile(f, dtype="<f4", count=32)
-            wv2 = np.fromfile(f, dtype="<f4", count=32)
-            bv2 = np.fromfile(f, dtype="<f4", count=1)[0]
-            return wv1, bv1, wv2, bv2
-
-        wv1_wl, bv1_wl, wv2_wl, bv2_wl = read_head()
-        if is_old_format:
-            read_head()  # cabeça auxiliar antiga -- lê pra avançar o cursor, descarta
-            print(f"'{path}' está no formato antigo (com cabeça auxiliar) -- "
-                  f"cabeça auxiliar ignorada, só w1/b1/cabeça WL/policy são quantizados.")
+        wv1_wl = np.fromfile(f, dtype="<f4", count=VALUE_INPUT * VALUE_HIDDEN).reshape(VALUE_INPUT, VALUE_HIDDEN)
+        bv1_wl = np.fromfile(f, dtype="<f4", count=VALUE_HIDDEN)
+        wv2_wl = np.fromfile(f, dtype="<f4", count=VALUE_HIDDEN)
+        bv2_wl = np.fromfile(f, dtype="<f4", count=1)[0]
         wp = np.fromfile(f, dtype="<f4", count=POLICY_OUT * HIDDEN).reshape(POLICY_OUT, HIDDEN)
         bp = np.fromfile(f, dtype="<f4", count=POLICY_OUT)
     got = w1.size + b1.size + wv1_wl.size + bv1_wl.size + wv2_wl.size + 1 + wp.size + bp.size
