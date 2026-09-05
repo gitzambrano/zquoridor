@@ -1,0 +1,73 @@
+name: bilateral-posttrain-diagnostics
+
+on:
+  workflow_run:
+    workflows: [full-accumulator-v2-experiment]
+    types: [completed]
+  workflow_dispatch:
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  posttrain:
+    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: exp/full-accumulator-v2
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Resolve source experiment run
+        id: source
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_run" ]; then
+            echo "run_id=${{ github.event.workflow_run.id }}" >> "$GITHUB_OUTPUT"
+          else
+            RUN_ID=$(gh api 'repos/${{ github.repository }}/actions/workflows/full-accumulator-v2-experiment.yml/runs?branch=exp/full-accumulator-v2&status=completed&per_page=1' --jq '.workflow_runs[0].id')
+            echo "run_id=$RUN_ID" >> "$GITHUB_OUTPUT"
+          fi
+        env:
+          GH_TOKEN: ${{ github.token }}
+      - name: Download trained candidate
+        uses: actions/download-artifact@v4
+        with:
+          name: bilateral-v2-completed
+          path: completed
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ steps.source.outputs.run_id }}
+      - name: Locate weights and build diagnostics
+        shell: bash
+        run: |
+          set -euo pipefail
+          WEIGHTS=$(find completed -type f -name 'nnue_weights_int8.bin' | head -1)
+          test -n "$WEIGHTS"
+          echo "WEIGHTS=$WEIGHTS" >> "$GITHUB_ENV"
+          mkdir -p bin posttrain
+          g++ -std=c++17 -O3 -DNDEBUG -Isrc tests/test_bilateral_accumulator.cpp -o bin/test_bilateral_accumulator
+          g++ -std=c++17 -O3 -DNDEBUG -Isrc tests/wandering_race_suite.cpp -o bin/wandering_race_suite
+          g++ -std=c++17 -O3 -DNDEBUG -Isrc tools/diagnostics/probe_bilateral_value.cpp -o bin/probe_bilateral_value
+          g++ -std=c++17 -O3 -DNDEBUG -Isrc benchmarks/bench_bilateral_value.cpp -o bin/bench_bilateral_value
+      - name: Incremental accumulator invariant
+        run: ./bin/test_bilateral_accumulator | tee posttrain/accumulator-parity.txt
+      - name: WL calibration curves
+        shell: bash
+        run: |
+          ./bin/probe_bilateral_value "$WEIGHTS" > posttrain/value-probe.csv
+          python tools/diagnostics/analyze_bilateral_probe.py posttrain/value-probe.csv | tee posttrain/value-analysis.txt
+      - name: Parametric wandering suite
+        run: ./bin/wandering_race_suite "$WEIGHTS" | tee posttrain/wandering-suite.txt
+      - name: Bilateral value microbenchmark
+        run: ./bin/bench_bilateral_value | tee posttrain/value-bench.txt
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: bilateral-v2-posttrain-diagnostics
+          retention-days: 7
+          path: posttrain/*
