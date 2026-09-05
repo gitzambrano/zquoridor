@@ -1,0 +1,252 @@
+name: full-accumulator-v2-experiment
+
+on:
+  push:
+    branches: [exp/full-accumulator-v2]
+    paths:
+      - tools/dev/apply_bilateral_value_v2.py
+      - .github/workflows/full-accumulator-v2-experiment.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: read
+
+jobs:
+  architecture:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: exp/full-accumulator-v2
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Apply cPuct 1.20 and bilateral architecture
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+          p=Path('src/mcab.hpp'); s=p.read_text()
+          if 'double cPuct = 1.5;' in s:
+              s=s.replace('double cPuct = 1.5;', 'double cPuct = 1.20;', 1)
+          if 'double cPuct = 1.20;' not in s:
+              raise SystemExit('cPuct default not found')
+          p.write_text(s)
+          PY
+          python tools/dev/apply_bilateral_value_v2.py
+      - name: Static and compile checks
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m py_compile training/train_nnue.py training/quantize_nnue.py tools/dev/apply_bilateral_value_v2.py
+          grep -q 'VALUE_INPUT = HIDDEN \* 2' src/nnue.hpp
+          grep -q 'VALUE_HIDDEN = 64' src/nnue.hpp
+          grep -q 'forwardValueWLQuant(ap.acc\[side\], ap.acc\[1 - side\])' src/nnue.hpp
+          mkdir -p bin
+          g++ -std=c++17 -O3 -DNDEBUG -Isrc tests/test_mcab_core.cpp -o bin/test_mcab_core
+          ./bin/test_mcab_core
+          bash build/build_selfplay.sh
+      - name: Commit architecture source
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add src/mcab.hpp src/nnue.hpp training/train_nnue.py training/quantize_nnue.py
+          if ! git diff --cached --quiet; then
+            git commit -m 'nnue: add bilateral full-accumulator value head'
+            git push origin HEAD:exp/full-accumulator-v2
+          fi
+
+  teacher:
+    needs: architecture
+    strategy:
+      fail-fast: false
+      matrix:
+        part: [0, 1]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/strong-selfplay-wandering
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install numpy
+        run: python -m pip install --disable-pip-version-check numpy
+      - name: Restore Gen8 teacher weights
+        uses: actions/download-artifact@v4
+        with:
+          name: gen8-search-ci-completed
+          path: bootstrap
+          github-token: ${{ github.token }}
+          repository: gitzambrano/zquoridor
+          run-id: 33973129847
+      - name: Build teacher with cPuct 1.20
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p data/nnue
+          cp bootstrap/nnue/candidates/gen8-search-ci/nnue_weights.bin data/nnue/nnue_weights.bin
+          cp bootstrap/nnue/candidates/gen8-search-ci/nnue_weights_int8.bin data/nnue/nnue_weights_int8.bin
+          grep -q 'double cPuct = 1.20;' src/mcab.hpp
+          bash build/build_selfplay.sh
+      - name: Generate 2500 V3 teacher games
+        shell: bash
+        run: |
+          set -euo pipefail
+          PART=${{ matrix.part }}
+          SEED=$((20260950 + PART * 100000))
+          mkdir -p data/selfplay/bilateral-teacher-$PART
+          python tools/selfplay/run_selfplay.py \
+            --games 2500 \
+            --chunk-games 500 \
+            --time-ms 20 \
+            --threads 4 \
+            --seed "$SEED" \
+            --mode montecarlo \
+            --mc-obvious-plies 0 \
+            --mc-temp-decay-plies 0 \
+            --epsilon-midgame 0.01 \
+            --out "data/selfplay/bilateral-teacher-$PART/p${PART}_{shard:03d}.bin"
+          python training/audit_selfplay.py data/selfplay/bilateral-teacher-$PART --fail-on-legacy
+          python - <<'PY'
+          import glob, numpy as np
+          from training.read_selfplay import load_selfplay, SAMPLE_DTYPE
+          files=glob.glob('data/selfplay/bilateral-teacher-*/*.bin')
+          assert len(files)==5, files
+          n=searched=0
+          for f in files:
+              a=load_selfplay(f); n+=len(a)
+              searched += int((a['policy_top_prob'][:,0] > 0).sum())
+          assert SAMPLE_DTYPE.itemsize == 64
+          assert searched > n*0.90, (searched,n)
+          print('V3 samples',n,'search targets',searched)
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bilateral-teacher-${{ matrix.part }}
+          retention-days: 7
+          path: data/selfplay/bilateral-teacher-${{ matrix.part }}/*.bin
+
+  train-arena:
+    needs: [architecture, teacher]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: exp/full-accumulator-v2
+          fetch-depth: 0
+      - name: Refresh architecture branch after source commit
+        run: |
+          git fetch origin exp/full-accumulator-v2
+          git reset --hard origin/exp/full-accumulator-v2
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install training dependencies
+        run: |
+          python -m pip install --disable-pip-version-check numpy torch --index-url https://download.pytorch.org/whl/cpu
+          python -m pip install --disable-pip-version-check matplotlib
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: bilateral-teacher-*
+          path: data/selfplay/bilateral-v2
+          merge-multiple: true
+      - name: Restore Gen8 baseline for arena
+        uses: actions/download-artifact@v4
+        with:
+          name: gen8-search-ci-completed
+          path: baseline
+          github-token: ${{ github.token }}
+          repository: gitzambrano/zquoridor
+          run-id: 33973129847
+      - name: Train bilateral network from fresh weights
+        shell: bash
+        run: |
+          set -euo pipefail
+          ls -lh data/selfplay/bilateral-v2
+          python training/audit_selfplay.py data/selfplay/bilateral-v2 --fail-on-legacy
+          mapfile -t FILES < <(find data/selfplay/bilateral-v2 -type f -name '*.bin' | sort)
+          test ${#FILES[@]} -eq 10
+          VAL="${FILES[9]}"
+          SOURCES=$(python - <<'PY'
+          import glob,json
+          fs=sorted(glob.glob('data/selfplay/bilateral-v2/*.bin'))
+          print(json.dumps([{'path':f,'frac':1.0,'k':1.0} for f in fs[:-1]],separators=(',',':')))
+          PY
+          )
+          python training/train_nnue.py \
+            --fresh \
+            --data-sources "$SOURCES" \
+            --val-data "$VAL" \
+            --out data/nnue/candidates/bilateral-v2/nnue_weights.bin \
+            --ckpt-dir data/checkpoints/bilateral-v2 \
+            --plot-dir data/plots/bilateral-v2 \
+            --epochs 60 \
+            --batch-size 8192 \
+            --lr 3e-4 \
+            --wl-gamma 0.995 \
+            --wall-poor-wl-weight 3.0 \
+            --policy-opening-plies 0 \
+            --monitor val_outcome
+          test -s data/nnue/candidates/bilateral-v2/nnue_weights_int8.bin
+      - name: Bilateral inference smoke and wandering regression
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p bin data/results
+          g++ -std=c++17 -O3 -DNDEBUG -Isrc tests/repro_wandering.cpp -o bin/repro_wandering
+          ./bin/repro_wandering data/nnue/candidates/bilateral-v2/nnue_weights_int8.bin | tee data/results/wandering.log
+          python - <<'PY'
+          from pathlib import Path
+          t=Path('data/results/wandering.log').read_text()
+          start=t.index('=== production MCAB NNUE, 500ms/move ===')
+          tail=t[start:]
+          end=tail.find('\n===',4)
+          sec=tail if end<0 else tail[:end]
+          if 'engine chegou! winner=0' not in sec:
+              raise SystemExit('bilateral candidate failed wandering regression')
+          PY
+      - name: Arena bilateral v2 vs Gen8 baseline
+        shell: bash
+        run: |
+          set -o pipefail
+          python tools/arena/run_arena.py \
+            --ref1 '' --ref2 'fix/strong-selfplay-wandering' \
+            --games 1200 --time 20 --threads 4 --random-plies 4 \
+            --e1-nnue data/nnue/candidates/bilateral-v2/nnue_weights_int8.bin \
+            --e2-nnue baseline/nnue/candidates/gen8-search-ci/nnue_weights_int8.bin \
+            | tee data/results/bilateral-v2-vs-gen8.log
+      - name: Summarize gate
+        if: always()
+        shell: bash
+        run: |
+          python - <<'PY'
+          import re
+          from pathlib import Path
+          p=Path('data/results/bilateral-v2-vs-gen8.log')
+          if not p.exists(): raise SystemExit(0)
+          t=p.read_text()
+          m=re.search(r'Diferenca Elo Engine 1 vs 2\s*:\s*([+-]?\d+(?:\.\d+)?)\s*\(Margem ±([0-9.]+)\)',t)
+          if m:
+              e=float(m.group(1)); d=float(m.group(2))
+              print(f'Bilateral v2 Elo {e:+.1f} ±{d:.1f}; lower95={e-d:+.1f}')
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: bilateral-v2-completed
+          retention-days: 7
+          path: |
+            data/nnue/candidates/bilateral-v2/*.bin
+            data/checkpoints/bilateral-v2/*
+            data/plots/bilateral-v2/*
+            data/results/*
