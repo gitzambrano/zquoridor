@@ -32,6 +32,24 @@ jobs:
           node --check gui_web/app.js
           node --check gui_web/board.js
 
+      - name: Recover generated WASM from current standalone
+        run: |
+          python - <<'PY'
+          import base64, re
+          from pathlib import Path
+          p = Path('gui_web/zquoridor.html')
+          text = p.read_text(encoding='utf-8')
+          m = re.search(r'const __QR_WASM_BYTES__ = __qr_b64ToBytes\("([A-Za-z0-9+/=]+)"\);', text)
+          if not m:
+              raise SystemExit('embedded WASM payload not found in gui_web/zquoridor.html')
+          wasm = base64.b64decode(m.group(1))
+          Path('gui_web/zquoridor.wasm').write_bytes(wasm)
+          md = re.search(r'const __QR_DATA_BYTES__ = __qr_b64ToBytes\("([A-Za-z0-9+/=]+)"\)\.buffer;', text)
+          if md:
+              Path('gui_web/zquoridor.data').write_bytes(base64.b64decode(md.group(1)))
+          print(f'recovered zquoridor.wasm ({len(wasm)} bytes)')
+          PY
+
       - name: Install browser test dependency
         run: |
           python -m pip install --upgrade pip
