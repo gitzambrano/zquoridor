@@ -1,0 +1,67 @@
+name: bilateral-v2-arena-rerun
+
+on:
+  push:
+    branches: [exp/full-accumulator-v2]
+    paths:
+      - .github/workflows/bilateral-v2-arena-rerun.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  arena:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: exp/full-accumulator-v2
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: python -m pip install --disable-pip-version-check numpy
+      - name: Fetch all experiment refs
+        run: git fetch origin '+refs/heads/*:refs/remotes/origin/*' --force
+      - uses: actions/download-artifact@v4
+        with:
+          name: bilateral-v2-completed
+          path: candidate
+          github-token: ${{ github.token }}
+          repository: gitzambrano/zquoridor
+          run-id: 33992518366
+      - uses: actions/download-artifact@v4
+        with:
+          name: gen8-search-ci-completed
+          path: baseline
+          github-token: ${{ github.token }}
+          repository: gitzambrano/zquoridor
+          run-id: 33973129847
+      - name: Locate weights
+        shell: bash
+        run: |
+          set -euo pipefail
+          find candidate baseline -type f -name '*int8.bin' -print
+          CAND=$(find candidate -type f -path '*bilateral-v2*' -name '*int8.bin' | head -1)
+          BASE=$(find baseline -type f -path '*gen8-search-ci*' -name '*int8.bin' | head -1)
+          test -n "$CAND" && test -n "$BASE"
+          echo "CAND=$CAND" >> "$GITHUB_ENV"
+          echo "BASE=$BASE" >> "$GITHUB_ENV"
+      - name: Arena v2 vs Gen8 search baseline
+        shell: bash
+        run: |
+          set -o pipefail
+          mkdir -p results
+          python tools/arena/run_arena.py \
+            --ref1 '' --ref2 'origin/fix/strong-selfplay-wandering' \
+            --games 2000 --time 20 --threads 4 --random-plies 4 \
+            --e1-nnue "$CAND" --e2-nnue "$BASE" \
+            | tee results/v2-vs-gen8.log
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bilateral-v2-arena-rerun
+          path: results/*
+          retention-days: 14
