@@ -27,26 +27,42 @@ jobs:
       - name: Apply deterministic GUI polish
         run: python tools/gui/apply_micro_polish.py
 
-      - name: Preserve legacy setting API and fix theme test baseline
+      - name: Preserve compatibility and update browser expectations
         run: |
           python - <<'PY'
           from pathlib import Path
 
-          app = Path('gui_web/app.js')
-          s = app.read_text(encoding='utf-8')
-          old = """function setOpt(key, val) {\n  S[key] = val;\n  S.preset = 'custom';\n  saveSettings(); applySettings();\n}"""
-          new = """function setOpt(key, val) {\n  S[key] = val;\n  // Schema-v4 style controls and the legacy boolean stay bidirectionally\n  // compatible so old stored settings/tests/integrations keep their meaning.\n  if (key === 'lastMoveStyle') S.lastMove = val !== 'off';\n  if (key === 'lastMove') S.lastMoveStyle = val ? 'subtle' : 'off';\n  S.preset = 'custom';\n  saveSettings(); applySettings();\n}"""
-          if s.count(old) != 1:
-              raise SystemExit('setOpt compatibility anchor drifted')
-          app.write_text(s.replace(old, new, 1), encoding='utf-8')
+          def replace_once(path, old, new, label):
+              p = Path(path)
+              s = p.read_text(encoding='utf-8')
+              if s.count(old) != 1:
+                  raise SystemExit(f'{label}: anchor drifted ({s.count(old)} matches)')
+              p.write_text(s.replace(old, new, 1), encoding='utf-8')
 
-          test = Path('gui_web/test_gui_features.py')
-          t = test.read_text(encoding='utf-8')
-          old = """            prev = board_hash_full()\n            seen = set()\n            for t in themes:\n                page.evaluate(f\"setOpt('board', '{t}')\")\n                page.wait_for_timeout(180)\n                h = board_hash_full()\n                check(f\"theme {t} repaints\", h != prev or t in seen)\n                seen.add(h)\n                prev = h"""
-          new = """            prev = board_hash_full()\n            initial_theme = page.evaluate(\"document.documentElement.dataset.board\")\n            seen = set()\n            for t in themes:\n                page.evaluate(f\"setOpt('board', '{t}')\")\n                page.wait_for_timeout(180)\n                h = board_hash_full()\n                # Re-selecting the already-active initial theme is correctly a no-op.\n                check(f\"theme {t} repaints\", h != prev or t == initial_theme)\n                seen.add(h)\n                prev = h"""
-          if t.count(old) != 1:
-              raise SystemExit('theme-test baseline anchor drifted')
-          test.write_text(t.replace(old, new, 1), encoding='utf-8')
+          replace_once('gui_web/app.js',
+          """function setOpt(key, val) {\n  S[key] = val;\n  S.preset = 'custom';\n  saveSettings(); applySettings();\n}""",
+          """function setOpt(key, val) {\n  S[key] = val;\n  // Schema-v4 style controls and the legacy boolean stay bidirectionally\n  // compatible so old stored settings/tests/integrations keep their meaning.\n  if (key === 'lastMoveStyle') S.lastMove = val !== 'off';\n  if (key === 'lastMove') S.lastMoveStyle = val ? 'subtle' : 'off';\n  S.preset = 'custom';\n  saveSettings(); applySettings();\n}""",
+          'setOpt compatibility')
+
+          replace_once('gui_web/test_gui_features.py',
+          """            prev = board_hash_full()\n            seen = set()\n            for t in themes:\n                page.evaluate(f\"setOpt('board', '{t}')\")\n                page.wait_for_timeout(180)\n                h = board_hash_full()\n                check(f\"theme {t} repaints\", h != prev or t in seen)\n                seen.add(h)\n                prev = h""",
+          """            prev = board_hash_full()\n            initial_theme = page.evaluate(\"document.documentElement.dataset.board\")\n            seen = set()\n            for t in themes:\n                page.evaluate(f\"setOpt('board', '{t}')\")\n                page.wait_for_timeout(180)\n                h = board_hash_full()\n                # Re-selecting the already-active initial theme is correctly a no-op.\n                check(f\"theme {t} repaints\", h != prev or t == initial_theme)\n                seen.add(h)\n                prev = h""",
+          'theme test baseline')
+
+          replace_once('gui_web/test_deep_click.py',
+          """        page.click(\"#setPawns .swatch[data-b='beacon']\")\n        page.wait_for_timeout(100)\n        check(\"pawn style swatch applies\", page.evaluate(\n              \"document.documentElement.dataset.pawn\") == \"beacon\")\n        page.click(\"#modalBox [data-set='frame'] [data-v='gilded']\")""",
+          """        page.click(\"#setPawns .swatch[data-b='beacon']\")\n        page.wait_for_timeout(100)\n        check(\"pawn style swatch applies\", page.evaluate(\n              \"document.documentElement.dataset.pawn\") == \"beacon\")\n        page.locator(\"#modalBox details.advSettings\").first.locator(\"summary\").click()\n        page.wait_for_timeout(100)\n        page.click(\"#modalBox [data-set='frame'] [data-v='gilded']\")""",
+          'board disclosure click')
+
+          replace_once('gui_web/test_deep_click.py',
+          """        check(\"ui theme light\", page.evaluate(\n              \"document.documentElement.dataset.ui\") == \"light\")\n        page.click(\"#modalBox [data-set='anim'] [data-v='off']\")""",
+          """        check(\"ui theme light\", page.evaluate(\n              \"document.documentElement.dataset.ui\") == \"light\")\n        page.locator(\"#modalBox details.advSettings\").first.locator(\"summary\").click()\n        page.wait_for_timeout(100)\n        page.click(\"#modalBox [data-set='anim'] [data-v='off']\")""",
+          'appearance disclosure click')
+
+          replace_once('gui_web/test_features_e2e.py',
+          """    chk(ev[\"w\"] == 24, \"vertical eval bar is 24px wide (got %s)\" % ev[\"w\"])""",
+          """    chk(ev[\"w\"] == 20, \"vertical eval bar is 20px wide (got %s)\" % ev[\"w\"])""",
+          'eval width expectation')
           PY
 
       - name: JavaScript syntax checks
@@ -99,7 +115,7 @@ jobs:
         run: |
           git config user.name "zquoridor-gui-polish"
           git config user.email "actions@users.noreply.github.com"
-          git add gui_web/style.html gui_web/app.js gui_web/board.js gui_web/test_gui_features.py gui_web/zquoridor.html index.html
+          git add gui_web/style.html gui_web/app.js gui_web/board.js gui_web/test_gui_features.py gui_web/test_deep_click.py gui_web/test_features_e2e.py gui_web/zquoridor.html index.html
           git rm tools/gui/apply_micro_polish.py .github/workflows/gui-micro-polish.yml
           git commit -m "gui: apply verified micro-polish pass"
           git push origin HEAD:gui/micro-polish-2026-09
