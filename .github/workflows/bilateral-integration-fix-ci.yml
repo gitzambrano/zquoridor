@@ -34,7 +34,9 @@ jobs:
           mkdir -p bin
           g++ -std=c++17 -O3 -DNDEBUG -Isrc tests/test_bilateral_accumulator.cpp -o bin/test_bilateral_accumulator
           ./bin/test_bilateral_accumulator
-          g++ -std=c++17 -O3 -DNDEBUG -Isrc tools/arena/arena.cpp -o bin/arena
+          grep -q 'nnueWinProbQuant(evalPair.acc\[s.turn\], evalPair.acc\[1 - s.turn\])' tools/selfplay/selfplay.hpp
+          grep -q 'auto opp = qr_e1::buildAccumulatorQuant(s, 1 - mover);' tools/arena/arena.cpp
+          grep -q 'std::fwrite(row.data(), sizeof(float), VALUE_HIDDEN, f)' src/nnue.hpp
       - name: Commit fixes
         shell: bash
         run: |
