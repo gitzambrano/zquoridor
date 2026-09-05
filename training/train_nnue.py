@@ -335,7 +335,7 @@ WALLS_LEFT_BUCKETS = WALLS_PER_PLAYER + 1  # 11
 NUM_FEATURES = N * N + N * N + WS * WS * 2 + 2 * DIST_BUCKETS + 2 * WALLS_LEFT_BUCKETS  # 354
 HIDDEN = 256
 VALUE_INPUT = HIDDEN * 2
-VALUE_HIDDEN = 32
+VALUE_HIDDEN = 64
 POLICY_OUT = N * N + WS * WS * 2                                # 209
 # VALUE_SCALE (200.0) removida 2026-08: so era usada pra normalizar a loss
 # MSE da cabeca auxiliar (search_score/VALUE_SCALE), que nao existe mais --

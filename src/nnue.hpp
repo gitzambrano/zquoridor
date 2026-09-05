@@ -72,7 +72,7 @@ inline int wallsLeftBucket(int n) {
 constexpr int NUM_FEATURES = N * N + N * N + WS * WS * 2 + 2 * DIST_BUCKETS + 2 * WALLS_LEFT_BUCKETS;  // 354
 constexpr int HIDDEN = 256;
 constexpr int VALUE_INPUT = HIDDEN * 2;
-constexpr int VALUE_HIDDEN = 32;
+constexpr int VALUE_HIDDEN = 64;
 constexpr int POLICY_OUT = N * N + WS * WS * 2;             // 81 destino peão + 128 muro = 209
 
 // Espelha a coordenada bruta do tabuleiro para a perspectiva do jogador 1
