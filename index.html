@@ -1526,8 +1526,8 @@ function qrTexturePrimitives(theme, mode, bx, bw, C) {
     // Soft organic grain inspired by lightly finished wood: long fibres wander
     // gently, a few close companions suggest growth layers, and fine broken
     // fibres keep the surface from looking digitally flat.
-    const count = theme === 'walnut' ? 38 : 46;
-    const base = theme === 'walnut' ? .050 : .090;
+    const count = theme === 'walnut' ? 38 : 52;
+    const base = theme === 'walnut' ? .050 : .125;
     for (let i = 0; i < count; i++) {
       const y0 = bx + rnd() * bw;
       const drift = (rnd() - .5) * C * .34;
@@ -1544,22 +1544,22 @@ function qrTexturePrimitives(theme, mode, bx, bw, C) {
       }
       const a = base * s * (.72 + .28 * rnd());
       const t = tone(.61);
-      out.push({ kind: 'poly', points: pts, width: .46 + rnd() * .68,
+      out.push({ kind: 'poly', points: pts, width: .54 + rnd() * .74,
                  tone: t, alpha: a });
 
       if (rnd() > .68) {
         const off = C * (.045 + rnd() * .090) * (rnd() < .5 ? -1 : 1);
         out.push({ kind: 'poly', points: pts.map(q => ({ x:q.x, y:q.y + off })),
-                   width: .32 + rnd() * .46, tone: t, alpha: a * .45 });
+                   width: .36 + rnd() * .50, tone: t, alpha: a * .50 });
       }
     }
 
-    const fibres = theme === 'walnut' ? 34 : 58;
+    const fibres = theme === 'walnut' ? 34 : 70;
     for (let i = 0; i < fibres; i++) {
       const x = bx + rnd() * bw, y = bx + rnd() * bw;
       const len = C * (.18 + rnd() * .55);
       line(x, y, x + len, y + (rnd() - .5) * C * .075,
-           .30 + rnd() * .40, tone(.62), base * s * (.30 + .24 * rnd()));
+           .34 + rnd() * .44, tone(.62), base * s * (.34 + .26 * rnd()));
     }
 
     const flecks = theme === 'walnut' ? 16 : 28;
