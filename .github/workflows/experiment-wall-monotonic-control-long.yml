@@ -1,0 +1,82 @@
+name: experiment-wall-monotonic-control-long
+
+on:
+  push:
+    branches: [exp/wall-monotonic-gen12]
+    paths:
+      - '.github/workflows/experiment-wall-monotonic-control-long.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  long-confirm:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: exp/wall-monotonic-gen12
+          fetch-depth: 0
+
+      - name: Fetch comparison refs
+        run: git fetch origin '+refs/heads/*:refs/remotes/origin/*' --force
+
+      - name: Restore lambda-zero control candidate
+        uses: actions/download-artifact@v4
+        with:
+          name: wall-monotonic-olddata-control
+          path: candidate
+          github-token: ${{ github.token }}
+          repository: gitzambrano/zquoridor
+          run-id: 34043824388
+
+      - name: Restore Gen8 baseline
+        uses: actions/download-artifact@v4
+        with:
+          name: gen8-search-ci-completed
+          path: baseline
+          github-token: ${{ github.token }}
+          repository: gitzambrano/zquoridor
+          run-id: 33973129847
+
+      - name: Locate weights
+        shell: bash
+        run: |
+          set -euo pipefail
+          CAND=$(find candidate -type f -path '*candidates/control*' -name 'nnue_weights_int8.bin' | head -1)
+          GEN8=$(find baseline -type f -path '*gen8-search-ci*' -name 'nnue_weights_int8.bin' | head -1)
+          test -n "$CAND"
+          test -n "$GEN8"
+          echo "CAND=$CAND" >> "$GITHUB_ENV"
+          echo "GEN8=$GEN8" >> "$GITHUB_ENV"
+          echo "candidate=$CAND"
+          echo "baseline=$GEN8"
+
+      - name: Wandering regression gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p bin results
+          g++ -std=c++17 -O3 -DNDEBUG -Isrc tests/wandering_race_suite.cpp -o bin/wandering_race_suite
+          ./bin/wandering_race_suite "$CAND" | tee results/wandering.txt
+
+      - name: 4000-game weights-only confirmation vs Gen8
+        shell: bash
+        run: |
+          set -o pipefail
+          python tools/arena/run_arena.py \
+            --ref1 'origin/fix/strong-selfplay-wandering' \
+            --ref2 'origin/fix/strong-selfplay-wandering' \
+            --games 4000 --time 20 --threads 4 --random-plies 4 \
+            --e1-nnue "$CAND" --e2-nnue "$GEN8" \
+            | tee results/arena-control-vs-gen8-4000.log
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: wall-monotonic-control-long-results
+          retention-days: 14
+          path: results/*
