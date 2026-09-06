@@ -89,25 +89,25 @@ if old_svg not in s:
 s = s.replace(old_svg, new_svg, 1)
 p.write_text(s)
 
-# Relax the old minimum-alpha assertion and explicitly verify player 1 gets
-# the intended small reduction without changing the tint colour itself.
+# Update the targeted regression: the blue wash intentionally loses 8% alpha,
+# while the player-coloured fills and no-edge-rail contract stay unchanged.
 t = Path('gui_web/test_micro_polish_semantics.py')
 ts = t.read_text()
-old_test = """                  {'#b6675b', '#5a85ca'}.issubset({x.lower() for x in goal_fills})
-                  and goal_alpha and min(goal_alpha) >= .27
-                  and 'height=\"2\"' not in goal_group)
-"""
-new_test = """                  {'#b6675b', '#5a85ca'}.issubset({x.lower() for x in goal_fills})
-                  and goal_alpha and min(goal_alpha) >= .24
-                  and 'height=\"2\"' not in goal_group)
-            blue_scale = page.evaluate(\"\"\"() => {
-              const ca = getComputedStyle(document.documentElement).getPropertyValue('--cell-a').trim();
-              const cb = getComputedStyle(document.documentElement).getPropertyValue('--cell-b').trim();
-              const blue = qrGoalTint(getComputedStyle(document.documentElement).getPropertyValue('--p1').trim());
+old_min = "and goal_alpha and min(goal_alpha) >= .27"
+if old_min not in ts:
+    raise SystemExit('missing goal alpha minimum assertion')
+ts = ts.replace(old_min, "and goal_alpha and min(goal_alpha) >= .24", 1)
+anchor = "                  and 'height=\"2\"' not in goal_group)\n"
+if anchor not in ts:
+    raise SystemExit('missing goal tint check anchor')
+extra = """            blue_scale = page.evaluate(\"\"\"() => {
+              const st = getComputedStyle(document.documentElement);
+              const ca = st.getPropertyValue('--cell-a').trim();
+              const cb = st.getPropertyValue('--cell-b').trim();
+              const blue = qrGoalTint(st.getPropertyValue('--p1').trim());
               return qrGoalPlayerAlpha(blue, ca, cb, 'subtle', 1) / qrGoalAlpha(blue, ca, cb, 'subtle');
             }\"\"\")
             check(\"blue goal tint is slightly reduced\", abs(blue_scale - .92) < .001)
 """
-if old_test not in ts:
-    raise SystemExit('missing semantic tint assertion')
-t.write_text(ts.replace(old_test, new_test, 1))
+ts = ts.replace(anchor, anchor + extra, 1)
+t.write_text(ts)
