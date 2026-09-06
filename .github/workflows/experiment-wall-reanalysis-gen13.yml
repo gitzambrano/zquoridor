@@ -1,0 +1,284 @@
+name: experiment-wall-reanalysis-gen13
+
+on:
+  push:
+    branches: [exp/wall-reanalysis-gen13]
+    paths:
+      - '.github/workflows/experiment-wall-reanalysis-gen13.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  reanalyse:
+    name: reanalyse-${{ matrix.partition }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        partition: [0, 1, 2, 3]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: exp/wall-reanalysis-gen13
+      - name: Restore Gen8 weights
+        uses: actions/download-artifact@v4
+        with:
+          name: gen8-search-ci-completed
+          path: bootstrap
+          github-token: ${{ github.token }}
+          repository: gitzambrano/zquoridor
+          run-id: 33973129847
+      - name: Restore teacher partition
+        uses: actions/download-artifact@v4
+        with:
+          name: wall-economy-teacher-${{ matrix.partition }}
+          path: teacher
+          github-token: ${{ github.token }}
+          repository: gitzambrano/zquoridor
+          run-id: 34043150939
+      - name: Compile targeted reanalysis
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p bin out logs
+          g++ -O3 -std=c++17 -pthread -march=native -Isrc -Itools/selfplay \
+            tools/dev/wall_reanalysis.cpp -o bin/wall_reanalysis
+      - name: Reanalyse wall-timing roots at 250ms
+        shell: bash
+        run: |
+          set -euo pipefail
+          W=$(find bootstrap -name nnue_weights_int8.bin | head -1)
+          test -n "$W"
+          part='${{ matrix.partition }}'
+          i=0
+          while IFS= read -r f; do
+            base=$(basename "$f" .bin)
+            if [[ "$base" == selfplay_broad_* ]]; then
+              maxpos=160
+            elif [[ "$base" == selfplay_deep_* ]]; then
+              maxpos=80
+            else
+              continue
+            fi
+            seed=$((202609130 + part * 100 + i))
+            echo "reanalyse $base max=$maxpos seed=$seed"
+            ./bin/wall_reanalysis "$f" "out/${base}_rean.bin" "$W" \
+              "$maxpos" 250 100000 "$seed" | tee "logs/${base}.txt"
+            i=$((i + 1))
+          done < <(find teacher -type f -name '*.bin' | sort)
+          test "$i" -ge 6
+          ! grep -R -E 'reconstruction_errors=[1-9]' logs
+          python - <<'PY'
+          import pathlib, struct
+          files=sorted(pathlib.Path('out').glob('*.bin'))
+          assert files, 'no reanalysis outputs'
+          records=targets=0
+          for p in files:
+              b=p.read_bytes()
+              assert len(b)%64==0, (p,len(b))
+              records += len(b)//64
+              for off in range(0,len(b),64):
+                  if struct.unpack_from('<H',b,off+48)[0] > 0:
+                      targets += 1
+          print(f'partition reanalysis: files={len(files)} records={records} deep_targets={targets}')
+          assert targets >= 250, f'too few deep targets: {targets}'
+          PY
+      - name: Upload reanalysis partition
+        uses: actions/upload-artifact@v4
+        with:
+          name: wall-reanalysis-gen13-${{ matrix.partition }}
+          path: |
+            out/*.bin
+            logs/*.txt
+          retention-days: 14
+
+  train-screen:
+    needs: reanalyse
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    outputs:
+      best_tag: ${{ steps.rank.outputs.best_tag }}
+      best_elo: ${{ steps.rank.outputs.best_elo }}
+      best_margin: ${{ steps.rank.outputs.best_margin }}
+      promising: ${{ steps.rank.outputs.promising }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: exp/wall-reanalysis-gen13
+          fetch-depth: 0
+      - name: Fetch production comparison ref
+        run: git fetch origin '+refs/heads/*:refs/remotes/origin/*' --force
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install CPU training dependencies
+        run: python -m pip install --disable-pip-version-check numpy torch --index-url https://download.pytorch.org/whl/cpu
+      - name: Restore Gen8 baseline
+        uses: actions/download-artifact@v4
+        with:
+          name: gen8-search-ci-completed
+          path: bootstrap
+          github-token: ${{ github.token }}
+          repository: gitzambrano/zquoridor
+          run-id: 33973129847
+      - name: Restore train partition 0
+        uses: actions/download-artifact@v4
+        with:
+          name: wall-reanalysis-gen13-0
+          path: reanalysis/p0
+      - name: Restore train partition 1
+        uses: actions/download-artifact@v4
+        with:
+          name: wall-reanalysis-gen13-1
+          path: reanalysis/p1
+      - name: Restore train partition 2
+        uses: actions/download-artifact@v4
+        with:
+          name: wall-reanalysis-gen13-2
+          path: reanalysis/p2
+      - name: Restore held-out partition 3
+        uses: actions/download-artifact@v4
+        with:
+          name: wall-reanalysis-gen13-3
+          path: reanalysis/p3
+      - name: Fit policy head and export trust-region doses
+        shell: bash
+        run: |
+          set -euo pipefail
+          GEN8=$(find bootstrap -name nnue_weights.bin | head -1)
+          test -n "$GEN8"
+          python training/finetune_policy_reanalysis.py \
+            --train reanalysis/p0 --train reanalysis/p1 --train reanalysis/p2 \
+            --val reanalysis/p3 \
+            --init-from "$GEN8" \
+            --out-dir candidate \
+            --epochs 30 --lr 2e-4 --lr-min 1e-5 --batch-size 1024 \
+            --seed 20260913 \
+            --blend 0.10 --blend 0.25 --blend 0.50 \
+            | tee policy-train.log
+          for tag in blend10 blend25 blend50; do
+            test -s "candidate/nnue_weights_${tag}.bin"
+            test -s "candidate/nnue_weights_${tag}_int8.bin"
+          done
+      - name: Wandering gate for all doses
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p bin results
+          g++ -std=c++17 -O3 -DNDEBUG -Isrc tests/wandering_race_suite.cpp -o bin/wandering_race_suite
+          for tag in blend10 blend25 blend50; do
+            ./bin/wandering_race_suite "candidate/nnue_weights_${tag}_int8.bin" \
+              | tee "results/wandering-${tag}.txt"
+            grep -q 'wandering race suite: 0/5 failed' "results/wandering-${tag}.txt"
+          done
+      - name: 800-game dose-response arenas
+        shell: bash
+        run: |
+          set -euo pipefail
+          GEN8=$(find bootstrap -name nnue_weights_int8.bin | head -1)
+          test -n "$GEN8"
+          for tag in blend10 blend25 blend50; do
+            echo "===== arena $tag vs Gen8 ====="
+            python tools/arena/run_arena.py \
+              --ref1 origin/fix/strong-selfplay-wandering \
+              --ref2 origin/fix/strong-selfplay-wandering \
+              --games 800 --time 20 --threads 4 --random-plies 4 \
+              --e1-nnue "candidate/nnue_weights_${tag}_int8.bin" \
+              --e2-nnue "$GEN8" \
+              | tee "results/arena-${tag}-vs-gen8-800.log"
+          done
+      - name: Rank dose-response candidates
+        id: rank
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json, os, pathlib, re
+          rows=[]
+          for tag in ('blend10','blend25','blend50'):
+              text=pathlib.Path(f'results/arena-{tag}-vs-gen8-800.log').read_text(errors='replace')
+              elo=re.search(r'Diferenca Elo[^:]*:\s*([+-]?[0-9.]+).*?Margem[^0-9]*([0-9.]+)',text,re.S)
+              wins=re.findall(r'Engine [12].*?:\s*([0-9]+) vitorias',text)
+              draws=re.search(r'Empates\s*:\s*([0-9]+)',text)
+              if not elo or len(wins)<2 or not draws:
+                  raise SystemExit(f'could not parse arena for {tag}')
+              row={'tag':tag,'wins':int(wins[-2]),'losses':int(wins[-1]),'draws':int(draws.group(1)),
+                   'elo':float(elo.group(1)),'margin':float(elo.group(2))}
+              rows.append(row)
+          rows.sort(key=lambda r:r['elo'],reverse=True)
+          best=rows[0]
+          pathlib.Path('results/dose-summary.json').write_text(json.dumps(rows,indent=2))
+          print(json.dumps(rows,indent=2))
+          promising=best['elo'] >= 5.0
+          with open(os.environ['GITHUB_OUTPUT'],'a') as f:
+              f.write(f"best_tag={best['tag']}\n")
+              f.write(f"best_elo={best['elo']}\n")
+              f.write(f"best_margin={best['margin']}\n")
+              f.write(f"promising={'true' if promising else 'false'}\n")
+          print(f"best={best['tag']} elo={best['elo']:+.1f} +/-{best['margin']:.1f}; long_confirm={promising}")
+          PY
+      - name: Upload Gen13 candidates and screens
+        uses: actions/upload-artifact@v4
+        with:
+          name: wall-reanalysis-gen13-candidates
+          path: |
+            candidate/*
+            policy-train.log
+            results/*
+          retention-days: 14
+
+  long-confirm:
+    needs: train-screen
+    if: needs.train-screen.outputs.promising == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: exp/wall-reanalysis-gen13
+          fetch-depth: 0
+      - name: Fetch production comparison ref
+        run: git fetch origin '+refs/heads/*:refs/remotes/origin/*' --force
+      - name: Restore screened candidates
+        uses: actions/download-artifact@v4
+        with:
+          name: wall-reanalysis-gen13-candidates
+          path: screened
+      - name: Restore Gen8 baseline
+        uses: actions/download-artifact@v4
+        with:
+          name: gen8-search-ci-completed
+          path: bootstrap
+          github-token: ${{ github.token }}
+          repository: gitzambrano/zquoridor
+          run-id: 33973129847
+      - name: 4000-game confirmation of best dose
+        shell: bash
+        env:
+          BEST_TAG: ${{ needs.train-screen.outputs.best_tag }}
+        run: |
+          set -euo pipefail
+          mkdir -p long-results
+          CAND=$(find screened -name "nnue_weights_${BEST_TAG}_int8.bin" | head -1)
+          GEN8=$(find bootstrap -name nnue_weights_int8.bin | head -1)
+          test -n "$CAND" && test -n "$GEN8"
+          g++ -std=c++17 -O3 -DNDEBUG -Isrc tests/wandering_race_suite.cpp -o /tmp/wandering_gen13
+          /tmp/wandering_gen13 "$CAND" | tee long-results/wandering.txt
+          grep -q 'wandering race suite: 0/5 failed' long-results/wandering.txt
+          python tools/arena/run_arena.py \
+            --ref1 origin/fix/strong-selfplay-wandering \
+            --ref2 origin/fix/strong-selfplay-wandering \
+            --games 4000 --time 20 --threads 4 --random-plies 4 \
+            --e1-nnue "$CAND" --e2-nnue "$GEN8" \
+            | tee "long-results/arena-${BEST_TAG}-vs-gen8-4000.log"
+      - name: Upload long confirmation
+        uses: actions/upload-artifact@v4
+        with:
+          name: wall-reanalysis-gen13-long-results
+          path: long-results/*
+          retention-days: 14
