@@ -8,25 +8,162 @@ permissions:
   contents: write
 
 jobs:
-  export-source:
+  polish-and-test:
     runs-on: ubuntu-latest
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4
         with:
           ref: gui/final-polish-2026-09
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Apply surgical polish and recover WASM
+        run: |
+          python gui_web/extract_wasm_from_bundle.py gui_web/zquoridor.html gui_web/zquoridor.wasm
+          ZQ_REPO_ROOT="$GITHUB_WORKSPACE" python tools/gui/apply_final_polish.py
+          node --check gui_web/app.js
+          node --check gui_web/board.js
+          python -m py_compile gui_web/test_micro_polish_semantics.py
+          git diff --check
+
+      - name: Install Chromium
+        run: |
+          python -m pip install playwright
+          python -m playwright install --with-deps chromium
+
+      - name: Rebuild standalone bundle
+        run: |
+          python gui_web/build_standalone.py
+          git diff --check
+
+      - name: Run all browser suites
+        working-directory: gui_web
+        run: |
+          set -euo pipefail
+          python test_gui_features.py
+          python test_deep_click.py
+          python test_features_e2e.py
+          python test_wall_matrix.py
+          python test_gameplay_sim.py
+          python test_browser_full.py
+          python test_micro_polish_semantics.py
+          python test_standalone.py
+
+      - name: Final real-browser visual audit
+        working-directory: gui_web
+        run: |
+          python dev_server.py 8137 >/tmp/zq-final-server.log 2>&1 &
+          SERVER_PID=$!
+          trap 'kill $SERVER_PID 2>/dev/null || true' EXIT
+          sleep 1
+          cat >/tmp/final_visual.py <<'PY'
+          import json
+          from pathlib import Path
+          from playwright.sync_api import sync_playwright, TimeoutError as PWTimeout
+
+          OUT=Path('final_visual'); OUT.mkdir(exist_ok=True)
+          R={'desktop':{},'mobile':{},'errors':[]}
+
+          def boot(p):
+              p.goto('http://127.0.0.1:8137/style.html', wait_until='domcontentloaded')
+              p.wait_for_function("() => window.__w && document.querySelector('#status') && !document.querySelector('#status').textContent.includes('Loading')", timeout=12000)
+              p.wait_for_timeout(350)
+
+          def watch(p):
+              p.on('pageerror', lambda e: R['errors'].append('pageerror: '+str(e)))
+              p.on('console', lambda m: R['errors'].append('console: '+m.text) if m.type=='error' else None)
+
+          def first_pawn_move(p, touch=False):
+              mv=p.evaluate("() => {const W=window.__w; for(let i=0;i<W.moveCount();i++) if(!W.mvIsWall(i)) return W.mvA(i); return -1}")
+              if mv < 0: return False
+              pt=p.evaluate("""dst => {const B=window.__qb,d=B.engPawnToDisp(dst),q=B.cellCenter(Math.floor(d/9),d%9),r=document.querySelector('#board').getBoundingClientRect();return{x:r.left+q.x,y:r.top+q.y}}""",mv)
+              old=p.evaluate('window.__w.plyCount()')
+              if touch: p.touchscreen.tap(pt['x'],pt['y'])
+              else:
+                  p.mouse.move(pt['x'],pt['y'],steps=8); p.mouse.click(pt['x'],pt['y'])
+              try:
+                  p.wait_for_function("old => window.__w.winner()>=0 || window.__w.plyCount()>=old+2 || (window.__w.plyCount()>old && window.__w.turn()===0)", arg=old, timeout=12000)
+              except PWTimeout: return False
+              p.wait_for_timeout(120)
+              return True
+
+          def first_wall_move(p):
+              data=p.evaluate("() => {const W=window.__w; for(let i=0;i<W.moveCount();i++) if(W.mvIsWall(i)) return [W.mvA(i),W.mvB(i),W.mvC(i)]; return null}")
+              if not data: return False
+              o,r,c=data; old=p.evaluate('window.__w.plyCount()')
+              p.click('#wallH' if o==0 else '#wallV')
+              pt=p.evaluate("""x => {const B=window.__qb,[o,r,c]=B.engWallToDisp(x[0],x[1],x[2]),a=B.anchorCenter(r,c),q=document.querySelector('#board').getBoundingClientRect();return{x:q.left+a.x,y:q.top+a.y}}""",data)
+              p.mouse.move(pt['x'],pt['y'],steps=10); p.mouse.click(pt['x'],pt['y'])
+              try:
+                  p.wait_for_function("old => window.__w.winner()>=0 || window.__w.plyCount()>=old+2 || (window.__w.plyCount()>old && window.__w.turn()===0)", arg=old, timeout=12000)
+              except PWTimeout: return False
+              p.wait_for_timeout(120)
+              return True
+
+          with sync_playwright() as pw:
+              b=pw.chromium.launch()
+              dctx=b.new_context(viewport={'width':1440,'height':900})
+              d=dctx.new_page(); watch(d); boot(d)
+              R['desktop']['evalFont']=d.evaluate("getComputedStyle(document.querySelector('#evalNum')).fontSize")
+              R['desktop']['palette']=d.evaluate("""() => {const s=getComputedStyle(document.documentElement);return {a:s.getPropertyValue('--cell-a').trim(),b:s.getPropertyValue('--cell-b').trim(),wall:s.getPropertyValue('--wall').trim(),wallHi:s.getPropertyValue('--wall-hi').trim()}}""")
+              d.screenshot(path=str(OUT/'desktop_initial.png'),full_page=True)
+              assert first_pawn_move(d)
+              assert first_wall_move(d)
+              d.screenshot(path=str(OUT/'desktop_wall.png'),full_page=True)
+              turns=2
+              while turns < 30 and d.evaluate('window.__w.winner()') < 0:
+                  if not first_pawn_move(d): break
+                  turns += 1
+              if d.evaluate('window.__w.winner()') >= 0:
+                  R['desktop']['realGameEnded']=True
+                  R['desktop']['gameOverDots']=d.evaluate('window.__qb.dots.length')
+                  assert R['desktop']['gameOverDots']==0
+                  d.screenshot(path=str(OUT/'desktop_gameover.png'),full_page=True)
+              else:
+                  R['desktop']['realGameEnded']=False
+              assert R['desktop']['evalFont']=='14px'
+              assert R['desktop']['palette']=={'a':'#e6d1ab','b':'#dcc096','wall':'#74797d','wallHi':'#e4e7e8'}
+              dctx.close()
+
+              mctx=b.new_context(viewport={'width':390,'height':844},device_scale_factor=2,is_mobile=True,has_touch=True)
+              m=mctx.new_page(); watch(m); boot(m)
+              for _ in range(5):
+                  if m.evaluate('window.__w.winner()')>=0: break
+                  if not first_pawn_move(m,touch=True): break
+              layout=m.evaluate("""() => {const q=s=>document.querySelector(s),log=q('#moveLog'),st=getComputedStyle(log); const sel=window.getSelection(); sel.removeAllRanges(); const range=document.createRange(); range.selectNodeContents(log); sel.addRange(range); const selected=sel.toString(); sel.removeAllRanges(); return {moves:getComputedStyle(q('#movesChip')).display,evalParent:q('#evalWrap').parentElement.id,evalPrev:q('#evalWrap').previousElementSibling?.id,evalNext:q('#evalWrap').nextElementSibling?.id,logParent:log.parentElement.id,overflow:st.overflowY,userSelect:st.userSelect,touchAction:st.touchAction,scrollHeight:log.scrollHeight,clientHeight:log.clientHeight,selectedChars:selected.length,bodyW:document.body.scrollWidth,vw:innerWidth}}""")
+              R['mobile']['layout']=layout
+              assert layout['moves']=='none'
+              assert layout['evalParent']=='underBoard' and layout['evalPrev']=='controls' and layout['evalNext']=='moveLog'
+              assert layout['logParent']=='underBoard' and layout['overflow']=='auto' and layout['userSelect']=='text' and 'pan-y' in layout['touchAction']
+              assert layout['selectedChars']>0 and layout['bodyW']==layout['vw']
+              m.evaluate("document.querySelector('#moveLog').scrollTop=document.querySelector('#moveLog').scrollHeight")
+              m.screenshot(path=str(OUT/'mobile_game.png'),full_page=True)
+              m.locator('#btnSettings').tap(); m.wait_for_timeout(200)
+              m.screenshot(path=str(OUT/'mobile_settings.png'),full_page=True)
+              mctx.close(); b.close()
+
+          if R['errors']:
+              raise SystemExit('runtime errors: '+repr(R['errors']))
+          Path('final_visual.json').write_text(json.dumps(R,indent=2),encoding='utf-8')
+          print(json.dumps(R,indent=2))
+          PY
+          python /tmp/final_visual.py
+
       - uses: actions/upload-artifact@v4
         with:
-          name: gui-final-source
+          name: gui-final-visual
           path: |
-            gui_web/style.html
-            gui_web/app.js
-            gui_web/board.js
-            gui_web/build_standalone.py
-            gui_web/extract_wasm_from_bundle.py
-            gui_web/dev_server.py
-            gui_web/test_*.py
-            gui_web/zquoridor.html
-            gui_web/zquoridor.js
-            gui_web/zquoridor.data
-            gui_web/fonts_cache
-            tools/gui/contrast_check.py
+            gui_web/final_visual/*.png
+            gui_web/final_visual.json
+
+      - name: Commit verified product files
+        run: |
+          git config user.name "zquoridor-gui-ci"
+          git config user.email "actions@users.noreply.github.com"
+          git add gui_web/style.html gui_web/app.js gui_web/board.js gui_web/test_micro_polish_semantics.py gui_web/zquoridor.html index.html
+          git diff --cached --check
+          git commit -m "gui: final board and mobile polish [skip ci]"
+          git push origin HEAD:gui/final-polish-2026-09
