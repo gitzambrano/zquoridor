@@ -153,8 +153,8 @@ jobs:
           GEN8=$(find bootstrap -name nnue_weights.bin | head -1)
           test -n "$GEN8"
           python training/finetune_policy_reanalysis.py \
-            --train reanalysis/p0 --train reanalysis/p1 --train reanalysis/p2 \
-            --val reanalysis/p3 \
+            --train reanalysis/p0/out --train reanalysis/p1/out --train reanalysis/p2/out \
+            --val reanalysis/p3/out \
             --init-from "$GEN8" \
             --out-dir candidate \
             --epochs 30 --lr 2e-4 --lr-min 1e-5 --batch-size 1024 \
@@ -204,10 +204,10 @@ jobs:
               text=pathlib.Path(f'results/arena-{tag}-vs-gen8-800.log').read_text(errors='replace')
               elo=re.search(r'Diferenca Elo[^:]*:\s*([+-]?[0-9.]+).*?Margem[^0-9]*([0-9.]+)',text,re.S)
               wins=re.findall(r'Engine [12].*?:\s*([0-9]+) vitorias',text)
-              draws=re.search(r'Empates\s*:\s*([0-9]+)',text)
+              draws=re.findall(r'Empates\s*:\s*([0-9]+)',text)
               if not elo or len(wins)<2 or not draws:
                   raise SystemExit(f'could not parse arena for {tag}')
-              row={'tag':tag,'wins':int(wins[-2]),'losses':int(wins[-1]),'draws':int(draws.group(1)),
+              row={'tag':tag,'wins':int(wins[-2]),'losses':int(wins[-1]),'draws':int(draws[-1]),
                    'elo':float(elo.group(1)),'margin':float(elo.group(2))}
               rows.append(row)
           rows.sort(key=lambda r:r['elo'],reverse=True)
