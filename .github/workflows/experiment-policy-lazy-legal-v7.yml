@@ -1,0 +1,83 @@
+name: experiment-policy-lazy-legal-v7
+
+on:
+  push:
+    branches: [exp/policy-lazy-legal-v7]
+    paths:
+      - '.github/workflows/experiment-policy-lazy-legal-v7.yml'
+      - 'tools/dev/apply_policy_lazy_legal_v7.py'
+      - 'tests/test_policy_lazy_legal_v7.cpp'
+      - 'tests/wandering_race_suite.cpp'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  patch-test-arena:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: exp/policy-lazy-legal-v7
+          fetch-depth: 0
+      - name: Fetch comparison refs
+        run: git fetch origin '+refs/heads/*:refs/remotes/origin/*' --force
+      - uses: actions/download-artifact@v4
+        with:
+          name: gen8-search-ci-completed
+          path: baseline
+          github-token: ${{ github.token }}
+          repository: gitzambrano/zquoridor
+          run-id: 33973129847
+      - name: Locate Gen8 weights
+        shell: bash
+        run: |
+          set -euo pipefail
+          W=$(find baseline -type f -path '*gen8-search-ci*' -name '*int8.bin' | head -1)
+          test -n "$W"
+          echo "GEN8=$W" >> "$GITHUB_ENV"
+      - name: Apply exact policy pruning
+        run: python tools/dev/apply_policy_lazy_legal_v7.py
+      - name: Compile and run parity/core tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p bin results
+          g++ -std=c++17 -O3 -DNDEBUG -Isrc tests/test_policy_lazy_legal_v7.cpp -o bin/test_policy_lazy_legal_v7
+          ./bin/test_policy_lazy_legal_v7 "$GEN8" | tee results/parity.txt
+          g++ -std=c++17 -O3 -DNDEBUG -Isrc tests/test_mcab_core.cpp -o bin/test_mcab_core
+          ./bin/test_mcab_core | tee results/core.txt
+      - name: Wandering suite
+        shell: bash
+        run: |
+          set -euo pipefail
+          g++ -std=c++17 -O3 -DNDEBUG -Isrc tests/wandering_race_suite.cpp -o bin/wandering_race_suite
+          ./bin/wandering_race_suite "$GEN8" | tee results/wandering.txt
+      - name: Commit generated experiment source
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add src/nnue.hpp
+          if ! git diff --cached --quiet; then
+            git commit -m 'nnue: skip unreachable wall policy rows at zero walls'
+            git push origin HEAD:exp/policy-lazy-legal-v7
+          fi
+      - name: Arena exact lazy policy vs baseline
+        shell: bash
+        run: |
+          set -o pipefail
+          python tools/arena/run_arena.py \
+            --ref1 '' --ref2 'origin/fix/strong-selfplay-wandering' \
+            --games 1600 --time 20 --threads 4 --random-plies 4 \
+            --e1-nnue "$GEN8" --e2-nnue "$GEN8" \
+            | tee results/arena-vs-baseline.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: policy-lazy-legal-v7-results
+          retention-days: 14
+          path: results/*
