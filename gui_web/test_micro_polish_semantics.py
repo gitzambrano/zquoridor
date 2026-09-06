@@ -2,6 +2,7 @@
 Run from gui_web/: python test_micro_polish_semantics.py
 """
 import os
+import re
 import subprocess
 import sys
 import time
@@ -77,9 +78,14 @@ def main():
             svg_subtle = page.evaluate("window.__qb.toSVG({coords:true})")
             check("goal rows repaint", g0 != g1)
             check("goal rows Off removes SVG wash and edges", 'data-zq-goal-rows=' not in svg_off)
-            check("goal rows Subtle exports", 'data-zq-goal-rows="subtle"' in svg_subtle)
-            check("goal tint is player-coloured and has no edge rails",
-                  '#ab6e66' in svg_subtle.lower() and '#6485bc' in svg_subtle.lower() and 'height="2"' not in svg_subtle)
+            check("goal rows Subtle exports", 'data-zq-goal-rows=\"subtle\"' in svg_subtle)
+            goal_group = svg_subtle.split('<g data-zq-goal-rows=\"subtle\">', 1)[1].split('</g>', 1)[0]
+            goal_fills = set(re.findall(r'fill=\"(#[0-9a-fA-F]{6})\"', goal_group))
+            goal_alpha = [float(x) for x in re.findall(r'fill-opacity=\"([0-9.]+)\"', goal_group)]
+            check("goal tint is stronger, player-coloured and has no edge rails",
+                  {'#b6675b', '#5a85ca'}.issubset({x.lower() for x in goal_fills})
+                  and goal_alpha and min(goal_alpha) >= .27
+                  and 'height=\"2\"' not in goal_group)
 
             # A pawn last move gets a fine halo; Clear is stronger; Off removes it.
             page.evaluate("setOpt('goalRows', 'off'); setOpt('lastMoveStyle', 'off')")
@@ -108,9 +114,9 @@ def main():
             png1 = page.evaluate("window.__qb.renderExport({size:640,coords:true}).toDataURL()")
             svg = page.evaluate("window.__qb.toSVG({size:640,coords:true})")
             check("PNG export carries renderer-owned effects", png0 != png1)
-            check("SVG export carries material texture", 'data-zq-texture="wood:natural"' in svg)
-            check("SVG export carries clear goal rows", 'data-zq-goal-rows="clear"' in svg)
-            check("SVG export carries wall profile", 'data-zq-wall-profile="bold"' in svg)
+            check("SVG export carries material texture", 'data-zq-texture=\"wood:natural\"' in svg)
+            check("SVG export carries clear goal rows", 'data-zq-goal-rows=\"clear\"' in svg)
+            check("SVG export carries wall profile", 'data-zq-wall-profile=\"bold\"' in svg)
             check("SVG export still has coordinates", '<text' in svg and 'abcdefghi' not in svg)
 
             # Any terminal state must clear actionable overlays immediately.
