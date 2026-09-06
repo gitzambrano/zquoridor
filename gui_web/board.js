@@ -109,17 +109,18 @@ function qrTexturePrimitives(theme, mode, bx, bw, C) {
     out.push({ kind: 'dot', x, y, radius, tone: t, alpha });
 
   if (theme === 'wood' || theme === 'walnut') {
-    // Soft organic grain inspired by lightly finished wood: long fibres wander
-    // gently, a few close companions suggest growth layers, and fine broken
-    // fibres keep the surface from looking digitally flat.
-    const count = theme === 'walnut' ? 38 : 52;
-    const base = theme === 'walnut' ? .050 : .125;
+    // Soft organic grain inspired by lightly finished wood. Default wood uses
+    // many hairline fibres with low contrast and small wander, so the surface
+    // reads as wood rather than as a set of drawn scratches. Walnut keeps its
+    // broader, darker grain profile.
+    const count = theme === 'walnut' ? 38 : 84;
+    const base = theme === 'walnut' ? .050 : .135;
     for (let i = 0; i < count; i++) {
       const y0 = bx + rnd() * bw;
-      const drift = (rnd() - .5) * C * .34;
-      const amp = C * (.018 + rnd() * .038);
+      const drift = (rnd() - .5) * C * (theme === 'walnut' ? .34 : .22);
+      const amp = C * (theme === 'walnut' ? (.018 + rnd() * .038) : (.008 + rnd() * .020));
       const phase = rnd() * Math.PI * 2;
-      const waves = .55 + rnd() * 1.20;
+      const waves = theme === 'walnut' ? .55 + rnd() * 1.20 : .45 + rnd() * .85;
       const pts = [];
       const segments = 10;
       for (let j = 0; j <= segments; j++) {
@@ -130,27 +131,27 @@ function qrTexturePrimitives(theme, mode, bx, bw, C) {
       }
       const a = base * s * (.72 + .28 * rnd());
       const t = tone(.61);
-      out.push({ kind: 'poly', points: pts, width: .54 + rnd() * .74,
+      out.push({ kind: 'poly', points: pts, width: theme === 'walnut' ? .54 + rnd() * .74 : .18 + rnd() * .22,
                  tone: t, alpha: a });
 
       if (rnd() > .68) {
-        const off = C * (.045 + rnd() * .090) * (rnd() < .5 ? -1 : 1);
+        const off = C * (theme === 'walnut' ? (.045 + rnd() * .090) : (.022 + rnd() * .050)) * (rnd() < .5 ? -1 : 1);
         out.push({ kind: 'poly', points: pts.map(q => ({ x:q.x, y:q.y + off })),
-                   width: .36 + rnd() * .50, tone: t, alpha: a * .50 });
+                   width: theme === 'walnut' ? .36 + rnd() * .50 : .10 + rnd() * .12, tone: t, alpha: a * (theme === 'walnut' ? .50 : .38) });
       }
     }
 
-    const fibres = theme === 'walnut' ? 34 : 70;
+    const fibres = theme === 'walnut' ? 34 : 115;
     for (let i = 0; i < fibres; i++) {
       const x = bx + rnd() * bw, y = bx + rnd() * bw;
-      const len = C * (.18 + rnd() * .55);
+      const len = C * (theme === 'walnut' ? (.18 + rnd() * .55) : (.12 + rnd() * .38));
       line(x, y, x + len, y + (rnd() - .5) * C * .075,
-           .34 + rnd() * .44, tone(.62), base * s * (.34 + .26 * rnd()));
+           theme === 'walnut' ? .34 + rnd() * .44 : .08 + rnd() * .12, tone(.62), base * s * (theme === 'walnut' ? (.34 + .26 * rnd()) : (.18 + .18 * rnd())));
     }
 
-    const flecks = theme === 'walnut' ? 16 : 28;
+    const flecks = theme === 'walnut' ? 16 : 14;
     for (let i = 0; i < flecks; i++)
-      dot(bx + rnd() * bw, bx + rnd() * bw, .22 + rnd() * .42,
+      dot(bx + rnd() * bw, bx + rnd() * bw, theme === 'walnut' ? .22 + rnd() * .42 : .10 + rnd() * .16,
           tone(.58), base * s * (.10 + .12 * rnd()));
   } else if (theme === 'marble') {
     for (let v = 0; v < 18; v++) {
