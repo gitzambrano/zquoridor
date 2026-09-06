@@ -1,0 +1,140 @@
+name: experiment-wall-monotonic-olddata
+
+on:
+  push:
+    branches: [exp/wall-monotonic-gen12]
+    paths:
+      - ".github/workflows/experiment-wall-monotonic-olddata.yml"
+
+jobs:
+  sweep:
+    name: lambda-${{ matrix.lambda_tag }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - lambda: 0.0
+            lambda_tag: control
+          - lambda: 0.05
+            lambda_tag: l005
+          - lambda: 0.15
+            lambda_tag: l015
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: exp/wall-monotonic-gen12
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install CPU training dependencies
+        run: |
+          python -m pip install --disable-pip-version-check numpy torch --index-url https://download.pytorch.org/whl/cpu
+          python -m pip install --disable-pip-version-check matplotlib
+      - name: Apply monotonicity training patch
+        run: |
+          python tools/dev/apply_wall_monotonicity.py
+          python -m py_compile training/train_nnue.py
+      - name: Restore Gen8 weights
+        uses: actions/download-artifact@v4
+        with:
+          name: gen8-search-ci-completed
+          path: bootstrap
+          github-token: ${{ github.token }}
+          repository: gitzambrano/zquoridor
+          run-id: 33973129847
+      - name: Restore 5000-game Gen8 teacher dataset
+        uses: actions/download-artifact@v4
+        with:
+          pattern: bilateral-teacher-*
+          path: data/selfplay/old-teacher
+          merge-multiple: true
+          github-token: ${{ github.token }}
+          repository: gitzambrano/zquoridor
+          run-id: 33992518366
+      - name: Hold out one complete shard and mine wall-critical replay
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p data/validation data/selfplay/old-focus data/metrics
+          VAL=$(find data/selfplay/old-teacher -type f -name '*.bin' | sort | tail -1)
+          test -n "$VAL"
+          mv "$VAL" data/validation/old-val.bin
+          python training/wall_economy.py data/selfplay/old-teacher \
+            --json data/metrics/baseline-economy.json \
+            --focus-out data/selfplay/old-focus/focus_000.bin \
+            --focus-copies 2 --focus-max-fraction 0.12
+      - name: Train warm-start candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG='${{ matrix.lambda_tag }}'
+          LAM='${{ matrix.lambda }}'
+          mkdir -p "data/nnue/candidates/${TAG}"
+          SOURCES=$(python - <<'PY'
+          import glob, json
+          paths = sorted(glob.glob('data/selfplay/old-teacher/*.bin')) + sorted(glob.glob('data/selfplay/old-focus/*.bin'))
+          print(json.dumps([{'path': p, 'frac': 1.0, 'k': 1.0} for p in paths], separators=(',', ':')))
+          PY
+          )
+          python training/train_nnue.py \
+            --fresh \
+            --init-from bootstrap/nnue/candidates/gen8-search-ci/nnue_weights.bin \
+            --data-sources "$SOURCES" \
+            --val-data data/validation/old-val.bin \
+            --out "data/nnue/candidates/${TAG}/nnue_weights.bin" \
+            --ckpt-dir "data/checkpoints/${TAG}" \
+            --plot-dir "data/plots/${TAG}" \
+            --epochs 24 \
+            --lr 1e-5 --lr-min 1e-6 --lr-schedule cosine \
+            --monitor val_outcome \
+            --policy-opening-plies 0 \
+            --wl-gamma 0.9975 \
+            --wall-mono-lambda "$LAM" \
+            --wall-mono-sample-fraction 0.25 \
+            2>&1 | tee "data/train-${TAG}.log"
+      - name: Counterfactual benchmark
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG='${{ matrix.lambda_tag }}'
+          python training/wall_counterfactual.py \
+            --weights "data/nnue/candidates/${TAG}/nnue_weights.bin" \
+            data/selfplay/old-teacher --samples 5000 \
+            --json "data/metrics/${TAG}-counterfactual.json" \
+            | tee "data/metrics/${TAG}-counterfactual.txt"
+      - name: Wandering gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG='${{ matrix.lambda_tag }}'
+          mkdir -p bin
+          g++ -std=c++17 -O3 -DNDEBUG -Isrc tests/wandering_race_suite.cpp -o bin/wandering_race_suite
+          ./bin/wandering_race_suite "data/nnue/candidates/${TAG}/nnue_weights_int8.bin" \
+            | tee "data/metrics/${TAG}-wandering.txt"
+      - name: 800-game arena vs Gen8
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG='${{ matrix.lambda_tag }}'
+          python tools/arena/run_arena.py \
+            --ref1 "" --ref2 "" \
+            --games 800 --time 20 --threads 4 --random-plies 4 \
+            --e1-nnue "data/nnue/candidates/${TAG}/nnue_weights_int8.bin" \
+            --e2-nnue bootstrap/nnue/candidates/gen8-search-ci/nnue_weights_int8.bin \
+            | tee "data/arena-${TAG}.log"
+      - name: Upload sweep result
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: wall-monotonic-olddata-${{ matrix.lambda_tag }}
+          retention-days: 14
+          if-no-files-found: warn
+          path: |
+            data/nnue/candidates/${{ matrix.lambda_tag }}/*.bin
+            data/metrics/*
+            data/train-${{ matrix.lambda_tag }}.log
+            data/arena-${{ matrix.lambda_tag }}.log
