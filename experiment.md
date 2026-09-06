@@ -2,9 +2,9 @@
 
 ## Status
 
-**In progress. Teacher generation is complete; scratch and Gen8 warm-start candidates are training on the larger targeted dataset. No candidate is promotable yet.**
+**In progress. Scratch training is decisively rejected; Gen8 warm-start has completed its arena and is finishing behavioral sampling.**
 
-Workflow run: `34043150939`.
+Primary workflow run: `34043150939`.
 
 ## Hypothesis
 
@@ -25,21 +25,6 @@ Current production search includes `cPuct=1.20`, the exact zero-wall endgame lea
 
 Network baseline: Gen8 from run `33973129847`, artifact `gen8-search-ci-completed`.
 
-## Wall-economy diagnostics
-
-The diagnostic tooling measures:
-
-- fraction of moves that place walls;
-- immediate wall efficiency `delta(opponent distance) - delta(own distance)`;
-- zero/negative-gain wall placements;
-- wall depletion milestones and the game outcome after reaching 5/3/1/0 walls;
-- same-player wall-placement chains;
-- wall-poor race positions;
-- root visit mass assigned to walls;
-- matched candidate-vs-Gen8 behavior samples.
-
-A counterfactual benchmark also fixes the board geometry and varies only `wallsLeft`. It measures whether the value head respects the resource-ordering expectation that an extra own wall should not reduce optimal value and an extra opponent wall should not improve our value.
-
 ## Teacher data
 
 Four parallel teacher jobs completed successfully:
@@ -49,72 +34,100 @@ Four parallel teacher jobs completed successfully:
 - teacher-2 job `101513392332`;
 - teacher-3 job `101513392414`.
 
-Each partition generated:
+Intended generation was 22,000 games: 20,000 broad games at 20 ms/move and 2,000 deeper games at 100 ms/move. The V3 audit detects **22,003 complete games / 1,380,324 positions** in the 24 shards. One complete broad shard (79,954 positions) is held out for validation.
 
-- 5,000 broad search-driven games at 20 ms/move;
-- 500 deeper games at 100 ms/move.
+The new teacher distribution is much cleaner than the older 5k teacher set. On the training population after the held-out shard is removed:
 
-Combined total: **22,000 games**:
+- 1,300,370 positions / 20,753 games;
+- walls are 27.25% of moves;
+- non-positive local wall efficiency is **4.60%**, versus about 13.5% on the old teacher data;
+- mean wall efficiency is 1.76 BFS plies, median 2;
+- 2,273 critical games are selected into the focused replay;
+- focused replay contributes 312,048 positions after two copies.
 
-- 20,000 broad games;
-- 2,000 deeper games.
+The 100 ms subset also shows a strong resource-conservation pattern: the side that actually spends its final wall subsequently wins only about 1.65% of those events. This is observational rather than causal, but it is useful teacher signal and motivated upweighting deeper data.
 
-One complete broad shard is held out for validation. The 100 ms teacher shards are duplicated in the training source to increase their sampling weight without changing labels.
+## Training population
 
-## Hard-example replay
+The training source totals **1,856,580 positions** after:
 
-`training/wall_economy.py` mines complete games containing strategically critical wall states, including low-resource positions, large wall imbalance, wall-poor races, depletion events, and ambiguous wall-vs-pawn decisions. Selected games are replayed twice with a maximum focused fraction of 12% of the source positions.
+- broad and deep teacher shards (minus held-out broad shard);
+- two additional copies of every 100 ms deep shard, making deep positions effectively 3x represented;
+- two-copy wall-critical focused replay.
 
-The older 5k dataset already showed the failure family clearly: roughly 28% of moves were walls and about 13.5% of wall transitions had non-positive local efficiency. Outcomes also degraded sharply after reaching one or zero walls. These numbers motivated the larger targeted campaign but are not by themselves causal estimates of wall value.
+All sources use `k=1.0`; no old-network evaluation is blended into the outcome target. `wl-gamma=0.9975` discounts long-delayed outcomes.
 
 ## Candidates
 
-Two candidates use the exact same Gen8 architecture.
+Both candidates use the exact Gen8 architecture.
 
-### Scratch
+### Scratch — REJECTED
 
-Job: `101520018937`.
+Job `101520018937`, artifact `wall-economy-gen11-scratch-results` ID `9993343558`.
+
+Training:
 
 - random initialization;
 - 50 epochs;
 - LR 5e-4 -> 2e-5 cosine;
-- monitor `val_outcome`;
-- `wl-gamma=0.9975`.
+- best exported checkpoint: epoch 48;
+- held-out `val_outcome=0.2437`;
+- held-out policy accuracy about 0.899.
 
-### Warm start
+Correctness/behavior gates:
 
-Job: `101520018956`.
+- wandering race suite: **5/5 PASS**;
+- counterfactual diagnostic became worse: own-wall violations 37.85%, opponent-wall violations 36.98% (Gen8 diagnostic on this sample: 20.40% / 17.90%).
+
+Arena vs Gen8, 1,600 games, 20 ms/move, 4 threads, random plies 4:
+
+- wins: **1**;
+- losses: **1,367**;
+- draws: **232**;
+- Elo: **-441.2 ±22.3**;
+- scratch NPS: **24,367**;
+- Gen8 NPS: **28,342**.
+
+Matched 500-game behavior sampling is catastrophic in exactly the failure family being targeted:
+
+- scratch wall-move fraction: **46.68%** versus Gen8 **29.07%**;
+- scratch non-positive wall efficiency: **60.24%** versus Gen8 **13.72%**;
+- scratch mean wall efficiency: **0.66** versus Gen8 **1.63**;
+- scratch reaches zero walls in 986 depletion events around ply 32, while Gen8 reaches zero walls only 89 times around ply 53 in the same-sized sample.
+
+**Decision: scratch is decisively rejected.** The much larger, cleaner dataset is still not sufficient for the current training objective to relearn strong global strategy from random initialization. High offline policy accuracy is not evidence of playing strength.
+
+### Warm start — ARENA COMPLETE, BEHAVIOR PENDING
+
+Job `101520018956`.
 
 - initialized from Gen8 float weights;
 - new optimizer state;
 - 40 epochs;
 - LR 2e-5 -> 1e-6 cosine;
-- monitor `val_outcome`;
-- `wl-gamma=0.9975`.
+- same data and held-out shard as scratch.
 
-Both train on the same broad + deeper-replay + wall-critical replay population and the same held-out validation shard.
+At the latest check training, counterfactual benchmark, wandering gate and the 1,600-game arena are complete. Matched 500-game behavioral sampling is still running; final logs/artifact are therefore not yet available from GitHub.
 
-## Gates
+## Interpretation so far
 
-After training, each candidate must pass:
+The scratch result is a key negative result. Scaling from roughly 5k to 22k games and upweighting cleaner/deeper data does **not** solve the learning problem by itself. The current supervised/distillation objective can obtain excellent validation metrics while learning a policy that places far too many locally useless walls and loses over 400 Elo.
 
-1. counterfactual wall-resource benchmark;
-2. 5-case wandering race suite;
-3. 1,600-game arena against Gen8 at 20 ms/move, 4 threads, random plies 4;
-4. matched 500-game behavior sampling for candidate and Gen8 with identical seeds/configuration.
+Therefore the next training direction should not be “more of the same from random initialization.” The strongest alternatives are:
 
-No promotion is based on offline loss alone.
+1. preserve the strong Gen8 representation via warm-start and make only controlled updates;
+2. reanalyse a small number of real wall-critical states with a much more expensive legal teacher search, replacing shallow policy targets only where wall-vs-pawn resource decisions matter;
+3. continue to gate every network by Elo and direct wall-economy behavior, not offline loss.
+
+A targeted legal reanalysis prototype is being validated separately. It reconstructs real V3 positions and reruns deeper MCAB only on low-wall/ambiguous positions, avoiding the off-manifold assumption in the wall-count counterfactual probe.
 
 ## Decision rule
 
-A candidate is considered for promotion only if it shows convincing playing-strength evidence and no behavioral regression. If the 1,600-game result is promising but statistically inconclusive, run a longer confirmation before changing production weights.
-
-Scratch versus warm start is itself part of the experiment: if scratch fails while warm start succeeds, the dataset improves the existing representation but is not sufficient to relearn the whole network from random initialization. If scratch succeeds, the larger data regime is sufficient to learn the Gen8 architecture independently.
-
-## Current state
-
-Teacher generation, validation split, wall-economy mining, and deeper-data replay preparation have all completed. At the latest check both `train-scratch` and `train-warm` are in the training step. All downstream gates are pending.
+No candidate is promoted from offline metrics. A candidate must show convincing Elo evidence and no behavioral regression. Promising 1,600-game results require a longer, preferably independently seeded confirmation before changing production weights.
 
 ## Next action
 
-Let both training arms complete, compare their counterfactual/behavioral metrics and Elo, then long-confirm the strongest candidate if warranted. Also compare it against the best old-data hard-replay control from `exp/wall-monotonic-gen12` before any production promotion.
+1. Finish and extract the warm-start result.
+2. Finish the 4,000-game confirmation of the older hard-replay lambda-0 control.
+3. Validate targeted legal reanalysis and use it only on the strongest surviving network.
+4. Promote nothing until a candidate clears the playing-strength gate and retains the behavioral gates.
