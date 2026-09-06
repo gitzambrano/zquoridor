@@ -1,0 +1,50 @@
+name: test-wall-monotonic-patch
+
+on:
+  push:
+    branches: [exp/wall-monotonic-gen12]
+    paths:
+      - ".github/workflows/test-wall-monotonic-patch.yml"
+      - "tools/dev/apply_wall_monotonicity.py"
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: exp/wall-monotonic-gen12
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install minimal dependencies
+        run: python -m pip install --disable-pip-version-check numpy torch --index-url https://download.pytorch.org/whl/cpu
+      - name: Apply patch and compile Python
+        run: |
+          python tools/dev/apply_wall_monotonicity.py
+          python -m py_compile training/train_nnue.py
+      - name: Gradient smoke test
+        shell: bash
+        run: |
+          python - <<'PY'
+          import torch
+          import training.train_nnue as t
+          torch.manual_seed(7)
+          m = t.QuoridorNNUE()
+          x = torch.zeros(8, t.NUM_FEATURES)
+          # Minimal valid one-hot walls-left features. Other features are not
+          # important for checking the differentiable counterfactual path.
+          wall_base = 290 + 2 * t.DIST_BUCKETS
+          own = torch.tensor([0,1,2,3,4,5,9,10])
+          opp = torch.tensor([10,9,8,7,6,5,1,0])
+          rows = torch.arange(len(x))
+          x[rows, wall_base + own] = 1.0
+          x[rows, wall_base + t.WALLS_LEFT_BUCKETS + opp] = 1.0
+          v, p = m(x)
+          lm = t.wall_monotonicity_loss(m, x, v, 1.0)
+          assert torch.isfinite(lm), lm
+          (v.square().mean() + lm).backward()
+          assert any(q.grad is not None for q in m.parameters())
+          print(f"wall monotonicity smoke PASS loss={lm.item():.6f}")
+          PY
