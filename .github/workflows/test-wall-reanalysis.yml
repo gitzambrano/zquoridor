@@ -1,0 +1,61 @@
+name: test-wall-reanalysis
+
+on:
+  push:
+    branches: [exp/wall-economy-gen11]
+    paths:
+      - 'tools/dev/wall_reanalysis.cpp'
+      - '.github/workflows/test-wall-reanalysis.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: exp/wall-economy-gen11
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Restore Gen8 weights
+        uses: actions/download-artifact@v4
+        with:
+          name: gen8-search-ci-completed
+          path: bootstrap
+          github-token: ${{ github.token }}
+          repository: gitzambrano/zquoridor
+          run-id: 33973129847
+      - name: Restore one teacher partition
+        uses: actions/download-artifact@v4
+        with:
+          name: wall-economy-teacher-0
+          path: teacher
+          github-token: ${{ github.token }}
+          repository: gitzambrano/zquoridor
+          run-id: 34043150939
+      - name: Compile and reanalyse two positions
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p bin out
+          g++ -O3 -std=c++17 -pthread -march=native -Isrc -Itools/selfplay \
+            tools/dev/wall_reanalysis.cpp -o bin/wall_reanalysis
+          W=$(find bootstrap -name nnue_weights_int8.bin | head -1)
+          IN=$(find teacher -name 'selfplay_broad_*.bin' | head -1)
+          ./bin/wall_reanalysis "$IN" out/reanalysis.bin "$W" 2 20 20000 20260906
+          test -s out/reanalysis.bin
+          python - <<'PY'
+          import numpy as np
+          dt2=np.dtype([('own_pawn','u1'),('opp_pawn','u1'),('walls_h','<u8'),('walls_v','<u8'),('walls_left_own','i1'),('walls_left_opp','i1'),('nnue_eval','<u2'),('game_result','i1'),('policy_target','<u2'),('own_dist','u1'),('opp_dist','u1'),('mover','u1'),('own_cat_total','<i2'),('opp_cat_total','<i2'),('policy_top_idx','<u2',(8,)),('policy_top_prob','<u2',(8,))])
+          a=np.fromfile('out/reanalysis.bin',dtype=dt2)
+          assert len(a)>0
+          assert np.any(a['policy_top_prob'][:,0]>0)
+          assert np.all((a['mover']==0)|(a['mover']==1))
+          print('reanalysis smoke PASS',len(a),'records',int(np.sum(a['policy_top_prob'][:,0]>0)),'deep-policy positions')
+          PY
