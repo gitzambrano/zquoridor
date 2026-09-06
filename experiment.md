@@ -1,68 +1,40 @@
-# Experiment: Strong Self-Play / Wandering Baseline
+# Experiment: Policy Low-Rank Rank 48
 
 ## Status
 
-**Search improvement confirmed and retained as the current experimental baseline. Training-policy work remains under evaluation in sibling experiment branches.**
+**Prepared. Spectral preservation and inference-cost experiment starting from the Gen8 policy head.**
 
-## Purpose
+## Hypothesis
 
-This branch is the control line for two related problems:
+The production policy head is a single dense `256 -> 209` projection. It costs 53,504 multiply-accumulates per policy evaluation. Because the head is linear, its trained weight matrix can be approximated directly with a truncated SVD instead of retraining the network from scratch.
 
-1. eliminate late-game wandering without the large Elo regressions seen with broad exact-leaf or hard-minimax fallbacks;
-2. establish a stronger search/self-play baseline before comparing new NNUE architectures.
+A rank-48 factorization replaces the projection with:
 
-## Key changes retained
+`256 -> 48 -> 209`
 
-- exact zero-wall endgame leaf fallback only: mover walls threshold 0, endgame leaf depth 2;
-- root MCTS visit-distribution policy targets instead of one-hot selected-action imitation;
-- search from ply 0 for new self-play cycles;
-- wall-poor WL weighting support;
-- stronger training/audit pipeline with explicit Elo promotion gate;
-- `cPuct` reduced from 1.50 to **1.20** after search sweep.
+with no nonlinearity between factors. This reduces the nominal policy-head MAC count from 53,504 to 22,320, a reduction of about 58.3%, while preserving the Gen8 trunk and value head exactly.
 
-## Confirmed search result
+## Controlled change
 
-`cPuct = 1.20` was confirmed in a 2,500-game same-network search-only match against the previous 1.50 default:
+Only the policy projection changes. The experiment must preserve:
 
-- wins: 1,297
-- losses: 958
-- draws: 245
-- Elo: **+47.4 ±13.0**
-- lower bound: **+34.4 Elo**
-- NPS was similar: about 27.3k vs 27.6k in that arena
+- Gen8 transformer/trunk weights;
+- Gen8 value head;
+- `cPuct = 1.20` search baseline;
+- policy ordering enablement and minimum depth;
+- all other MCAB parameters.
 
-This is a statistically convincing search gain and is now the baseline used by the bilateral architecture experiments.
+The low-rank factors are initialized from the trained Gen8 policy matrix with truncated SVD. The original policy bias is retained.
 
-## Wandering history
+## Evaluation order
 
-Earlier experiments showed:
-
-- `MinimaxHard`: fixes behavior but catastrophically weak;
-- broad combined-wall exact leaf: fixes wandering but loses substantial strength/performance;
-- exact zero-wall fallback: removes the reported zero-wall loop with approximately neutral Elo;
-- visit-policy targets improve the training direction and avoid the Gen9 one-hot self-imitation regression.
-
-## Gen10 visit-policy diagnostic
-
-On 5,000 games / 293,491 positions:
-
-- 98.6% of positions had root visit-distribution targets;
-- Gen10 vs Gen8: +9.8 ±26.0 Elo over 600 games;
-- Gen10 vs Gen7: +8.1 ±26.3 Elo over 600 games.
-
-This was promising but not statistically conclusive.
-
-## Current role
-
-This branch is the **search/control baseline** for architecture experiments. Do not mix speculative architecture changes directly into it.
+1. Measure singular-value energy retained at ranks 16/32/48/64/96.
+2. Measure policy-logit reconstruction error on representative positions.
+3. Measure KL divergence and legal-move top-1/top-3 agreement against the original Gen8 policy.
+4. Benchmark isolated policy forward and whole-engine NPS.
+5. Run wandering regression.
+6. If policy fidelity is acceptable, run a fixed-time arena against the untouched Gen8 search baseline.
 
 ## Decision rule
 
-Changes entering this baseline must either:
-
-- have a clearly positive lower 95% Elo bound in a sufficiently large arena; or
-- be correctness/infrastructure fixes that do not alter engine behavior.
-
-## Next action
-
-Use this branch as the Gen8-era search baseline when evaluating bilateral and antisymmetric NNUE candidates. Keep architecture hypotheses in separate `exp/*` branches, each with its own `experiment.md`.
+Rank 48 survives only if it produces a meaningful NPS gain without a statistically meaningful Elo loss. If fidelity is substantially better than necessary, test rank 32. If fidelity is insufficient, test rank 64.
