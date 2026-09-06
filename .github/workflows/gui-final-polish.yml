@@ -43,6 +43,10 @@ jobs:
         working-directory: gui_web
         run: |
           set -euo pipefail
+          python dev_server.py 8123 >/tmp/zq-suite-server.log 2>&1 &
+          SERVER_PID=$!
+          trap 'kill $SERVER_PID 2>/dev/null || true' EXIT
+          sleep 1
           python test_gui_features.py
           python test_deep_click.py
           python test_features_e2e.py
