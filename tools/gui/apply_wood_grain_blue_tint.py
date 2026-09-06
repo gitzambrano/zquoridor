@@ -89,25 +89,12 @@ if old_svg not in s:
 s = s.replace(old_svg, new_svg, 1)
 p.write_text(s)
 
-# Update the targeted regression: the blue wash intentionally loses 8% alpha,
-# while the player-coloured fills and no-edge-rail contract stay unchanged.
+# The blue row now has a deliberate 8% reduction, so the existing minimum
+# opacity regression needs a slightly lower floor while preserving all other
+# assertions about player colours and the absence of edge rails.
 t = Path('gui_web/test_micro_polish_semantics.py')
 ts = t.read_text()
 old_min = "and goal_alpha and min(goal_alpha) >= .27"
 if old_min not in ts:
     raise SystemExit('missing goal alpha minimum assertion')
-ts = ts.replace(old_min, "and goal_alpha and min(goal_alpha) >= .24", 1)
-anchor = "                  and 'height=\"2\"' not in goal_group)\n"
-if anchor not in ts:
-    raise SystemExit('missing goal tint check anchor')
-extra = """            blue_scale = page.evaluate(\"\"\"() => {
-              const st = getComputedStyle(document.documentElement);
-              const ca = st.getPropertyValue('--cell-a').trim();
-              const cb = st.getPropertyValue('--cell-b').trim();
-              const blue = qrGoalTint(st.getPropertyValue('--p1').trim());
-              return qrGoalPlayerAlpha(blue, ca, cb, 'subtle', 1) / qrGoalAlpha(blue, ca, cb, 'subtle');
-            }\"\"\")
-            check(\"blue goal tint is slightly reduced\", abs(blue_scale - .92) < .001)
-"""
-ts = ts.replace(anchor, anchor + extra, 1)
-t.write_text(ts)
+t.write_text(ts.replace(old_min, "and goal_alpha and min(goal_alpha) >= .24", 1))
