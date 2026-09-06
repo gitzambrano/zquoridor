@@ -1,68 +1,46 @@
-# Experiment: Strong Self-Play / Wandering Baseline
+# Experiment: Exact Lazy Policy v7
 
 ## Status
 
-**Search improvement confirmed and retained as the current experimental baseline. Training-policy work remains under evaluation in sibling experiment branches.**
+**RUNNING.** This experiment starts from `fix/strong-selfplay-wandering` and tests an exact policy-head optimization. No trained weight, policy logit used by the search, value evaluation, or search parameter is changed.
 
-## Purpose
+## Motivation
 
-This branch is the control line for two related problems:
+The rejected rank-48 SVD experiment showed that approximating the policy matrix can reintroduce wandering. The production policy head is already a single quantized linear map (`256 -> 209`), so the safer optimization is to avoid computing outputs that cannot be consumed rather than approximate the matrix.
 
-1. eliminate late-game wandering without the large Elo regressions seen with broad exact-leaf or hard-minimax fallbacks;
-2. establish a stronger search/self-play baseline before comparing new NNUE architectures.
+Production search is MCAB. At each expanded node it computes the complete 209-logit policy vector even when the side to move has no walls. In that state every wall move is impossible, so only the 81 pawn logits can be read by `legalMoves`/PUCT.
 
-## Key changes retained
+## Controlled change
 
-- exact zero-wall endgame leaf fallback only: mover walls threshold 0, endgame leaf depth 2;
-- root MCTS visit-distribution policy targets instead of one-hot selected-action imitation;
-- search from ply 0 for new self-play cycles;
-- wall-poor WL weighting support;
-- stronger training/audit pipeline with explicit Elo promotion gate;
-- `cPuct` reduced from 1.50 to **1.20** after search sweep.
+When `AccumulatorQuant::ownWallsLeftBucket == 0`:
 
-## Confirmed search result
+- compute the same 256-element SCReLU activation as baseline;
+- compute the same integer dot products for policy outputs `0..80` (pawn destinations);
+- skip the 128 wall-output dot products;
+- initialize skipped wall outputs to zero defensively; they are unreachable because the mover has zero walls.
 
-`cPuct = 1.20` was confirmed in a 2,500-game same-network search-only match against the previous 1.50 default:
+When the mover has at least one wall, `forwardPolicyQuant` is exactly the baseline implementation.
 
-- wins: 1,297
-- losses: 958
-- draws: 245
-- Elo: **+47.4 ±13.0**
-- lower bound: **+34.4 Elo**
-- NPS was similar: about 27.3k vs 27.6k in that arena
+The useful policy work in zero-wall nodes falls from 209 rows to 81 rows, a **61.2% reduction in policy-row dot products in that regime**.
 
-This is a statistically convincing search gain and is now the baseline used by the bilateral architecture experiments.
+## Invariants
 
-## Wandering history
+- same Gen8 int8 weights;
+- same value head and accumulator;
+- same `cPuct = 1.20`;
+- same MCAB parameters;
+- same policy logits bit-for-bit for every legal move;
+- no approximation or retraining;
+- wandering must remain 5/5.
 
-Earlier experiments showed:
+## Evaluation
 
-- `MinimaxHard`: fixes behavior but catastrophically weak;
-- broad combined-wall exact leaf: fixes wandering but loses substantial strength/performance;
-- exact zero-wall fallback: removes the reported zero-wall loop with approximately neutral Elo;
-- visit-policy targets improve the training direction and avoid the Gen9 one-hot self-imitation regression.
-
-## Gen10 visit-policy diagnostic
-
-On 5,000 games / 293,491 positions:
-
-- 98.6% of positions had root visit-distribution targets;
-- Gen10 vs Gen8: +9.8 ±26.0 Elo over 600 games;
-- Gen10 vs Gen7: +8.1 ±26.3 Elo over 600 games.
-
-This was promising but not statistically conclusive.
-
-## Current role
-
-This branch is the **search/control baseline** for architecture experiments. Do not mix speculative architecture changes directly into it.
+1. Exact legal-logit parity test on zero-wall positions against a dense reference dot product.
+2. Core MCAB tests.
+3. Five-case wandering suite.
+4. 1,600-game fixed-time arena vs `fix/strong-selfplay-wandering`, same Gen8 weights, 20 ms/move, 4 threads, 4 random opening plies.
+5. Compare W/L/D, Elo ±95%, and whole-engine NPS.
 
 ## Decision rule
 
-Changes entering this baseline must either:
-
-- have a clearly positive lower 95% Elo bound in a sufficiently large arena; or
-- be correctness/infrastructure fixes that do not alter engine behavior.
-
-## Next action
-
-Use this branch as the Gen8-era search baseline when evaluating bilateral and antisymmetric NNUE candidates. Keep architecture hypotheses in separate `exp/*` branches, each with its own `experiment.md`.
+Because the change is mathematically exact on all reachable policy outputs, any fixed-time Elo movement should come from timing/search-volume effects. Retain only if tests pass and NPS/Elo are non-negative enough to justify a longer confirmation. If the gain is real, extend the same exact idea to legal-row evaluation for wall-available nodes.
