@@ -48,9 +48,23 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          mkdir -p results
           git clone --depth 1 https://github.com/titaniummachine1/titanium-engine.git /tmp/titanium-engine
           RUSTFLAGS="-C target-cpu=native" cargo build --release \
             --manifest-path /tmp/titanium-engine/Cargo.toml --bin titanium
+          git -C /tmp/titanium-engine rev-parse HEAD | tee results/titanium-sha.txt
+
+      - name: Direct Titanium fixed-time protocol probe
+        shell: bash
+        env:
+          TITANIUM_PONDERING: "0"
+        run: |
+          set -euo pipefail
+          printf 'reset\nposition\ngo 0.200\nquit\n' \
+            | timeout 20s /tmp/titanium-engine/target/release/titanium uci \
+              2>results/titanium-direct.err \
+            | tee results/titanium-direct.out
+          grep -q '^bestmove ' results/titanium-direct.out
 
       - name: Build strongest validated Zquoridor search
         shell: bash
@@ -71,7 +85,7 @@ jobs:
             --zq ./bin/zq_best --zq-arg=--nnue --zq-arg="$W" \
             --titanium /tmp/titanium-engine/target/release/titanium \
             --openings tools/external/openings_titanium.jsonl \
-            --limit-openings 1 --movetime 20 --workers 1 \
+            --limit-openings 1 --movetime 200 --workers 1 \
             --json-out results/smoke.json --games-out results/smoke-games.jsonl
 
       - name: Zquoridor strong vs Titanium — 200 ms
