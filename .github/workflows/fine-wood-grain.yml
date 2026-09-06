@@ -1,0 +1,67 @@
+name: Fine wood grain
+
+on:
+  push:
+    branches:
+      - fix/fine-wood-grain-2026-09
+
+permissions:
+  contents: write
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Apply patch and rebuild
+        run: |
+          python gui_web/extract_wasm_from_bundle.py gui_web/zquoridor.html gui_web/zquoridor.wasm
+          python tools/gui/apply_fine_wood_grain.py
+          python gui_web/build_standalone.py
+          node --check gui_web/board.js
+          git diff --check
+
+      - name: Install Chromium
+        run: |
+          python -m pip install playwright
+          python -m playwright install --with-deps chromium
+
+      - name: Browser validation
+        working-directory: gui_web
+        run: |
+          set -euo pipefail
+          python dev_server.py 8123 >/tmp/zq-fine-wood.log 2>&1 &
+          SERVER_PID=$!
+          trap 'kill $SERVER_PID 2>/dev/null || true' EXIT
+          sleep 1
+          python test_gui_features.py
+          python test_micro_polish_semantics.py
+          python test_standalone.py
+
+      - name: Capture visual
+        working-directory: gui_web
+        run: |
+          set -euo pipefail
+          python dev_server.py 8123 >/tmp/zq-fine-wood-shot.log 2>&1 &
+          SERVER_PID=$!
+          trap 'kill $SERVER_PID 2>/dev/null || true' EXIT
+          sleep 1
+          python ../tools/gui/capture_fine_wood_grain.py
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: fine-wood-grain
+          path: gui_web/fine_wood_grain_shots/*.png
+
+      - name: Commit validated product
+        run: |
+          git config user.name zquoridor-gui-ci
+          git config user.email actions@users.noreply.github.com
+          git add gui_web/board.js gui_web/zquoridor.html index.html
+          git commit -m 'gui: refine default wood to hairline grain [skip ci]'
+          git push
