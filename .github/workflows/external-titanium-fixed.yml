@@ -1,0 +1,92 @@
+name: external-titanium-fixed
+
+on:
+  push:
+    branches:
+      - bench/external-titanium-2026-09
+    paths:
+      - ".github/workflows/external-titanium-fixed.yml"
+  workflow_dispatch:
+
+jobs:
+  benchmark:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Restore validated Gen8 NNUE
+        uses: actions/download-artifact@v4
+        with:
+          name: gen8-search-ci-completed
+          path: bootstrap
+          github-token: ${{ github.token }}
+          repository: gitzambrano/zquoridor
+          run-id: 33973129847
+
+      - name: Locate weights
+        id: weights
+        shell: bash
+        run: |
+          set -euo pipefail
+          W="bootstrap/nnue/candidates/gen8-search-ci/nnue_weights_int8.bin"
+          test -s "$W"
+          echo "path=$W" >> "$GITHUB_OUTPUT"
+
+      - name: Build Titanium
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone --depth 1 https://github.com/titaniummachine1/titanium-engine.git /tmp/titanium-engine
+          RUSTFLAGS="-C target-cpu=native" cargo build --release \
+            --manifest-path /tmp/titanium-engine/Cargo.toml --bin titanium
+
+      - name: Build strongest validated Zquoridor search
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p bin results
+          g++ -std=c++17 -O3 -DNDEBUG -march=native -pthread \
+            -Isrc tools/external/zquoridor_uci.cpp -o bin/zq_best
+
+      - name: UCI smoke match
+        shell: bash
+        env:
+          W: ${{ steps.weights.outputs.path }}
+        run: |
+          set -euo pipefail
+          python tools/external/titanium_arena_fixed.py \
+            --zq ./bin/zq_best --zq-arg=--nnue --zq-arg="$W" \
+            --titanium /tmp/titanium-engine/target/release/titanium \
+            --openings tools/external/openings_titanium.jsonl \
+            --limit-openings 1 --movetime 20 --workers 1 \
+            --json-out results/smoke.json --games-out results/smoke-games.jsonl
+
+      - name: Zquoridor strong vs Titanium — 200 ms
+        shell: bash
+        env:
+          W: ${{ steps.weights.outputs.path }}
+        run: |
+          set -euo pipefail
+          python tools/external/titanium_arena_fixed.py \
+            --zq ./bin/zq_best --zq-arg=--nnue --zq-arg="$W" \
+            --titanium /tmp/titanium-engine/target/release/titanium \
+            --openings tools/external/openings_titanium.jsonl \
+            --limit-openings 20 --movetime 200 --workers 1 \
+            --json-out results/best.json --games-out results/best-games.jsonl \
+            | tee results/best.log
+
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: external-titanium-fixed-results
+          retention-days: 30
+          path: results/
