@@ -1,0 +1,93 @@
+name: Wall junction screenshots
+
+on:
+  push:
+    branches: [ci/wall-junction-screenshots-2026-09]
+
+jobs:
+  capture:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: |
+          python -m pip install playwright
+          python -m playwright install --with-deps chromium
+      - name: Capture junction cases
+        working-directory: gui_web
+        run: |
+          python dev_server.py 8123 >/tmp/zq-shot-server.log 2>&1 &
+          SERVER_PID=$!
+          trap 'kill $SERVER_PID 2>/dev/null || true' EXIT
+          sleep 1
+          cat >/tmp/capture_junctions.py <<'PY'
+          from pathlib import Path
+          from playwright.sync_api import sync_playwright
+
+          OUT=Path('wall_junction_shots'); OUT.mkdir(exist_ok=True)
+
+          def boot(p):
+              p.goto('http://127.0.0.1:8123/style.html', wait_until='domcontentloaded')
+              p.wait_for_function("() => window.__qb && window.__w && !document.querySelector('#status').textContent.includes('Loading')", timeout=15000)
+              p.wait_for_timeout(300)
+
+          def set_walls(p, hs, vs):
+              p.evaluate("""cfg => {
+                const B=window.__qb;
+                B.wallH.fill(0); B.wallV.fill(0);
+                for (const [r,c] of cfg.hs) B.wallH[r*8+c]=1;
+                for (const [r,c] of cfg.vs) B.wallV[r*8+c]=1;
+                B.lastMove=null; B.dots=[]; B.selected=-1; B.paths=null;
+                B.ghost=null; B.hover=null; B.linePreview=null; B._wallAnim=null;
+                document.documentElement.dataset.board='wood';
+                document.documentElement.dataset.goalRows='subtle';
+                document.documentElement.dataset.wallProfile='standard';
+                B.themeDirty=true; B.render();
+              }""", {'hs':hs,'vs':vs})
+              p.wait_for_timeout(180)
+
+          def clip_join(p, r, c, size=210):
+              q=p.evaluate("""x => {
+                const B=window.__qb,a=B.anchorCenter(x[0],x[1]),b=document.querySelector('#board').getBoundingClientRect();
+                return {x:b.left+a.x,y:b.top+a.y};
+              }""", [r,c])
+              return {'x':q['x']-size/2,'y':q['y']-size/2,'width':size,'height':size}
+
+          with sync_playwright() as pw:
+              b=pw.chromium.launch()
+              ctx=b.new_context(viewport={'width':1440,'height':900}, device_scale_factor=1)
+              p=ctx.new_page(); boot(p)
+
+              # Mixed board: one L, one T, plus straight H-H and V-V joins.
+              set_walls(p,
+                        hs=[[2,1],[4,3],[6,0],[6,2]],
+                        vs=[[3,2],[4,4],[0,6],[2,6]])
+              p.screenshot(path=str(OUT/'01_full_mixed_junctions.png'), full_page=True)
+              p.locator('#board').screenshot(path=str(OUT/'02_board_mixed_junctions.png'))
+              p.screenshot(path=str(OUT/'03_close_L_join.png'), clip=clip_join(p,2,2,230))
+              p.screenshot(path=str(OUT/'04_close_T_join.png'), clip=clip_join(p,4,4,230))
+
+              # Isolated L join.
+              set_walls(p, hs=[[3,2]], vs=[[4,3]])
+              p.locator('#board').screenshot(path=str(OUT/'05_isolated_L.png'))
+              p.screenshot(path=str(OUT/'06_isolated_L_close.png'), clip=clip_join(p,3,3,250))
+
+              # Isolated T join: horizontal terminates against the middle of vertical.
+              set_walls(p, hs=[[3,2]], vs=[[3,3]])
+              p.locator('#board').screenshot(path=str(OUT/'07_isolated_T.png'))
+              p.screenshot(path=str(OUT/'08_isolated_T_close.png'), clip=clip_join(p,3,3,250))
+
+              # Straight joins, useful for checking seam suppression too.
+              set_walls(p, hs=[[5,1],[5,3]], vs=[[1,6],[3,6]])
+              p.locator('#board').screenshot(path=str(OUT/'09_straight_HH_VV.png'))
+
+              ctx.close(); b.close()
+          PY
+          python /tmp/capture_junctions.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wall-junction-screenshots
+          path: gui_web/wall_junction_shots/*.png
