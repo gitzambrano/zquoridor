@@ -16,6 +16,7 @@ jobs:
           python-version: '3.11'
       - name: Apply patch and rebuild
         run: |
+          python gui_web/extract_wasm_from_bundle.py gui_web/zquoridor.html gui_web/zquoridor.wasm
           python tools/gui/apply_goal_texture_final.py
           python gui_web/build_standalone.py
           node --check gui_web/board.js
@@ -38,7 +39,6 @@ jobs:
       - name: Capture goal rows
         working-directory: gui_web
         run: |
-          python extract_wasm_from_bundle.py zquoridor.html zquoridor.wasm
           python dev_server.py 8123 >/tmp/zq-goal.log 2>&1 &
           PID=$!
           trap 'kill $PID 2>/dev/null || true' EXIT
