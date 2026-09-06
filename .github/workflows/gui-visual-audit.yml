@@ -1,195 +1,97 @@
-name: GUI visual audit
+name: GUI visual audit panels
 
 on:
   push:
     branches: [gui/micro-polish-2026-09]
 
-permissions:
-  contents: write
-
 jobs:
-  visual-audit:
+  panel-audit:
     runs-on: ubuntu-latest
-    timeout-minutes: 35
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
         with:
           ref: gui/micro-polish-2026-09
-          fetch-depth: 0
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-      - name: Recover wasm and install browser
+      - name: Browser setup
         run: |
           python - <<'PY'
           import base64,re
           from pathlib import Path
           t=Path('gui_web/zquoridor.html').read_text(encoding='utf-8')
           m=re.search(r'const __QR_WASM_BYTES__ = __qr_b64ToBytes\("([A-Za-z0-9+/=]+)"\);',t)
-          if not m: raise SystemExit('embedded wasm missing')
           Path('gui_web/zquoridor.wasm').write_bytes(base64.b64decode(m.group(1)))
           PY
           python -m pip install playwright
           python -m playwright install --with-deps chromium
-      - name: Interactive desktop and mobile audit
+      - name: Click panels, controls and scroll settings
         working-directory: gui_web
         run: |
-          python dev_server.py 8123 >/tmp/zq-audit-server.log 2>&1 &
-          SERVER_PID=$!
-          trap 'kill $SERVER_PID 2>/dev/null || true' EXIT
+          python dev_server.py 8124 >/tmp/zq-panel-server.log 2>&1 &
           sleep 1
-          cat > /tmp/visual_audit.py <<'PY'
-          import json, os, random, time
+          cat >/tmp/panel_audit.py <<'PY'
+          import json
           from pathlib import Path
-          from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeoutError
+          from playwright.sync_api import sync_playwright
+          out=Path('panel_audit'); out.mkdir(exist_ok=True)
+          R={'errors':[],'desktop':{},'mobile':{}}
+          def watch(p):
+              p.on('pageerror',lambda e:R['errors'].append('pageerror: '+str(e)))
+              p.on('console',lambda m:R['errors'].append('console: '+m.text) if m.type=='error' else None)
+          def boot(p):
+              p.goto('http://127.0.0.1:8124/style.html'); p.wait_for_function("() => window.__w && !status.textContent.includes('Loading')"); p.wait_for_timeout(300)
+          with sync_playwright() as w:
+              b=w.chromium.launch()
+              c=b.new_context(viewport={'width':1440,'height':900}); p=c.new_page(); watch(p); boot(p)
+              # desktop analysis
+              p.click("button[data-pane='anPane']"); p.wait_for_timeout(150)
+              p.click('#anEngBtn'); p.wait_for_timeout(1200)
+              R['desktop']['pv_rows']=p.locator('.pvRow').count()
+              p.screenshot(path=str(out/'desktop_analysis.png'),full_page=True)
+              # editor
+              p.click("button[data-pane='edPane']"); p.wait_for_timeout(180)
+              R['desktop']['editor_visible']=p.is_visible('#edPane')
+              p.screenshot(path=str(out/'desktop_editor.png'),full_page=True)
+              # play controls: paths, H, V each click on/off
+              p.click("button[data-pane='playPane']");
+              p.click('#btnPaths'); R['desktop']['paths_on']=p.evaluate("document.querySelector('#btnPaths').classList.contains('on')")
+              p.click('#wallH'); R['desktop']['h_armed']=p.evaluate("document.querySelector('#wallH').classList.contains('on')")
+              p.click('#wallH'); p.click('#wallV'); R['desktop']['v_armed']=p.evaluate("document.querySelector('#wallV').classList.contains('on')")
+              p.click('#wallV')
+              # Board settings advanced
+              p.click('#btnSettings'); p.get_by_role('button',name='Board',exact=True).click(); p.locator('details.advSettings').first.locator('summary').click(); p.wait_for_timeout(150)
+              p.screenshot(path=str(out/'desktop_board_settings.png'),full_page=True)
+              c.close()
 
-          OUT=Path('audit_screenshots'); OUT.mkdir(exist_ok=True)
-          report={'desktop':{},'mobile':{},'errors':[],'screenshots':[]}
-          random.seed(200809)
-
-          def shot(page,name):
-              p=OUT/(name+'.png'); page.screenshot(path=str(p), full_page=True)
-              report['screenshots'].append(p.name)
-
-          def install_watch(page,label):
-              errs=[]
-              page.on('pageerror', lambda e: errs.append('pageerror: '+str(e)))
-              page.on('console', lambda m: errs.append('console '+m.type+': '+m.text) if m.type=='error' else None)
-              report[label]['runtime_errors']=errs
-
-          def wait_boot(page):
-              page.goto('http://127.0.0.1:8123/style.html', wait_until='domcontentloaded')
-              page.wait_for_function("() => window.__w && !document.querySelector('#status').textContent.includes('Loading')", timeout=12000)
-              page.wait_for_timeout(500)
-
-          def metrics(page):
-              return page.evaluate("""() => {
-                const q=s=>document.querySelector(s), b=q('#board').getBoundingClientRect();
-                const z=q('#boardZone').getBoundingClientRect(), e=q('#evalStrip').getBoundingClientRect();
-                return {vw:innerWidth,vh:innerHeight,bodyW:document.body.scrollWidth,bodyH:document.body.scrollHeight,
-                  board:{x:b.x,y:b.y,w:b.width,h:b.height,right:b.right,bottom:b.bottom},
-                  zone:{x:z.x,y:z.y,w:z.width,h:z.height},eval:{w:e.width,h:e.height},
-                  status:q('#status').textContent, ply:window.__w.plyCount(), winner:window.__w.winner()};
-              }""")
-
-          def pawn_move(page, drag=False, touch=False):
-              mv=page.evaluate("""() => { const W=window.__w; for(let i=0;i<W.moveCount();i++) if(!W.mvIsWall(i)) return W.mvA(i); return -1; }""")
-              if mv < 0: return False
-              pts=page.evaluate("""(dst) => { const B=window.__qb, W=window.__w;
-                const cur=B.engPawnToDisp(W.pawn(W.turn())), d=B.engPawnToDisp(dst);
-                const a=B.cellCenter(Math.floor(cur/9),cur%9), z=B.cellCenter(Math.floor(d/9),d%9), r=document.querySelector('#board').getBoundingClientRect();
-                return {sx:r.left+a.x,sy:r.top+a.y,tx:r.left+z.x,ty:r.top+z.y}; }""", mv)
-              if touch:
-                  page.touchscreen.tap(pts['tx'],pts['ty'])
-              elif drag:
-                  page.mouse.move(pts['sx'],pts['sy'],steps=5); page.mouse.down(); page.wait_for_timeout(90)
-                  page.mouse.move(pts['tx'],pts['ty'],steps=12); page.wait_for_timeout(70); page.mouse.up()
-              else:
-                  page.mouse.move(pts['tx'],pts['ty'],steps=9); page.wait_for_timeout(80); page.mouse.click(pts['tx'],pts['ty'])
-              return True
-
-          def wall_move(page, touch=False):
-              data=page.evaluate("""() => { const W=window.__w; for(let i=0;i<W.moveCount();i++) if(W.mvIsWall(i)) return [W.mvA(i),W.mvB(i),W.mvC(i)]; return null; }""")
-              if not data: return False
-              o,r,c=data
-              sel='#wallH' if o==0 else '#wallV'
-              if touch: page.locator(sel).tap()
-              else: page.click(sel)
-              pt=page.evaluate("""([o,r,c]) => { const B=window.__qb,[oo,rr,cc]=B.engWallToDisp(o,r,c),a=B.anchorCenter(rr,cc),q=document.querySelector('#board').getBoundingClientRect(); return {x:q.left+a.x,y:q.top+a.y}; }""", data)
-              if touch: page.touchscreen.tap(pt['x'],pt['y'])
-              else:
-                  page.mouse.move(pt['x'],pt['y'],steps=10); page.wait_for_timeout(100); page.mouse.click(pt['x'],pt['y'])
-              return True
-
-          def wait_engine(page, oldply, timeout=12000):
-              try:
-                  page.wait_for_function("([p]) => window.__w.winner() >= 0 || window.__w.plyCount() >= p+2 || (window.__w.plyCount()>p && window.__w.turn()===0)", arg=[oldply], timeout=timeout)
-              except PlaywrightTimeoutError:
-                  report['errors'].append(f'engine wait timeout at ply {oldply}')
-              page.wait_for_timeout(180)
-
-          with sync_playwright() as pw:
-              browser=pw.chromium.launch(headless=True)
-
-              # DESKTOP --------------------------------------------------
-              ctx=browser.new_context(viewport={'width':1440,'height':900}, device_scale_factor=1)
-              p=ctx.new_page(); install_watch(p,'desktop'); wait_boot(p)
-              report['desktop']['initial']=metrics(p); shot(p,'desktop_01_initial')
-
-              # Exercise UI chrome with real clicks.
-              p.click('#btnHint'); p.wait_for_timeout(300); shot(p,'desktop_02_hint')
-              p.click('#btnFlip'); p.wait_for_timeout(250); p.click('#btnFlip')
-              p.click('#btnSettings'); p.wait_for_timeout(250); shot(p,'desktop_03_settings')
-              p.locator('[data-close]').first.click(); p.wait_for_timeout(150)
-
-              # Play a complete game. Alternate click, drag and wall placement.
-              human_turns=0
-              while human_turns < 55 and p.evaluate('window.__w.winner()') < 0:
-                  old=p.evaluate('window.__w.plyCount()')
-                  use_wall=(human_turns in (2,6,10,14))
-                  ok=wall_move(p,False) if use_wall else pawn_move(p,drag=(human_turns%3==1),touch=False)
-                  if not ok: ok=pawn_move(p,drag=False,touch=False)
-                  if not ok: break
-                  human_turns+=1
-                  if human_turns==3: shot(p,'desktop_04_wall_and_pawns')
-                  wait_engine(p,old)
-                  if human_turns==7: shot(p,'desktop_05_midgame')
-                  if human_turns==8:
-                      p.click("button[data-pane='anPane']"); p.wait_for_timeout(250)
-                      if 'OFF' in (p.text_content('#anEngBtn') or ''): p.click('#anEngBtn')
-                      p.wait_for_timeout(900); shot(p,'desktop_06_analysis')
-                      p.click("button[data-pane='playPane']"); p.wait_for_timeout(180)
-              report['desktop']['human_turns']=human_turns
-              report['desktop']['final']=metrics(p); shot(p,'desktop_07_final')
-              # click takeback/new only after final snapshot; ensure buttons respond
-              if p.is_visible('#btnTakeback'): p.click('#btnTakeback'); p.wait_for_timeout(180)
-              p.click('#btnNew'); p.wait_for_timeout(150)
-              # New may open confirm sheet depending state; close safely.
-              if p.locator('[data-close]').count() and p.locator('[data-close]').first.is_visible(): p.locator('[data-close]').first.click()
-              report['desktop']['post_controls']=metrics(p)
-              ctx.close()
-
-              # MOBILE ---------------------------------------------------
-              mctx=browser.new_context(viewport={'width':390,'height':844}, device_scale_factor=2, is_mobile=True, has_touch=True)
-              m=mctx.new_page(); install_watch(m,'mobile'); wait_boot(m)
-              report['mobile']['initial']=metrics(m); shot(m,'mobile_01_initial')
-              # Touch pawn move
-              old=m.evaluate('window.__w.plyCount()'); pawn_move(m,touch=True); wait_engine(m,old)
-              # Arm and place a real legal wall; capture confirmation chip before commit.
-              old=m.evaluate('window.__w.plyCount()'); wall_move(m,touch=True); m.wait_for_timeout(180)
-              report['mobile']['confirm_visible']=m.is_visible('#confirmChip')
-              shot(m,'mobile_02_wall_confirm')
-              if m.is_visible('#ccOk'): m.locator('#ccOk').tap(); wait_engine(m,old)
-              shot(m,'mobile_03_after_wall')
-              # Mobile analysis sheet.
-              tab=m.locator("#tabBar button[data-pane='anPane']")
-              if tab.count(): tab.tap(); m.wait_for_timeout(250)
-              shot(m,'mobile_04_analysis_sheet')
-              if m.locator("#tabBar button[data-pane='playPane']").count(): m.locator("#tabBar button[data-pane='playPane']").tap(); m.wait_for_timeout(150)
-              m.locator('#btnSettings').tap(); m.wait_for_timeout(220); shot(m,'mobile_05_settings')
-              if m.locator('[data-close]').count() and m.locator('[data-close]').first.is_visible(): m.locator('[data-close]').first.tap()
-              report['mobile']['final']=metrics(m)
-              # hit target sample sizes
-              report['mobile']['targets']=m.evaluate("""() => ['#btnNew','#wallH','#wallV','#btnSettings'].map(s=>{const r=document.querySelector(s).getBoundingClientRect();return [s,r.width,r.height]})""")
-              mctx.close(); browser.close()
-
-          # Treat runtime JS errors as bugs, but keep screenshots/report even on findings.
-          for side in ('desktop','mobile'):
-              report['errors'].extend(report[side].get('runtime_errors',[]))
-          Path('audit_report.json').write_text(json.dumps(report,indent=2),encoding='utf-8')
-          print(json.dumps(report,indent=2))
+              mc=b.new_context(viewport={'width':390,'height':844},device_scale_factor=2,is_mobile=True,has_touch=True); m=mc.new_page(); watch(m); boot(m)
+              m.locator('#btnSettings').tap(); m.get_by_role('button',name='Board',exact=True).tap(); m.locator('details.advSettings').first.locator('summary').tap(); m.wait_for_timeout(120)
+              # scroll the sheet to bottom, proving advanced rows are reachable
+              info=m.evaluate("""() => {const sh=document.querySelector('.sheetBody')||document.querySelector('.modalBody')||document.querySelector('.modal'); return sh?{tag:sh.className,sh:sh.scrollHeight,ch:sh.clientHeight,top:sh.scrollTop}:null} """)
+              # scroll whichever visible modal/sheet actually scrolls
+              m.evaluate("""() => {for(const e of document.querySelectorAll('.sheet,.sheetBody,.modal,.modalBody')) if(e.scrollHeight>e.clientHeight+5){e.scrollTop=e.scrollHeight; break;}}""")
+              m.wait_for_timeout(150)
+              R['mobile']['settings_scroll_before']=info
+              R['mobile']['advanced_visible']=m.locator('details.advSettings[open]').count()>0
+              R['mobile']['body_width']=[m.evaluate('document.body.scrollWidth'),390]
+              m.screenshot(path=str(out/'mobile_board_settings_scrolled.png'),full_page=True)
+              # other tabs tappable
+              for name in ['Sound','Play & data','Appearance']:
+                  m.get_by_role('button',name=name,exact=True).tap(); m.wait_for_timeout(80)
+                  R['mobile'][name]=True
+              if m.locator('[data-close]').count(): m.locator('[data-close]').first.tap()
+              # analysis engine on mobile
+              m.locator("#tabBar button[data-pane='anPane']").tap(); m.wait_for_timeout(150); m.locator('#anEngBtn').tap(); m.wait_for_timeout(1200)
+              R['mobile']['pv_rows']=m.locator('.pvRow').count()
+              m.screenshot(path=str(out/'mobile_analysis_on.png'),full_page=True)
+              mc.close(); b.close()
+          Path('panel_audit.json').write_text(json.dumps(R,indent=2)); print(json.dumps(R,indent=2))
           PY
-          python /tmp/visual_audit.py
+          python /tmp/panel_audit.py
       - uses: actions/upload-artifact@v4
         with:
-          name: gui-visual-audit
+          name: gui-panel-visual-audit
           path: |
-            gui_web/audit_screenshots/*.png
-            gui_web/audit_report.json
-      - name: Publish screenshots temporarily for inspection
-        run: |
-          git config user.name "zquoridor-visual-audit"
-          git config user.email "actions@users.noreply.github.com"
-          git add gui_web/audit_screenshots gui_web/audit_report.json
-          git commit -m "test(gui): capture desktop and mobile visual audit"
-          git push origin HEAD:gui/micro-polish-2026-09
+            gui_web/panel_audit/*.png
+            gui_web/panel_audit.json
