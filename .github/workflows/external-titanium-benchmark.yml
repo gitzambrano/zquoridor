@@ -12,7 +12,7 @@ on:
 jobs:
   benchmark:
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 90
 
     steps:
       - uses: actions/checkout@v4
@@ -57,9 +57,9 @@ jobs:
           mkdir -p bin results
           CXXFLAGS="-std=c++17 -O3 -DNDEBUG -march=native -pthread"
 
-          # Best validated search lineage: this branch descends from the
-          # Gen8-era experimental search baseline (cPuct 1.20, scale 160,
-          # zero-wall fallback). The network is held fixed by the artifact.
+          # Best validated search lineage: this branch has the same production
+          # core as fix/strong-selfplay-wandering (cPuct 1.20, scale 160,
+          # zero-wall fallback). The network is held fixed by the Gen8 artifact.
           g++ $CXXFLAGS -Isrc tools/external/zquoridor_uci.cpp -o bin/zq_best
 
           # Build the exact same UCI adapter against current main, so any
@@ -79,11 +79,14 @@ jobs:
             | bin/zq_best --nnue "$W" | tee results/zq-uci-smoke.log
           grep -q '^bestmove ' results/zq-uci-smoke.log
 
+          # Serialize even the smoke test. Multiple simultaneous engine
+          # processes both distort fixed-movetime NPS and exposed a startup
+          # timeout on the hosted runner.
           python tools/external/titanium_arena.py \
             --zq ./bin/zq_best --zq-arg=--nnue --zq-arg="$W" \
             --titanium /tmp/titanium-engine/target/release/titanium \
             --openings tools/external/openings_titanium.jsonl \
-            --limit-openings 2 --movetime 20 --workers 2 \
+            --limit-openings 1 --movetime 20 --workers 1 \
             --json-out results/smoke.json --games-out results/smoke-games.jsonl
 
       - name: Best baseline vs Titanium — 200 ms
@@ -96,7 +99,7 @@ jobs:
             --zq ./bin/zq_best --zq-arg=--nnue --zq-arg="$W" \
             --titanium /tmp/titanium-engine/target/release/titanium \
             --openings tools/external/openings_titanium.jsonl \
-            --movetime 200 --workers 4 \
+            --limit-openings 20 --movetime 200 --workers 1 \
             --json-out results/best.json --games-out results/best-games.jsonl \
             | tee results/best.log
 
@@ -110,7 +113,7 @@ jobs:
             --zq ./bin/zq_best --zq-arg=--nnue --zq-arg="$W" --zq-arg=--cpuct --zq-arg=1.50 \
             --titanium /tmp/titanium-engine/target/release/titanium \
             --openings tools/external/openings_titanium.jsonl \
-            --movetime 200 --workers 4 \
+            --limit-openings 20 --movetime 200 --workers 1 \
             --json-out results/cpuct150.json --games-out results/cpuct150-games.jsonl \
             | tee results/cpuct150.log
 
@@ -124,7 +127,7 @@ jobs:
             --zq ./bin/zq_best --zq-arg=--nnue --zq-arg="$W" --zq-arg=--no-mcab \
             --titanium /tmp/titanium-engine/target/release/titanium \
             --openings tools/external/openings_titanium.jsonl \
-            --movetime 200 --workers 4 \
+            --limit-openings 20 --movetime 200 --workers 1 \
             --json-out results/pure-ab.json --games-out results/pure-ab-games.jsonl \
             | tee results/pure-ab.log
 
@@ -138,7 +141,7 @@ jobs:
             --zq ./bin/zq_main --zq-arg=--nnue --zq-arg="$W" \
             --titanium /tmp/titanium-engine/target/release/titanium \
             --openings tools/external/openings_titanium.jsonl \
-            --movetime 200 --workers 4 \
+            --limit-openings 20 --movetime 200 --workers 1 \
             --json-out results/main.json --games-out results/main-games.jsonl \
             | tee results/main.log
 
