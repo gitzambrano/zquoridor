@@ -40,6 +40,7 @@ jobs:
           trap 'kill $SERVER_PID 2>/dev/null || true' EXIT
           sleep 1
           python test_gui_features.py
+          python test_micro_polish_semantics.py
           python test_standalone.py
 
       - name: Capture visual
@@ -60,5 +61,5 @@ jobs:
           git config user.name zquoridor-gui-ci
           git config user.email actions@users.noreply.github.com
           git add gui_web/board.js gui_web/zquoridor.html index.html
-          git commit -m 'gui: increase goal row tint strength [skip ci]'
+          git commit -m 'gui: strengthen goal tints and refine wood grain [skip ci]'
           git push
