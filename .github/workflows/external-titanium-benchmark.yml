@@ -1,0 +1,176 @@
+name: external-titanium-benchmark
+
+on:
+  push:
+    branches:
+      - bench/external-titanium-2026-09
+    paths:
+      - ".github/workflows/external-titanium-benchmark.yml"
+      - "tools/external/**"
+  workflow_dispatch:
+
+jobs:
+  benchmark:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Restore validated Gen8 NNUE
+        uses: actions/download-artifact@v4
+        with:
+          name: gen8-search-ci-completed
+          path: bootstrap
+          github-token: ${{ github.token }}
+          repository: gitzambrano/zquoridor
+          run-id: 33973129847
+
+      - name: Locate weights
+        id: weights
+        shell: bash
+        run: |
+          set -euo pipefail
+          W="bootstrap/nnue/candidates/gen8-search-ci/nnue_weights_int8.bin"
+          test -s "$W"
+          echo "path=$W" >> "$GITHUB_OUTPUT"
+          ls -lh "$W"
+
+      - name: Build Titanium
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone --depth 1 https://github.com/titaniummachine1/titanium-engine.git /tmp/titanium-engine
+          cargo build --release --manifest-path /tmp/titanium-engine/Cargo.toml --bin titanium
+          /tmp/titanium-engine/target/release/titanium bench 2 1
+
+      - name: Build Zquoridor adapters
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p bin results
+          CXXFLAGS="-std=c++17 -O3 -DNDEBUG -march=native -pthread"
+
+          # Best validated search lineage: this branch descends from the
+          # Gen8-era experimental search baseline (cPuct 1.20, scale 160,
+          # zero-wall fallback). The network is held fixed by the artifact.
+          g++ $CXXFLAGS -Isrc tools/external/zquoridor_uci.cpp -o bin/zq_best
+
+          # Build the exact same UCI adapter against current main, so any
+          # difference is core search/config, not referee or protocol code.
+          git worktree add --detach /tmp/zq-main origin/main
+          g++ $CXXFLAGS -I/tmp/zq-main/src tools/external/zquoridor_uci.cpp -o bin/zq_main
+
+          ls -lh bin/zq_best bin/zq_main
+
+      - name: Protocol and legality smoke test
+        shell: bash
+        env:
+          W: ${{ steps.weights.outputs.path }}
+        run: |
+          set -euo pipefail
+          printf 'uci\nisready\nposition startpos moves e2 e8 e3 e7\ngo movetime 20\nquit\n' \
+            | bin/zq_best --nnue "$W" | tee results/zq-uci-smoke.log
+          grep -q '^bestmove ' results/zq-uci-smoke.log
+
+          python tools/external/titanium_arena.py \
+            --zq ./bin/zq_best --zq-arg=--nnue --zq-arg="$W" \
+            --titanium /tmp/titanium-engine/target/release/titanium \
+            --openings tools/external/openings_titanium.jsonl \
+            --limit-openings 2 --movetime 20 --workers 2 \
+            --json-out results/smoke.json --games-out results/smoke-games.jsonl
+
+      - name: Best baseline vs Titanium — 200 ms
+        shell: bash
+        env:
+          W: ${{ steps.weights.outputs.path }}
+        run: |
+          set -euo pipefail
+          python tools/external/titanium_arena.py \
+            --zq ./bin/zq_best --zq-arg=--nnue --zq-arg="$W" \
+            --titanium /tmp/titanium-engine/target/release/titanium \
+            --openings tools/external/openings_titanium.jsonl \
+            --movetime 200 --workers 4 \
+            --json-out results/best.json --games-out results/best-games.jsonl \
+            | tee results/best.log
+
+      - name: cPuct 1.50 isolation vs Titanium — 200 ms
+        shell: bash
+        env:
+          W: ${{ steps.weights.outputs.path }}
+        run: |
+          set -euo pipefail
+          python tools/external/titanium_arena.py \
+            --zq ./bin/zq_best --zq-arg=--nnue --zq-arg="$W" --zq-arg=--cpuct --zq-arg=1.50 \
+            --titanium /tmp/titanium-engine/target/release/titanium \
+            --openings tools/external/openings_titanium.jsonl \
+            --movetime 200 --workers 4 \
+            --json-out results/cpuct150.json --games-out results/cpuct150-games.jsonl \
+            | tee results/cpuct150.log
+
+      - name: Pure alpha-beta vs Titanium — 200 ms
+        shell: bash
+        env:
+          W: ${{ steps.weights.outputs.path }}
+        run: |
+          set -euo pipefail
+          python tools/external/titanium_arena.py \
+            --zq ./bin/zq_best --zq-arg=--nnue --zq-arg="$W" --zq-arg=--no-mcab \
+            --titanium /tmp/titanium-engine/target/release/titanium \
+            --openings tools/external/openings_titanium.jsonl \
+            --movetime 200 --workers 4 \
+            --json-out results/pure-ab.json --games-out results/pure-ab-games.jsonl \
+            | tee results/pure-ab.log
+
+      - name: Current main vs Titanium — 200 ms
+        shell: bash
+        env:
+          W: ${{ steps.weights.outputs.path }}
+        run: |
+          set -euo pipefail
+          python tools/external/titanium_arena.py \
+            --zq ./bin/zq_main --zq-arg=--nnue --zq-arg="$W" \
+            --titanium /tmp/titanium-engine/target/release/titanium \
+            --openings tools/external/openings_titanium.jsonl \
+            --movetime 200 --workers 4 \
+            --json-out results/main.json --games-out results/main-games.jsonl \
+            | tee results/main.log
+
+      - name: Compare variants
+        if: always()
+        shell: bash
+        run: |
+          python - <<'PY' | tee results/comparison.txt
+          import json
+          from pathlib import Path
+          variants = [
+              ("best", "results/best.json"),
+              ("cpuct150", "results/cpuct150.json"),
+              ("pure-ab", "results/pure-ab.json"),
+              ("main", "results/main.json"),
+          ]
+          print(f"{'variant':<12} {'W-D-L':<14} {'score':>8} {'Elo':>9} {'95% Elo':>22} {'back%':>8} {'empty-back%':>12}")
+          for name, path in variants:
+              p = Path(path)
+              if not p.exists():
+                  print(f"{name:<12} MISSING")
+                  continue
+              d = json.loads(p.read_text())
+              wdl = f"{d['wins']}-{d['draws']}-{d['losses']}"
+              ci = f"[{d['elo_95_low']:+.0f},{d['elo_95_high']:+.0f}]"
+              print(f"{name:<12} {wdl:<14} {d['score_pct']:7.1f}% {d['elo']:+8.1f} {ci:>22} {d['zq_backward_pawn_pct']:7.2f}% {d['zq_both_emptyhand_backward_pct']:11.2f}%")
+          PY
+
+      - name: Upload benchmark evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: external-titanium-benchmark
+          retention-days: 30
+          path: results/
