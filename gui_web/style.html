@@ -121,12 +121,12 @@ html[data-board="emerald"]{
 html,body{height:100%;overflow:hidden}
 body{
   background:var(--bg);color:var(--txt);
-  font-family:'JetBrains Mono',ui-monospace,Consolas,monospace;
+  font-family:ui-sans-serif,-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;
   font-size:var(--fs-md);line-height:1.45;touch-action:manipulation;
   overscroll-behavior:none;height:100dvh;display:flex;flex-direction:column;
 }
 button{font:inherit;color:inherit;background:none;border:none;cursor:pointer}
-.num{font-variant-numeric:tabular-nums}
+.num{font-family:'JetBrains Mono',ui-monospace,Consolas,monospace;font-variant-numeric:tabular-nums}
 .cinzel{font-family:Cinzel,'Times New Roman',serif}
 .sronly{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0)}
 :focus-visible{outline:1px solid var(--gold2);outline-offset:2px}
@@ -265,7 +265,7 @@ html[data-anim="off"] *{animation-duration:0ms!important;transition-duration:0ms
   padding-left:var(--space-5);border-left:1px solid var(--bor)}
 /* The bare number said nothing. The unit is the shortest honest label for it:
    the value is a step count to the goal row. */
-.pbar .dist::before{content:"STEPS";font-size:9px;letter-spacing:.14em;
+.pbar .dist::before{content:"PATH";font-size:9px;letter-spacing:.14em;
   color:var(--muted);font-weight:600}
 .pbar .dist b{font-size:var(--fs-lg);color:var(--txt2);font-weight:600;
   font-variant-numeric:tabular-nums}
@@ -320,7 +320,7 @@ html[data-anim="off"] *{animation-duration:0ms!important;transition-duration:0ms
    the board's top edge. The strip now shares the board's exact top and bottom
    edge. The readout moves inside the strip, so it needs no reserved room. */
 #boardZone > #evalWrap{height:min(100%,100cqh);max-height:100%}
-#boardZone > #evalWrap #evalStrip{width:24px;height:100%}
+#boardZone > #evalWrap #evalStrip{width:20px;height:100%}
 #boardZone > #evalWrap .fill{left:0;right:0;bottom:0}
 #boardZone > #evalWrap #evalStrip::after{left:0;right:0;top:50%;height:1px}
 /* The readout sits inside the strip, not below it. Below, it needed a
@@ -332,8 +332,8 @@ html[data-anim="off"] *{animation-duration:0ms!important;transition-duration:0ms
   bottom:-17px;text-align:center;font-size:11px;letter-spacing:.02em;
   color:var(--txt2);white-space:nowrap}
 /* horizontal, under the board */
-#underBoard > #evalWrap{width:100%;height:12px}
-#underBoard > #evalWrap #evalStrip{width:100%;height:12px}
+#underBoard > #evalWrap{width:100%;height:10px}
+#underBoard > #evalWrap #evalStrip{width:100%;height:10px}
 #underBoard > #evalWrap .fill{top:0;bottom:0;left:0}
 #underBoard > #evalWrap #evalStrip::after{top:0;bottom:0;left:50%;width:1px}
 #underBoard > #evalWrap #evalNum{display:none}
@@ -822,6 +822,46 @@ html[data-density="compact"] .pbar{padding:var(--space-1) var(--space-4)}
 html[data-density="compact"] #tabBar{height:46px}
 html[data-handed="left"] #toasts{left:14px;transform:none;align-items:flex-start}
 html[data-handed="left"] #controls{flex-direction:row-reverse}
+
+
+/* ======================== micro-polish 2026-09 ========================= */
+/* UI prose is intentionally sans-serif; data keeps the technical mono face. */
+html[data-ui-font="technical"] body,
+html[data-ui-font="technical"] button,
+html[data-ui-font="technical"] input,
+html[data-ui-font="technical"] select{
+  font-family:'JetBrains Mono',ui-monospace,Consolas,monospace;
+}
+html[data-ui-font="modern"] body{
+  font-family:ui-sans-serif,-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;
+}
+.clock,.wn,.dist b,#evalNum,#moveLog,.pvScore,.anInfo,.num,
+input[type="number"],input[type="text"],textarea{
+  font-family:'JetBrains Mono',ui-monospace,Consolas,monospace;
+}
+
+/* Advanced choices exist, but do not dominate the first settings scan. */
+.advSettings{
+  margin-top:var(--space-3);border-top:1px solid var(--bor);padding-top:var(--space-2);
+}
+.advSettings summary{
+  list-style:none;cursor:pointer;color:var(--txt2);font-size:var(--fs-sm);
+  font-weight:600;letter-spacing:.02em;padding:var(--space-2) 0;user-select:none;
+}
+.advSettings summary::-webkit-details-marker{display:none}
+.advSettings summary::after{content:'›';float:right;color:var(--muted);font-size:1.15em;
+  transform:rotate(90deg);transition:transform var(--dur-fast)}
+.advSettings[open] summary::after{transform:rotate(-90deg)}
+.advSettings .advBody{padding-top:var(--space-1)}
+
+/* Board material, cell/groove contrast and goal-row strength are painted by
+   QBoard itself. Keeping them out of DOM filters/pseudo-elements means they
+   never post-process pawns or walls, and exports use the same rendering path. */
+
+/* The evaluation strip belongs to the board, but should not compete with it. */
+#evalStrip{border-radius:3px}
+#boardZone > #evalWrap #evalNum{font-size:12px;bottom:-18px}
+
 </style>
 </head>
 <body>
@@ -847,7 +887,7 @@ html[data-handed="left"] #controls{flex-direction:row-reverse}
       </div>
       <div class="pb-data">
         <span class="clock num">5:00</span>
-        <span class="dist" title="Steps to goal"><b>8</b></span>
+        <span class="dist" title="Shortest path to goal"><b>8</b></span>
       </div>
     </div>
 
@@ -870,7 +910,7 @@ html[data-handed="left"] #controls{flex-direction:row-reverse}
       </div>
       <div class="pb-data">
         <span class="clock num">5:00</span>
-        <span class="dist" title="Steps to goal"><b>8</b></span>
+        <span class="dist" title="Shortest path to goal"><b>8</b></span>
       </div>
     </div>
 

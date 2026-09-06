@@ -89,12 +89,14 @@ def main():
             area("appearance: board themes")
             themes = page.evaluate("BOARD_THEMES")
             prev = board_hash_full()
+            initial_theme = page.evaluate("document.documentElement.dataset.board")
             seen = set()
             for t in themes:
                 page.evaluate(f"setOpt('board', '{t}')")
                 page.wait_for_timeout(180)
                 h = board_hash_full()
-                check(f"theme {t} repaints", h != prev or t in seen)
+                # Re-selecting the already-active initial theme is correctly a no-op.
+                check(f"theme {t} repaints", h != prev or t == initial_theme)
                 seen.add(h)
                 prev = h
             check("theme persisted", page.evaluate(

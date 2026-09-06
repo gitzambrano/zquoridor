@@ -122,7 +122,7 @@ with sync_playwright() as p:
                      "const f=document.getElementById('evalFill').getBoundingClientRect();"
                      "return {w:Math.round(s.width), share:Math.round(f.height/s.height*100),"
                      "num:document.getElementById('evalNum').textContent}}")
-    chk(ev["w"] == 24, "vertical eval bar is 24px wide (got %s)" % ev["w"])
+    chk(ev["w"] == 20, "vertical eval bar is 20px wide (got %s)" % ev["w"])
     chk(ev["num"].endswith("%"), "eval readout is a percentage (%s)" % ev["num"])
     chk(0 <= ev["share"] <= 100, "eval fill stays within 0 to 100 percent (%s)" % ev["share"])
 
