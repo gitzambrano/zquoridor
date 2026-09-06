@@ -28,6 +28,11 @@ jobs:
       - name: Run all GUI tests
         working-directory: gui_web
         run: |
+          set -euo pipefail
+          python dev_server.py 8123 >/tmp/zq-suite-server.log 2>&1 &
+          SERVER_PID=$!
+          trap 'kill $SERVER_PID 2>/dev/null || true' EXIT
+          sleep 1
           python test_gui_features.py
           python test_deep_click.py
           python test_features_e2e.py
@@ -39,7 +44,7 @@ jobs:
       - name: Capture goal rows
         working-directory: gui_web
         run: |
-          python dev_server.py 8123 >/tmp/zq-goal.log 2>&1 &
+          python dev_server.py 8137 >/tmp/zq-goal.log 2>&1 &
           PID=$!
           trap 'kill $PID 2>/dev/null || true' EXIT
           sleep 1
@@ -50,7 +55,7 @@ jobs:
           with sync_playwright() as pw:
               b=pw.chromium.launch()
               p=b.new_page(viewport={'width':1440,'height':900})
-              p.goto('http://127.0.0.1:8123/style.html', wait_until='domcontentloaded')
+              p.goto('http://127.0.0.1:8137/style.html', wait_until='domcontentloaded')
               p.wait_for_function('() => window.__qb && window.__w', timeout=15000)
               p.wait_for_timeout(400)
               p.locator('#board').screenshot(path=str(out/'goal_rows_normal.png'))
