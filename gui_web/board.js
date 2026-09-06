@@ -82,6 +82,13 @@ function qrGoalAlpha(tint, cellA, cellB, mode) {
   return Math.max(lo, Math.min(hi, alpha));
 }
 
+// Blue is naturally more conspicuous against the warm wood substrate. Keep
+// the same tint colour, but trim only player 1's wash by 8% so the two sides
+// remain clear without the blue row dominating the board.
+function qrGoalPlayerAlpha(tint, cellA, cellB, mode, player) {
+  return qrGoalAlpha(tint, cellA, cellB, mode) * (player === 1 ? .92 : 1);
+}
+
 // One deterministic primitive generator feeds both Canvas and SVG. Textures
 // therefore describe the material (wood grain, marble veins, paper fibre,
 // mineral streaks) rather than a generic overlay laid over the whole UI.
@@ -105,8 +112,8 @@ function qrTexturePrimitives(theme, mode, bx, bw, C) {
     // Soft organic grain inspired by lightly finished wood: long fibres wander
     // gently, a few close companions suggest growth layers, and fine broken
     // fibres keep the surface from looking digitally flat.
-    const count = theme === 'walnut' ? 38 : 40;
-    const base = theme === 'walnut' ? .050 : .062;
+    const count = theme === 'walnut' ? 38 : 52;
+    const base = theme === 'walnut' ? .050 : .125;
     for (let i = 0; i < count; i++) {
       const y0 = bx + rnd() * bw;
       const drift = (rnd() - .5) * C * .34;
@@ -123,22 +130,22 @@ function qrTexturePrimitives(theme, mode, bx, bw, C) {
       }
       const a = base * s * (.72 + .28 * rnd());
       const t = tone(.61);
-      out.push({ kind: 'poly', points: pts, width: .36 + rnd() * .60,
+      out.push({ kind: 'poly', points: pts, width: .54 + rnd() * .74,
                  tone: t, alpha: a });
 
       if (rnd() > .68) {
         const off = C * (.045 + rnd() * .090) * (rnd() < .5 ? -1 : 1);
         out.push({ kind: 'poly', points: pts.map(q => ({ x:q.x, y:q.y + off })),
-                   width: .28 + rnd() * .42, tone: t, alpha: a * .38 });
+                   width: .36 + rnd() * .50, tone: t, alpha: a * .50 });
       }
     }
 
-    const fibres = theme === 'walnut' ? 34 : 48;
+    const fibres = theme === 'walnut' ? 34 : 70;
     for (let i = 0; i < fibres; i++) {
       const x = bx + rnd() * bw, y = bx + rnd() * bw;
       const len = C * (.18 + rnd() * .55);
       line(x, y, x + len, y + (rnd() - .5) * C * .075,
-           .26 + rnd() * .34, tone(.62), base * s * (.24 + .20 * rnd()));
+           .34 + rnd() * .44, tone(.62), base * s * (.34 + .26 * rnd()));
     }
 
     const flecks = theme === 'walnut' ? 16 : 28;
@@ -633,10 +640,11 @@ class QBoard {
     // the substrate merely because both rows used the same numeric opacity.
     const goalMode = ds.goalRows || 'subtle';
     if (goalMode !== 'off') {
-      const top = qrGoalTint(this.flipped ? this.css('--p0') : this.css('--p1'));
-      const bottom = qrGoalTint(this.flipped ? this.css('--p1') : this.css('--p0'));
-      const topAlpha = qrGoalAlpha(top, ca, cb, goalMode);
-      const bottomAlpha = qrGoalAlpha(bottom, ca, cb, goalMode);
+      const topPlayer = this.flipped ? 0 : 1, bottomPlayer = 1 - topPlayer;
+      const top = qrGoalTint(this.css('--p' + topPlayer));
+      const bottom = qrGoalTint(this.css('--p' + bottomPlayer));
+      const topAlpha = qrGoalPlayerAlpha(top, ca, cb, goalMode, topPlayer);
+      const bottomAlpha = qrGoalPlayerAlpha(bottom, ca, cb, goalMode, bottomPlayer);
       g.save();
       for (const [r, tint, alpha] of [[0, top, topAlpha], [8, bottom, bottomAlpha]]) {
         g.globalAlpha = alpha;
@@ -1362,10 +1370,11 @@ class QBoard {
 
     const goalMode = ds.goalRows || 'subtle';
     if (goalMode !== 'off') {
-      const top = qrGoalTint(this.flipped ? cssOf('--p0') : cssOf('--p1'));
-      const bottom = qrGoalTint(this.flipped ? cssOf('--p1') : cssOf('--p0'));
-      const topAlpha = qrGoalAlpha(top, ca, cb, goalMode);
-      const bottomAlpha = qrGoalAlpha(bottom, ca, cb, goalMode);
+      const topPlayer = this.flipped ? 0 : 1, bottomPlayer = 1 - topPlayer;
+      const top = qrGoalTint(cssOf('--p' + topPlayer));
+      const bottom = qrGoalTint(cssOf('--p' + bottomPlayer));
+      const topAlpha = qrGoalPlayerAlpha(top, ca, cb, goalMode, topPlayer);
+      const bottomAlpha = qrGoalPlayerAlpha(bottom, ca, cb, goalMode, bottomPlayer);
       b += `<g data-zq-goal-rows="${goalMode}">`;
       for (const [r, tint, alpha] of [[0, top, topAlpha], [8, bottom, bottomAlpha]]) for (let c = 0; c < 9; c++)
         b += `<rect x="${(M + c * U).toFixed(1)}" y="${(M + r * U).toFixed(1)}" width="${C.toFixed(1)}" height="${C.toFixed(1)}" rx="${(C * .10).toFixed(1)}" fill="${esc(tint)}" fill-opacity="${alpha.toFixed(4)}"/>`;

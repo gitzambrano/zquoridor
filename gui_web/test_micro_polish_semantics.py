@@ -84,7 +84,7 @@ def main():
             goal_alpha = [float(x) for x in re.findall(r'fill-opacity=\"([0-9.]+)\"', goal_group)]
             check("goal tint is stronger, player-coloured and has no edge rails",
                   {'#b6675b', '#5a85ca'}.issubset({x.lower() for x in goal_fills})
-                  and goal_alpha and min(goal_alpha) >= .27
+                  and goal_alpha and min(goal_alpha) >= .24
                   and 'height=\"2\"' not in goal_group)
 
             # A pawn last move gets a fine halo; Clear is stronger; Off removes it.
