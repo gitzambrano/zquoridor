@@ -2,7 +2,7 @@ name: test-policy-reanalysis-finetune
 
 on:
   push:
-    branches: [exp/wall-economy-gen11]
+    branches: [exp/wall-reanalysis-gen13]
     paths:
       - 'training/finetune_policy_reanalysis.py'
       - '.github/workflows/test-policy-reanalysis-finetune.yml'
@@ -19,28 +19,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: exp/wall-economy-gen11
+          ref: exp/wall-reanalysis-gen13
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
       - name: Install dependencies
         run: python -m pip install --disable-pip-version-check numpy torch --index-url https://download.pytorch.org/whl/cpu
-      - name: Restore Gen8 weights
-        uses: actions/download-artifact@v4
-        with:
-          name: gen8-search-ci-completed
-          path: bootstrap
-          github-token: ${{ github.token }}
-          repository: gitzambrano/zquoridor
-          run-id: 33973129847
-      - name: Restore old reanalysis-shaped V3 data
-        uses: actions/download-artifact@v4
-        with:
-          name: wall-monotonic-olddata-control
-          path: sample
-          github-token: ${{ github.token }}
-          repository: gitzambrano/zquoridor
-          run-id: 34043824388
       - name: Syntax/import smoke
         shell: bash
         run: |
@@ -49,6 +33,6 @@ jobs:
           python - <<'PY'
           import sys
           sys.path.insert(0,'training')
-          import finetune_policy_reanalysis as f
+          import finetune_policy_reanalysis
           print('policy reanalysis finetuner import PASS')
           PY
