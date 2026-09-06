@@ -1,0 +1,311 @@
+name: experiment-wall-economy-gen11
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - exp/wall-economy-gen11
+    paths:
+      - ".github/workflows/experiment-wall-economy-gen11.yml"
+      - "training/wall_economy.py"
+      - "training/wall_counterfactual.py"
+      - "tests/wandering_race_suite.cpp"
+      - "experiment.md"
+
+jobs:
+  selfplay:
+    name: teacher-${{ matrix.part }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        part: [0, 1, 2, 3]
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: exp/wall-economy-gen11
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install runtime dependency
+        run: python -m pip install --disable-pip-version-check numpy
+
+      - name: Restore Gen8 teacher weights
+        uses: actions/download-artifact@v4
+        with:
+          name: gen8-search-ci-completed
+          path: bootstrap
+          github-token: ${{ github.token }}
+          repository: gitzambrano/zquoridor
+          run-id: 33973129847
+
+      - name: Build self-play with production search
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp bootstrap/nnue/candidates/gen8-search-ci/nnue_weights.bin data/nnue/nnue_weights.bin
+          cp bootstrap/nnue/candidates/gen8-search-ci/nnue_weights_int8.bin data/nnue/nnue_weights_int8.bin
+          bash build/build_selfplay.sh
+
+      - name: Generate 5000 broad teacher games at 20ms
+        shell: bash
+        run: |
+          set -euo pipefail
+          python tools/selfplay/run_selfplay.py \
+            --games 5000 \
+            --chunk-games 1250 \
+            --time-ms 20 \
+            --threads 4 \
+            --seed $((202609060 + ${{ matrix.part }} * 100000)) \
+            --mode montecarlo \
+            --mc-obvious-plies 0 \
+            --mc-temp-decay-plies 0 \
+            --epsilon-midgame 0.01 \
+            --out "data/selfplay/broad/selfplay_{shard:03d}.bin"
+
+      - name: Generate 500 deeper teacher games at 100ms
+        shell: bash
+        run: |
+          set -euo pipefail
+          python tools/selfplay/run_selfplay.py \
+            --games 500 \
+            --chunk-games 250 \
+            --time-ms 100 \
+            --threads 4 \
+            --seed $((202609061 + ${{ matrix.part }} * 100000)) \
+            --mode montecarlo \
+            --mc-obvious-plies 0 \
+            --mc-temp-opening 0.80 \
+            --mc-temp-end 0.30 \
+            --mc-temp-decay-plies 4 \
+            --epsilon-midgame 0 \
+            --mcab-no-root-noise \
+            --out "data/selfplay/deep/selfplay_{shard:03d}.bin"
+
+      - name: Audit and namespace shards
+        shell: bash
+        run: |
+          set -euo pipefail
+          python training/audit_selfplay.py data/selfplay/broad --fail-on-legacy
+          python training/audit_selfplay.py data/selfplay/deep --fail-on-legacy
+          mkdir -p upload
+          n=0
+          for f in data/selfplay/broad/selfplay_*.bin; do
+            printf -v dst 'upload/selfplay_broad_%02d_%03d.bin' "${{ matrix.part }}" "$n"
+            cp "$f" "$dst"
+            n=$((n + 1))
+          done
+          test "$n" -eq 4
+          n=0
+          for f in data/selfplay/deep/selfplay_*.bin; do
+            printf -v dst 'upload/selfplay_deep_%02d_%03d.bin' "${{ matrix.part }}" "$n"
+            cp "$f" "$dst"
+            n=$((n + 1))
+          done
+          test "$n" -eq 2
+
+      - name: Upload teacher partition
+        uses: actions/upload-artifact@v4
+        with:
+          name: wall-economy-teacher-${{ matrix.part }}
+          path: upload/*.bin
+          retention-days: 14
+          if-no-files-found: error
+
+  train:
+    name: train-${{ matrix.mode }}
+    needs: selfplay
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+    strategy:
+      fail-fast: false
+      matrix:
+        mode: [scratch, warm]
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: exp/wall-economy-gen11
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install CPU training dependencies
+        run: |
+          python -m pip install --disable-pip-version-check numpy torch --index-url https://download.pytorch.org/whl/cpu
+          python -m pip install --disable-pip-version-check matplotlib
+
+      - name: Restore Gen8 baseline weights
+        uses: actions/download-artifact@v4
+        with:
+          name: gen8-search-ci-completed
+          path: bootstrap
+          github-token: ${{ github.token }}
+          repository: gitzambrano/zquoridor
+          run-id: 33973129847
+
+      - name: Restore 22000 teacher games
+        uses: actions/download-artifact@v4
+        with:
+          pattern: wall-economy-teacher-*
+          path: data/selfplay/wall-economy-gen11
+          merge-multiple: true
+
+      - name: Validate dataset and hold out one complete broad shard
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(find data/selfplay/wall-economy-gen11 -maxdepth 1 -name 'selfplay_broad_*.bin' | wc -l)" -eq 16
+          test "$(find data/selfplay/wall-economy-gen11 -maxdepth 1 -name 'selfplay_deep_*.bin' | wc -l)" -eq 8
+          python training/audit_selfplay.py data/selfplay/wall-economy-gen11 --fail-on-legacy
+          mkdir -p data/validation
+          mv data/selfplay/wall-economy-gen11/selfplay_broad_03_003.bin data/validation/wall-economy-gen11-val.bin
+
+      - name: Diagnose Gen8 wall economy and mine critical replay
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p data/metrics data/selfplay/wall-economy-gen11-focus
+          python training/wall_economy.py data/selfplay/wall-economy-gen11 \
+            --json data/metrics/teacher-wall-economy.json \
+            --focus-out data/selfplay/wall-economy-gen11-focus/focus_000.bin \
+            --focus-copies 2 \
+            --focus-max-fraction 0.12 \
+            | tee data/metrics/teacher-wall-economy.txt
+          python training/wall_counterfactual.py \
+            --weights bootstrap/nnue/candidates/gen8-search-ci/nnue_weights.bin \
+            data/selfplay/wall-economy-gen11 \
+            --samples 5000 \
+            --json data/metrics/gen8-counterfactual.json \
+            | tee data/metrics/gen8-counterfactual.txt
+
+      - name: Upweight deeper teacher data without changing labels
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p data/selfplay/wall-economy-gen11-deep-replay
+          for f in data/selfplay/wall-economy-gen11/selfplay_deep_*.bin; do
+            b=$(basename "$f" .bin)
+            cp "$f" "data/selfplay/wall-economy-gen11-deep-replay/${b}_copy1.bin"
+            cp "$f" "data/selfplay/wall-economy-gen11-deep-replay/${b}_copy2.bin"
+          done
+
+      - name: Train same Gen8 architecture on larger targeted dataset
+        shell: bash
+        run: |
+          set -euo pipefail
+          MODE='${{ matrix.mode }}'
+          mkdir -p "data/nnue/candidates/wall-economy-gen11-${MODE}"
+          SOURCES=$(python - <<'PY'
+          import glob, json
+          paths = []
+          paths += sorted(glob.glob('data/selfplay/wall-economy-gen11/*.bin'))
+          paths += sorted(glob.glob('data/selfplay/wall-economy-gen11-deep-replay/*.bin'))
+          paths += sorted(glob.glob('data/selfplay/wall-economy-gen11-focus/*.bin'))
+          print(json.dumps([{'path': p, 'frac': 1.0, 'k': 1.0} for p in paths], separators=(',', ':')))
+          PY
+          )
+          COMMON=(
+            --fresh
+            --data-sources "$SOURCES"
+            --val-data data/validation/wall-economy-gen11-val.bin
+            --out "data/nnue/candidates/wall-economy-gen11-${MODE}/nnue_weights.bin"
+            --ckpt-dir "data/checkpoints/wall-economy-gen11-${MODE}"
+            --plot-dir "data/plots/wall-economy-gen11-${MODE}"
+            --monitor val_outcome
+            --policy-opening-plies 0
+            --wl-gamma 0.9975
+          )
+          if [ "$MODE" = scratch ]; then
+            python training/train_nnue.py "${COMMON[@]}" \
+              --epochs 50 --lr 5e-4 --lr-min 2e-5 --lr-schedule cosine \
+              2>&1 | tee "data/train-${MODE}.log"
+          else
+            python training/train_nnue.py "${COMMON[@]}" \
+              --init-from bootstrap/nnue/candidates/gen8-search-ci/nnue_weights.bin \
+              --epochs 40 --lr 2e-5 --lr-min 1e-6 --lr-schedule cosine \
+              2>&1 | tee "data/train-${MODE}.log"
+          fi
+
+      - name: Counterfactual wall-resource benchmark
+        shell: bash
+        run: |
+          set -euo pipefail
+          MODE='${{ matrix.mode }}'
+          python training/wall_counterfactual.py \
+            --weights "data/nnue/candidates/wall-economy-gen11-${MODE}/nnue_weights.bin" \
+            data/selfplay/wall-economy-gen11 \
+            --samples 5000 \
+            --json "data/metrics/${MODE}-counterfactual.json" \
+            | tee "data/metrics/${MODE}-counterfactual.txt"
+
+      - name: Wandering regression gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          MODE='${{ matrix.mode }}'
+          mkdir -p bin
+          g++ -std=c++17 -O3 -DNDEBUG -Isrc tests/wandering_race_suite.cpp -o bin/wandering_race_suite
+          ./bin/wandering_race_suite "data/nnue/candidates/wall-economy-gen11-${MODE}/nnue_weights_int8.bin" \
+            | tee "data/metrics/${MODE}-wandering.txt"
+
+      - name: 1600-game Elo arena against Gen8 baseline
+        shell: bash
+        run: |
+          set -euo pipefail
+          MODE='${{ matrix.mode }}'
+          python tools/arena/run_arena.py \
+            --ref1 "" --ref2 "" \
+            --games 1600 --time 20 --threads 4 --random-plies 4 \
+            --e1-nnue "data/nnue/candidates/wall-economy-gen11-${MODE}/nnue_weights_int8.bin" \
+            --e2-nnue bootstrap/nnue/candidates/gen8-search-ci/nnue_weights_int8.bin \
+            | tee "data/arena-${MODE}-vs-gen8.log"
+
+      - name: Generate matched-size behavior samples
+        shell: bash
+        run: |
+          set -euo pipefail
+          MODE='${{ matrix.mode }}'
+          bash build/build_selfplay.sh
+          python tools/selfplay/run_selfplay.py \
+            --games 500 --chunk-games 500 --time-ms 20 --threads 4 \
+            --seed 202609066 --mode montecarlo \
+            --mc-obvious-plies 0 --mc-temp-opening 0.60 --mc-temp-end 0.25 --mc-temp-decay-plies 4 \
+            --epsilon-midgame 0.01 --mcab-no-root-noise \
+            --nnue-weights "data/nnue/candidates/wall-economy-gen11-${MODE}/nnue_weights_int8.bin" \
+            --out "data/behavior/${MODE}/selfplay_{shard:03d}.bin"
+          python tools/selfplay/run_selfplay.py \
+            --games 500 --chunk-games 500 --time-ms 20 --threads 4 \
+            --seed 202609066 --mode montecarlo \
+            --mc-obvious-plies 0 --mc-temp-opening 0.60 --mc-temp-end 0.25 --mc-temp-decay-plies 4 \
+            --epsilon-midgame 0.01 --mcab-no-root-noise \
+            --nnue-weights bootstrap/nnue/candidates/gen8-search-ci/nnue_weights_int8.bin \
+            --out "data/behavior/gen8/selfplay_{shard:03d}.bin"
+          python training/wall_economy.py "data/behavior/${MODE}" \
+            --json "data/metrics/${MODE}-behavior.json" \
+            | tee "data/metrics/${MODE}-behavior.txt"
+          python training/wall_economy.py data/behavior/gen8 \
+            --json "data/metrics/gen8-behavior.json" \
+            | tee "data/metrics/gen8-behavior.txt"
+
+      - name: Upload candidate experiment
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: wall-economy-gen11-${{ matrix.mode }}-results
+          retention-days: 14
+          if-no-files-found: warn
+          path: |
+            data/nnue/candidates/wall-economy-gen11-${{ matrix.mode }}/*.bin
+            data/checkpoints/wall-economy-gen11-${{ matrix.mode }}/train_config_*.json
+            data/plots/wall-economy-gen11-${{ matrix.mode }}/training_curves.png
+            data/metrics/*
+            data/train-${{ matrix.mode }}.log
+            data/arena-${{ matrix.mode }}-vs-gen8.log
