@@ -2,39 +2,55 @@
 
 ## Status
 
-**Prepared. Spectral preservation and inference-cost experiment starting from the Gen8 policy head.**
+**Rejected. Rank 48 fails the wandering hard gate and preserves too little of the trained policy matrix.**
 
 ## Hypothesis
 
-The production policy head is a single dense `256 -> 209` projection. It costs 53,504 multiply-accumulates per policy evaluation. Because the head is linear, its trained weight matrix can be approximated directly with a truncated SVD instead of retraining the network from scratch.
-
-A rank-48 factorization replaces the projection with:
-
-`256 -> 48 -> 209`
-
-with no nonlinearity between factors. This reduces the nominal policy-head MAC count from 53,504 to 22,320, a reduction of about 58.3%, while preserving the Gen8 trunk and value head exactly.
+The production policy head is a single dense `256 -> 209` projection. It costs 53,504 multiply-accumulates per policy evaluation. A truncated SVD can replace it with a linear `256 -> 48 -> 209` factorization, nominally reducing policy-head MACs to 22,320 (-58.3%) while leaving the Gen8 trunk and value head unchanged.
 
 ## Controlled change
 
-Only the policy projection changes. The experiment must preserve:
+Only the policy projection was changed. Gen8 trunk/value weights, `cPuct = 1.20`, policy-ordering settings, MCAB parameters, and the Gen8 int8 weight file were otherwise preserved.
 
-- Gen8 transformer/trunk weights;
-- Gen8 value head;
-- `cPuct = 1.20` search baseline;
-- policy ordering enablement and minimum depth;
-- all other MCAB parameters.
+## Spectral result
 
-The low-rank factors are initialized from the trained Gen8 policy matrix with truncated SVD. The original policy bias is retained.
+Measured directly from the trained Gen8 quantized policy matrix:
 
-## Evaluation order
+| Rank | Energy retained | Relative Frobenius error |
+|---:|---:|---:|
+| 16 | 34.58% | 0.8088 |
+| 32 | 51.76% | 0.6946 |
+| 48 | 64.23% | 0.5981 |
+| 64 | 73.97% | 0.5102 |
+| 96 | 87.44% | 0.3544 |
+| 128 | 95.10% | 0.2214 |
 
-1. Measure singular-value energy retained at ranks 16/32/48/64/96.
-2. Measure policy-logit reconstruction error on representative positions.
-3. Measure KL divergence and legal-move top-1/top-3 agreement against the original Gen8 policy.
-4. Benchmark isolated policy forward and whole-engine NPS.
-5. Run wandering regression.
-6. If policy fidelity is acceptable, run a fixed-time arena against the untouched Gen8 search baseline.
+Rank 48 therefore discards about 35.8% of the policy-matrix spectral energy.
 
-## Decision rule
+## Regression result
 
-Rank 48 survives only if it produces a meaningful NPS gain without a statistically meaningful Elo loss. If fidelity is substantially better than necessary, test rank 32. If fidelity is insufficient, test rank 64.
+Core MCAB tests: **PASS**.
+
+Wandering race suite: **4/5 PASS**.
+
+The failing case was:
+
+- `race_6v8_w10`: did not reach the goal, entered a two-cycle, `noProgress=4`, final own distance 5.
+
+The other four race cases passed.
+
+Relevant runs:
+
+- initial infrastructure run: `34001668873` (failed because the wandering test file was absent from the branch);
+- corrected regression run: `34004606082`;
+- corrected-run artifact: `9980544265`.
+
+## Decision
+
+**Reject rank 48 without arena.** Wandering is a hard regression gate, so running the planned 1,600-game arena would spend compute on a candidate already unsuitable for promotion.
+
+Rank 32 is also rejected without testing because it retains only 51.8% of spectral energy, materially worse than rank 48. Rank 64 still has substantial reconstruction error (0.510) and only 74.0% energy retention, so the low-rank family is not the preferred next direction.
+
+## Next action
+
+Prefer exact-policy compute reductions over approximate compression: compute fewer policy logits / compute policy only when needed, preserving the trained Gen8 logits exactly. The active `exp/policy-lazy-legal-v7` branch is the next candidate to evaluate.
