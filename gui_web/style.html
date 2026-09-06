@@ -854,28 +854,9 @@ input[type="number"],input[type="text"],textarea{
 .advSettings[open] summary::after{transform:rotate(-90deg)}
 .advSettings .advBody{padding-top:var(--space-1)}
 
-/* A barely-visible material layer prevents flat themes from looking synthetic.
-   It is deliberately weak enough to leave pawns, walls and coordinates clean. */
-#boardWrap::after{
-  content:"";position:absolute;inset:0;border-radius:inherit;pointer-events:none;z-index:8;
-  background:
-    repeating-linear-gradient(12deg,rgba(255,255,255,.22) 0 1px,transparent 1px 9px),
-    repeating-linear-gradient(101deg,rgba(0,0,0,.20) 0 1px,transparent 1px 13px);
-  mix-blend-mode:soft-light;opacity:.025;
-}
-html[data-board-texture="off"] #boardWrap::after{display:none}
-html[data-board-texture="subtle"] #boardWrap::after{opacity:.025}
-html[data-board-texture="natural"] #boardWrap::after{opacity:.055}
-
-/* Contrast is intentionally subtle: a preference, not a second theme system. */
-html[data-board-contrast="soft"] #board{filter:contrast(.96) saturate(.99)}
-html[data-board-contrast="standard"] #board{filter:none}
-html[data-board-contrast="strong"] #board{filter:contrast(1.07) saturate(1.015)}
-
-/* Goal-row strength remains neutral and never becomes a player-coloured band. */
-html[data-goal-rows="off"] #boardWrap{--goal-wash:rgba(120,122,132,0)}
-html[data-goal-rows="subtle"] #boardWrap{--goal-wash:rgba(120,122,132,.12)}
-html[data-goal-rows="clear"] #boardWrap{--goal-wash:rgba(120,122,132,.21)}
+/* Board material, cell/groove contrast and goal-row strength are painted by
+   QBoard itself. Keeping them out of DOM filters/pseudo-elements means they
+   never post-process pawns or walls, and exports use the same rendering path. */
 
 /* The evaluation strip belongs to the board, but should not compete with it. */
 #evalStrip{border-radius:3px}

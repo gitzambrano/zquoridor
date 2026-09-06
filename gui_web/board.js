@@ -18,6 +18,109 @@ function qrMulberry32(seed) {
     t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
     return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
   };
+ }
+
+// Board contrast belongs to the substrate only. Transform the three board
+// colours before painting instead of filtering the completed canvas, so pawns,
+// walls, marks and text keep their authored colours.
+function qrBoardContrastColor(color, mode) {
+  if (!mode || mode === 'standard') return color;
+  const m = /^#([0-9a-f]{6})$/i.exec(String(color || '').trim());
+  if (!m) return color;
+  const n = parseInt(m[1], 16);
+  let rgb = [(n >> 16) & 255, (n >> 8) & 255, n & 255];
+  const mean = (rgb[0] + rgb[1] + rgb[2]) / 3;
+  const sat = mode === 'strong' ? 1.015 : .99;
+  const contrast = mode === 'strong' ? 1.07 : .96;
+  rgb = rgb.map(v => mean + (v - mean) * sat)
+           .map(v => 128 + (v - 128) * contrast)
+           .map(v => Math.max(0, Math.min(255, Math.round(v))));
+  return '#' + rgb.map(v => v.toString(16).padStart(2, '0')).join('');
+}
+
+function qrTextureStrength(mode) {
+  return mode === 'off' ? 0 : mode === 'natural' ? 1 : .52;
+}
+
+// One deterministic primitive generator feeds both Canvas and SVG. Textures
+// therefore describe the material (wood grain, marble veins, paper fibre,
+// mineral streaks) rather than a generic overlay laid over the whole UI.
+function qrTexturePrimitives(theme, mode, bx, bw, C) {
+  const s = qrTextureStrength(mode);
+  if (!s) return [];
+  const seeds = {
+    wood: 0x574f4f44, walnut: 0x57414c4e, ivory: 0x49564f52,
+    marble: 0x4d415242, parchment: 0x50415243, obsidian: 0x4f425349,
+    slate: 0x534c4154, emerald: 0x454d4552, noir: 0x4e4f4952,
+  };
+  const rnd = qrMulberry32(seeds[theme] || 0x5a51554f);
+  const out = [];
+  const tone = bias => rnd() < (bias == null ? .5 : bias) ? 'dark' : 'light';
+  const line = (x1, y1, x2, y2, width, t, alpha) =>
+    out.push({ kind: 'line', x1, y1, x2, y2, width, tone: t, alpha });
+  const dot = (x, y, radius, t, alpha) =>
+    out.push({ kind: 'dot', x, y, radius, tone: t, alpha });
+
+  if (theme === 'wood' || theme === 'walnut') {
+    const count = theme === 'walnut' ? 34 : 28;
+    const base = theme === 'walnut' ? .050 : .040;
+    for (let i = 0; i < count; i++) {
+      const y = bx + rnd() * bw;
+      const drift = (rnd() - .5) * bw * .035;
+      const a = base * s * (.70 + .30 * rnd());
+      const t = tone(.58);
+      line(bx - 2, y, bx + bw + 2, y + drift, .45 + rnd() * .75, t, a);
+      if (rnd() > .70) {
+        const off = (rnd() - .5) * C * .18;
+        line(bx, y + off, bx + bw, y + drift + off,
+             .35 + rnd() * .45, t, a * .55);
+      }
+    }
+  } else if (theme === 'marble') {
+    for (let v = 0; v < 18; v++) {
+      let x = bx + rnd() * bw, y = bx - 4;
+      const pts = [{ x, y }];
+      while (y < bx + bw + 4) {
+        y += C * (.42 + rnd() * .62);
+        x += (rnd() - .5) * C * 1.15;
+        pts.push({ x, y });
+      }
+      out.push({ kind: 'poly', points: pts, width: .55 + rnd() * 1.45,
+                 tone: tone(.72), alpha: (.070 + rnd() * .035) * s });
+    }
+  } else if (theme === 'parchment' || theme === 'ivory') {
+    const dots = theme === 'parchment' ? 105 : 62;
+    const da = (theme === 'parchment' ? .030 : .018) * s;
+    for (let i = 0; i < dots; i++)
+      dot(bx + rnd() * bw, bx + rnd() * bw, .35 + rnd() * .85,
+          tone(theme === 'parchment' ? .70 : .55), da * (.55 + .45 * rnd()));
+    const fibres = theme === 'parchment' ? 22 : 10;
+    for (let i = 0; i < fibres; i++) {
+      const x = bx + rnd() * bw, y = bx + rnd() * bw;
+      line(x, y, x + C * (.35 + rnd() * .65), y + (rnd() - .5) * C * .10,
+           .35 + rnd() * .35, tone(.66), da * 1.25);
+    }
+  } else if (theme === 'slate' || theme === 'obsidian') {
+    const count = theme === 'slate' ? 42 : 30;
+    const a = (theme === 'slate' ? .034 : .026) * s;
+    for (let i = 0; i < count; i++) {
+      const x = bx + rnd() * bw, y = bx + rnd() * bw;
+      const len = C * (.30 + rnd() * .85);
+      line(x, y, x + len, y - len * (.18 + rnd() * .25),
+           .45 + rnd() * .65, tone(.60), a * (.65 + .35 * rnd()));
+    }
+  } else if (theme === 'emerald') {
+    for (let i = 0; i < 28; i++) {
+      const x = bx + rnd() * bw, y = bx + rnd() * bw;
+      line(x, y, x + (rnd() - .5) * C * .20, y + C * (.45 + rnd() * .85),
+           .40 + rnd() * .55, tone(.62), .025 * s * (.6 + .4 * rnd()));
+    }
+  } else if (theme === 'noir') {
+    for (let i = 0; i < 52; i++)
+      dot(bx + rnd() * bw, bx + rnd() * bw, .30 + rnd() * .70,
+          tone(.48), .016 * s * (.5 + .5 * rnd()));
+  }
+  return out;
 }
 
 // Ease in out, cubic. Used by the pawn slide.
@@ -371,6 +474,34 @@ class QBoard {
     }
   }
 
+  paintMaterialTexture(g, bx, bw) {
+    const ds = this.ds();
+    const parts = qrTexturePrimitives(ds.board || 'wood', ds.boardTexture || 'subtle',
+                                      bx, bw, this.C);
+    if (!parts.length) return;
+    g.save();
+    this.rr(g, bx, bx, bw, bw, 4); g.clip();
+    g.lineCap = 'round'; g.lineJoin = 'round';
+    for (const p of parts) {
+      const col = p.tone === 'light' ? '#ffffff' : '#000000';
+      g.globalAlpha = p.alpha;
+      if (p.kind === 'dot') {
+        g.fillStyle = col;
+        g.beginPath(); g.arc(p.x, p.y, p.radius, 0, 7); g.fill();
+      } else if (p.kind === 'poly') {
+        if (!p.points.length) continue;
+        g.strokeStyle = col; g.lineWidth = p.width;
+        g.beginPath(); g.moveTo(p.points[0].x, p.points[0].y);
+        for (let i = 1; i < p.points.length; i++) g.lineTo(p.points[i].x, p.points[i].y);
+        g.stroke();
+      } else {
+        g.strokeStyle = col; g.lineWidth = p.width;
+        g.beginPath(); g.moveTo(p.x1, p.y1); g.lineTo(p.x2, p.y2); g.stroke();
+      }
+    }
+    g.restore();
+  }
+
   paintStatic(g) {
     const { C, G, U, M, S } = this;
     const ds = this.ds();
@@ -381,7 +512,9 @@ class QBoard {
     // colour shows through every groove.
     this.paintFrame(g, frameStyle, bx, bw);
 
-    g.fillStyle = this.css('--groove');
+    const boardContrast = ds.boardContrast || 'standard';
+    const groove = qrBoardContrastColor(this.css('--groove'), boardContrast);
+    g.fillStyle = groove;
     this.rr(g, bx, bx, bw, bw, 4); g.fill();
     if (frameStyle !== 'none') {
       // Inner bevel of the frame around the play area.
@@ -394,7 +527,8 @@ class QBoard {
     //   grooves  rounded cells, bed colour in the gap, groove centre lines
     //   flat     square cells that grow over the gap, one seamless surface
     //   inlaid   flat surface with a gold hairline inlaid around each cell
-    const ca = this.css('--cell-a'), cb = this.css('--cell-b');
+    const ca = qrBoardContrastColor(this.css('--cell-a'), boardContrast),
+          cb = qrBoardContrastColor(this.css('--cell-b'), boardContrast);
     const rad = 0.10 * C;
     for (let r = 0; r < 9; r++) for (let c = 0; c < 9; c++) {
       const p = this.cellXY(r, c);
@@ -422,18 +556,17 @@ class QBoard {
         }
       }
     }
-    // Goal rows: a light neutral wash over rank 1 and rank 9, the two rows a
-    // game can end on. Drawn over the cells so it follows their shape, and
-    // under everything else so a pawn or a wall still reads normally.
-    {
-      const wash = this.css('--goal-wash');
-      if (wash) {
-        g.fillStyle = wash;
-        for (const r of [0, 8]) for (let c = 0; c < 9; c++) {
-          const p = this.cellXY(r, c);
-          if (cellSep === 'grooves') { this.rr(g, p.x, p.y, C, C, rad); g.fill(); }
-          else g.fillRect(p.x - G / 2, p.y - G / 2, C + G, C + G);
-        }
+    this.paintMaterialTexture(g, bx, bw);
+
+    // Goal rows are renderer-owned too: Off really means no wash and no edge.
+    const goalMode = ds.goalRows || 'subtle';
+    const goalAlpha = goalMode === 'clear' ? .21 : goalMode === 'off' ? 0 : .12;
+    if (goalAlpha > 0) {
+      g.fillStyle = `rgba(120,122,132,${goalAlpha})`;
+      for (const r of [0, 8]) for (let c = 0; c < 9; c++) {
+        const p = this.cellXY(r, c);
+        if (cellSep === 'grooves') { this.rr(g, p.x, p.y, C, C, rad); g.fill(); }
+        else g.fillRect(p.x - G / 2, p.y - G / 2, C + G, C + G);
       }
     }
     if (cellSep === 'grooves') {
@@ -452,34 +585,15 @@ class QBoard {
       }
     }
 
-    // Carrara marble signature theme: deterministic veins baked into the
-    // static layer, so they cost nothing per frame.
-    if ((ds.board || '') === 'marble' && (ds.boardTexture || 'subtle') !== 'off') {
-      const rnd = qrMulberry32(0xCAFE);
-      g.save();
-      g.beginPath(); g.rect(bx, bx, bw, bw); g.clip();
-      for (let v = 0; v < 26; v++) {
-        g.strokeStyle = rnd() > .5 ? 'rgba(120,125,140,.16)' : 'rgba(70,74,88,.12)';
-        g.lineWidth = .6 + rnd() * 1.8;
-        let x = M + rnd() * bw, y = M - 4;
-        g.beginPath(); g.moveTo(x, y);
-        while (y < S - M + 4) {
-          y += 14 + rnd() * 30;
-          x += (rnd() - .5) * 46;
-          g.quadraticCurveTo(x + (rnd() - .5) * 24, y - 12, x, y);
-        }
-        g.stroke();
-      }
-      g.restore();
+    // Goal edges follow the same control. Off removes every goal-row cue.
+    if (goalMode !== 'off') {
+      g.globalAlpha = goalMode === 'clear' ? .40 : .30;
+      g.fillStyle = this.flipped ? this.css('--p0') : this.css('--p1');
+      g.fillRect(bx, bx, bw, 2);
+      g.fillStyle = this.flipped ? this.css('--p1') : this.css('--p0');
+      g.fillRect(bx, bx + bw - 2, bw, 2);
+      g.globalAlpha = 1;
     }
-
-    // Goal edges: a quiet 2px line just inside the top and bottom play edges.
-    g.globalAlpha = .30;
-    g.fillStyle = this.flipped ? this.css('--p0') : this.css('--p1');
-    g.fillRect(bx, bx, bw, 2);
-    g.fillStyle = this.flipped ? this.css('--p1') : this.css('--p0');
-    g.fillRect(bx, bx + bw - 2, bw, 2);
-    g.globalAlpha = 1;
 
     // Coordinates, drawn on the frame margin.
     const coordsMode = ds.coords || 'edges';
@@ -541,10 +655,18 @@ class QBoard {
 
     if (this.lastMove) {
       if (this.lastMove.type === 'pawn') {
-        // No mark on a pawn's square. The filled gold tile read as a second
-        // piece on the board and fought with the pawn standing on it. A wall
-        // still takes its gold rim below, because a wall has no other way to
-        // say it was the move just played.
+        const lm = this.ds().lastMoveStyle || 'subtle';
+        if (lm !== 'off') {
+          const ctr = this.cellCenter(this.lastMove.r, this.lastMove.c);
+          const sizeMul = { small: .85, large: 1.15 }[this.ds().pawnSize] || 1;
+          const haloR = (.30 * sizeMul + (lm === 'clear' ? .070 : .058)) * C;
+          g.save();
+          g.beginPath(); g.arc(ctr.x, ctr.y, haloR, 0, 7);
+          g.strokeStyle = this.css('--gold');
+          g.lineWidth = lm === 'clear' ? Math.max(1.5, .026 * C) : Math.max(1.0, .018 * C);
+          g.globalAlpha = lm === 'clear' ? .88 : .52;
+          g.stroke(); g.restore();
+        }
       } else {
         const [o, r, c] = this.engWallToDisp(this.lastMove.o, this.lastMove.r, this.lastMove.c);
         // Frame the rail from outside. Stroking the beam itself put a gold
@@ -815,7 +937,12 @@ class QBoard {
     const gh = this.ghost, o = gh.o, r = gh.r, c = gh.c;
     const rc = this.wallDrawRect(o, r, c);
     const st = gh.state;
-    const alpha = st === 'bad' ? .20 : st === 'pending' ? 1 : .60;
+    const wp = this.ds().wallPreview || 'normal';
+    const alpha = wp === 'subtle'
+      ? (st === 'bad' ? .14 : st === 'pending' ? .90 : .45)
+      : wp === 'strong'
+        ? (st === 'bad' ? .28 : st === 'pending' ? 1 : .75)
+        : (st === 'bad' ? .20 : st === 'pending' ? 1 : .60);
     const col = st === 'ok' ? this.css('--green')
               : st === 'assisted' ? this.css('--gold')
               : st === 'pending' ? this.css('--gold')
@@ -1124,43 +1251,92 @@ class QBoard {
     const cssOf = name => getComputedStyle(tmp).getPropertyValue(name).trim() ||
                           getComputedStyle(document.documentElement).getPropertyValue(name).trim();
     const esc = s => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;');
-    const frame = cssOf('--frame'), groove = cssOf('--groove');
-    const ca = cssOf('--cell-a'), cb = cssOf('--cell-b'), wall = cssOf('--wall');
-    const edge = cssOf('--wall-edge'), gold = cssOf('--gold'), coord = cssOf('--coord');
-    const G = size * 0.0115, M = size * 0.0195;
-    const C = (size - 2 * M - 8 * G) / 9, U = C + G;
+    const ds = document.documentElement.dataset;
+    const contrast = ds.boardContrast || 'standard';
+    const frame = cssOf('--frame');
+    const groove = qrBoardContrastColor(cssOf('--groove'), contrast);
+    const ca = qrBoardContrastColor(cssOf('--cell-a'), contrast);
+    const cb = qrBoardContrastColor(cssOf('--cell-b'), contrast);
+    const wall = cssOf('--wall'), edge = cssOf('--wall-edge');
+    const gold = cssOf('--gold'), coord = cssOf('--coord');
+    const coordsMode = opts.coords === false ? 'off' : (ds.coords || 'edges');
+    const k = coordsMode !== 'off' ? .46 : .20;
+    const G = Math.max(4, Math.min(10, .145 * (size / 10.6)));
+    const C = (size - 8 * G) / (9 + 2 * k), M = k * C, U = C + G;
+    const bx = M - G / 2, bw = 9 * U;
     let b = `<svg xmlns="http://www.w3.org/2000/svg" width="${size}" height="${size}" viewBox="0 0 ${size} ${size}">`;
+    b += `<defs><clipPath id="zqPlayClip"><rect x="${bx.toFixed(1)}" y="${bx.toFixed(1)}" width="${bw.toFixed(1)}" height="${bw.toFixed(1)}" rx="4"/></clipPath></defs>`;
     if (!opts.transparent) b += `<rect width="${size}" height="${size}" fill="${esc(cssOf('--bg'))}"/>`;
-    b += `<rect width="${size}" height="${size}" rx="26" fill="${esc(frame)}"/>`;
-    b += `<rect x="${(M - G / 2).toFixed(1)}" y="${(M - G / 2).toFixed(1)}" width="${(9 * U).toFixed(1)}" height="${(9 * U).toFixed(1)}" fill="${esc(groove)}"/>`;
+    b += `<rect width="${size}" height="${size}" rx="14" fill="${esc(frame)}"/>`;
+    b += `<rect x="${bx.toFixed(1)}" y="${bx.toFixed(1)}" width="${bw.toFixed(1)}" height="${bw.toFixed(1)}" rx="4" fill="${esc(groove)}"/>`;
     for (let r = 0; r < 9; r++) for (let c = 0; c < 9; c++)
       b += `<rect x="${(M + c * U).toFixed(1)}" y="${(M + r * U).toFixed(1)}" width="${C.toFixed(1)}" height="${C.toFixed(1)}" rx="${(C * .10).toFixed(1)}" fill="${esc(((r + c) & 1) ? cb : ca)}"/>`;
+
+    const textureMode = ds.boardTexture || 'subtle';
+    const texture = qrTexturePrimitives(ds.board || 'wood', textureMode, bx, bw, C);
+    if (texture.length) {
+      b += `<g data-zq-texture="${esc((ds.board || 'wood') + ':' + textureMode)}" clip-path="url(#zqPlayClip)" stroke-linecap="round" stroke-linejoin="round">`;
+      for (const p of texture) {
+        const col = p.tone === 'light' ? '#ffffff' : '#000000';
+        if (p.kind === 'dot') {
+          b += `<circle cx="${p.x.toFixed(2)}" cy="${p.y.toFixed(2)}" r="${p.radius.toFixed(2)}" fill="${col}" fill-opacity="${p.alpha.toFixed(4)}"/>`;
+        } else if (p.kind === 'poly') {
+          const pts = p.points.map(q => `${q.x.toFixed(2)},${q.y.toFixed(2)}`).join(' ');
+          b += `<polyline points="${pts}" fill="none" stroke="${col}" stroke-opacity="${p.alpha.toFixed(4)}" stroke-width="${p.width.toFixed(2)}"/>`;
+        } else {
+          b += `<line x1="${p.x1.toFixed(2)}" y1="${p.y1.toFixed(2)}" x2="${p.x2.toFixed(2)}" y2="${p.y2.toFixed(2)}" stroke="${col}" stroke-opacity="${p.alpha.toFixed(4)}" stroke-width="${p.width.toFixed(2)}"/>`;
+        }
+      }
+      b += `</g>`;
+    }
+
+    const goalMode = ds.goalRows || 'subtle';
+    if (goalMode !== 'off') {
+      const goalAlpha = goalMode === 'clear' ? .21 : .12;
+      b += `<g data-zq-goal-rows="${goalMode}">`;
+      for (const r of [0, 8]) for (let c = 0; c < 9; c++)
+        b += `<rect x="${(M + c * U).toFixed(1)}" y="${(M + r * U).toFixed(1)}" width="${C.toFixed(1)}" height="${C.toFixed(1)}" rx="${(C * .10).toFixed(1)}" fill="#787a84" fill-opacity="${goalAlpha}"/>`;
+      const top = this.flipped ? cssOf('--p0') : cssOf('--p1');
+      const bottom = this.flipped ? cssOf('--p1') : cssOf('--p0');
+      const edgeAlpha = goalMode === 'clear' ? .40 : .30;
+      b += `<rect x="${bx.toFixed(1)}" y="${bx.toFixed(1)}" width="${bw.toFixed(1)}" height="2" fill="${esc(top)}" fill-opacity="${edgeAlpha}"/>`;
+      b += `<rect x="${bx.toFixed(1)}" y="${(bx + bw - 2).toFixed(1)}" width="${bw.toFixed(1)}" height="2" fill="${esc(bottom)}" fill-opacity="${edgeAlpha}"/>`;
+      b += `</g>`;
+    }
+
+    const profile = ds.wallProfile || 'standard';
+    const profileScale = profile === 'slim' ? .27 : profile === 'bold' ? .41 : .33;
+    const inf = Math.max(1.4, G * profileScale), ext = G * .54;
+    b += `<g data-zq-wall-profile="${profile}">`;
     for (let r = 0; r < 8; r++) for (let c = 0; c < 8; c++) {
       if (this.wallH[r * 8 + c]) {
-        const x = M + c * U, y = M + (r + 1) * U - G / 2;
-        b += `<rect x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${(2 * C + G).toFixed(1)}" height="${G.toFixed(1)}" rx="4" fill="${esc(wall)}" stroke="${esc(edge)}"/>`;
+        const x = M + c * U - ext, y = M + (r + 1) * U - G - inf;
+        b += `<rect x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${(2 * C + G + 2 * ext).toFixed(1)}" height="${(G + 2 * inf).toFixed(1)}" rx="2" fill="${esc(wall)}" stroke="${esc(edge)}"/>`;
       }
       if (this.wallV[r * 8 + c]) {
-        const x = M + (c + 1) * U - G / 2, y = M + r * U;
-        b += `<rect x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${G.toFixed(1)}" height="${(2 * C + G).toFixed(1)}" rx="4" fill="${esc(wall)}" stroke="${esc(edge)}"/>`;
+        const x = M + (c + 1) * U - G - inf, y = M + r * U - ext;
+        b += `<rect x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${(G + 2 * inf).toFixed(1)}" height="${(2 * C + G + 2 * ext).toFixed(1)}" rx="2" fill="${esc(wall)}" stroke="${esc(edge)}"/>`;
       }
     }
+    b += `</g>`;
     for (let pl = 0; pl < 2; pl++) {
       if (!Number.isInteger(this.pawn[pl])) continue;
       const d = this.pawn[pl];
       const cx = M + (d % 9) * U + C / 2, cy = M + Math.floor(d / 9) * U + C / 2;
-      const R = .30 * C;
+      const pawnScale = { small: .85, large: 1.15 }[ds.pawnSize] || 1;
+      const R = .30 * C * pawnScale;
       b += `<circle cx="${cx.toFixed(1)}" cy="${cy.toFixed(1)}" r="${R.toFixed(1)}" fill="${esc(cssOf('--p' + pl))}" stroke="${esc(cssOf('--p' + pl + '-deep'))}"/>`;
     }
     if (opts.coords !== false) {
-      b += `<g fill="${esc(coord)}" font-family="monospace" font-size="${(C * .15).toFixed(0)}">`;
+      const bandX = bx / 2, bandY = (bx + bw + size) / 2;
+      b += `<g fill="${esc(coord)}" font-family="'JetBrains Mono', monospace" font-size="${Math.max(10.5, C * .228).toFixed(1)}" font-weight="500" dominant-baseline="middle">`;
       for (let c = 0; c < 9; c++) {
         const x = M + c * U + C / 2;
-        b += `<text x="${x.toFixed(1)}" y="${size - M / 2}" text-anchor="middle">${'abcdefghi'[c]}</text>`;
+        b += `<text x="${x.toFixed(1)}" y="${bandY.toFixed(1)}" text-anchor="middle">${'abcdefghi'[c]}</text>`;
       }
       for (let r = 0; r < 9; r++) {
         const y = M + r * U + C / 2;
-        b += `<text x="${M / 2}" y="${y.toFixed(1)}" text-anchor="middle">${this.flipped ? r + 1 : 9 - r}</text>`;
+        b += `<text x="${bandX.toFixed(1)}" y="${y.toFixed(1)}" text-anchor="middle">${this.flipped ? r + 1 : 9 - r}</text>`;
       }
       b += `</g>`;
     }
