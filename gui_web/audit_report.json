@@ -1,0 +1,181 @@
+{
+  "desktop": {
+    "runtime_errors": [],
+    "initial": {
+      "vw": 1440,
+      "vh": 900,
+      "bodyW": 1440,
+      "bodyH": 900,
+      "board": {
+        "x": 197.296875,
+        "y": 118.5,
+        "w": 685,
+        "h": 685,
+        "right": 882.296875,
+        "bottom": 803.5
+      },
+      "zone": {
+        "x": 152,
+        "y": 115.6875,
+        "w": 739.609375,
+        "h": 708.625
+      },
+      "eval": {
+        "w": 20,
+        "h": 685
+      },
+      "status": "Your move",
+      "ply": 0,
+      "winner": -1
+    },
+    "human_turns": 7,
+    "final": {
+      "vw": 1440,
+      "vh": 900,
+      "bodyW": 1440,
+      "bodyH": 900,
+      "board": {
+        "x": 197.296875,
+        "y": 118.5,
+        "w": 685,
+        "h": 685,
+        "right": 882.296875,
+        "bottom": 803.5
+      },
+      "zone": {
+        "x": 152,
+        "y": 115.6875,
+        "w": 739.609375,
+        "h": 708.625
+      },
+      "eval": {
+        "w": 20,
+        "h": 685
+      },
+      "status": "Zquoridor won",
+      "ply": 14,
+      "winner": 1
+    },
+    "post_controls": {
+      "vw": 1440,
+      "vh": 900,
+      "bodyW": 1440,
+      "bodyH": 900,
+      "board": {
+        "x": 197.296875,
+        "y": 118.5,
+        "w": 685,
+        "h": 685,
+        "right": 882.296875,
+        "bottom": 803.5
+      },
+      "zone": {
+        "x": 152,
+        "y": 115.6875,
+        "w": 739.609375,
+        "h": 708.625
+      },
+      "eval": {
+        "w": 20,
+        "h": 685
+      },
+      "status": "Takeback - your move",
+      "ply": 12,
+      "winner": -1
+    }
+  },
+  "mobile": {
+    "runtime_errors": [],
+    "initial": {
+      "vw": 390,
+      "vh": 844,
+      "bodyW": 390,
+      "bodyH": 844,
+      "board": {
+        "x": 11,
+        "y": 105.5,
+        "w": 368,
+        "h": 368,
+        "right": 379,
+        "bottom": 473.5
+      },
+      "zone": {
+        "x": 8,
+        "y": 101.5,
+        "w": 374,
+        "h": 376
+      },
+      "eval": {
+        "w": 368,
+        "h": 10
+      },
+      "status": "Your move",
+      "ply": 0,
+      "winner": -1
+    },
+    "confirm_visible": true,
+    "final": {
+      "vw": 390,
+      "vh": 844,
+      "bodyW": 390,
+      "bodyH": 844,
+      "board": {
+        "x": 11,
+        "y": 105.5,
+        "w": 368,
+        "h": 368,
+        "right": 379,
+        "bottom": 473.5
+      },
+      "zone": {
+        "x": 8,
+        "y": 101.5,
+        "w": 374,
+        "h": 376
+      },
+      "eval": {
+        "w": 368,
+        "h": 10
+      },
+      "status": "Your move",
+      "ply": 4,
+      "winner": -1
+    },
+    "targets": [
+      [
+        "#btnNew",
+        46.609375,
+        44
+      ],
+      [
+        "#wallH",
+        60,
+        44
+      ],
+      [
+        "#wallV",
+        60,
+        44
+      ],
+      [
+        "#btnSettings",
+        44,
+        44
+      ]
+    ]
+  },
+  "errors": [],
+  "screenshots": [
+    "desktop_01_initial.png",
+    "desktop_02_hint.png",
+    "desktop_03_settings.png",
+    "desktop_04_wall_and_pawns.png",
+    "desktop_05_midgame.png",
+    "desktop_07_final.png",
+    "mobile_01_initial.png",
+    "mobile_02_wall_confirm.png",
+    "mobile_03_after_wall.png",
+    "mobile_04_analysis_sheet.png",
+    "mobile_05_settings.png"
+  ]
+}
