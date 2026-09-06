@@ -1,0 +1,68 @@
+name: Wood grain and blue tint
+
+on:
+  push:
+    branches:
+      - fix/wood-grain-blue-tint-2026-09
+
+permissions:
+  contents: write
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Apply patch and rebuild
+        run: |
+          python gui_web/extract_wasm_from_bundle.py gui_web/zquoridor.html gui_web/zquoridor.wasm
+          python tools/gui/apply_wood_grain_blue_tint.py
+          python gui_web/build_standalone.py
+          node --check gui_web/board.js
+          python -m py_compile gui_web/test_micro_polish_semantics.py
+          git diff --check
+
+      - name: Install Chromium
+        run: |
+          python -m pip install playwright
+          python -m playwright install --with-deps chromium
+
+      - name: Browser validation
+        working-directory: gui_web
+        run: |
+          set -euo pipefail
+          python dev_server.py 8123 >/tmp/zq-wood-blue.log 2>&1 &
+          SERVER_PID=$!
+          trap 'kill $SERVER_PID 2>/dev/null || true' EXIT
+          sleep 1
+          python test_gui_features.py
+          python test_micro_polish_semantics.py
+          python test_standalone.py
+
+      - name: Capture visual
+        working-directory: gui_web
+        run: |
+          set -euo pipefail
+          python dev_server.py 8123 >/tmp/zq-wood-blue-shot.log 2>&1 &
+          SERVER_PID=$!
+          trap 'kill $SERVER_PID 2>/dev/null || true' EXIT
+          sleep 1
+          python ../tools/gui/capture_wood_grain_blue_tint.py
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wood-grain-blue-tint
+          path: gui_web/wood_grain_blue_tint_shots/*.png
+
+      - name: Commit validated product
+        run: |
+          git config user.name zquoridor-gui-ci
+          git config user.email actions@users.noreply.github.com
+          git add gui_web/board.js gui_web/test_micro_polish_semantics.py gui_web/zquoridor.html index.html
+          git commit -m 'gui: reveal wood grain and soften blue goal tint [skip ci]'
+          git push
