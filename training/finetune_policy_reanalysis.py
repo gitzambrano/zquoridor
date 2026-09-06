@@ -167,7 +167,10 @@ def main() -> int:
 
     initial = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
     opt = torch.optim.AdamW(model.policy.parameters(), lr=args.lr, weight_decay=1e-5)
-    clipper = WeightClipper()
+    # Use the same fixed-QB representable range as normal QAT, but clamp only
+    # the mutable policy weight. Calling WeightClipper(model) would also clamp
+    # frozen trunk/value tensors and violate Gen13's bit-identical invariant.
+    policy_weight_max = 127.0 / float(WeightClipper().qb)
     rng = np.random.default_rng(args.seed)
 
     best = None
@@ -195,7 +198,8 @@ def main() -> int:
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.policy.parameters(), 1.0)
             opt.step()
-            clipper(model)
+            with torch.no_grad():
+                model.policy.weight.clamp_(-policy_weight_max, policy_weight_max)
             total_loss += loss.item() * len(chunk)
             total += len(chunk)
 
