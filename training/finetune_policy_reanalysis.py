@@ -5,12 +5,18 @@ This deliberately freezes the 354->256 trunk and the complete value head.
 The experiment is meant to alter root/search priors for wall timing while
 preserving the Gen8 evaluation representation that already has proven Elo.
 Only V3 samples with a non-zero root visit distribution contribute loss.
+
+The fitted policy is not deployed directly by default.  One or more --blend
+values export trust-region candidates of the form
+
+    policy = Gen8 + alpha * (fitted_policy - Gen8)
+
+so Elo can be measured as a dose-response curve without touching trunk/value.
 """
 from __future__ import annotations
 
 import argparse
 import json
-import os
 import sys
 from pathlib import Path
 
@@ -19,7 +25,6 @@ import torch
 import torch.nn.functional as F
 
 HERE = Path(__file__).resolve().parent
-ROOT = HERE.parent
 sys.path.insert(0, str(HERE))
 
 from read_selfplay import load_multi_selfplay  # noqa: E402
@@ -37,9 +42,7 @@ from quantize_nnue import quantize_file  # noqa: E402
 def valid_indices(ds) -> np.ndarray:
     chunks = []
     offset = 0
-    for path, n in ds.sizes():
-        # Read lazily through the dataset abstraction so format handling stays
-        # identical to the normal trainer.
+    for _path, n in ds.sizes():
         arr = ds[np.arange(offset, offset + n)]
         local = np.flatnonzero(arr["policy_top_prob"][:, 0] > 0)
         if len(local):
@@ -76,26 +79,59 @@ def evaluate(model, ds, idx, device, batch_size):
     return total_loss / max(1, total), top1 / max(1, total)
 
 
+def assert_frozen(state, initial):
+    changed = []
+    for name, value in state.items():
+        if name.startswith("policy."):
+            continue
+        if not torch.equal(value.detach().cpu(), initial[name]):
+            changed.append(name)
+    if changed:
+        raise RuntimeError(f"policy-only invariant violated; non-policy tensors changed: {changed}")
+
+
+def blend_state(initial, fitted, alpha: float):
+    if not (0.0 < alpha <= 1.0):
+        raise ValueError(f"blend alpha must be in (0,1], got {alpha}")
+    out = {k: v.detach().cpu().clone() for k, v in fitted.items()}
+    for name in ("policy.weight", "policy.bias"):
+        out[name] = initial[name] + alpha * (fitted[name] - initial[name])
+    assert_frozen(out, initial)
+    return out
+
+
 def main() -> int:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--train", action="append", required=True)
     p.add_argument("--val", action="append", required=True)
     p.add_argument("--init-from", required=True)
-    p.add_argument("--out", required=True)
+    p.add_argument("--out-dir", required=True)
     p.add_argument("--epochs", type=int, default=30)
     p.add_argument("--lr", type=float, default=2e-4)
     p.add_argument("--lr-min", type=float, default=1e-5)
     p.add_argument("--batch-size", type=int, default=1024)
     p.add_argument("--seed", type=int, default=20260906)
+    p.add_argument("--blend", action="append", type=float,
+                   help="Export Gen8->fitted policy interpolation. Repeatable; default: 0.10,0.25,0.50")
     p.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     args = p.parse_args()
+
+    blends = args.blend if args.blend else [0.10, 0.25, 0.50]
+    if len(set(round(x, 8) for x in blends)) != len(blends):
+        raise SystemExit(f"duplicate --blend values: {blends}")
+    if any(x <= 0.0 or x > 1.0 for x in blends):
+        raise SystemExit(f"all --blend values must be in (0,1]: {blends}")
 
     np.random.seed(args.seed)
     torch.manual_seed(args.seed)
     device = torch.device(args.device)
 
-    _, train_ds = load_multi_selfplay(args.train)
-    _, val_ds = load_multi_selfplay(args.val)
+    train_paths, train_ds = load_multi_selfplay(args.train)
+    val_paths, val_ds = load_multi_selfplay(args.val)
+    overlap = set(map(str, train_paths)) & set(map(str, val_paths))
+    if overlap:
+        raise SystemExit(f"train/validation path leakage: {sorted(overlap)}")
+
     train_idx = valid_indices(train_ds)
     val_idx = valid_indices(val_ds)
     if len(train_idx) == 0 or len(val_idx) == 0:
@@ -104,7 +140,6 @@ def main() -> int:
     model = QuoridorNNUE().to(device)
     _load_into_model(model, _load_raw_weights(args.init_from))
 
-    # Preserve every proven Gen8 parameter except the direct policy head.
     for param in model.parameters():
         param.requires_grad_(False)
     model.policy.weight.requires_grad_(True)
@@ -116,6 +151,7 @@ def main() -> int:
     rng = np.random.default_rng(args.seed)
 
     best = None
+    best_epoch = None
     best_state = None
     history = []
     for epoch in range(1, args.epochs + 1):
@@ -151,32 +187,49 @@ def main() -> int:
               f"val_policy={val_loss:.5f} val_top1={val_acc:.3f}", flush=True)
         if best is None or val_loss < best:
             best = val_loss
+            best_epoch = epoch
             best_state = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
 
     assert best_state is not None
-    model.load_state_dict(best_state)
+    assert_frozen(best_state, initial)
 
-    # Hard invariant: trunk and value parameters must be bit-identical to Gen8.
-    changed = []
-    for name, value in model.state_dict().items():
-        if name.startswith("policy."):
-            continue
-        if not torch.equal(value.detach().cpu(), initial[name]):
-            changed.append(name)
-    if changed:
-        raise RuntimeError(f"policy-only invariant violated; non-policy tensors changed: {changed}")
+    out_dir = Path(args.out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    exports = []
+    policy_delta_l2 = float(torch.linalg.vector_norm(
+        torch.cat([
+            (best_state["policy.weight"] - initial["policy.weight"]).reshape(-1),
+            (best_state["policy.bias"] - initial["policy.bias"]).reshape(-1),
+        ])
+    ).item())
 
-    out = Path(args.out)
-    out.parent.mkdir(parents=True, exist_ok=True)
-    export_weights(model, str(out))
-    qout = out.with_name(out.stem + "_int8.bin")
-    quantize_file(str(out), str(qout))
-    (out.parent / "policy_reanalysis_history.json").write_text(
-        json.dumps({"train_positions": int(len(train_idx)), "val_positions": int(len(val_idx)),
-                    "best_val_policy": float(best), "history": history}, indent=2),
-        encoding="utf-8",
-    )
-    print(f"policy-only export: {out} and {qout}; train={len(train_idx)} val={len(val_idx)}")
+    for alpha in blends:
+        state = blend_state(initial, best_state, alpha)
+        model.load_state_dict(state)
+        assert_frozen(model.state_dict(), initial)
+        tag = f"blend{int(round(alpha * 100)):02d}"
+        fout = out_dir / f"nnue_weights_{tag}.bin"
+        qout = out_dir / f"nnue_weights_{tag}_int8.bin"
+        export_weights(model, str(fout))
+        quantize_file(str(fout), str(qout))
+        exports.append({"alpha": float(alpha), "float": fout.name, "int8": qout.name})
+        print(f"export {tag}: alpha={alpha:.3f} -> {fout} / {qout}", flush=True)
+
+    metadata = {
+        "train_paths": list(map(str, train_paths)),
+        "val_paths": list(map(str, val_paths)),
+        "train_positions": int(len(train_idx)),
+        "val_positions": int(len(val_idx)),
+        "best_epoch": int(best_epoch),
+        "best_val_policy": float(best),
+        "policy_delta_l2": policy_delta_l2,
+        "exports": exports,
+        "history": history,
+    }
+    (out_dir / "policy_reanalysis_history.json").write_text(
+        json.dumps(metadata, indent=2), encoding="utf-8")
+    print(f"policy-only Gen13 complete: train={len(train_idx)} val={len(val_idx)} "
+          f"best_epoch={best_epoch} best_val={best:.6f} delta_l2={policy_delta_l2:.6f}")
     return 0
 
 
