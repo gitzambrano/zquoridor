@@ -47,7 +47,7 @@ jobs:
         run: |
           set -euo pipefail
           git clone --depth 1 https://github.com/titaniummachine1/titanium-engine.git /tmp/titanium-engine
-          cargo build --release --manifest-path /tmp/titanium-engine/Cargo.toml --bin titanium
+          RUSTFLAGS="-C target-cpu=native" cargo build --release --manifest-path /tmp/titanium-engine/Cargo.toml --bin titanium
           /tmp/titanium-engine/target/release/titanium bench 2 1
 
       - name: Build Zquoridor adapters
@@ -146,6 +146,7 @@ jobs:
         if: always()
         shell: bash
         run: |
+          mkdir -p results
           python - <<'PY' | tee results/comparison.txt
           import json
           from pathlib import Path
