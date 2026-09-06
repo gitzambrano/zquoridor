@@ -19,6 +19,7 @@ jobs:
       - name: Capture junction cases
         working-directory: gui_web
         run: |
+          python extract_wasm_from_bundle.py zquoridor.html zquoridor.wasm
           python dev_server.py 8123 >/tmp/zq-shot-server.log 2>&1 &
           SERVER_PID=$!
           trap 'kill $SERVER_PID 2>/dev/null || true' EXIT
