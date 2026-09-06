@@ -6,6 +6,7 @@ on:
     paths:
       - '.github/workflows/experiment-policy-lowrank-r48.yml'
       - 'tools/dev/build_policy_lowrank.py'
+      - 'tests/wandering_race_suite.cpp'
   workflow_dispatch:
 
 permissions:
