@@ -1,0 +1,76 @@
+name: gen8-search-cpu-continue
+
+on:
+  push:
+    branches:
+      - fix/strong-selfplay-wandering
+    paths:
+      - ".github/workflows/gen8-search-cpu-continue.yml"
+
+jobs:
+  continue-gen8-search:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install CPU training dependencies
+        run: |
+          python -m pip install --disable-pip-version-check numpy torch --index-url https://download.pytorch.org/whl/cpu
+          python -m pip install --disable-pip-version-check matplotlib
+
+      - name: Restore self-play from first experiment
+        uses: actions/download-artifact@v4
+        with:
+          name: gen8-search-ci-experiment
+          path: data
+          github-token: ${{ github.token }}
+          repository: gitzambrano/zquoridor
+          run-id: 33972378727
+
+      - name: Verify restored generation
+        run: |
+          ls -lh data/selfplay/gen8-search-ci/*.bin
+          test "$(find data/selfplay/gen8-search-ci -maxdepth 1 -name 'selfplay_*.bin' | wc -l)" -eq 4
+
+      - name: Build self-play engine
+        run: bash build/build_selfplay.sh
+
+      - name: Train and arena using restored self-play
+        run: |
+          python training/strong_cycle.py \
+            --generation gen8-search-ci \
+            --reuse-selfplay \
+            --games 2000 \
+            --chunk-games 500 \
+            --time-ms 20 \
+            --threads 4 \
+            --focus-copies 2 \
+            --focus-max-fraction 0.10 \
+            --epochs 20 \
+            --lr 2e-5 \
+            --wl-gamma 0.99 \
+            --arena-games 300 \
+            --arena-time-ms 20 \
+            --arena-threads 4 \
+            --arena-random-plies 4
+
+      - name: Upload completed experiment
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gen8-search-ci-completed
+          if-no-files-found: warn
+          retention-days: 7
+          path: |
+            data/selfplay/gen8-search-ci/*.bin
+            data/selfplay/gen8-search-ci-focus/*.bin
+            data/nnue/candidates/gen8-search-ci/*.bin
+            data/nnue/champions/gen8-search-ci-*/*.bin
+            data/logs/gen8-search-ci-*.log
+            data/checkpoints/gen8-search-ci-candidate/train_config_*.json

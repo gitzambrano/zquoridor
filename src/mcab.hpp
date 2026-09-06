@@ -224,11 +224,11 @@ struct McabParams {
     int leafDepth = 0;
     int leafDepthMax = 8;                // teto p/ mcabAdaptiveLeafDepth (não usado na Fase 1)
     bool adaptiveLeafDepth = false;      // não implementado na Fase 1 (Seção 9 já documenta v1=false)
-    double cPuct = 1.5;
+    double cPuct = 1.20;
     // FPU = Q(pai) - fpuReduction (Seção 5.1). 0.0, não o 0.1 do plano: medido
     // -24.4 ±22.9 Elo a favor de 0.0 em 800 partidas a 200ms, leafDepth=0.
     double fpuReduction = 0.0;
-    double scoreScale = 200.0;           // = NNUE_EVAL_SCALE
+    double scoreScale = 160.0;           // = NNUE_EVAL_SCALE
     RootSelectMode rootSelectMode = RootSelectMode::MaxVisits;
     BackupMode backupMode = BackupMode::AvgBlend;
     bool progressiveWidening = false;   // production default: off until an Elo gate
