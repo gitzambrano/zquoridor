@@ -6,7 +6,7 @@ The experiment is meant to alter root/search priors for wall timing while
 preserving the Gen8 evaluation representation that already has proven Elo.
 Only V3 samples with a non-zero root visit distribution contribute loss.
 
-The fitted policy is not deployed directly by default.  One or more --blend
+The fitted policy is not deployed directly by default. One or more --blend
 values export trust-region candidates of the form
 
     policy = Gen8 + alpha * (fitted_policy - Gen8)
@@ -37,6 +37,21 @@ from train_nnue import (  # noqa: E402
     to_chunk_tensors,
 )
 from quantize_nnue import quantize_file  # noqa: E402
+
+
+def normalize_specs(specs):
+    """Accept either a directory containing *.bin directly or an artifact
+    directory whose payload kept the original `out/*.bin` prefix."""
+    out = []
+    for spec in specs:
+        p = Path(spec)
+        if p.is_dir() and not any(p.glob("*.bin")) and (p / "out").is_dir():
+            nested = p / "out"
+            if any(nested.glob("*.bin")):
+                out.append(str(nested))
+                continue
+        out.append(str(spec))
+    return out
 
 
 def valid_indices(ds) -> np.ndarray:
@@ -126,8 +141,10 @@ def main() -> int:
     torch.manual_seed(args.seed)
     device = torch.device(args.device)
 
-    train_paths, train_ds = load_multi_selfplay(args.train)
-    val_paths, val_ds = load_multi_selfplay(args.val)
+    train_specs = normalize_specs(args.train)
+    val_specs = normalize_specs(args.val)
+    train_paths, train_ds = load_multi_selfplay(train_specs)
+    val_paths, val_ds = load_multi_selfplay(val_specs)
     overlap = set(map(str, train_paths)) & set(map(str, val_paths))
     if overlap:
         raise SystemExit(f"train/validation path leakage: {sorted(overlap)}")
@@ -136,6 +153,9 @@ def main() -> int:
     val_idx = valid_indices(val_ds)
     if len(train_idx) == 0 or len(val_idx) == 0:
         raise SystemExit(f"need non-empty deep policy targets: train={len(train_idx)} val={len(val_idx)}")
+
+    print(f"resolved reanalysis: train_files={len(train_paths)} train_targets={len(train_idx)} "
+          f"val_files={len(val_paths)} val_targets={len(val_idx)}")
 
     model = QuoridorNNUE().to(device)
     _load_into_model(model, _load_raw_weights(args.init_from))
@@ -179,6 +199,7 @@ def main() -> int:
             total_loss += loss.item() * len(chunk)
             total += len(chunk)
 
+        assert_frozen(model.state_dict(), initial)
         val_loss, val_acc = evaluate(model, val_ds, val_idx, device, args.batch_size)
         tr = total_loss / max(1, total)
         history.append({"epoch": epoch, "lr": float(lr), "train_policy": tr,
