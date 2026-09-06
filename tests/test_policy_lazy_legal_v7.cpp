@@ -1,6 +1,7 @@
 #include <array>
 #include <cmath>
 #include <cstdio>
+#include <cstring>
 #include "../src/rules.hpp"
 #include "../src/nnue.hpp"
 using namespace qr;
@@ -19,8 +20,6 @@ static bool sameBits(float a,float b) { return std::memcmp(&a,&b,sizeof(float))=
 int main(int argc,char** argv) {
     if(argc<2 || !loadWeightsQuant(argv[1])) return 2;
 
-    // Control: with walls available the optimized function must remain
-    // bit-identical to the dense reference for all 209 outputs.
     State full=initialState();
     auto af=buildAccumulatorQuant(full,full.turn);
     std::array<float,POLICY_OUT> of{};
@@ -30,8 +29,6 @@ int main(int argc,char** argv) {
         if(!sameBits(of[o],ref)) { std::printf("full mismatch o=%d %.9g %.9g\n",o,of[o],ref); return 1; }
     }
 
-    // Zero-wall mover: every legal move is a pawn move and every consumed
-    // logit must remain bit-identical to the dense policy row.
     State z=initialState();
     z.wallsLeft[z.turn]=0;
     auto az=buildAccumulatorQuant(z,z.turn);
