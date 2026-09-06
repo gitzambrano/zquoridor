@@ -1,0 +1,178 @@
+name: Goal tint and texture final
+
+on:
+  push:
+    branches: [fix/goal-tint-texture-2026-09]
+
+permissions:
+  contents: write
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Apply focused product patch
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          p=Path('gui_web/board.js')
+          s=p.read_text()
+          s=s.replace("const base = theme === 'walnut' ? .050 : .040;", "const base = theme === 'walnut' ? .050 : .044;")
+          old="function qrGoalTint(color) { return qrMixHex(color, '#85888d', .55); }"
+          new="""function qrGoalTint(color) { return qrMixHex(color, '#85888d', .55); }
+
+// Equal numeric opacity does not mean equal visual emphasis: on the warm wood
+// substrate the red tint moves the cell colour less than the blue tint. Pick
+// alpha from the actual tint-to-cell distance so both goal sides read with
+// comparable strength, including custom pawn colours and other board themes.
+function qrGoalAlpha(tint, cellA, cellB, mode) {
+  const read = v => {
+    const m = /^#([0-9a-f]{6})$/i.exec(String(v || '').trim());
+    if (!m) return null;
+    const n = parseInt(m[1], 16);
+    return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
+  };
+  const t = read(tint), a = read(cellA), b = read(cellB);
+  if (!t || !a || !b) return mode === 'clear' ? .23 : .16;
+  const d = x => Math.hypot(t[0] - x[0], t[1] - x[1], t[2] - x[2]);
+  const span = (d(a) + d(b)) / 2;
+  if (span < 1) return mode === 'clear' ? .23 : .16;
+  const target = mode === 'clear' ? 31.5 : 21;
+  const alpha = target / span;
+  const lo = mode === 'clear' ? .18 : .13, hi = mode === 'clear' ? .32 : .22;
+  return Math.max(lo, Math.min(hi, alpha));
+}"""
+          assert old in s
+          s=s.replace(old,new)
+          old="""    // Goal rows tint only the nine destination cells. Each row follows the
+    // player who is trying to reach it (red player 0, blue player 1), with
+    // enough neutral grey mixed in that the tint stays subordinate to play.
+    const goalMode = ds.goalRows || 'subtle';
+    const goalAlpha = goalMode === 'clear' ? .21 : goalMode === 'off' ? 0 : .14;
+    if (goalAlpha > 0) {
+      const top = qrGoalTint(this.flipped ? this.css('--p1') : this.css('--p0'));
+      const bottom = qrGoalTint(this.flipped ? this.css('--p0') : this.css('--p1'));
+      g.save();
+      g.globalAlpha = goalAlpha;
+      for (const [r, tint] of [[0, top], [8, bottom]]) {
+        g.fillStyle = tint;
+        for (let c = 0; c < 9; c++) {
+          const p = this.cellXY(r, c);
+          if (cellSep === 'grooves') { this.rr(g, p.x, p.y, C, C, rad); g.fill(); }
+          else g.fillRect(p.x, p.y, C, C);
+        }
+      }
+      g.restore();
+    }"""
+          new="""    // Goal rows tint only the nine cells on each player's visual side of
+    // the board. The tint follows the pawn colour when the board is flipped.
+    // Alpha is balanced perceptually so one colour does not disappear into
+    // the substrate merely because both rows used the same numeric opacity.
+    const goalMode = ds.goalRows || 'subtle';
+    if (goalMode !== 'off') {
+      const top = qrGoalTint(this.flipped ? this.css('--p0') : this.css('--p1'));
+      const bottom = qrGoalTint(this.flipped ? this.css('--p1') : this.css('--p0'));
+      const topAlpha = qrGoalAlpha(top, ca, cb, goalMode);
+      const bottomAlpha = qrGoalAlpha(bottom, ca, cb, goalMode);
+      g.save();
+      for (const [r, tint, alpha] of [[0, top, topAlpha], [8, bottom, bottomAlpha]]) {
+        g.globalAlpha = alpha;
+        g.fillStyle = tint;
+        for (let c = 0; c < 9; c++) {
+          const p = this.cellXY(r, c);
+          if (cellSep === 'grooves') { this.rr(g, p.x, p.y, C, C, rad); g.fill(); }
+          else g.fillRect(p.x, p.y, C, C);
+        }
+      }
+      g.restore();
+    }"""
+          assert old in s
+          s=s.replace(old,new)
+          old="""    const goalMode = ds.goalRows || 'subtle';
+    if (goalMode !== 'off') {
+      const goalAlpha = goalMode === 'clear' ? .21 : .14;
+      const top = qrGoalTint(this.flipped ? cssOf('--p1') : cssOf('--p0'));
+      const bottom = qrGoalTint(this.flipped ? cssOf('--p0') : cssOf('--p1'));
+      b += `<g data-zq-goal-rows=\"${goalMode}\">`;
+      for (const [r, tint] of [[0, top], [8, bottom]]) for (let c = 0; c < 9; c++)
+        b += `<rect x=\"${(M + c * U).toFixed(1)}\" y=\"${(M + r * U).toFixed(1)}\" width=\"${C.toFixed(1)}\" height=\"${C.toFixed(1)}\" rx=\"${(C * .10).toFixed(1)}\" fill=\"${esc(tint)}\" fill-opacity=\"${goalAlpha}\"/>`;
+      b += `</g>`;
+    }"""
+          new="""    const goalMode = ds.goalRows || 'subtle';
+    if (goalMode !== 'off') {
+      const top = qrGoalTint(this.flipped ? cssOf('--p0') : cssOf('--p1'));
+      const bottom = qrGoalTint(this.flipped ? cssOf('--p1') : cssOf('--p0'));
+      const topAlpha = qrGoalAlpha(top, ca, cb, goalMode);
+      const bottomAlpha = qrGoalAlpha(bottom, ca, cb, goalMode);
+      b += `<g data-zq-goal-rows=\"${goalMode}\">`;
+      for (const [r, tint, alpha] of [[0, top, topAlpha], [8, bottom, bottomAlpha]]) for (let c = 0; c < 9; c++)
+        b += `<rect x=\"${(M + c * U).toFixed(1)}\" y=\"${(M + r * U).toFixed(1)}\" width=\"${C.toFixed(1)}\" height=\"${C.toFixed(1)}\" rx=\"${(C * .10).toFixed(1)}\" fill=\"${esc(tint)}\" fill-opacity=\"${alpha.toFixed(4)}\"/>`;
+      b += `</g>`;
+    }"""
+          assert old in s
+          s=s.replace(old,new)
+          p.write_text(s)
+          PY
+          cd gui_web
+          python build_standalone.py
+      - name: Static checks
+        run: |
+          node --check gui_web/board.js
+          git diff --check
+          python -m py_compile gui_web/test_micro_polish_semantics.py
+      - name: Install browser
+        run: |
+          python -m pip install playwright
+          python -m playwright install --with-deps chromium
+      - name: Run all GUI suites
+        working-directory: gui_web
+        run: |
+          set -e
+          python test_gui_features.py
+          python test_deep_click.py
+          python test_features_e2e.py
+          python test_wall_matrix.py
+          python test_gameplay_sim.py
+          python test_browser_full.py
+          python test_micro_polish_semantics.py
+          python test_standalone.py
+      - name: Capture final goal rows
+        working-directory: gui_web
+        run: |
+          python build_standalone.py --extract-wasm >/dev/null
+          python dev_server.py 8123 >/tmp/zq-goal-server.log 2>&1 &
+          PID=$!
+          trap 'kill $PID 2>/dev/null || true' EXIT
+          sleep 1
+          cat >/tmp/goalshot.py <<'PY'
+          from pathlib import Path
+          from playwright.sync_api import sync_playwright
+          out=Path('goal_texture_shots'); out.mkdir(exist_ok=True)
+          with sync_playwright() as pw:
+              b=pw.chromium.launch(); p=b.new_page(viewport={'width':1440,'height':900})
+              p.goto('http://127.0.0.1:8123/style.html',wait_until='domcontentloaded')
+              p.wait_for_function("() => window.__qb && window.__w",timeout=15000)
+              p.wait_for_timeout(400)
+              p.locator('#board').screenshot(path=str(out/'goal_rows_normal.png'))
+              p.evaluate("() => { window.__qb.flipped=true; window.__qb.themeDirty=true; window.__qb.render(); }")
+              p.wait_for_timeout(200)
+              p.locator('#board').screenshot(path=str(out/'goal_rows_flipped.png'))
+              b.close()
+          PY
+          python /tmp/goalshot.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: goal-texture-final
+          path: gui_web/goal_texture_shots/*.png
+      - name: Commit validated product files to branch
+        run: |
+          git config user.name zquoridor-gui-ci
+          git config user.email actions@users.noreply.github.com
+          git add gui_web/board.js gui_web/zquoridor.html index.html
+          git commit -m 'gui: balance goal tints and enrich wood texture [skip ci]'
+          git push
