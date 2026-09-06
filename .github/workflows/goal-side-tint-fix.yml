@@ -1,0 +1,113 @@
+name: Goal side tint fix
+
+on:
+  push:
+    branches: [fix/goal-side-tints-2026-09]
+
+permissions:
+  contents: write
+
+jobs:
+  fix-test-capture:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/goal-side-tints-2026-09
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Apply side-colour mapping and rebuild
+        run: |
+          python gui_web/extract_wasm_from_bundle.py gui_web/zquoridor.html gui_web/zquoridor.wasm
+          python - <<'PY'
+          from pathlib import Path
+          p=Path('gui_web/board.js')
+          s=p.read_text()
+          reps={
+            "const top = qrGoalTint(this.flipped ? this.css('--p1') : this.css('--p0'));":"const top = qrGoalTint(this.flipped ? this.css('--p0') : this.css('--p1'));",
+            "const bottom = qrGoalTint(this.flipped ? this.css('--p0') : this.css('--p1'));":"const bottom = qrGoalTint(this.flipped ? this.css('--p1') : this.css('--p0'));",
+            "const top = qrGoalTint(this.flipped ? cssOf('--p1') : cssOf('--p0'));":"const top = qrGoalTint(this.flipped ? cssOf('--p0') : cssOf('--p1'));",
+            "const bottom = qrGoalTint(this.flipped ? cssOf('--p0') : cssOf('--p1'));":"const bottom = qrGoalTint(this.flipped ? cssOf('--p1') : cssOf('--p0'));",
+            "// Goal rows tint only the nine destination cells. Each row follows the\n    // player who is trying to reach it (red player 0, blue player 1), with\n    // enough neutral grey mixed in that the tint stays subordinate to play.":"// Goal rows tint only the nine cells on each player's board edge. The tint\n    // follows the pawn visibly stationed on that side (blue at the top and red\n    // at the bottom in the normal view), and swaps with the board when flipped."
+          }
+          for old,new in reps.items():
+              n=s.count(old)
+              if n!=1:
+                  raise SystemExit(f'expected one occurrence, got {n}: {old[:70]}')
+              s=s.replace(old,new)
+          p.write_text(s)
+          PY
+          node --check gui_web/board.js
+          python gui_web/build_standalone.py
+          git diff --check
+
+      - name: Install Chromium
+        run: |
+          python -m pip install playwright
+          python -m playwright install --with-deps chromium
+
+      - name: Verify and capture both goal sides
+        working-directory: gui_web
+        run: |
+          python dev_server.py 8123 >/tmp/zq-goal-server.log 2>&1 &
+          SERVER_PID=$!
+          trap 'kill $SERVER_PID 2>/dev/null || true' EXIT
+          sleep 1
+          cat >/tmp/check_goal_sides.py <<'PY'
+          from pathlib import Path
+          from playwright.sync_api import sync_playwright
+          out=Path('goal_side_shots'); out.mkdir(exist_ok=True)
+          with sync_playwright() as pw:
+              b=pw.chromium.launch()
+              p=b.new_page(viewport={'width':1200,'height':900})
+              p.goto('http://127.0.0.1:8123/style.html', wait_until='domcontentloaded')
+              p.wait_for_function("() => window.__qb && window.__w && !document.querySelector('#status').textContent.includes('Loading')", timeout=15000)
+              p.evaluate("""() => {
+                const d=document.documentElement.dataset, B=window.__qb;
+                d.boardTexture='off'; d.goalRows='clear'; B.themeDirty=true; B.render();
+              }""")
+              p.wait_for_timeout(250)
+              vals=p.evaluate("""() => {
+                const B=window.__qb, g=B.ctx;
+                function pix(r,c){const q=B.cellCenter(r,c),d=g.getImageData(Math.round(q.x),Math.round(q.y),1,1).data;return [d[0],d[1],d[2]]}
+                const normal={top:pix(0,4),bottom:pix(8,4)};
+                B.flipped=true; B.themeDirty=true; B.render();
+                const flipped={top:pix(0,4),bottom:pix(8,4)};
+                B.flipped=false; B.themeDirty=true; B.render();
+                return {normal,flipped};
+              }""")
+              # Same base square is sampled at r=0 and r=8. Blue side must be
+              # relatively bluer; red side must be relatively redder.
+              nt,nb=vals['normal']['top'],vals['normal']['bottom']
+              ft,fb=vals['flipped']['top'],vals['flipped']['bottom']
+              assert nt[2]-nt[0] > nb[2]-nb[0], vals
+              assert nb[0]-nb[2] > nt[0]-nt[2], vals
+              assert ft[0]-ft[2] > fb[0]-fb[2], vals
+              assert fb[2]-fb[0] > ft[2]-ft[0], vals
+              p.locator('#board').screenshot(path=str(out/'goal_sides_normal.png'))
+              p.evaluate("window.__qb.flipped=true; window.__qb.themeDirty=true; window.__qb.render()")
+              p.wait_for_timeout(100)
+              p.locator('#board').screenshot(path=str(out/'goal_sides_flipped.png'))
+              print(vals)
+              b.close()
+          PY
+          python /tmp/check_goal_sides.py
+          python test_micro_polish_semantics.py
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: goal-side-tint-screenshots
+          path: gui_web/goal_side_shots/*.png
+
+      - name: Commit verified product files
+        run: |
+          git config user.name "zquoridor-gui-ci"
+          git config user.email "actions@users.noreply.github.com"
+          git add gui_web/board.js gui_web/zquoridor.html index.html
+          git diff --cached --check
+          git commit -m "fix(gui): match goal tint to board side [skip ci]"
+          git push origin HEAD:fix/goal-side-tints-2026-09
