@@ -1,0 +1,102 @@
+name: Goal tint texture parallel
+on:
+  push:
+    branches:
+      - fix/goal-tint-texture-2026-09
+permissions:
+  contents: write
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        test:
+          - test_gui_features.py
+          - test_deep_click.py
+          - test_features_e2e.py
+          - test_wall_matrix.py
+          - test_gameplay_sim.py
+          - test_browser_full.py
+          - test_micro_polish_semantics.py
+          - test_standalone.py
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Prepare tested product
+        run: |
+          python gui_web/extract_wasm_from_bundle.py gui_web/zquoridor.html gui_web/zquoridor.wasm
+          python tools/gui/apply_goal_texture_final.py
+          python gui_web/build_standalone.py
+          node --check gui_web/board.js
+          git diff --check
+      - name: Install Chromium
+        run: |
+          python -m pip install playwright
+          python -m playwright install --with-deps chromium
+      - name: Run suite
+        working-directory: gui_web
+        run: |
+          set -euo pipefail
+          python dev_server.py 8123 >/tmp/zq-suite-server.log 2>&1 &
+          SERVER_PID=$!
+          trap 'kill $SERVER_PID 2>/dev/null || true' EXIT
+          sleep 1
+          python "${{ matrix.test }}"
+  finalize:
+    needs: tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Rebuild validated product
+        run: |
+          python gui_web/extract_wasm_from_bundle.py gui_web/zquoridor.html gui_web/zquoridor.wasm
+          python tools/gui/apply_goal_texture_final.py
+          python gui_web/build_standalone.py
+          node --check gui_web/board.js
+          git diff --check
+      - name: Install Chromium
+        run: |
+          python -m pip install playwright
+          python -m playwright install --with-deps chromium
+      - name: Capture final goal rows
+        working-directory: gui_web
+        run: |
+          python dev_server.py 8137 >/tmp/zq-goal.log 2>&1 &
+          PID=$!
+          trap 'kill $PID 2>/dev/null || true' EXIT
+          sleep 1
+          python - <<'PY'
+          from pathlib import Path
+          from playwright.sync_api import sync_playwright
+          out=Path('goal_texture_shots'); out.mkdir(exist_ok=True)
+          with sync_playwright() as pw:
+              b=pw.chromium.launch()
+              p=b.new_page(viewport={'width':1440,'height':900})
+              p.goto('http://127.0.0.1:8137/style.html', wait_until='domcontentloaded')
+              p.wait_for_function('() => window.__qb && window.__w', timeout=15000)
+              p.wait_for_timeout(400)
+              p.locator('#board').screenshot(path=str(out/'goal_rows_normal.png'))
+              p.evaluate('() => { window.__qb.flipped=true; window.__qb.themeDirty=true; window.__qb.render(); }')
+              p.wait_for_timeout(200)
+              p.locator('#board').screenshot(path=str(out/'goal_rows_flipped.png'))
+              b.close()
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: goal-texture-final-parallel
+          path: gui_web/goal_texture_shots/*.png
+      - name: Commit product files
+        run: |
+          git config user.name zquoridor-gui-ci
+          git config user.email actions@users.noreply.github.com
+          git add gui_web/board.js gui_web/zquoridor.html index.html
+          git commit -m 'gui: balance goal tints and enrich wood texture [skip ci]'
+          git push
