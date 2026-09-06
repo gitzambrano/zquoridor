@@ -1,0 +1,32 @@
+name: GUI final polish
+
+on:
+  push:
+    branches: [gui/final-polish-2026-09]
+
+permissions:
+  contents: write
+
+jobs:
+  export-source:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: gui/final-polish-2026-09
+      - uses: actions/upload-artifact@v4
+        with:
+          name: gui-final-source
+          path: |
+            gui_web/style.html
+            gui_web/app.js
+            gui_web/board.js
+            gui_web/build_standalone.py
+            gui_web/extract_wasm_from_bundle.py
+            gui_web/dev_server.py
+            gui_web/test_*.py
+            gui_web/zquoridor.html
+            gui_web/zquoridor.js
+            gui_web/zquoridor.data
+            gui_web/fonts_cache
+            tools/gui/contrast_check.py
