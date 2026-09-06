@@ -10,10 +10,13 @@ on:
       - "training/wall_economy.py"
       - "training/wall_counterfactual.py"
       - "tests/wandering_race_suite.cpp"
-      - "experiment.md"
 
 jobs:
   selfplay:
+    # Workflow-file edits whose commit is documentation-only should not launch
+    # another 22k-game campaign. This guard also makes the commit that removes
+    # experiment.md from the trigger list cheap: it creates a skipped run.
+    if: github.event_name == 'workflow_dispatch' || !startsWith(github.event.head_commit.message, 'docs:')
     name: teacher-${{ matrix.part }}
     runs-on: ubuntu-latest
     timeout-minutes: 120
