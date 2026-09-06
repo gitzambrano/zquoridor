@@ -23,6 +23,8 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
+      - name: Install smoke dependency
+        run: python -m pip install --disable-pip-version-check numpy
       - name: Restore Gen8 weights
         uses: actions/download-artifact@v4
         with:
@@ -52,10 +54,14 @@ jobs:
           test -s out/reanalysis.bin
           python - <<'PY'
           import numpy as np
-          dt2=np.dtype([('own_pawn','u1'),('opp_pawn','u1'),('walls_h','<u8'),('walls_v','<u8'),('walls_left_own','i1'),('walls_left_opp','i1'),('nnue_eval','<u2'),('game_result','i1'),('policy_target','<u2'),('own_dist','u1'),('opp_dist','u1'),('mover','u1'),('own_cat_total','<i2'),('opp_cat_total','<i2'),('policy_top_idx','<u2',(8,)),('policy_top_prob','<u2',(8,))])
-          a=np.fromfile('out/reanalysis.bin',dtype=dt2)
+          dt=np.dtype([('own_pawn','u1'),('opp_pawn','u1'),('walls_h','<u8'),('walls_v','<u8'),('walls_left_own','i1'),('walls_left_opp','i1'),('nnue_eval','<u2'),('game_result','i1'),('policy_target','<u2'),('own_dist','u1'),('opp_dist','u1'),('mover','u1'),('own_cat_total','<i2'),('opp_cat_total','<i2'),('policy_top_idx','<u2',(8,)),('policy_top_prob','<u2',(8,))])
+          assert dt.itemsize == 64
+          a=np.fromfile('out/reanalysis.bin',dtype=dt)
           assert len(a)>0
-          assert np.any(a['policy_top_prob'][:,0]>0)
+          valid=a['policy_top_prob'][:,0]>0
+          assert int(valid.sum()) == 2
           assert np.all((a['mover']==0)|(a['mover']==1))
-          print('reanalysis smoke PASS',len(a),'records',int(np.sum(a['policy_top_prob'][:,0]>0)),'deep-policy positions')
+          starts=(a['walls_h']==0)&(a['walls_v']==0)&(a['walls_left_own']==10)&(a['walls_left_opp']==10)&(a['own_dist']==8)&(a['opp_dist']==8)
+          assert starts[0] and int(starts.sum()) >= 1
+          print('reanalysis smoke PASS',len(a),'records',int(valid.sum()),'deep-policy positions')
           PY
