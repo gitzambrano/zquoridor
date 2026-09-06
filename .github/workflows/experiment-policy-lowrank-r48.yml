@@ -1,0 +1,86 @@
+name: experiment-policy-lowrank-r48
+
+on:
+  push:
+    branches: [exp/policy-lowrank-r48]
+    paths:
+      - '.github/workflows/experiment-policy-lowrank-r48.yml'
+      - 'tools/dev/build_policy_lowrank.py'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  factor-test-arena:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: exp/policy-lowrank-r48
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install numpy
+        run: python -m pip install --disable-pip-version-check numpy
+      - name: Fetch comparison refs
+        run: git fetch origin '+refs/heads/*:refs/remotes/origin/*' --force
+      - uses: actions/download-artifact@v4
+        with:
+          name: gen8-search-ci-completed
+          path: baseline
+          github-token: ${{ github.token }}
+          repository: gitzambrano/zquoridor
+          run-id: 33973129847
+      - name: Locate Gen8 weights
+        shell: bash
+        run: |
+          set -euo pipefail
+          W=$(find baseline -type f -path '*gen8-search-ci*' -name '*int8.bin' | head -1)
+          test -n "$W"
+          echo "GEN8=$W" >> "$GITHUB_ENV"
+      - name: Build rank-48 factors and patch policy forward
+        shell: bash
+        run: |
+          set -euo pipefail
+          python tools/dev/build_policy_lowrank.py "$GEN8" --report policy-lowrank-r48.json | tee factor.log
+      - name: Compile core and wandering
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p bin results
+          g++ -std=c++17 -O3 -DNDEBUG -Isrc tests/test_mcab_core.cpp -o bin/test_mcab_core
+          ./bin/test_mcab_core
+          g++ -std=c++17 -O3 -DNDEBUG -Isrc tests/wandering_race_suite.cpp -o bin/wandering_race_suite
+          ./bin/wandering_race_suite "$GEN8" | tee results/wandering.txt
+      - name: Commit generated experiment source
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add src/nnue.hpp src/policy_lowrank_r48.inc policy-lowrank-r48.json
+          if ! git diff --cached --quiet; then
+            git commit -m 'nnue: factor Gen8 policy head to rank 48'
+            git push origin HEAD:exp/policy-lowrank-r48
+          fi
+      - name: Arena rank-48 policy vs exact Gen8 baseline
+        shell: bash
+        run: |
+          set -o pipefail
+          python tools/arena/run_arena.py \
+            --ref1 '' --ref2 'origin/fix/strong-selfplay-wandering' \
+            --games 1600 --time 20 --threads 4 --random-plies 4 \
+            --e1-nnue "$GEN8" --e2-nnue "$GEN8" \
+            | tee results/arena-vs-gen8.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: policy-lowrank-r48-results
+          retention-days: 14
+          path: |
+            policy-lowrank-r48.json
+            factor.log
+            results/*
