@@ -6,6 +6,10 @@ on:
       - bench/external-titanium-2026-09
     paths:
       - ".github/workflows/external-titanium-fixed.yml"
+      - "tools/external/titanium_arena.py"
+      - "tools/external/titanium_arena_fixed.py"
+      - "tools/external/zquoridor_uci.cpp"
+      - "tools/external/openings_titanium.jsonl"
   workflow_dispatch:
 
 jobs:
@@ -56,10 +60,11 @@ jobs:
           g++ -std=c++17 -O3 -DNDEBUG -march=native -pthread \
             -Isrc tools/external/zquoridor_uci.cpp -o bin/zq_best
 
-      - name: UCI smoke match
+      - name: Protocol smoke match
         shell: bash
         env:
           W: ${{ steps.weights.outputs.path }}
+          TITANIUM_PONDERING: "0"
         run: |
           set -euo pipefail
           python tools/external/titanium_arena_fixed.py \
@@ -73,6 +78,7 @@ jobs:
         shell: bash
         env:
           W: ${{ steps.weights.outputs.path }}
+          TITANIUM_PONDERING: "0"
         run: |
           set -euo pipefail
           python tools/external/titanium_arena_fixed.py \
