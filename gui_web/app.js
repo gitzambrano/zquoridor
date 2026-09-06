@@ -348,6 +348,7 @@ function clockTick() {
 }
 function flagFall(side) {
   stopClock(); gameOver = true; engineThinking = false;
+  clearFinishedGameInteraction();
   setStatus((side === humanSide ? 'Your clock ran out' : 'Zquoridor flagged you'));
   const el = strip(side === humanSide ? 'bottom' : 'top');
   if (el) el.classList.add('flag');
@@ -594,10 +595,18 @@ function engineLocalMove(gen, finish) {
   const ok = W.engineMove(24, lv.ms);
   finish(ok ? packPly(W.plyCount() - 1) : null, W.lastEval(), true);
 }
+function clearFinishedGameInteraction() {
+  if (!B) return;
+  clearGhost();
+  B.selected = -1;
+  B.dots = [];
+  B.render();
+}
 function checkEnd() {
   const w = W.winner();
   if (w !== -1) {
     gameOver = true;
+    clearFinishedGameInteraction();
     const youWon = w === humanSide;
     setStatus(youWon ? 'You won - goal reached' : 'Zquoridor won');
     toast(youWon ? 'ok' : 'err', youWon ? 'Victory' : 'Defeat');
@@ -606,7 +615,7 @@ function checkEnd() {
     pushRecent('played');
     refreshHud(); return true;
   }
-  if (W.isDraw()) { gameOver = true; markResult(-1); setStatus('Draw by repetition'); pushRecent('draw'); return true; }
+  if (W.isDraw()) { gameOver = true; clearFinishedGameInteraction(); markResult(-1); setStatus('Draw by repetition'); pushRecent('draw'); return true; }
   return false;
 }
 function syncAll() {
@@ -1638,6 +1647,7 @@ function resignConfirm() {
   if (gameOver) { toast('info', 'No game in progress'); return; }
   confirmModal('RESIGN?', 'The current game will be recorded as a loss.', () => {
     gameOver = true; engineThinking = false;
+    clearFinishedGameInteraction();
     pushRecent('resign');
     markResult(1 - humanSide);
     setStatus('You resigned');
@@ -2914,17 +2924,21 @@ function layoutReflow() {
   g_wideLayout = wide;
   const slot = $('controlsSlot'), under = $('underBoard');
   if (!slot || !under) return;
-  // The single evaluation bar is vertical beside the board on a wide screen
-  // and horizontal under the board on a phone. It is the same element.
-  const zone = $('boardZone'), ew = $('evalWrap');
-  if (ew && zone && under) {
-    if (wide) { if (ew.parentElement !== zone) zone.insertBefore(ew, zone.firstChild); }
-    else if (ew.parentElement !== under) under.insertBefore(ew, under.firstChild);
-  }
   const target = wide ? slot : under;
   for (const id of ['statusRow', 'controls']) {
     const el = $(id);
     if (el && el.parentElement !== target) target.appendChild(el);
+  }
+  // The single evaluation bar is vertical beside the board on a wide screen.
+  // On a phone it sits immediately BELOW the controls, before the scrolling
+  // move history, so the board/readout hierarchy follows the thumb controls.
+  const zone = $('boardZone'), ew = $('evalWrap'), controls = $('controls');
+  if (ew && zone && under) {
+    if (wide) {
+      if (ew.parentElement !== zone) zone.insertBefore(ew, zone.firstChild);
+    } else if (controls) {
+      if (ew.parentElement !== under || ew.previousElementSibling !== controls) controls.after(ew);
+    }
   }
   // The move log follows the same rule. On a phone it fills the space under
   // the button row, which is otherwise dead. On a wide screen it returns to

@@ -20,16 +20,16 @@
   --green-dim:rgba(74,156,106,.16); --red-dim:rgba(192,57,74,.16);
 
   /* board: wood (default) */
-  --cell-a:#e6d1ab; --cell-b:#d9bb8f;
+  --cell-a:#e6d1ab; --cell-b:#dcc096;
   --groove:#7c5a3a;
   --frame:#4b3722;
   --frame-hi:#6b5236;
   --coord:#be9f7c;
-  /* Walls are pale plaster rails: bright against the wood bed, with a warm
-     grey rim so they keep a premium, matte look instead of pure white. */
-  --wall:#ecebe5;
-  --wall-hi:#faf9f4;
-  --wall-edge:#a6a49a;
+  /* Neutral graphite rails: darker than the wood bed, with a restrained
+     off-white highlight so the wall reads clearly without growing thicker. */
+  --wall:#74797d;
+  --wall-hi:#e4e7e8;
+  --wall-edge:#4b5054;
   --p0:#d94f37; --p0-light:#f0836b; --p0-deep:#8c2a18;
   --p1:#3b82f6; --p1-light:#7daefc; --p1-deep:#1c4c9c;
   /* Translucent player tints, used by the evaluation graph area fill. */
@@ -528,7 +528,7 @@ html[data-anim="off"] *{animation-duration:0ms!important;transition-duration:0ms
      subtracts the zone's padding before sizing the board, so reserving it here
      keeps the strip exactly as tall as the board instead of letting the label
      overhang whatever sits underneath. */
-  #boardZone{padding-left:var(--space-2);padding-bottom:18px;gap:var(--space-4)}
+  #boardZone{padding-left:var(--space-2);padding-bottom:22px;gap:var(--space-4)}
   /* The button row and the status line move into the side rail, so the
      board keeps the full height of its column. */
   #controlsSlot{display:flex;flex-direction:column;gap:var(--space-4);
@@ -860,7 +860,33 @@ input[type="number"],input[type="text"],textarea{
 
 /* The evaluation strip belongs to the board, but should not compete with it. */
 #evalStrip{border-radius:3px}
-#boardZone > #evalWrap #evalNum{font-size:12px;bottom:-18px}
+#boardZone > #evalWrap #evalNum{font-size:14px;font-weight:700;bottom:-20px}
+
+@media (max-width:899.98px){
+  /* The move counter duplicates the log on a phone. Keep the status line
+     focused on game state and give that width back to the board controls. */
+  #movesChip{display:none}
+
+  /* On portrait/mobile the evaluation strip belongs immediately below the
+     controls. The JS reflow places the element there; these rules keep the
+     spacing compact and make the move history the flexible/scrolling area. */
+  #underBoard > #evalWrap{margin-top:1px;margin-bottom:1px}
+  #underBoard > #moveLog{
+    flex:1 1 auto;min-height:64px;max-height:100%;overflow-y:auto;overflow-x:hidden;
+    overscroll-behavior:contain;touch-action:pan-y;user-select:text;-webkit-user-select:text;
+    -webkit-touch-callout:default;cursor:text;scrollbar-gutter:stable;
+  }
+  #underBoard > #moveLog .mlRow,
+  #underBoard > #moveLog .mlNum,
+  #underBoard > #moveLog .mlMv{
+    user-select:text;-webkit-user-select:text;
+  }
+  /* Keep the accent palette on one intentional row instead of leaving the
+     custom swatch orphaned on a second line. */
+  #setAccents{flex-wrap:nowrap;width:100%}
+  #setAccents .swatch{flex:1 1 0;min-width:27px}
+  #setAccents #accentPick{flex:0 0 34px}
+}
 
 </style>
 </head>

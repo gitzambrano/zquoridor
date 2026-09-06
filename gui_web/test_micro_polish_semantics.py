@@ -34,8 +34,8 @@ def main():
                 return page.evaluate("document.getElementById('board').toDataURL()")
 
             check("boot", "Loading" not in (page.text_content("#status") or ""))
-            check("eval readout final size is 12px",
-                  page.evaluate("getComputedStyle(document.getElementById('evalNum')).fontSize") == "12px")
+            check("desktop eval readout is 14px",
+                  page.evaluate("getComputedStyle(document.getElementById('evalNum')).fontSize") == "14px")
 
             # Freeze optional dynamic overlays so static-effect hashes are stable.
             page.evaluate("setOpt('paths', false); setOpt('dots', false); setOpt('lastMoveStyle', 'off'); setOpt('board', 'wood')")
@@ -78,6 +78,8 @@ def main():
             check("goal rows repaint", g0 != g1)
             check("goal rows Off removes SVG wash and edges", 'data-zq-goal-rows=' not in svg_off)
             check("goal rows Subtle exports", 'data-zq-goal-rows="subtle"' in svg_subtle)
+            check("goal tint is player-coloured and has no edge rails",
+                  '#ab6e66' in svg_subtle.lower() and '#6485bc' in svg_subtle.lower() and 'height="2"' not in svg_subtle)
 
             # A pawn last move gets a fine halo; Clear is stronger; Off removes it.
             page.evaluate("setOpt('goalRows', 'off'); setOpt('lastMoveStyle', 'off')")
@@ -110,6 +112,35 @@ def main():
             check("SVG export carries clear goal rows", 'data-zq-goal-rows="clear"' in svg)
             check("SVG export carries wall profile", 'data-zq-wall-profile="bold"' in svg)
             check("SVG export still has coordinates", '<text' in svg and 'abcdefghi' not in svg)
+
+            # Any terminal state must clear actionable overlays immediately.
+            page.evaluate("window.__qb.dots=[1,2,3]; window.__qb.selected=4; flagFall(humanSide)")
+            check("game-over clears legal-move dots", page.evaluate("window.__qb.dots.length") == 0)
+            check("game-over clears pawn selection", page.evaluate("window.__qb.selected") == -1)
+
+            # Mobile hierarchy: no redundant Moves chip, controls then eval, then
+            # a selectable scrolling move log.
+            mobile = browser.new_page(viewport={"width":390,"height":844}, is_mobile=True, has_touch=True)
+            mobile.goto("http://127.0.0.1:8213/style.html")
+            mobile.wait_for_timeout(2200)
+            mob = mobile.evaluate("""() => {
+              const q=s=>document.querySelector(s), log=q('#moveLog'), st=getComputedStyle(log);
+              return {
+                moves:getComputedStyle(q('#movesChip')).display,
+                evalParent:q('#evalWrap').parentElement.id,
+                evalPrev:q('#evalWrap').previousElementSibling && q('#evalWrap').previousElementSibling.id,
+                logParent:log.parentElement.id,
+                overflow:st.overflowY, select:st.userSelect, touch:st.touchAction,
+                bodyW:document.body.scrollWidth, vw:innerWidth
+              };
+            }""")
+            check("mobile hides redundant Moves counter", mob['moves'] == 'none')
+            check("mobile eval bar is directly below controls", mob['evalParent'] == 'underBoard' and mob['evalPrev'] == 'controls')
+            check("mobile move log is under board and scrollable/selectable",
+                  mob['logParent'] == 'underBoard' and mob['overflow'] == 'auto' and mob['select'] == 'text' and 'pan-y' in mob['touch'])
+            check("mobile has no horizontal overflow", mob['bodyW'] == mob['vw'])
+            mobile.close()
+
             check("zero page errors", not errors)
 
             browser.close()

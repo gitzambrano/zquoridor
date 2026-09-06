@@ -42,6 +42,24 @@ function qrTextureStrength(mode) {
   return mode === 'off' ? 0 : mode === 'natural' ? 1 : .52;
 }
 
+// Goal rows borrow the player's own colour, but are pulled toward a neutral
+// grey before being laid over the cells. The result is a quiet destination
+// tint, not a second saturated board colour.
+function qrMixHex(a, b, t) {
+  const read = v => {
+    const m = /^#([0-9a-f]{6})$/i.exec(String(v || '').trim());
+    if (!m) return null;
+    const n = parseInt(m[1], 16);
+    return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
+  };
+  const aa = read(a), bb = read(b);
+  if (!aa || !bb) return a;
+  const x = Math.max(0, Math.min(1, t));
+  const rgb = aa.map((v, i) => Math.round(v * (1 - x) + bb[i] * x));
+  return '#' + rgb.map(v => v.toString(16).padStart(2, '0')).join('');
+}
+function qrGoalTint(color) { return qrMixHex(color, '#85888d', .55); }
+
 // One deterministic primitive generator feeds both Canvas and SVG. Textures
 // therefore describe the material (wood grain, marble veins, paper fibre,
 // mineral streaks) rather than a generic overlay laid over the whole UI.
@@ -558,16 +576,25 @@ class QBoard {
     }
     this.paintMaterialTexture(g, bx, bw);
 
-    // Goal rows are renderer-owned too: Off really means no wash and no edge.
+    // Goal rows tint only the nine destination cells. Each row follows the
+    // player who is trying to reach it (red player 0, blue player 1), with
+    // enough neutral grey mixed in that the tint stays subordinate to play.
     const goalMode = ds.goalRows || 'subtle';
-    const goalAlpha = goalMode === 'clear' ? .21 : goalMode === 'off' ? 0 : .12;
+    const goalAlpha = goalMode === 'clear' ? .21 : goalMode === 'off' ? 0 : .14;
     if (goalAlpha > 0) {
-      g.fillStyle = `rgba(120,122,132,${goalAlpha})`;
-      for (const r of [0, 8]) for (let c = 0; c < 9; c++) {
-        const p = this.cellXY(r, c);
-        if (cellSep === 'grooves') { this.rr(g, p.x, p.y, C, C, rad); g.fill(); }
-        else g.fillRect(p.x - G / 2, p.y - G / 2, C + G, C + G);
+      const top = qrGoalTint(this.flipped ? this.css('--p1') : this.css('--p0'));
+      const bottom = qrGoalTint(this.flipped ? this.css('--p0') : this.css('--p1'));
+      g.save();
+      g.globalAlpha = goalAlpha;
+      for (const [r, tint] of [[0, top], [8, bottom]]) {
+        g.fillStyle = tint;
+        for (let c = 0; c < 9; c++) {
+          const p = this.cellXY(r, c);
+          if (cellSep === 'grooves') { this.rr(g, p.x, p.y, C, C, rad); g.fill(); }
+          else g.fillRect(p.x, p.y, C, C);
+        }
       }
+      g.restore();
     }
     if (cellSep === 'grooves') {
       // Groove centre lines, so the grid still reads when the cells are too
@@ -583,16 +610,6 @@ class QBoard {
         g.beginPath(); g.moveTo(t, bx); g.lineTo(t, bx + bw); g.stroke();
       }
       }
-    }
-
-    // Goal edges follow the same control. Off removes every goal-row cue.
-    if (goalMode !== 'off') {
-      g.globalAlpha = goalMode === 'clear' ? .40 : .30;
-      g.fillStyle = this.flipped ? this.css('--p0') : this.css('--p1');
-      g.fillRect(bx, bx, bw, 2);
-      g.fillStyle = this.flipped ? this.css('--p1') : this.css('--p0');
-      g.fillRect(bx, bx + bw - 2, bw, 2);
-      g.globalAlpha = 1;
     }
 
     // Coordinates, drawn on the frame margin.
@@ -1292,15 +1309,12 @@ class QBoard {
 
     const goalMode = ds.goalRows || 'subtle';
     if (goalMode !== 'off') {
-      const goalAlpha = goalMode === 'clear' ? .21 : .12;
+      const goalAlpha = goalMode === 'clear' ? .21 : .14;
+      const top = qrGoalTint(this.flipped ? cssOf('--p1') : cssOf('--p0'));
+      const bottom = qrGoalTint(this.flipped ? cssOf('--p0') : cssOf('--p1'));
       b += `<g data-zq-goal-rows="${goalMode}">`;
-      for (const r of [0, 8]) for (let c = 0; c < 9; c++)
-        b += `<rect x="${(M + c * U).toFixed(1)}" y="${(M + r * U).toFixed(1)}" width="${C.toFixed(1)}" height="${C.toFixed(1)}" rx="${(C * .10).toFixed(1)}" fill="#787a84" fill-opacity="${goalAlpha}"/>`;
-      const top = this.flipped ? cssOf('--p0') : cssOf('--p1');
-      const bottom = this.flipped ? cssOf('--p1') : cssOf('--p0');
-      const edgeAlpha = goalMode === 'clear' ? .40 : .30;
-      b += `<rect x="${bx.toFixed(1)}" y="${bx.toFixed(1)}" width="${bw.toFixed(1)}" height="2" fill="${esc(top)}" fill-opacity="${edgeAlpha}"/>`;
-      b += `<rect x="${bx.toFixed(1)}" y="${(bx + bw - 2).toFixed(1)}" width="${bw.toFixed(1)}" height="2" fill="${esc(bottom)}" fill-opacity="${edgeAlpha}"/>`;
+      for (const [r, tint] of [[0, top], [8, bottom]]) for (let c = 0; c < 9; c++)
+        b += `<rect x="${(M + c * U).toFixed(1)}" y="${(M + r * U).toFixed(1)}" width="${C.toFixed(1)}" height="${C.toFixed(1)}" rx="${(C * .10).toFixed(1)}" fill="${esc(tint)}" fill-opacity="${goalAlpha}"/>`;
       b += `</g>`;
     }
 

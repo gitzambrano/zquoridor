@@ -18,16 +18,16 @@
   --green-dim:rgba(74,156,106,.16); --red-dim:rgba(192,57,74,.16);
 
   /* board: wood (default) */
-  --cell-a:#e6d1ab; --cell-b:#d9bb8f;
+  --cell-a:#e6d1ab; --cell-b:#dcc096;
   --groove:#7c5a3a;
   --frame:#4b3722;
   --frame-hi:#6b5236;
   --coord:#be9f7c;
-  /* Walls are pale plaster rails: bright against the wood bed, with a warm
-     grey rim so they keep a premium, matte look instead of pure white. */
-  --wall:#ecebe5;
-  --wall-hi:#faf9f4;
-  --wall-edge:#a6a49a;
+  /* Neutral graphite rails: darker than the wood bed, with a restrained
+     off-white highlight so the wall reads clearly without growing thicker. */
+  --wall:#74797d;
+  --wall-hi:#e4e7e8;
+  --wall-edge:#4b5054;
   --p0:#d94f37; --p0-light:#f0836b; --p0-deep:#8c2a18;
   --p1:#3b82f6; --p1-light:#7daefc; --p1-deep:#1c4c9c;
   /* Translucent player tints, used by the evaluation graph area fill. */
@@ -526,7 +526,7 @@ html[data-anim="off"] *{animation-duration:0ms!important;transition-duration:0ms
      subtracts the zone's padding before sizing the board, so reserving it here
      keeps the strip exactly as tall as the board instead of letting the label
      overhang whatever sits underneath. */
-  #boardZone{padding-left:var(--space-2);padding-bottom:18px;gap:var(--space-4)}
+  #boardZone{padding-left:var(--space-2);padding-bottom:22px;gap:var(--space-4)}
   /* The button row and the status line move into the side rail, so the
      board keeps the full height of its column. */
   #controlsSlot{display:flex;flex-direction:column;gap:var(--space-4);
@@ -858,7 +858,33 @@ input[type="number"],input[type="text"],textarea{
 
 /* The evaluation strip belongs to the board, but should not compete with it. */
 #evalStrip{border-radius:3px}
-#boardZone > #evalWrap #evalNum{font-size:12px;bottom:-18px}
+#boardZone > #evalWrap #evalNum{font-size:14px;font-weight:700;bottom:-20px}
+
+@media (max-width:899.98px){
+  /* The move counter duplicates the log on a phone. Keep the status line
+     focused on game state and give that width back to the board controls. */
+  #movesChip{display:none}
+
+  /* On portrait/mobile the evaluation strip belongs immediately below the
+     controls. The JS reflow places the element there; these rules keep the
+     spacing compact and make the move history the flexible/scrolling area. */
+  #underBoard > #evalWrap{margin-top:1px;margin-bottom:1px}
+  #underBoard > #moveLog{
+    flex:1 1 auto;min-height:64px;max-height:100%;overflow-y:auto;overflow-x:hidden;
+    overscroll-behavior:contain;touch-action:pan-y;user-select:text;-webkit-user-select:text;
+    -webkit-touch-callout:default;cursor:text;scrollbar-gutter:stable;
+  }
+  #underBoard > #moveLog .mlRow,
+  #underBoard > #moveLog .mlNum,
+  #underBoard > #moveLog .mlMv{
+    user-select:text;-webkit-user-select:text;
+  }
+  /* Keep the accent palette on one intentional row instead of leaving the
+     custom swatch orphaned on a second line. */
+  #setAccents{flex-wrap:nowrap;width:100%}
+  #setAccents .swatch{flex:1 1 0;min-width:27px}
+  #setAccents #accentPick{flex:0 0 34px}
+}
 
 </style>
 <style>
@@ -1430,6 +1456,24 @@ function qrTextureStrength(mode) {
   return mode === 'off' ? 0 : mode === 'natural' ? 1 : .52;
 }
 
+// Goal rows borrow the player's own colour, but are pulled toward a neutral
+// grey before being laid over the cells. The result is a quiet destination
+// tint, not a second saturated board colour.
+function qrMixHex(a, b, t) {
+  const read = v => {
+    const m = /^#([0-9a-f]{6})$/i.exec(String(v || '').trim());
+    if (!m) return null;
+    const n = parseInt(m[1], 16);
+    return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
+  };
+  const aa = read(a), bb = read(b);
+  if (!aa || !bb) return a;
+  const x = Math.max(0, Math.min(1, t));
+  const rgb = aa.map((v, i) => Math.round(v * (1 - x) + bb[i] * x));
+  return '#' + rgb.map(v => v.toString(16).padStart(2, '0')).join('');
+}
+function qrGoalTint(color) { return qrMixHex(color, '#85888d', .55); }
+
 // One deterministic primitive generator feeds both Canvas and SVG. Textures
 // therefore describe the material (wood grain, marble veins, paper fibre,
 // mineral streaks) rather than a generic overlay laid over the whole UI.
@@ -1946,16 +1990,25 @@ class QBoard {
     }
     this.paintMaterialTexture(g, bx, bw);
 
-    // Goal rows are renderer-owned too: Off really means no wash and no edge.
+    // Goal rows tint only the nine destination cells. Each row follows the
+    // player who is trying to reach it (red player 0, blue player 1), with
+    // enough neutral grey mixed in that the tint stays subordinate to play.
     const goalMode = ds.goalRows || 'subtle';
-    const goalAlpha = goalMode === 'clear' ? .21 : goalMode === 'off' ? 0 : .12;
+    const goalAlpha = goalMode === 'clear' ? .21 : goalMode === 'off' ? 0 : .14;
     if (goalAlpha > 0) {
-      g.fillStyle = `rgba(120,122,132,${goalAlpha})`;
-      for (const r of [0, 8]) for (let c = 0; c < 9; c++) {
-        const p = this.cellXY(r, c);
-        if (cellSep === 'grooves') { this.rr(g, p.x, p.y, C, C, rad); g.fill(); }
-        else g.fillRect(p.x - G / 2, p.y - G / 2, C + G, C + G);
+      const top = qrGoalTint(this.flipped ? this.css('--p1') : this.css('--p0'));
+      const bottom = qrGoalTint(this.flipped ? this.css('--p0') : this.css('--p1'));
+      g.save();
+      g.globalAlpha = goalAlpha;
+      for (const [r, tint] of [[0, top], [8, bottom]]) {
+        g.fillStyle = tint;
+        for (let c = 0; c < 9; c++) {
+          const p = this.cellXY(r, c);
+          if (cellSep === 'grooves') { this.rr(g, p.x, p.y, C, C, rad); g.fill(); }
+          else g.fillRect(p.x, p.y, C, C);
+        }
       }
+      g.restore();
     }
     if (cellSep === 'grooves') {
       // Groove centre lines, so the grid still reads when the cells are too
@@ -1971,16 +2024,6 @@ class QBoard {
         g.beginPath(); g.moveTo(t, bx); g.lineTo(t, bx + bw); g.stroke();
       }
       }
-    }
-
-    // Goal edges follow the same control. Off removes every goal-row cue.
-    if (goalMode !== 'off') {
-      g.globalAlpha = goalMode === 'clear' ? .40 : .30;
-      g.fillStyle = this.flipped ? this.css('--p0') : this.css('--p1');
-      g.fillRect(bx, bx, bw, 2);
-      g.fillStyle = this.flipped ? this.css('--p1') : this.css('--p0');
-      g.fillRect(bx, bx + bw - 2, bw, 2);
-      g.globalAlpha = 1;
     }
 
     // Coordinates, drawn on the frame margin.
@@ -2680,15 +2723,12 @@ class QBoard {
 
     const goalMode = ds.goalRows || 'subtle';
     if (goalMode !== 'off') {
-      const goalAlpha = goalMode === 'clear' ? .21 : .12;
+      const goalAlpha = goalMode === 'clear' ? .21 : .14;
+      const top = qrGoalTint(this.flipped ? cssOf('--p1') : cssOf('--p0'));
+      const bottom = qrGoalTint(this.flipped ? cssOf('--p0') : cssOf('--p1'));
       b += `<g data-zq-goal-rows="${goalMode}">`;
-      for (const r of [0, 8]) for (let c = 0; c < 9; c++)
-        b += `<rect x="${(M + c * U).toFixed(1)}" y="${(M + r * U).toFixed(1)}" width="${C.toFixed(1)}" height="${C.toFixed(1)}" rx="${(C * .10).toFixed(1)}" fill="#787a84" fill-opacity="${goalAlpha}"/>`;
-      const top = this.flipped ? cssOf('--p0') : cssOf('--p1');
-      const bottom = this.flipped ? cssOf('--p1') : cssOf('--p0');
-      const edgeAlpha = goalMode === 'clear' ? .40 : .30;
-      b += `<rect x="${bx.toFixed(1)}" y="${bx.toFixed(1)}" width="${bw.toFixed(1)}" height="2" fill="${esc(top)}" fill-opacity="${edgeAlpha}"/>`;
-      b += `<rect x="${bx.toFixed(1)}" y="${(bx + bw - 2).toFixed(1)}" width="${bw.toFixed(1)}" height="2" fill="${esc(bottom)}" fill-opacity="${edgeAlpha}"/>`;
+      for (const [r, tint] of [[0, top], [8, bottom]]) for (let c = 0; c < 9; c++)
+        b += `<rect x="${(M + c * U).toFixed(1)}" y="${(M + r * U).toFixed(1)}" width="${C.toFixed(1)}" height="${C.toFixed(1)}" rx="${(C * .10).toFixed(1)}" fill="${esc(tint)}" fill-opacity="${goalAlpha}"/>`;
       b += `</g>`;
     }
 
@@ -3095,6 +3135,7 @@ function clockTick() {
 }
 function flagFall(side) {
   stopClock(); gameOver = true; engineThinking = false;
+  clearFinishedGameInteraction();
   setStatus((side === humanSide ? 'Your clock ran out' : 'Zquoridor flagged you'));
   const el = strip(side === humanSide ? 'bottom' : 'top');
   if (el) el.classList.add('flag');
@@ -3341,10 +3382,18 @@ function engineLocalMove(gen, finish) {
   const ok = W.engineMove(24, lv.ms);
   finish(ok ? packPly(W.plyCount() - 1) : null, W.lastEval(), true);
 }
+function clearFinishedGameInteraction() {
+  if (!B) return;
+  clearGhost();
+  B.selected = -1;
+  B.dots = [];
+  B.render();
+}
 function checkEnd() {
   const w = W.winner();
   if (w !== -1) {
     gameOver = true;
+    clearFinishedGameInteraction();
     const youWon = w === humanSide;
     setStatus(youWon ? 'You won - goal reached' : 'Zquoridor won');
     toast(youWon ? 'ok' : 'err', youWon ? 'Victory' : 'Defeat');
@@ -3353,7 +3402,7 @@ function checkEnd() {
     pushRecent('played');
     refreshHud(); return true;
   }
-  if (W.isDraw()) { gameOver = true; markResult(-1); setStatus('Draw by repetition'); pushRecent('draw'); return true; }
+  if (W.isDraw()) { gameOver = true; clearFinishedGameInteraction(); markResult(-1); setStatus('Draw by repetition'); pushRecent('draw'); return true; }
   return false;
 }
 function syncAll() {
@@ -4385,6 +4434,7 @@ function resignConfirm() {
   if (gameOver) { toast('info', 'No game in progress'); return; }
   confirmModal('RESIGN?', 'The current game will be recorded as a loss.', () => {
     gameOver = true; engineThinking = false;
+    clearFinishedGameInteraction();
     pushRecent('resign');
     markResult(1 - humanSide);
     setStatus('You resigned');
@@ -5661,17 +5711,21 @@ function layoutReflow() {
   g_wideLayout = wide;
   const slot = $('controlsSlot'), under = $('underBoard');
   if (!slot || !under) return;
-  // The single evaluation bar is vertical beside the board on a wide screen
-  // and horizontal under the board on a phone. It is the same element.
-  const zone = $('boardZone'), ew = $('evalWrap');
-  if (ew && zone && under) {
-    if (wide) { if (ew.parentElement !== zone) zone.insertBefore(ew, zone.firstChild); }
-    else if (ew.parentElement !== under) under.insertBefore(ew, under.firstChild);
-  }
   const target = wide ? slot : under;
   for (const id of ['statusRow', 'controls']) {
     const el = $(id);
     if (el && el.parentElement !== target) target.appendChild(el);
+  }
+  // The single evaluation bar is vertical beside the board on a wide screen.
+  // On a phone it sits immediately BELOW the controls, before the scrolling
+  // move history, so the board/readout hierarchy follows the thumb controls.
+  const zone = $('boardZone'), ew = $('evalWrap'), controls = $('controls');
+  if (ew && zone && under) {
+    if (wide) {
+      if (ew.parentElement !== zone) zone.insertBefore(ew, zone.firstChild);
+    } else if (controls) {
+      if (ew.parentElement !== under || ew.previousElementSibling !== controls) controls.after(ew);
+    }
   }
   // The move log follows the same rule. On a phone it fills the space under
   // the button row, which is otherwise dead. On a wide screen it returns to
