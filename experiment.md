@@ -2,7 +2,7 @@
 
 ## Status
 
-**RUNNING.** This experiment starts from `fix/strong-selfplay-wandering` and tests an exact policy-head optimization. No trained weight, policy logit used by the search, value evaluation, or search parameter is changed.
+**Promising; long confirmation required.** The exact zero-wall policy-row pruning passes all correctness gates and shows a small positive fixed-time signal with a measurable NPS gain.
 
 ## Motivation
 
@@ -30,17 +30,55 @@ The useful policy work in zero-wall nodes falls from 209 rows to 81 rows, a **61
 - same `cPuct = 1.20`;
 - same MCAB parameters;
 - same policy logits bit-for-bit for every legal move;
-- no approximation or retraining;
-- wandering must remain 5/5.
+- no approximation or retraining.
 
-## Evaluation
+## Correctness gates
 
-1. Exact legal-logit parity test on zero-wall positions against a dense reference dot product.
-2. Core MCAB tests.
-3. Five-case wandering suite.
-4. 1,600-game fixed-time arena vs `fix/strong-selfplay-wandering`, same Gen8 weights, 20 ms/move, 4 threads, 4 random opening plies.
-5. Compare W/L/D, Elo ±95%, and whole-engine NPS.
+Workflow `34004852374`:
+
+- exact legal-logit parity on zero-wall test positions: **PASS**;
+- core MCAB tests: **PASS**;
+- wandering suite: **5/5 PASS**.
+
+Generated source commit:
+
+- `1cad3d9e0eefe30241de88a300a3dcbafe1d804c` — `nnue: skip unreachable wall policy rows at zero walls`.
+
+## 1,600-game arena
+
+Protocol:
+
+- candidate: `exp/policy-lazy-legal-v7`;
+- baseline: `fix/strong-selfplay-wandering`;
+- same Gen8 int8 weights;
+- 20 ms/move;
+- 4 threads;
+- 4 random opening plies;
+- policy ordering enabled, min depth 3;
+- `cPuct = 1.20`.
+
+Result:
+
+- candidate wins: **728**;
+- baseline wins: **715**;
+- draws: **157**;
+- Elo: **+2.8 ±16.2**;
+- candidate NPS: **27,019**;
+- baseline NPS: **26,828**;
+- NPS delta: **+0.71%**.
+
+Artifact:
+
+- `policy-lazy-legal-v7-results`, artifact `9980716114`.
+
+## Interpretation
+
+The Elo result is statistically inconclusive but centered slightly positive. More importantly, the candidate is mathematically exact for every legal policy output, passes the wandering hard gate, and produces a repeatable whole-engine throughput gain. The remaining question is whether the timing/search-volume benefit is large enough to produce a stable Elo gain over a longer sample.
 
 ## Decision rule
 
-Because the change is mathematically exact on all reachable policy outputs, any fixed-time Elo movement should come from timing/search-volume effects. Retain only if tests pass and NPS/Elo are non-negative enough to justify a longer confirmation. If the gain is real, extend the same exact idea to legal-row evaluation for wall-available nodes.
+Run a 4,000-game fixed-time confirmation against the exact baseline. Promote only if correctness remains clean and the longer result is non-negative with a persistent NPS gain; prefer a positive lower confidence bound for a definitive strength promotion.
+
+## Next action
+
+Run `experiment-policy-lazy-legal-v7-long` for 4,000 games under the same 20 ms / 4-thread / 4-random-ply protocol.
