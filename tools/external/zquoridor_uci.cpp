@@ -63,6 +63,12 @@ struct Options {
     int nodeBudget = -1;
     int leafDepth = -1;
     int policyMinDepth = 3;
+    bool progressiveWidening = false;
+    bool clearTTPerMove = false;
+    bool disableTreeReuse = false;
+    int wideningInitialMoves = -1;
+    double wideningCoefficient = -1.0;
+    double wideningExponent = -1.0;
 };
 
 static Options parseArgs(int argc, char** argv) {
@@ -83,6 +89,12 @@ static Options parseArgs(int argc, char** argv) {
         else if (a == "--nodes") o.nodeBudget = std::atoi(need("--nodes"));
         else if (a == "--leaf-depth") o.leafDepth = std::atoi(need("--leaf-depth"));
         else if (a == "--policy-min-depth") o.policyMinDepth = std::atoi(need("--policy-min-depth"));
+        else if (a == "--progressive-widening") o.progressiveWidening = true;
+        else if (a == "--clear-tt-per-move") o.clearTTPerMove = true;
+        else if (a == "--no-tree-reuse") o.disableTreeReuse = true;
+        else if (a == "--widening-initial") o.wideningInitialMoves = std::atoi(need("--widening-initial"));
+        else if (a == "--widening-coeff") o.wideningCoefficient = std::atof(need("--widening-coeff"));
+        else if (a == "--widening-exp") o.wideningExponent = std::atof(need("--widening-exp"));
         else {
             std::cerr << "unknown argument: " << a << "\n";
             std::exit(2);
@@ -114,6 +126,12 @@ int main(int argc, char** argv) {
     if (opt.scoreScale > 0.0) params.scoreScale = opt.scoreScale;
     if (opt.nodeBudget >= 0) params.nodeBudget = opt.nodeBudget;
     if (opt.leafDepth >= 0) params.leafDepth = opt.leafDepth;
+    if (opt.progressiveWidening) params.progressiveWidening = true;
+    if (opt.clearTTPerMove) params.clearTTPerMove = true;
+    if (opt.disableTreeReuse) params.treeReuse = false;
+    if (opt.wideningInitialMoves >= 0) params.wideningInitialMoves = opt.wideningInitialMoves;
+    if (opt.wideningCoefficient > 0.0) params.wideningCoefficient = opt.wideningCoefficient;
+    if (opt.wideningExponent > 0.0) params.wideningExponent = opt.wideningExponent;
     params.rootNoiseEnabled = false;
     runner.setParams(params);
 
@@ -206,7 +224,11 @@ int main(int argc, char** argv) {
                       << " time " << elapsed
                       << " string cpuct=" << params.cPuct
                       << " scale=" << params.scoreScale
-                      << " mcab=" << (params.enabled ? 1 : 0) << "\n";
+                      << " mcab=" << (params.enabled ? 1 : 0)
+                      << " leaf=" << params.leafDepth
+                      << " pw=" << (params.progressiveWidening ? 1 : 0)
+                      << " clearTT=" << (params.clearTTPerMove ? 1 : 0)
+                      << " reuse=" << (params.treeReuse ? 1 : 0) << "\n";
             std::cout << "bestmove " << moveToText(best) << "\n" << std::flush;
         } else if (cmd == "quit") {
             break;
