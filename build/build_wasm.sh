@@ -11,6 +11,9 @@
 # como ligar NNUE mesmo manualmente via JS, apesar de engine_wasm.cpp já
 # exportar essas funções com EMSCRIPTEN_KEEPALIVE. Lista sincronizada com o
 # .bat abaixo.
+#
+# O frontend é C++; use em++ (não emcc) para que libc++ e os operadores
+# new/delete sejam vinculados também nas versões atuais do Emscripten.
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -18,8 +21,8 @@ GUIWEB="$HERE/../gui_web"
 ROOT="$HERE/.."
 DEFAULT_WEIGHTS="$ROOT/data/nnue/nnue_weights_int8.bin"
 
-if ! command -v emcc >/dev/null 2>&1; then
-    echo "[ERRO] emcc não encontrado no PATH." >&2
+if ! command -v em++ >/dev/null 2>&1; then
+    echo "[ERRO] em++ não encontrado no PATH." >&2
     echo "Rode primeiro: source /caminho/pro/emsdk/emsdk_env.sh" >&2
     exit 1
 fi
@@ -61,7 +64,7 @@ else
     echo "    (rode training/quantize_nnue.py primeiro, ou o app web fica só no modo heurístico)."
 fi
 
-emcc -O3 -std=c++17 -msimd128 \
+em++ -O3 -std=c++17 -msimd128 \
   engine_wasm.cpp \
   -s MODULARIZE=1 \
   -s EXPORT_NAME=ZquoridorModule \
