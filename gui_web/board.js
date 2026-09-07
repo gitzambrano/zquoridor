@@ -133,7 +133,7 @@ function qrTexturePrimitives(theme, mode, bx, bw, C) {
         }
         const t = tone(.58);
         const w = C * (.44 + rnd() * .34);
-        const a = (.030 + rnd() * .016) * s;
+        const a = (.033 + rnd() * .018) * s;
         out.push({ kind: 'poly', points: pts, width: w, tone: t, alpha: a });
         out.push({ kind: 'poly', points: pts, width: w * (.26 + rnd() * .15),
                    tone: t, alpha: a * (.18 + rnd() * .10) });
@@ -160,7 +160,7 @@ function qrTexturePrimitives(theme, mode, bx, bw, C) {
           pts.push({ x, y });
         }
         const t = tone(.78);
-        const a = (.055 + rnd() * .030) * s;
+        const a = (.060 + rnd() * .033) * s;
         out.push({ kind: 'poly', points: pts,
                    width: .40 + rnd() * .28,
                    tone: t, alpha: a });
@@ -176,7 +176,7 @@ function qrTexturePrimitives(theme, mode, bx, bw, C) {
         const x = bx + rnd() * bw, y = bx + rnd() * bw;
         const len = C * (.12 + rnd() * .38);
         line(x, y, x + len, y + (rnd() - .5) * C * .022,
-             .28 + rnd() * .20, tone(.82), (.038 + rnd() * .022) * s);
+             .28 + rnd() * .20, tone(.82), (.042 + rnd() * .024) * s);
       }
     } else {
       // Walnut intentionally keeps its broader, darker grain profile.
