@@ -1,0 +1,191 @@
+name: qsearch-pawn-progress
+
+on:
+  push:
+    branches: [exp/qsearch-pawn-progress]
+    paths:
+      - ".github/workflows/qsearch-pawn-progress.yml"
+      - "tools/external/**"
+  workflow_dispatch:
+
+jobs:
+  experiment:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      max-parallel: 6
+      matrix:
+        include:
+          - name: ab-baseline
+            pawn_q: false
+            zq_args: "--zq-arg=--no-mcab"
+          - name: no-qsearch
+            pawn_q: false
+            zq_args: "--zq-arg=--no-mcab --zq-arg=--no-qsearch"
+          - name: wall-q4
+            pawn_q: false
+            zq_args: "--zq-arg=--no-mcab --zq-arg=--qs-max-extra --zq-arg=4"
+          - name: pawn-q2
+            pawn_q: true
+            zq_args: "--zq-arg=--no-mcab --zq-arg=--qs-max-extra --zq-arg=2"
+          - name: pawn-q3
+            pawn_q: true
+            zq_args: "--zq-arg=--no-mcab --zq-arg=--qs-max-extra --zq-arg=3"
+          - name: pawn-q4
+            pawn_q: true
+            zq_args: "--zq-arg=--no-mcab --zq-arg=--qs-max-extra --zq-arg=4"
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Restore validated Gen8 NNUE
+        uses: actions/download-artifact@v4
+        with:
+          name: gen8-search-ci-completed
+          path: bootstrap
+          github-token: ${{ github.token }}
+          repository: gitzambrano/zquoridor
+          run-id: 33973129847
+
+      - name: Locate weights
+        id: weights
+        shell: bash
+        run: |
+          set -euo pipefail
+          W="bootstrap/nnue/candidates/gen8-search-ci/nnue_weights_int8.bin"
+          test -s "$W"
+          echo "path=$W" >> "$GITHUB_OUTPUT"
+
+      - name: Patch experimental pawn-progress qsearch
+        if: matrix.pawn_q == true
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+          p = Path('src/search.hpp')
+          s = p.read_text()
+          old = '''        if (qply >= effCap) return best;
+
+        if (s.wallsLeft[side] <= 0) return best;  // sem muro pra jogar, nada a estender
+'''
+          new = '''        if (qply >= effCap) return best;
+
+        // EXPERIMENT qsearch-pawn-progress: Titanium treats a pawn step that
+        // shortens our shortest path as a noisy move too. Restricting the
+        // extension to strict path progress keeps it finite and excludes
+        // lateral/backward wandering by construction.
+        {
+            int sideDistBefore = cachedShortestPathLen(sideCache);
+            MoveList pawnMoves;
+            pawnStepMoves(s, side, pawnMoves);
+            for (size_t i = 0; i < pawnMoves.size(); i++) {
+                const Move& m = pawnMoves[i];
+                State ns = applyMove(s, m);
+                PlayerPathCache sideCacheAfter;
+                computeDistCached(ns.wallsH, ns.wallsV, ns.pawn[side], side,
+                                  &xdistCache, sideCacheAfter);
+                if (cachedShortestPathLen(sideCacheAfter) >= sideDistBefore) continue;
+
+                AccPair* childAcc = nullptr;
+                if (curAcc) {
+                    childAcc = curAcc + 1;
+                    makeChildAccPair(*curAcc, *childAcc, s, m, &xdistCache);
+                }
+                reptbl.push(ns.hash, /*irreversible=*/false);
+                int score = -quiescence(ns, -beta, -localAlpha, qply + 1,
+                                        stats, reptbl, !rootParity, childAcc);
+                reptbl.pop();
+                if (stopped) return 0;
+                if (score > best) best = score;
+                if (score > localAlpha) localAlpha = score;
+                if (localAlpha >= beta) return best;
+            }
+        }
+
+        if (s.wallsLeft[side] <= 0) return best;  // no wall left: pawn-noise already searched above
+'''
+          if old not in s:
+              raise SystemExit('qsearch insertion point not found')
+          p.write_text(s.replace(old, new, 1))
+          PY
+
+      - name: Build pinned Titanium
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone https://github.com/titaniummachine1/titanium-engine.git /tmp/titanium-engine
+          git -C /tmp/titanium-engine checkout 1ac94755f69799f01b2e06869403e701bbf0bd51
+          RUSTFLAGS="-C target-cpu=native" cargo build --release \
+            --manifest-path /tmp/titanium-engine/Cargo.toml --bin titanium
+
+      - name: Build Zquoridor
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p bin results
+          g++ -std=c++17 -O3 -DNDEBUG -march=native -pthread \
+            -Isrc tools/external/zquoridor_uci.cpp -o bin/zq
+
+      - name: Run ${{ matrix.name }} vs Titanium
+        shell: bash
+        env:
+          W: ${{ steps.weights.outputs.path }}
+          TITANIUM_PONDERING: "0"
+          VARIANT: ${{ matrix.name }}
+        run: |
+          set -euo pipefail
+          EXTRA_ARGS=( ${{ matrix.zq_args }} )
+          python tools/external/titanium_arena_fixed.py \
+            --zq ./bin/zq --zq-arg=--nnue --zq-arg="$W" \
+            "${EXTRA_ARGS[@]}" \
+            --titanium /tmp/titanium-engine/target/release/titanium \
+            --openings tools/external/openings_titanium.jsonl \
+            --limit-openings 20 --movetime 200 --workers 1 \
+            --json-out "results/${VARIANT}.json" \
+            --games-out "results/${VARIANT}-games.jsonl" \
+            | tee "results/${VARIANT}.log"
+
+      - name: Upload evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: qsearch-pawn-${{ matrix.name }}
+          retention-days: 30
+          path: results/
+
+  summarize:
+    if: always()
+    needs: experiment
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: qsearch-pawn-*
+          path: collected
+      - name: Compare variants
+        shell: bash
+        run: |
+          python - <<'PY' | tee comparison.txt
+          import json
+          from pathlib import Path
+          rows=[]
+          for p in Path('collected').glob('**/*.json'):
+              try: d=json.loads(p.read_text())
+              except Exception: continue
+              if 'wins' in d: rows.append((p.stem,d))
+          rows.sort(key=lambda x:x[1]['score_pct'], reverse=True)
+          print(f"{'variant':<18} {'W-D-L':<12} {'score':>7} {'Elo':>9} {'P0':>7} {'P1':>7} {'back':>8} {'emptyback':>10}")
+          for n,d in rows:
+              wdl=f"{d['wins']}-{d['draws']}-{d['losses']}"
+              print(f"{n:<18} {wdl:<12} {d['score_pct']:6.1f}% {d['elo']:+8.1f} {d['by_color']['0']['score_pct']:6.1f}% {d['by_color']['1']['score_pct']:6.1f}% {d['zq_backward_pawn_pct']:7.2f}% {d['zq_both_emptyhand_backward_pct']:9.2f}%")
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: qsearch-pawn-comparison
+          retention-days: 30
+          path: comparison.txt
