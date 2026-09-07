@@ -63,6 +63,16 @@ struct Options {
     int nodeBudget = -1;
     int leafDepth = -1;
     int policyMinDepth = 3;
+    bool policyOrdering = true;
+    bool quiescence = true;
+    bool lmrPvs = true;
+    long long catScoreScale = -999;
+    int wallBfsOrderMaxPly = -999;
+    int qsMaxExtraPlies = -999;
+    int qsCriticalBfsDelta = -999;
+    int lmrMinDepth = -999;
+    int lmrMinMoveIndex = -999;
+    double lmrDivisor = -1.0;
     bool progressiveWidening = false;
     bool clearTTPerMove = false;
     bool disableTreeReuse = false;
@@ -91,6 +101,16 @@ static Options parseArgs(int argc, char** argv) {
         else if (a == "--nodes") o.nodeBudget = std::atoi(need("--nodes"));
         else if (a == "--leaf-depth") o.leafDepth = std::atoi(need("--leaf-depth"));
         else if (a == "--policy-min-depth") o.policyMinDepth = std::atoi(need("--policy-min-depth"));
+        else if (a == "--no-policy-order") o.policyOrdering = false;
+        else if (a == "--no-qsearch") o.quiescence = false;
+        else if (a == "--no-lmr-pvs") o.lmrPvs = false;
+        else if (a == "--cat-scale") o.catScoreScale = std::atoll(need("--cat-scale"));
+        else if (a == "--wall-bfs-max-ply") o.wallBfsOrderMaxPly = std::atoi(need("--wall-bfs-max-ply"));
+        else if (a == "--qs-max-extra") o.qsMaxExtraPlies = std::atoi(need("--qs-max-extra"));
+        else if (a == "--qs-critical-delta") o.qsCriticalBfsDelta = std::atoi(need("--qs-critical-delta"));
+        else if (a == "--lmr-min-depth") o.lmrMinDepth = std::atoi(need("--lmr-min-depth"));
+        else if (a == "--lmr-min-move") o.lmrMinMoveIndex = std::atoi(need("--lmr-min-move"));
+        else if (a == "--lmr-divisor") o.lmrDivisor = std::atof(need("--lmr-divisor"));
         else if (a == "--progressive-widening") o.progressiveWidening = true;
         else if (a == "--clear-tt-per-move") o.clearTTPerMove = true;
         else if (a == "--no-tree-reuse") o.disableTreeReuse = true;
@@ -120,8 +140,17 @@ int main(int argc, char** argv) {
 
     qr::Negamax engine;
     engine.setEvalMode(qr::Negamax::EvalMode::NNUE);
-    engine.setPolicyOrderingEnabled(true);
+    engine.setPolicyOrderingEnabled(opt.policyOrdering);
     engine.setPolicyOrderingMinDepth(opt.policyMinDepth);
+    engine.setQuiescenceEnabled(opt.quiescence);
+    engine.setLmrPvsEnabled(opt.lmrPvs);
+    if (opt.catScoreScale != -999) engine.setCatScoreScale(opt.catScoreScale);
+    if (opt.wallBfsOrderMaxPly != -999) engine.setWallBfsOrderMaxPly(opt.wallBfsOrderMaxPly);
+    if (opt.qsMaxExtraPlies != -999) engine.setQsMaxExtraPlies(opt.qsMaxExtraPlies);
+    if (opt.qsCriticalBfsDelta != -999) engine.setQsCriticalBfsDelta(opt.qsCriticalBfsDelta);
+    if (opt.lmrMinDepth != -999) engine.setLmrMinDepth(opt.lmrMinDepth);
+    if (opt.lmrMinMoveIndex != -999) engine.setLmrMinMoveIndex(opt.lmrMinMoveIndex);
+    if (opt.lmrDivisor > 0.0) engine.setLmrDivisor(opt.lmrDivisor);
 
     Runner runner;
     mcab::McabParams params;
@@ -234,6 +263,17 @@ int main(int argc, char** argv) {
                       << " leaf=" << params.leafDepth
                       << " endWalls=" << params.endgameMoverWallThreshold
                       << " endLeaf=" << params.endgameLeafDepth
+                      << " qsearch=" << (engine.isQuiescenceEnabled() ? 1 : 0)
+                      << " lmrpvs=" << (engine.isLmrPvsEnabled() ? 1 : 0)
+                      << " policy=" << (engine.isPolicyOrderingEnabled() ? 1 : 0)
+                      << " policyMin=" << engine.getPolicyOrderingMinDepth()
+                      << " catScale=" << engine.getCatScoreScale()
+                      << " wallBfsPly=" << engine.getWallBfsOrderMaxPly()
+                      << " qsExtra=" << engine.getQsMaxExtraPlies()
+                      << " qsDelta=" << engine.getQsCriticalBfsDelta()
+                      << " lmrDepth=" << engine.getLmrMinDepth()
+                      << " lmrMove=" << engine.getLmrMinMoveIndex()
+                      << " lmrDiv=" << engine.getLmrDivisor()
                       << " pw=" << (params.progressiveWidening ? 1 : 0)
                       << " clearTT=" << (params.clearTTPerMove ? 1 : 0)
                       << " reuse=" << (params.treeReuse ? 1 : 0) << "\n";
