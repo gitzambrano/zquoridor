@@ -69,6 +69,8 @@ struct Options {
     int wideningInitialMoves = -1;
     double wideningCoefficient = -1.0;
     double wideningExponent = -1.0;
+    int endgameMoverWallThreshold = -999;
+    int endgameLeafDepth = -1;
 };
 
 static Options parseArgs(int argc, char** argv) {
@@ -95,6 +97,8 @@ static Options parseArgs(int argc, char** argv) {
         else if (a == "--widening-initial") o.wideningInitialMoves = std::atoi(need("--widening-initial"));
         else if (a == "--widening-coeff") o.wideningCoefficient = std::atof(need("--widening-coeff"));
         else if (a == "--widening-exp") o.wideningExponent = std::atof(need("--widening-exp"));
+        else if (a == "--endgame-mover-walls") o.endgameMoverWallThreshold = std::atoi(need("--endgame-mover-walls"));
+        else if (a == "--endgame-leaf-depth") o.endgameLeafDepth = std::atoi(need("--endgame-leaf-depth"));
         else {
             std::cerr << "unknown argument: " << a << "\n";
             std::exit(2);
@@ -132,6 +136,8 @@ int main(int argc, char** argv) {
     if (opt.wideningInitialMoves >= 0) params.wideningInitialMoves = opt.wideningInitialMoves;
     if (opt.wideningCoefficient > 0.0) params.wideningCoefficient = opt.wideningCoefficient;
     if (opt.wideningExponent > 0.0) params.wideningExponent = opt.wideningExponent;
+    if (opt.endgameMoverWallThreshold != -999) params.endgameMoverWallThreshold = opt.endgameMoverWallThreshold;
+    if (opt.endgameLeafDepth >= 0) params.endgameLeafDepth = opt.endgameLeafDepth;
     params.rootNoiseEnabled = false;
     runner.setParams(params);
 
@@ -226,6 +232,8 @@ int main(int argc, char** argv) {
                       << " scale=" << params.scoreScale
                       << " mcab=" << (params.enabled ? 1 : 0)
                       << " leaf=" << params.leafDepth
+                      << " endWalls=" << params.endgameMoverWallThreshold
+                      << " endLeaf=" << params.endgameLeafDepth
                       << " pw=" << (params.progressiveWidening ? 1 : 0)
                       << " clearTT=" << (params.clearTTPerMove ? 1 : 0)
                       << " reuse=" << (params.treeReuse ? 1 : 0) << "\n";
