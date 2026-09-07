@@ -1,0 +1,60 @@
+name: vnext-ab-root-lmr-500
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [exp/vnext-search-2026-09]
+    paths:
+      - ".github/workflows/vnext-ab-root-lmr-500.yml"
+      - "tools/experiments/apply_no_root_lmr.py"
+
+jobs:
+  h2h:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Restore validated Gen8
+        uses: actions/download-artifact@v4
+        with:
+          name: gen8-search-ci-completed
+          path: bootstrap
+          github-token: ${{ github.token }}
+          repository: gitzambrano/zquoridor
+          run-id: 33973129847
+      - name: Materialize no-root-LMR candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+          python tools/experiments/apply_no_root_lmr.py
+          git diff --check
+          git config user.name zquoridor-benchmark
+          git config user.email benchmark@invalid.local
+          git add src/search.hpp
+          git commit -m "exp(search): disable LMR at root"
+      - name: Pure AB H2H 500 games
+        shell: bash
+        env:
+          W: ${{ github.workspace }}/bootstrap/nnue/candidates/gen8-search-ci/nnue_weights_int8.bin
+        run: |
+          set -euo pipefail
+          mkdir -p results
+          python tools/arena/run_arena.py \
+            --ref1 HEAD --ref2 HEAD^ \
+            --games 500 --report-games 50 --time 200 --threads 14 \
+            --seed 202609074 --random-plies 4 \
+            --e1-nnue "$W" --e2-nnue "$W" \
+            --e1-no-mcab --e2-no-mcab \
+            2>&1 | tee results/no-root-lmr-500.log
+      - name: Upload
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: vnext-ab-no-root-lmr-500
+          path: results/
+          retention-days: 30
