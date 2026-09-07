@@ -1,0 +1,128 @@
+name: selfplay-train-smoke
+
+on:
+  push:
+    branches:
+      - fix/strong-selfplay-wandering
+    paths:
+      - ".github/workflows/selfplay-train-smoke.yml"
+
+jobs:
+  selfplay-train-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --disable-pip-version-check numpy torch --index-url https://download.pytorch.org/whl/cpu
+
+      - name: Build self-play engine
+        run: bash build/build_selfplay.sh
+
+      - name: Generate search-driven self-play batch
+        run: |
+          python tools/selfplay/run_selfplay.py \
+            --games 96 \
+            --chunk-games 48 \
+            --time-ms 12 \
+            --threads 2 \
+            --mode montecarlo \
+            --mc-obvious-plies 0 \
+            --mc-temp-decay-plies 0 \
+            --epsilon-midgame 0.01 \
+            --mcab-nodes 1024 \
+            --out 'data/selfplay/ci-smoke/selfplay_{shard:03d}.bin'
+
+      - name: Validate generated shards
+        run: |
+          PYTHONPATH=training python - <<'PY'
+          from pathlib import Path
+          import numpy as np
+          from read_selfplay import SAMPLE_DTYPE, game_start_mask
+
+          paths = sorted(Path('data/selfplay/ci-smoke').glob('selfplay_*.bin'))
+          assert len(paths) >= 2, f'expected at least two shards, got {len(paths)}'
+          total_positions = 0
+          total_games = 0
+          for path in paths:
+              assert path.stat().st_size > 0
+              assert path.stat().st_size % SAMPLE_DTYPE.itemsize == 0
+              arr = np.memmap(path, dtype=SAMPLE_DTYPE, mode='r')
+              positions = len(arr)
+              games = int(game_start_mask(arr).sum())
+              assert positions > 0 and games > 0
+              total_positions += positions
+              total_games += games
+              print(f'{path}: {positions} positions, {games} games, {path.stat().st_size} bytes')
+          print(f'total: {total_positions} positions, {total_games} games')
+          assert total_games >= 80, f'too many games were discarded: {total_games}/96'
+          PY
+
+      - name: Train warm-start NNUE candidate
+        run: |
+          mkdir -p data/nnue/ci-smoke data/checkpoints/ci-smoke
+          python training/train_nnue.py \
+            --fresh \
+            --init-from data/nnue/nnue_weights.bin \
+            --data-sources '[{"path":"data/selfplay/ci-smoke/selfplay_000.bin","frac":1.0,"k":1.0}]' \
+            --val-data data/selfplay/ci-smoke/selfplay_001.bin \
+            --out data/nnue/ci-smoke/nnue_weights.bin \
+            --ckpt-dir data/checkpoints/ci-smoke \
+            --plot-dir '' \
+            --epochs 3 \
+            --lr 2e-5 \
+            --lr-schedule cosine \
+            --warmup-epochs 0 \
+            --batch-size 512 \
+            --chunk-size 4096 \
+            --device cpu \
+            --monitor val_outcome \
+            --policy-opening-plies 0 \
+            --wl-gamma 0.99 \
+            --no-early-stop
+
+      - name: Validate trained candidate in C++ self-play
+        run: |
+          test -s data/nnue/ci-smoke/nnue_weights.bin
+          test -s data/nnue/ci-smoke/nnue_weights_int8.bin
+          python tools/selfplay/run_selfplay.py \
+            --games 4 \
+            --chunk-games 4 \
+            --time-ms 8 \
+            --threads 1 \
+            --mode montecarlo \
+            --mc-obvious-plies 0 \
+            --mc-temp-decay-plies 0 \
+            --mcab-nodes 512 \
+            --nnue-weights data/nnue/ci-smoke/nnue_weights_int8.bin \
+            --out 'data/selfplay/ci-candidate-smoke/selfplay_{shard:03d}.bin'
+          test -s data/selfplay/ci-candidate-smoke/selfplay_000.bin
+
+      - name: Summarize smoke artifacts
+        run: |
+          echo 'Self-play shards:'
+          ls -lh data/selfplay/ci-smoke/*.bin
+          echo 'Candidate weights:'
+          ls -lh data/nnue/ci-smoke/*.bin
+          echo 'Candidate inference shard:'
+          ls -lh data/selfplay/ci-candidate-smoke/*.bin
+
+      - name: Upload smoke artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: selfplay-train-smoke
+          if-no-files-found: warn
+          retention-days: 7
+          path: |
+            data/selfplay/ci-smoke/*.bin
+            data/selfplay/ci-candidate-smoke/*.bin
+            data/nnue/ci-smoke/*.bin
+            data/checkpoints/ci-smoke/train_config_*.json

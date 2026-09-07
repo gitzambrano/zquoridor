@@ -1,0 +1,212 @@
+name: search-strength-sweep
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [fix/strong-selfplay-wandering]
+    paths:
+      - .github/workflows/search-strength-sweep.yml
+
+permissions:
+  contents: write
+  actions: read
+
+jobs:
+  sweep:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: cpuct-1p20
+            args: --e1-mcab-cpuct 1.20
+          - name: cpuct-1p30
+            args: --e1-mcab-cpuct 1.30
+          - name: cpuct-1p70
+            args: --e1-mcab-cpuct 1.70
+          - name: cpuct-1p85
+            args: --e1-mcab-cpuct 1.85
+          - name: scale-160
+            args: --e1-mcab-score-scale 160
+          - name: scale-240
+            args: --e1-mcab-score-scale 240
+          - name: visits-then-q
+            args: --e1-mcab-root-select visits-then-q
+          - name: endgame-depth-3
+            args: --e1-mcab-endgame-leaf-depth 3
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: python -m pip install --disable-pip-version-check numpy
+      - name: Restore Gen8 weights
+        uses: actions/download-artifact@v4
+        with:
+          name: gen8-search-ci-completed
+          path: gen8
+          github-token: ${{ github.token }}
+          repository: gitzambrano/zquoridor
+          run-id: 33973129847
+      - name: Run candidate against production search
+        shell: bash
+        run: |
+          set -o pipefail
+          W=gen8/nnue/candidates/gen8-search-ci/nnue_weights_int8.bin
+          python tools/arena/run_arena.py \
+            --ref1 '' --ref2 '' --games 500 --time 20 --threads 4 --random-plies 4 \
+            --e1-nnue "$W" --e2-nnue "$W" \
+            ${{ matrix.args }} \
+            | tee result.log
+      - uses: actions/upload-artifact@v4
+        with:
+          name: search-sweep-${{ matrix.name }}
+          path: result.log
+          retention-days: 7
+
+  select:
+    needs: sweep
+    runs-on: ubuntu-24.04
+    outputs:
+      name: ${{ steps.pick.outputs.name }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: search-sweep-*
+          path: sweep-results
+      - id: pick
+        shell: bash
+        run: |
+          python - <<'PY' >> "$GITHUB_OUTPUT"
+          import glob,re,os
+          best=None
+          for f in glob.glob('sweep-results/**/result.log',recursive=True):
+              t=open(f).read()
+              m=re.search(r'Diferenca Elo Engine 1 vs 2\s*:\s*([+-]?\d+(?:\.\d+)?)\s*\(Margem ±([0-9.]+)\)',t)
+              if not m: continue
+              elo=float(m.group(1)); margin=float(m.group(2))
+              name=os.path.basename(os.path.dirname(f)).removeprefix('search-sweep-')
+              lower=elo-margin
+              print(f'{name}: {elo:+.1f} ±{margin:.1f} lower={lower:+.1f}',file=__import__('sys').stderr)
+              if best is None or elo>best[0]: best=(elo,name)
+          if best is None: raise SystemExit('no parsable sweep result')
+          print('name='+best[1])
+          PY
+
+  confirm:
+    needs: select
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    outputs:
+      promote: ${{ steps.gate.outputs.promote }}
+      name: ${{ needs.select.outputs.name }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: python -m pip install --disable-pip-version-check numpy
+      - uses: actions/download-artifact@v4
+        with:
+          name: gen8-search-ci-completed
+          path: gen8
+          github-token: ${{ github.token }}
+          repository: gitzambrano/zquoridor
+          run-id: 33973129847
+      - name: Confirm selected search candidate
+        shell: bash
+        env:
+          CANDIDATE: ${{ needs.select.outputs.name }}
+        run: |
+          set -o pipefail
+          W=gen8/nnue/candidates/gen8-search-ci/nnue_weights_int8.bin
+          case "$CANDIDATE" in
+            cpuct-1p20) ARG='--e1-mcab-cpuct 1.20' ;;
+            cpuct-1p30) ARG='--e1-mcab-cpuct 1.30' ;;
+            cpuct-1p70) ARG='--e1-mcab-cpuct 1.70' ;;
+            cpuct-1p85) ARG='--e1-mcab-cpuct 1.85' ;;
+            scale-160) ARG='--e1-mcab-score-scale 160' ;;
+            scale-240) ARG='--e1-mcab-score-scale 240' ;;
+            visits-then-q) ARG='--e1-mcab-root-select visits-then-q' ;;
+            endgame-depth-3) ARG='--e1-mcab-endgame-leaf-depth 3' ;;
+            *) echo "unknown candidate $CANDIDATE" >&2; exit 2 ;;
+          esac
+          python tools/arena/run_arena.py \
+            --ref1 '' --ref2 '' --games 2500 --time 20 --threads 4 --random-plies 4 \
+            --e1-nnue "$W" --e2-nnue "$W" $ARG \
+            | tee confirm.log
+      - id: gate
+        run: |
+          python - <<'PY' >> "$GITHUB_OUTPUT"
+          import re
+          t=open('confirm.log').read()
+          m=re.search(r'Diferenca Elo Engine 1 vs 2\s*:\s*([+-]?\d+(?:\.\d+)?)\s*\(Margem ±([0-9.]+)\)',t)
+          if not m: raise SystemExit('cannot parse Elo')
+          e=float(m.group(1)); d=float(m.group(2)); ok=e-d>0
+          print('promote='+str(ok).lower())
+          print(f'confirmed {e:+.1f} ±{d:.1f}; lower={e-d:+.1f}; promote={ok}',file=__import__('sys').stderr)
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: search-sweep-confirmation
+          path: confirm.log
+          retention-days: 7
+
+  commit-search:
+    needs: [select, confirm]
+    if: needs.confirm.outputs.promote == 'true'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/strong-selfplay-wandering
+          fetch-depth: 0
+      - name: Apply selected default and verify wandering
+        shell: bash
+        env:
+          CANDIDATE: ${{ needs.select.outputs.name }}
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import os
+          from pathlib import Path
+          name=os.environ['CANDIDATE']
+          p=Path('src/mcab.hpp')
+          t=p.read_text()
+          repl={
+            'cpuct-1p20':('double cPuct = 1.5;', 'double cPuct = 1.20;'),
+            'cpuct-1p30':('double cPuct = 1.5;', 'double cPuct = 1.30;'),
+            'cpuct-1p70':('double cPuct = 1.5;', 'double cPuct = 1.70;'),
+            'cpuct-1p85':('double cPuct = 1.5;', 'double cPuct = 1.85;'),
+            'scale-160':('double scoreScale = 200.0;', 'double scoreScale = 160.0;'),
+            'scale-240':('double scoreScale = 200.0;', 'double scoreScale = 240.0;'),
+            'visits-then-q':('RootSelectMode rootSelectMode = RootSelectMode::MaxVisits;', 'RootSelectMode rootSelectMode = RootSelectMode::MaxVisitsThenQ;'),
+            'endgame-depth-3':('int endgameLeafDepth = 2;', 'int endgameLeafDepth = 3;'),
+          }
+          old,new=repl[name]
+          if new in t:
+              print(f'{name} is already the production default; leaving source unchanged')
+          elif old in t:
+              p.write_text(t.replace(old,new,1))
+          else:
+              raise SystemExit(f'neither old nor promoted default found for {name}')
+          PY
+          mkdir -p bin
+          g++ -std=c++17 -O3 -DNDEBUG -Isrc tests/repro_wandering.cpp -o bin/repro_wandering
+          ./bin/repro_wandering data/nnue/nnue_weights_int8.bin | tee wandering-search.log
+          python - <<'PY'
+          p=open('wandering-search.log').read(); start=p.index('=== production MCAB NNUE, 500ms/move ==='); sec=p[start:]; end=sec.find('\n===',4); sec=sec if end<0 else sec[:end]
+          if 'engine chegou! winner=0' not in sec: raise SystemExit('search candidate regressed wandering')
+          PY
+      - name: Commit proven search improvement
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add src/mcab.hpp
+          if git diff --cached --quiet; then
+            echo 'Selected search default already committed; no-op.'
+          else
+            git commit -m "search: promote ${{ needs.select.outputs.name }} after Elo gate"
+            git push origin HEAD:fix/strong-selfplay-wandering
+          fi

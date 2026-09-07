@@ -1,0 +1,161 @@
+name: gen10-policy-visits-experiment
+
+on:
+  push:
+    branches: [fix/strong-selfplay-wandering]
+    paths:
+      - tools/dev/apply_gen10_training_patch.py
+      - .github/workflows/gen10-policy-visits-experiment.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: read
+
+jobs:
+  implement-train-arena:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install dependencies
+        run: |
+          python -m pip install --disable-pip-version-check numpy torch --index-url https://download.pytorch.org/whl/cpu
+          python -m pip install --disable-pip-version-check matplotlib
+      - name: Apply Gen10 patch
+        run: python tools/dev/apply_gen10_training_patch.py
+      - name: Static checks
+        run: |
+          python -m py_compile training/read_selfplay.py training/train_nnue.py tools/dev/apply_gen10_training_patch.py
+          bash build/build_selfplay.sh
+          grep -q 'sizeof(TrainingSample) == 64' tools/selfplay/selfplay.hpp
+          grep -q 'sizeof(TrainingSample) == 64' tools/arena/arena.cpp
+      - name: Commit source changes
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add tools/selfplay/selfplay.hpp tools/arena/arena.cpp training/read_selfplay.py training/train_nnue.py
+          if ! git diff --cached --quiet; then
+            git commit -m 'train: add visit-policy targets and wall-poor WL weighting'
+            git push origin HEAD:fix/strong-selfplay-wandering
+          fi
+      - name: Restore Gen8 bootstrap
+        uses: actions/download-artifact@v4
+        with:
+          name: gen8-search-ci-completed
+          path: bootstrap
+          github-token: ${{ github.token }}
+          repository: gitzambrano/zquoridor
+          run-id: 33973129847
+      - name: Preserve Gen7 and use Gen8 for self-play
+        run: |
+          mkdir -p data/baselines/gen7 data/baselines/gen8
+          cp data/nnue/nnue_weights.bin data/baselines/gen7/nnue_weights.bin
+          cp data/nnue/nnue_weights_int8.bin data/baselines/gen7/nnue_weights_int8.bin
+          cp bootstrap/nnue/candidates/gen8-search-ci/nnue_weights.bin data/baselines/gen8/nnue_weights.bin
+          cp bootstrap/nnue/candidates/gen8-search-ci/nnue_weights_int8.bin data/baselines/gen8/nnue_weights_int8.bin
+          cp data/baselines/gen8/nnue_weights.bin data/nnue/nnue_weights.bin
+          cp data/baselines/gen8/nnue_weights_int8.bin data/nnue/nnue_weights_int8.bin
+      - name: Generate 5000 search-driven V3 games
+        run: |
+          rm -rf data/selfplay/gen10-visits
+          python tools/selfplay/run_selfplay.py \
+            --games 5000 \
+            --chunk-games 1000 \
+            --time-ms 20 \
+            --threads 4 \
+            --mode montecarlo \
+            --mc-obvious-plies 0 \
+            --mc-temp-decay-plies 0 \
+            --epsilon-midgame 0.01 \
+            --out 'data/selfplay/gen10-visits/selfplay_{shard:03d}.bin'
+          python - <<'PY'
+          import glob, numpy as np
+          from training.read_selfplay import load_selfplay, SAMPLE_DTYPE
+          files=sorted(glob.glob('data/selfplay/gen10-visits/*.bin'))
+          assert len(files)==5, files
+          n=searched=0
+          for f in files:
+              a=load_selfplay(f)
+              n += len(a)
+              searched += int((a['policy_top_prob'][:,0] > 0).sum())
+              sums=a['policy_top_prob'].astype(np.uint64).sum(axis=1)
+              assert np.all((sums==0)|(sums==65535))
+          print('samples', n, 'visit-policy samples', searched, 'fraction', searched/max(1,n))
+          assert SAMPLE_DTYPE.itemsize == 64
+          assert searched > n*0.90
+          PY
+      - name: Build focused replay and train Gen10 from Gen8
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import training.strong_cycle as s
+          shards=s.selfplay_shards('gen10-visits')
+          train,val=s.split_train_validation(shards)
+          out=Path('data/selfplay/gen10-visits-focus/focus_000.bin')
+          s.build_focus_replay(train,out,2,0.10)
+          print('validation', val)
+          PY
+          SOURCES=$(python - <<'PY'
+          import glob,json
+          files=sorted(glob.glob('data/selfplay/gen10-visits/selfplay_*.bin'))
+          src=[{'path':f,'frac':1.0,'k':1.0} for f in files[:-1]]
+          src.append({'path':'data/selfplay/gen10-visits-focus/focus_000.bin','frac':1.0,'k':1.0})
+          print(json.dumps(src,separators=(',',':')))
+          PY
+          )
+          python training/train_nnue.py \
+            --fresh \
+            --init-from data/baselines/gen8/nnue_weights.bin \
+            --data-sources "$SOURCES" \
+            --val-data data/selfplay/gen10-visits/selfplay_004.bin \
+            --out data/nnue/candidates/gen10-visits/nnue_weights.bin \
+            --ckpt-dir data/checkpoints/gen10-visits \
+            --plot-dir data/plots/gen10-visits \
+            --epochs 30 \
+            --batch-size 16384 \
+            --lr 1e-5 \
+            --wl-gamma 0.995 \
+            --wall-poor-wl-weight 3.0 \
+            --policy-opening-plies 0 \
+            --monitor val_outcome
+      - name: Wandering regression check
+        continue-on-error: true
+        run: |
+          mkdir -p bin
+          g++ -std=c++17 -O3 -DNDEBUG -Isrc tests/repro_wandering.cpp -o bin/repro_wandering
+          cp data/nnue/candidates/gen10-visits/nnue_weights_int8.bin data/nnue/nnue_weights_int8.bin
+          ./bin/repro_wandering | tee data/gen10-wandering.log
+      - name: Arena Gen10 vs Gen8
+        run: |
+          python tools/arena/run_arena.py \
+            --ref1 '' --ref2 '' \
+            --games 600 --time 20 --threads 4 --random-plies 4 \
+            --e1-nnue data/nnue/candidates/gen10-visits/nnue_weights_int8.bin \
+            --e2-nnue data/baselines/gen8/nnue_weights_int8.bin \
+            | tee data/gen10-vs-gen8.log
+      - name: Arena Gen10 vs Gen7
+        run: |
+          python tools/arena/run_arena.py \
+            --ref1 '' --ref2 '' \
+            --games 600 --time 20 --threads 4 --random-plies 4 \
+            --e1-nnue data/nnue/candidates/gen10-visits/nnue_weights_int8.bin \
+            --e2-nnue data/baselines/gen7/nnue_weights_int8.bin \
+            | tee data/gen10-vs-gen7.log
+      - name: Upload experiment
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gen10-policy-visits-experiment
+          retention-days: 7
+          path: |
+            data/selfplay/gen10-visits/*.bin
+            data/selfplay/gen10-visits-focus/*
+            data/nnue/candidates/gen10-visits/*.bin
+            data/plots/gen10-visits/*
+            data/gen10-*.log

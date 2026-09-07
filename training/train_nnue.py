@@ -402,7 +402,7 @@ class WeightClipper:
  
 # --- features -----------------------------------------------------------------
 def to_chunk_tensors(chunk: np.ndarray, k_chunk: np.ndarray, device, pw_chunk: np.ndarray = None,
-                     pr_chunk: np.ndarray = None, wl_gamma: float = 1.0):
+                     pr_chunk: np.ndarray = None, wl_gamma: float = 1.0, wall_poor_wl_weight: float = 1.0):
     """Converte um bloco de TrainingSample (array estruturado numpy) para
     tensores densos e transfere tudo para `device` de uma vez so. Chamar
     isso uma vez por bloco grande (em vez de uma vez por batch) e o que
@@ -474,16 +474,28 @@ def to_chunk_tensors(chunk: np.ndarray, k_chunk: np.ndarray, device, pw_chunk: n
     else:
         pw = pw_chunk.astype(np.float32)
 
+    risk = ((chunk["walls_left_own"] == 0) & (chunk["walls_left_opp"] >= 4)) | \
+           ((chunk["walls_left_own"] <= 2) & ((chunk["walls_left_opp"] - chunk["walls_left_own"]) >= 4) & \
+            ((chunk["own_dist"].astype(np.int16) + 2) <= chunk["opp_dist"].astype(np.int16)))
+    wl_w = np.where(risk, np.float32(wall_poor_wl_weight), np.float32(1.0)).astype(np.float32)
+    top_idx = chunk["policy_top_idx"].astype(np.int64)
+    top_prob = chunk["policy_top_prob"].astype(np.float32) / np.float32(65535.0)
+    visit_valid = (chunk["policy_top_prob"][:, 0] > 0).astype(np.float32)
+    pw = pw * visit_valid
     return {
         "x": torch.from_numpy(x).to(device, non_blocking=True),
         "wl_target": torch.from_numpy(wl_target).to(device, non_blocking=True),
+        "wl_w": torch.from_numpy(wl_w).to(device, non_blocking=True),
         "policy_target": torch.from_numpy(chunk["policy_target"].astype(np.int64)).to(device, non_blocking=True),
+        "policy_top_idx": torch.from_numpy(top_idx).to(device, non_blocking=True),
+        "policy_top_prob": torch.from_numpy(top_prob).to(device, non_blocking=True),
         "policy_w": torch.from_numpy(pw).to(device, non_blocking=True),
     }
 
 
 def iter_gpu_batches(chunk: np.ndarray, k_chunk: np.ndarray, device, batch_size: int, gpu_chunk_size: int,
-                     pw_chunk: np.ndarray = None, pr_chunk: np.ndarray = None, wl_gamma: float = 1.0):
+                     pw_chunk: np.ndarray = None, pr_chunk: np.ndarray = None, wl_gamma: float = 1.0,
+                     wall_poor_wl_weight: float = 1.0):
     """Percorre `chunk` (e `k_chunk`, MESMA ordem/tamanho) em sub-blocos de
     ate `gpu_chunk_size` posicoes, transferindo cada sub-bloco para
     `device` uma unica vez (via `to_chunk_tensors`), e dentro dele fatia os
@@ -498,14 +510,17 @@ def iter_gpu_batches(chunk: np.ndarray, k_chunk: np.ndarray, device, batch_size:
         k_sub = k_chunk[gstart:gstart + gpu_chunk_size]
         pw_sub = None if pw_chunk is None else pw_chunk[gstart:gstart + gpu_chunk_size]
         pr_sub = None if pr_chunk is None else pr_chunk[gstart:gstart + gpu_chunk_size]
-        t = to_chunk_tensors(sub, k_sub, device, pw_sub, pr_sub, wl_gamma)
+        t = to_chunk_tensors(sub, k_sub, device, pw_sub, pr_sub, wl_gamma, wall_poor_wl_weight)
         n_sub = len(sub)
         for start in range(0, n_sub, batch_size):
             end = min(start + batch_size, n_sub)
             yield {
                 "x": t["x"][start:end],
                 "wl_target": t["wl_target"][start:end],
+                "wl_w": t["wl_w"][start:end],
                 "policy_target": t["policy_target"][start:end],
+                "policy_top_idx": t["policy_top_idx"][start:end],
+                "policy_top_prob": t["policy_top_prob"][start:end],
                 "policy_w": t["policy_w"][start:end],
             }
 
@@ -971,27 +986,23 @@ def _default_quant_path(out_path: str) -> str:
     return out_path + "_int8.bin"
  
  
-def weighted_policy_loss(policy_logits, policy_t, pw):
-    """Cross entropy of the policy head, weighted for each sample.
-
-    A weight of 0 removes the sample from the policy loss. The same sample
-    still trains the value head, because this weight never touches
-    `loss_outcome`. This is what excludes the montecarlo opening plies,
-    whose recorded policy target is a move that the policy head itself
-    sampled, with no search behind it.
-
-    When every weight in the batch is 0, the numerator is also 0, so the
-    term is 0 and adds no gradient. The clamp only avoids a division by
-    zero, it never changes a real value.
-    """
-    per = F.cross_entropy(policy_logits, policy_t, reduction="none")
+def weighted_policy_loss(policy_logits, policy_top_idx, policy_top_prob, pw):
+    """Sparse soft cross entropy against the MCAB top-8 visit distribution."""
+    logp = F.log_softmax(policy_logits, dim=-1)
+    gathered = torch.gather(logp, 1, policy_top_idx)
+    per = -(gathered * policy_top_prob).sum(dim=-1)
     return (per * pw).sum() / pw.sum().clamp(min=1e-8)
+
+
+def weighted_outcome_loss(value_logits, target, weight):
+    per = F.binary_cross_entropy_with_logits(value_logits, target, reduction="none")
+    return (per * weight).sum() / weight.sum().clamp(min=1e-8)
 
 
 # --- avaliacao em chunks (limitado por RAM/VRAM) -----------------------------
 @torch.no_grad()
 def run_eval(ds, indices, k_by_source, batch_size, chunk_size, gpu_chunk_size, model, device,
-             w_outcome, w_policy, pw_by_sample=None, pr_by_sample=None, wl_gamma=1.0):
+             w_outcome, w_policy, pw_by_sample=None, pr_by_sample=None, wl_gamma=1.0, wall_poor_wl_weight=1.0):
     model.eval()
     total = dict(loss=0.0, outcome=0.0, policy=0.0, correct=0, pw=0.0)
     n_items = len(indices)
@@ -1002,13 +1013,13 @@ def run_eval(ds, indices, k_by_source, batch_size, chunk_size, gpu_chunk_size, m
         pw_chunk = None if pw_by_sample is None else pw_by_sample[chunk_idx]
         pr_chunk = None if pr_by_sample is None else pr_by_sample[chunk_idx]
         for t in iter_gpu_batches(chunk, k_chunk, device, batch_size, gpu_chunk_size, pw_chunk,
-                                  pr_chunk, wl_gamma):
+                                  pr_chunk, wl_gamma, wall_poor_wl_weight):
             policy_t = t["policy_target"]
             pw = t["policy_w"]
 
             value_wl, policy_logits = model(t["x"])
-            loss_outcome = F.binary_cross_entropy_with_logits(value_wl, t["wl_target"])
-            loss_policy = weighted_policy_loss(policy_logits, policy_t, pw)
+            loss_outcome = weighted_outcome_loss(value_wl, t["wl_target"], t["wl_w"])
+            loss_policy = weighted_policy_loss(policy_logits, t["policy_top_idx"], t["policy_top_prob"], pw)
             loss = w_outcome * loss_outcome + w_policy * loss_policy
 
             nb = len(t["x"])
@@ -1477,13 +1488,13 @@ def train(args):
                 pr_chunk = pr_chunk[perm]
 
             for t in iter_gpu_batches(chunk, k_chunk, device, batch_size, gpu_chunk_size, pw_chunk,
-                                      pr_chunk, args.wl_gamma):
+                                      pr_chunk, args.wl_gamma, args.wall_poor_wl_weight):
                 policy_t = t["policy_target"]
                 pw = t["policy_w"]
 
                 value_wl, policy_logits = model(t["x"])
-                loss_outcome = F.binary_cross_entropy_with_logits(value_wl, t["wl_target"])
-                loss_policy = weighted_policy_loss(policy_logits, policy_t, pw)
+                loss_outcome = weighted_outcome_loss(value_wl, t["wl_target"], t["wl_w"])
+                loss_policy = weighted_policy_loss(policy_logits, t["policy_top_idx"], t["policy_top_prob"], pw)
                 loss = args.w_outcome * loss_outcome + args.w_policy * loss_policy
 
                 opt.zero_grad(set_to_none=True)
@@ -1843,6 +1854,8 @@ def parse_args(argv=None):
     g_loss.add_argument("--wl-gamma", type=float, default=WL_GAMMA_DEFAULT,
                         help=f"desconto do alvo WL pela duracao ate o fim da partida "
                              f"(padrao: {WL_GAMMA_DEFAULT}). 1.0 = desligado, alvo = so o lambda.")
+    g_loss.add_argument("--wall-poor-wl-weight", type=float, default=1.0,
+                        help="relative WL loss weight for wall-poor race positions")
     g_loss.add_argument("--policy-opening-plies", type=int, default=POLICY_OPENING_PLIES_DEFAULT,
                         help=f"plies iniciais excluidos da loss de POLICY, mantidos na de valor "
                              f"(padrao: {POLICY_OPENING_PLIES_DEFAULT}). 0 = treina a policy em "
