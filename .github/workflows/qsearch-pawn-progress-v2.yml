@@ -1,0 +1,115 @@
+name: qsearch-pawn-progress-v2
+
+on:
+  push:
+    branches:
+      - exp/qsearch-pawn-progress
+  workflow_dispatch:
+
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Restore Gen8
+        uses: actions/download-artifact@v4
+        with:
+          name: gen8-search-ci-completed
+          path: bootstrap
+          github-token: ${{ github.token }}
+          repository: gitzambrano/zquoridor
+          run-id: 33973129847
+      - name: Build engines
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p bin results
+          git clone https://github.com/titaniummachine1/titanium-engine.git /tmp/titanium-engine
+          git -C /tmp/titanium-engine checkout 1ac94755f69799f01b2e06869403e701bbf0bd51
+          RUSTFLAGS='-C target-cpu=native' cargo build --release --manifest-path /tmp/titanium-engine/Cargo.toml --bin titanium
+          g++ -std=c++17 -O3 -DNDEBUG -march=native -pthread -Isrc tools/external/zquoridor_uci.cpp -o bin/zq_base
+          python - <<'PY'
+          from pathlib import Path
+          p=Path('src/search.hpp')
+          s=p.read_text()
+          old='''        if (qply >= effCap) return best;
+
+        if (s.wallsLeft[side] <= 0) return best;  // sem muro pra jogar, nada a estender
+'''
+          new='''        if (qply >= effCap) return best;
+
+        // EXPERIMENT qsearch pawn progress: only strictly shorter own paths.
+        {
+            int sideDistBefore = cachedShortestPathLen(sideCache);
+            MoveList pawnMoves;
+            pawnStepMoves(s, side, pawnMoves);
+            for (size_t i = 0; i < pawnMoves.size(); i++) {
+                const Move& m = pawnMoves[i];
+                State ns = applyMove(s, m);
+                PlayerPathCache sideCacheAfter;
+                computeDistCached(ns.wallsH, ns.wallsV, ns.pawn[side], side,
+                                  &xdistCache, sideCacheAfter);
+                if (cachedShortestPathLen(sideCacheAfter) >= sideDistBefore) continue;
+                AccPair* childAcc = nullptr;
+                if (curAcc) {
+                    childAcc = curAcc + 1;
+                    makeChildAccPair(*curAcc, *childAcc, s, m, &xdistCache);
+                }
+                reptbl.push(ns.hash, false);
+                int score = -quiescence(ns, -beta, -localAlpha, qply + 1,
+                                        stats, reptbl, !rootParity, childAcc);
+                reptbl.pop();
+                if (stopped) return 0;
+                if (score > best) best = score;
+                if (score > localAlpha) localAlpha = score;
+                if (localAlpha >= beta) return best;
+            }
+        }
+
+        if (s.wallsLeft[side] <= 0) return best;
+'''
+          if old not in s:
+              raise SystemExit('qsearch insertion point not found')
+          p.write_text(s.replace(old,new,1))
+          PY
+          g++ -std=c++17 -O3 -DNDEBUG -march=native -pthread -Isrc tools/external/zquoridor_uci.cpp -o bin/zq_pawnq
+      - name: Run sequential comparison
+        shell: bash
+        env:
+          TITANIUM_PONDERING: '0'
+        run: |
+          set -euo pipefail
+          W='bootstrap/nnue/candidates/gen8-search-ci/nnue_weights_int8.bin'
+          run_one() {
+            local name="$1" bin="$2"; shift 2
+            python tools/external/titanium_arena_fixed.py \
+              --zq "$bin" --zq-arg=--nnue --zq-arg="$W" --zq-arg=--no-mcab "$@" \
+              --titanium /tmp/titanium-engine/target/release/titanium \
+              --openings tools/external/openings_titanium.jsonl --limit-openings 20 \
+              --movetime 200 --workers 1 --json-out "results/$name.json" \
+              --games-out "results/$name-games.jsonl" | tee "results/$name.log"
+          }
+          run_one base ./bin/zq_base
+          run_one pawnq2 ./bin/zq_pawnq --zq-arg=--qs-max-extra --zq-arg=2
+          run_one pawnq3 ./bin/zq_pawnq --zq-arg=--qs-max-extra --zq-arg=3
+          run_one pawnq4 ./bin/zq_pawnq --zq-arg=--qs-max-extra --zq-arg=4
+          python - <<'PY' | tee results/comparison.txt
+          import json
+          for n in ('base','pawnq2','pawnq3','pawnq4'):
+              d=json.load(open('results/'+n+'.json'))
+              print(n, 'W/D/L=%d/%d/%d'%(d['wins'],d['draws'],d['losses']),
+                    'score=%.1f%%'%d['score_pct'], 'Elo=%+.1f'%d['elo'],
+                    'P0=%.1f%%'%d['by_color']['0']['score_pct'],
+                    'P1=%.1f%%'%d['by_color']['1']['score_pct'],
+                    'back=%.2f%%'%d['zq_backward_pawn_pct'])
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: qsearch-pawn-progress-v2
+          retention-days: 30
+          path: results/
