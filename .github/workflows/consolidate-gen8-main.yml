@@ -1,0 +1,156 @@
+name: Consolidate Gen8 production main
+
+on:
+  push:
+    branches: [release/gen8-main-consolidation]
+    paths:
+      - '.github/workflows/consolidate-gen8-main.yml'
+
+permissions:
+  contents: write
+  actions: read
+
+jobs:
+  consolidate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: release/gen8-main-consolidation
+          fetch-depth: 0
+
+      - name: Merge approved engine baseline into current product main
+        run: |
+          set -euo pipefail
+          git config user.name "zquoridor-release-ci"
+          git config user.email "actions@users.noreply.github.com"
+          git fetch origin main fix/strong-selfplay-wandering
+          git merge --no-edit origin/fix/strong-selfplay-wandering
+          test "$(git rev-parse HEAD^2)" = "12ea0136e0c1d73ac63847b4d72d0171b4ff9473"
+
+      - name: Restore exact Gen8 training artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: gen8-search-ci-completed
+          path: _gen8_artifact
+          github-token: ${{ github.token }}
+          repository: gitzambrano/zquoridor
+          run-id: 33973129847
+
+      - name: Install Gen8 weights and permanent checkpoint archive
+        run: |
+          set -euo pipefail
+          FLOAT=_gen8_artifact/nnue/candidates/gen8-search-ci/nnue_weights.bin
+          INT8=_gen8_artifact/nnue/candidates/gen8-search-ci/nnue_weights_int8.bin
+          test -s "$FLOAT"
+          test -s "$INT8"
+          echo 'add43055e32154f76d376c594718cdf1bb09d8f777f55481061e486c1705393c  '"$FLOAT" | sha256sum -c -
+          echo 'b03f392ab6d13974149320ec793472b957f613b16070a95863f29e5604359818  '"$INT8" | sha256sum -c -
+
+          mkdir -p data/nnue
+          cp "$FLOAT" data/nnue/nnue_weights.bin
+          cp "$INT8" data/nnue/nnue_weights_int8.bin
+
+          rm -rf checkpoints/gen8
+          mkdir -p checkpoints/gen8/artifact
+          cp -a _gen8_artifact/. checkpoints/gen8/artifact/
+          cp "$FLOAT" checkpoints/gen8/nnue_weights.bin
+          cp "$INT8" checkpoints/gen8/nnue_weights_int8.bin
+
+          cat > checkpoints/gen8/README.md <<'EOF'
+          # Gen8 production checkpoint
+
+          This directory permanently archives the exact Gen8 baseline promoted to production.
+
+          - Source workflow run: `33973129847` (`gen8-search-cpu-continue`)
+          - Source artifact: `gen8-search-ci-completed` (`9971548567`)
+          - Engine/search baseline: `fix/strong-selfplay-wandering` at `12ea0136e0c1d73ac63847b4d72d0171b4ff9473`
+          - Float production weights: `nnue_weights.bin`
+          - Quantized production weights: `nnue_weights_int8.bin`
+          - Float SHA-256: `add43055e32154f76d376c594718cdf1bb09d8f777f55481061e486c1705393c`
+          - Int8 SHA-256: `b03f392ab6d13974149320ec793472b957f613b16070a95863f29e5604359818`
+          - Architecture fingerprint: 354 input features, hidden 256, policy 209, QA 255, QB 64.
+
+          `artifact/` preserves the complete uploaded Gen8 artifact: candidate/champion weights, training configs, logs, focused replay data and the original self-play shards. The two files at this directory root are convenient immutable copies of the production candidate. `data/nnue/` contains the same bytes used by the native and web products.
+
+          The original workflow did not upload optimizer/PyTorch state; therefore no optimizer state is fabricated here. The archived float network is the recoverable training checkpoint.
+          EOF
+
+          cmp data/nnue/nnue_weights.bin checkpoints/gen8/nnue_weights.bin
+          cmp data/nnue/nnue_weights_int8.bin checkpoints/gen8/nnue_weights_int8.bin
+
+      - uses: mymindstorm/setup-emsdk@v14
+        with:
+          version: latest
+          actions-cache-folder: emsdk-cache
+
+      - name: Rebuild WASM and standalone product with Gen8
+        run: |
+          set -euo pipefail
+          bash build/build_wasm.sh
+          test -s gui_web/zquoridor.data
+          cmp data/nnue/nnue_weights_int8.bin gui_web/zquoridor.data
+          node --check gui_web/app.js
+          node --check gui_web/board.js
+          git diff --check
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Native correctness suite on Gen8 production bytes
+        run: |
+          set -euo pipefail
+          bash build/build_tests.sh
+          ./bin/test_rules_sanity
+          ./bin/test_search_staging
+          ./bin/test_move_ordering
+          ./bin/test_endgame_race
+          ./bin/test_lmr_pvs
+          ./bin/nnue_verify data/nnue/nnue_weights.bin data/nnue/nnue_weights_int8.bin
+          ./bin/nnue_incremental_check data/nnue/nnue_weights_int8.bin
+          ./bin/nnue_sign_check data/nnue/nnue_weights_int8.bin
+          ./bin/test_search_leaf_smoke
+          ./bin/test_mcab_core
+          ./bin/test_mcab_dispatch
+          ./bin/test_mcab_phase9
+          ./bin/test_wall_qextension
+          ./bin/test_policy_ab
+          ./bin/test_contempt_repetition
+          ./bin/test_endgame_race_fuzz
+          ./bin/test_mcab_endgame_leaf
+          ./bin/test_notation
+
+      - name: Standalone browser smoke
+        run: |
+          set -euo pipefail
+          python -m pip install --disable-pip-version-check playwright
+          python -m playwright install --with-deps chromium
+          python gui_web/test_standalone.py
+
+      - name: Record production manifest
+        run: |
+          set -euo pipefail
+          cat > checkpoints/gen8/PRODUCTION_MANIFEST.txt <<EOF
+          generation=Gen8
+          source_run=33973129847
+          source_artifact=9971548567
+          source_search_commit=12ea0136e0c1d73ac63847b4d72d0171b4ff9473
+          float_sha256=$(sha256sum data/nnue/nnue_weights.bin | awk '{print $1}')
+          int8_sha256=$(sha256sum data/nnue/nnue_weights_int8.bin | awk '{print $1}')
+          wasm_data_sha256=$(sha256sum gui_web/zquoridor.data | awk '{print $1}')
+          merged_main_parent=$(git rev-parse HEAD^1)
+          merged_engine_parent=$(git rev-parse HEAD^2)
+          EOF
+          cat checkpoints/gen8/PRODUCTION_MANIFEST.txt
+
+      - name: Commit verified consolidated product
+        run: |
+          set -euo pipefail
+          git add -A
+          git add -f checkpoints/gen8
+          git diff --cached --check
+          git status --short
+          git commit -m "release: consolidate Gen8 engine, weights and checkpoints"
+          git push origin HEAD:release/gen8-main-consolidation
