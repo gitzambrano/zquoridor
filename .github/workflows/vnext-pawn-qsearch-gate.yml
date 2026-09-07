@@ -1,0 +1,98 @@
+name: vnext-pawn-qsearch-gate
+
+on:
+  push:
+    branches:
+      - exp/vnext-search-2026-09
+    paths:
+      - ".github/workflows/vnext-pawn-qsearch-gate.yml"
+  workflow_dispatch:
+
+jobs:
+  gate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: ab
+            games: 1000
+            extra: "--e1-no-mcab --e2-no-mcab"
+          - name: hybrid
+            games: 1000
+            extra: ""
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Restore validated Gen8 NNUE
+        uses: actions/download-artifact@v4
+        with:
+          name: gen8-search-ci-completed
+          path: bootstrap
+          github-token: ${{ github.token }}
+          repository: gitzambrano/zquoridor
+          run-id: 33973129847
+
+      - name: Materialize candidate as a local commit
+        shell: bash
+        run: |
+          set -euo pipefail
+          python tools/experiments/apply_qsearch_pawn_progress.py
+          git diff --check
+          git config user.name "zquoridor-benchmark"
+          git config user.email "benchmark@invalid.local"
+          git add src/search.hpp
+          git commit -m "exp(search): extend qsearch with monotone pawn progress"
+          echo "candidate=$(git rev-parse HEAD)"
+          echo "baseline=$(git rev-parse HEAD^)"
+
+      - name: Direct ${{ matrix.name }} head-to-head
+        shell: bash
+        env:
+          W: ${{ github.workspace }}/bootstrap/nnue/candidates/gen8-search-ci/nnue_weights_int8.bin
+          EXTRA: ${{ matrix.extra }}
+          GAMES: ${{ matrix.games }}
+        run: |
+          set -euo pipefail
+          test -s "$W"
+          mkdir -p results
+          read -r -a EXTRA_ARGS <<< "$EXTRA"
+          python tools/arena/run_arena.py \
+            --ref1 HEAD --ref2 HEAD^ \
+            --games "$GAMES" --report-games 50 --time 200 --threads 14 \
+            --e1-nnue "$W" --e2-nnue "$W" \
+            "${EXTRA_ARGS[@]}" \
+            2>&1 | tee "results/${{ matrix.name }}.log"
+
+      - name: Extract gate result
+        shell: bash
+        env:
+          NAME: ${{ matrix.name }}
+        run: |
+          python - <<'PY' | tee "results/${NAME}-summary.txt"
+          import os, re
+          from pathlib import Path
+          text = Path(f"results/{os.environ['NAME']}.log").read_text(errors="replace")
+          m = re.search(r"Diferenca Elo Engine 1 vs 2\s*:\s*([+-]?\d+(?:\.\d+)?)\s*\(Margem\s*[±+\-]?\s*(\d+(?:\.\d+)?)\)", text)
+          if not m:
+              raise SystemExit("could not parse final Elo result")
+          elo = float(m.group(1)); margin = float(m.group(2))
+          print(f"candidate Elo = {elo:+.1f} ±{margin:.1f}")
+          print(f"95%-style lower bound = {elo-margin:+.1f}")
+          print("PASS" if elo - margin > 0 else "NOT PROVEN")
+          PY
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: vnext-pawn-qsearch-${{ matrix.name }}
+          retention-days: 30
+          path: results/
