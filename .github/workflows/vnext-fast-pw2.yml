@@ -1,0 +1,74 @@
+name: vnext-fast-pw2
+
+on:
+  push:
+    branches:
+      - exp/vnext-search-2026-09
+    paths:
+      - ".github/workflows/vnext-fast-pw2.yml"
+  workflow_dispatch:
+
+jobs:
+  screen:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: pw8-fast
+            initial: 8
+          - name: pw16-fast
+            initial: 16
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Restore validated Gen8 NNUE
+        uses: actions/download-artifact@v4
+        with:
+          name: gen8-search-ci-completed
+          path: bootstrap
+          github-token: ${{ github.token }}
+          repository: gitzambrano/zquoridor
+          run-id: 33973129847
+      - name: Materialize optimized below-root widening
+        shell: bash
+        run: |
+          set -euo pipefail
+          python tools/experiments/apply_pw_below_root.py
+          python tools/experiments/apply_pw_fast_path.py
+          git diff --check
+          git config user.name "zquoridor-benchmark"
+          git config user.email "benchmark@invalid.local"
+          git add src/mcab.hpp
+          git commit -m "exp(mcab): optimize below-root progressive widening"
+      - name: Fast direct screen — ${{ matrix.name }}
+        shell: bash
+        env:
+          W: ${{ github.workspace }}/bootstrap/nnue/candidates/gen8-search-ci/nnue_weights_int8.bin
+        run: |
+          set -euo pipefail
+          test -s "$W"
+          mkdir -p results
+          python tools/arena/run_arena.py \
+            --ref1 HEAD --ref2 HEAD^ \
+            --games 160 --report-games 20 --time 200 --threads 14 \
+            --seed 202609072 --random-plies 4 \
+            --e1-nnue "$W" --e2-nnue "$W" \
+            --e1-mcab-progressive-widening \
+            --e1-mcab-widening-initial ${{ matrix.initial }} \
+            --e1-mcab-widening-coefficient 2.0 \
+            --e1-mcab-widening-exponent 0.5 \
+            --e2-mcab-no-progressive-widening \
+            2>&1 | tee "results/${{ matrix.name }}.log"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: vnext-fast-${{ matrix.name }}
+          retention-days: 30
+          path: results/
