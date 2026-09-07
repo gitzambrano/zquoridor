@@ -9,33 +9,9 @@ on:
   workflow_dispatch:
 
 jobs:
-  experiment:
+  validate:
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
-    strategy:
-      fail-fast: false
-      max-parallel: 6
-      matrix:
-        include:
-          - name: ab-baseline
-            pawn_q: false
-            zq_args: "--zq-arg=--no-mcab"
-          - name: no-qsearch
-            pawn_q: false
-            zq_args: "--zq-arg=--no-mcab --zq-arg=--no-qsearch"
-          - name: wall-q4
-            pawn_q: false
-            zq_args: "--zq-arg=--no-mcab --zq-arg=--qs-max-extra --zq-arg=4"
-          - name: pawn-q2
-            pawn_q: true
-            zq_args: "--zq-arg=--no-mcab --zq-arg=--qs-max-extra --zq-arg=2"
-          - name: pawn-q3
-            pawn_q: true
-            zq_args: "--zq-arg=--no-mcab --zq-arg=--qs-max-extra --zq-arg=3"
-          - name: pawn-q4
-            pawn_q: true
-            zq_args: "--zq-arg=--no-mcab --zq-arg=--qs-max-extra --zq-arg=4"
-
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -60,8 +36,24 @@ jobs:
           test -s "$W"
           echo "path=$W" >> "$GITHUB_OUTPUT"
 
-      - name: Patch experimental pawn-progress qsearch
-        if: matrix.pawn_q == true
+      - name: Build pinned Titanium
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone https://github.com/titaniummachine1/titanium-engine.git /tmp/titanium-engine
+          git -C /tmp/titanium-engine checkout 1ac94755f69799f01b2e06869403e701bbf0bd51
+          RUSTFLAGS="-C target-cpu=native" cargo build --release \
+            --manifest-path /tmp/titanium-engine/Cargo.toml --bin titanium
+
+      - name: Build baseline Zquoridor
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p bin results
+          g++ -std=c++17 -O3 -DNDEBUG -march=native -pthread \
+            -Isrc tools/external/zquoridor_uci.cpp -o bin/zq_base
+
+      - name: Patch pawn-progress qsearch and build candidate
         shell: bash
         run: |
           set -euo pipefail
@@ -75,10 +67,9 @@ jobs:
 '''
           new = '''        if (qply >= effCap) return best;
 
-        // EXPERIMENT qsearch-pawn-progress: Titanium treats a pawn step that
-        // shortens our shortest path as a noisy move too. Restricting the
-        // extension to strict path progress keeps it finite and excludes
-        // lateral/backward wandering by construction.
+        // EXPERIMENT: a pawn step that strictly shortens our own shortest
+        // path is a noisy move, analogous to Titanium's our_path_gain > 0.
+        // Strict progress excludes lateral/backward wandering by construction.
         {
             int sideDistBefore = cachedShortestPathLen(sideCache);
             MoveList pawnMoves;
@@ -107,85 +98,89 @@ jobs:
             }
         }
 
-        if (s.wallsLeft[side] <= 0) return best;  // no wall left: pawn-noise already searched above
+        if (s.wallsLeft[side] <= 0) return best;
 '''
           if old not in s:
               raise SystemExit('qsearch insertion point not found')
           p.write_text(s.replace(old, new, 1))
           PY
-
-      - name: Build pinned Titanium
-        shell: bash
-        run: |
-          set -euo pipefail
-          git clone https://github.com/titaniummachine1/titanium-engine.git /tmp/titanium-engine
-          git -C /tmp/titanium-engine checkout 1ac94755f69799f01b2e06869403e701bbf0bd51
-          RUSTFLAGS="-C target-cpu=native" cargo build --release \
-            --manifest-path /tmp/titanium-engine/Cargo.toml --bin titanium
-
-      - name: Build Zquoridor
-        shell: bash
-        run: |
-          set -euo pipefail
-          mkdir -p bin results
           g++ -std=c++17 -O3 -DNDEBUG -march=native -pthread \
-            -Isrc tools/external/zquoridor_uci.cpp -o bin/zq
+            -Isrc tools/external/zquoridor_uci.cpp -o bin/zq_pawnq
 
-      - name: Run ${{ matrix.name }} vs Titanium
+      - name: Baseline wall-q2 — 40 games
         shell: bash
         env:
           W: ${{ steps.weights.outputs.path }}
           TITANIUM_PONDERING: "0"
-          VARIANT: ${{ matrix.name }}
         run: |
-          set -euo pipefail
-          EXTRA_ARGS=( ${{ matrix.zq_args }} )
           python tools/external/titanium_arena_fixed.py \
-            --zq ./bin/zq --zq-arg=--nnue --zq-arg="$W" \
-            "${EXTRA_ARGS[@]}" \
+            --zq ./bin/zq_base --zq-arg=--nnue --zq-arg="$W" --zq-arg=--no-mcab \
             --titanium /tmp/titanium-engine/target/release/titanium \
-            --openings tools/external/openings_titanium.jsonl \
-            --limit-openings 20 --movetime 200 --workers 1 \
-            --json-out "results/${VARIANT}.json" \
-            --games-out "results/${VARIANT}-games.jsonl" \
-            | tee "results/${VARIANT}.log"
+            --openings tools/external/openings_titanium.jsonl --limit-openings 20 \
+            --movetime 200 --workers 1 --json-out results/base.json \
+            --games-out results/base-games.jsonl | tee results/base.log
 
-      - name: Upload evidence
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: qsearch-pawn-${{ matrix.name }}
-          retention-days: 30
-          path: results/
+      - name: Pawn progress q2 — 40 games
+        shell: bash
+        env:
+          W: ${{ steps.weights.outputs.path }}
+          TITANIUM_PONDERING: "0"
+        run: |
+          python tools/external/titanium_arena_fixed.py \
+            --zq ./bin/zq_pawnq --zq-arg=--nnue --zq-arg="$W" --zq-arg=--no-mcab \
+            --zq-arg=--qs-max-extra --zq-arg=2 \
+            --titanium /tmp/titanium-engine/target/release/titanium \
+            --openings tools/external/openings_titanium.jsonl --limit-openings 20 \
+            --movetime 200 --workers 1 --json-out results/pawnq2.json \
+            --games-out results/pawnq2-games.jsonl | tee results/pawnq2.log
 
-  summarize:
-    if: always()
-    needs: experiment
-    runs-on: ubuntu-24.04
-    steps:
-      - uses: actions/download-artifact@v4
-        with:
-          pattern: qsearch-pawn-*
-          path: collected
-      - name: Compare variants
+      - name: Pawn progress q3 — 40 games
+        shell: bash
+        env:
+          W: ${{ steps.weights.outputs.path }}
+          TITANIUM_PONDERING: "0"
+        run: |
+          python tools/external/titanium_arena_fixed.py \
+            --zq ./bin/zq_pawnq --zq-arg=--nnue --zq-arg="$W" --zq-arg=--no-mcab \
+            --zq-arg=--qs-max-extra --zq-arg=3 \
+            --titanium /tmp/titanium-engine/target/release/titanium \
+            --openings tools/external/openings_titanium.jsonl --limit-openings 20 \
+            --movetime 200 --workers 1 --json-out results/pawnq3.json \
+            --games-out results/pawnq3-games.jsonl | tee results/pawnq3.log
+
+      - name: Pawn progress q4 — 40 games
+        shell: bash
+        env:
+          W: ${{ steps.weights.outputs.path }}
+          TITANIUM_PONDERING: "0"
+        run: |
+          python tools/external/titanium_arena_fixed.py \
+            --zq ./bin/zq_pawnq --zq-arg=--nnue --zq-arg="$W" --zq-arg=--no-mcab \
+            --zq-arg=--qs-max-extra --zq-arg=4 \
+            --titanium /tmp/titanium-engine/target/release/titanium \
+            --openings tools/external/openings_titanium.jsonl --limit-openings 20 \
+            --movetime 200 --workers 1 --json-out results/pawnq4.json \
+            --games-out results/pawnq4-games.jsonl | tee results/pawnq4.log
+
+      - name: Compare
         shell: bash
         run: |
-          python - <<'PY' | tee comparison.txt
+          python - <<'PY' | tee results/comparison.txt
           import json
-          from pathlib import Path
-          rows=[]
-          for p in Path('collected').glob('**/*.json'):
-              try: d=json.loads(p.read_text())
-              except Exception: continue
-              if 'wins' in d: rows.append((p.stem,d))
-          rows.sort(key=lambda x:x[1]['score_pct'], reverse=True)
-          print(f"{'variant':<18} {'W-D-L':<12} {'score':>7} {'Elo':>9} {'P0':>7} {'P1':>7} {'back':>8} {'emptyback':>10}")
-          for n,d in rows:
-              wdl=f"{d['wins']}-{d['draws']}-{d['losses']}"
-              print(f"{n:<18} {wdl:<12} {d['score_pct']:6.1f}% {d['elo']:+8.1f} {d['by_color']['0']['score_pct']:6.1f}% {d['by_color']['1']['score_pct']:6.1f}% {d['zq_backward_pawn_pct']:7.2f}% {d['zq_both_emptyhand_backward_pct']:9.2f}%")
+          for n in ('base','pawnq2','pawnq3','pawnq4'):
+              d=json.load(open(f'results/{n}.json'))
+              print(n,
+                    f"W/D/L={d['wins']}/{d['draws']}/{d['losses']}",
+                    f"score={d['score_pct']:.1f}%", f"Elo={d['elo']:+.1f}",
+                    f"P0={d['by_color']['0']['score_pct']:.1f}%",
+                    f"P1={d['by_color']['1']['score_pct']:.1f}%",
+                    f"back={d['zq_backward_pawn_pct']:.2f}%",
+                    f"emptyBack={d['zq_both_emptyhand_backward_pct']:.2f}%")
           PY
+
       - uses: actions/upload-artifact@v4
+        if: always()
         with:
-          name: qsearch-pawn-comparison
+          name: qsearch-pawn-progress-validation
           retention-days: 30
-          path: comparison.txt
+          path: results/
