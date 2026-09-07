@@ -5,6 +5,7 @@ on:
     branches: [release/gen8-main-consolidation]
     paths:
       - '.github/workflows/consolidate-gen8-main.yml'
+      - 'build/build_wasm.sh'
 
 permissions:
   contents: write
