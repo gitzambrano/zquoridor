@@ -1,0 +1,146 @@
+name: titanium-ab-search-components
+
+on:
+  push:
+    branches: [exp/titanium-ab-search-components]
+    paths:
+      - ".github/workflows/titanium-ab-search-components.yml"
+      - "tools/external/**"
+  workflow_dispatch:
+
+jobs:
+  experiment:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      max-parallel: 6
+      matrix:
+        include:
+          - name: ab-baseline
+            zq_args: "--zq-arg=--no-mcab"
+          - name: no-qsearch
+            zq_args: "--zq-arg=--no-mcab --zq-arg=--no-qsearch"
+          - name: no-lmr-pvs
+            zq_args: "--zq-arg=--no-mcab --zq-arg=--no-lmr-pvs"
+          - name: no-policy-order
+            zq_args: "--zq-arg=--no-mcab --zq-arg=--no-policy-order"
+          - name: policy-depth2
+            zq_args: "--zq-arg=--no-mcab --zq-arg=--policy-min-depth --zq-arg=2"
+          - name: policy-depth4
+            zq_args: "--zq-arg=--no-mcab --zq-arg=--policy-min-depth --zq-arg=4"
+          - name: no-wall-bfs-order
+            zq_args: "--zq-arg=--no-mcab --zq-arg=--wall-bfs-max-ply --zq-arg=-1"
+          - name: cat0
+            zq_args: "--zq-arg=--no-mcab --zq-arg=--cat-scale --zq-arg=0"
+          - name: qs-one-ply
+            zq_args: "--zq-arg=--no-mcab --zq-arg=--qs-max-extra --zq-arg=1"
+          - name: qs-delta1
+            zq_args: "--zq-arg=--no-mcab --zq-arg=--qs-critical-delta --zq-arg=1"
+          - name: qs-delta3
+            zq_args: "--zq-arg=--no-mcab --zq-arg=--qs-critical-delta --zq-arg=3"
+          - name: lmr-safer
+            zq_args: "--zq-arg=--no-mcab --zq-arg=--lmr-min-depth --zq-arg=4 --zq-arg=--lmr-min-move --zq-arg=4 --zq-arg=--lmr-divisor --zq-arg=2.75"
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Restore validated Gen8 NNUE
+        uses: actions/download-artifact@v4
+        with:
+          name: gen8-search-ci-completed
+          path: bootstrap
+          github-token: ${{ github.token }}
+          repository: gitzambrano/zquoridor
+          run-id: 33973129847
+
+      - name: Locate weights
+        id: weights
+        shell: bash
+        run: |
+          set -euo pipefail
+          W="bootstrap/nnue/candidates/gen8-search-ci/nnue_weights_int8.bin"
+          test -s "$W"
+          echo "path=$W" >> "$GITHUB_OUTPUT"
+
+      - name: Build pinned Titanium
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone https://github.com/titaniummachine1/titanium-engine.git /tmp/titanium-engine
+          git -C /tmp/titanium-engine checkout 1ac94755f69799f01b2e06869403e701bbf0bd51
+          RUSTFLAGS="-C target-cpu=native" cargo build --release \
+            --manifest-path /tmp/titanium-engine/Cargo.toml --bin titanium
+
+      - name: Build Zquoridor adapter
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p bin results
+          g++ -std=c++17 -O3 -DNDEBUG -march=native -pthread \
+            -Isrc tools/external/zquoridor_uci.cpp -o bin/zq
+
+      - name: Run ${{ matrix.name }} vs Titanium
+        shell: bash
+        env:
+          W: ${{ steps.weights.outputs.path }}
+          TITANIUM_PONDERING: "0"
+          VARIANT: ${{ matrix.name }}
+        run: |
+          set -euo pipefail
+          EXTRA_ARGS=( ${{ matrix.zq_args }} )
+          python tools/external/titanium_arena_fixed.py \
+            --zq ./bin/zq --zq-arg=--nnue --zq-arg="$W" \
+            "${EXTRA_ARGS[@]}" \
+            --titanium /tmp/titanium-engine/target/release/titanium \
+            --openings tools/external/openings_titanium.jsonl \
+            --limit-openings 20 --movetime 200 --workers 1 \
+            --json-out "results/${VARIANT}.json" \
+            --games-out "results/${VARIANT}-games.jsonl" \
+            | tee "results/${VARIANT}.log"
+
+      - name: Upload ${{ matrix.name }} evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: titanium-ab-${{ matrix.name }}
+          retention-days: 30
+          path: results/
+
+  summarize:
+    if: always()
+    needs: experiment
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: titanium-ab-*
+          path: collected
+
+      - name: Compare variants
+        shell: bash
+        run: |
+          python - <<'PY' | tee comparison.txt
+          import json
+          from pathlib import Path
+          rows=[]
+          for p in Path('collected').glob('**/*.json'):
+              try: d=json.loads(p.read_text())
+              except Exception: continue
+              if 'wins' in d: rows.append((p.stem,d))
+          rows.sort(key=lambda x:x[1]['score_pct'], reverse=True)
+          print(f"{'variant':<24} {'W-D-L':<12} {'score':>7} {'Elo':>9} {'95% Elo':>21} {'P0':>7} {'P1':>7} {'back':>8}")
+          for n,d in rows:
+              wdl=f"{d['wins']}-{d['draws']}-{d['losses']}"
+              ci=f"[{d['elo_95_low']:+.0f},{d['elo_95_high']:+.0f}]"
+              print(f"{n:<24} {wdl:<12} {d['score_pct']:6.1f}% {d['elo']:+8.1f} {ci:>21} {d['by_color']['0']['score_pct']:6.1f}% {d['by_color']['1']['score_pct']:6.1f}% {d['zq_backward_pawn_pct']:7.2f}%")
+          PY
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: titanium-ab-comparison
+          retention-days: 30
+          path: comparison.txt
