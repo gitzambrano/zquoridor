@@ -1,0 +1,79 @@
+name: vnext-ab-titanium-telemetry
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - exp/vnext-search-2026-09
+    paths:
+      - ".github/workflows/vnext-ab-titanium-telemetry.yml"
+      - "tools/experiments/search_telemetry_vs_titanium.py"
+      - "tools/external/**"
+
+jobs:
+  telemetry:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Restore validated Gen8 NNUE
+        uses: actions/download-artifact@v4
+        with:
+          name: gen8-search-ci-completed
+          path: bootstrap
+          github-token: ${{ github.token }}
+          repository: gitzambrano/zquoridor
+          run-id: 33973129847
+
+      - name: Build pinned Titanium
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone https://github.com/titaniummachine1/titanium-engine.git /tmp/titanium-engine
+          git -C /tmp/titanium-engine checkout 1ac94755f69799f01b2e06869403e701bbf0bd51
+          RUSTFLAGS="-C target-cpu=native" cargo build --release \
+            --manifest-path /tmp/titanium-engine/Cargo.toml --bin titanium
+
+      - name: Build Zquoridor adapter
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p bin results
+          g++ -std=c++17 -O3 -DNDEBUG -march=native -pthread \
+            -Isrc tools/external/zquoridor_uci.cpp -o bin/zq_telemetry
+
+      - name: Same-position telemetry
+        shell: bash
+        env:
+          TITANIUM_PONDERING: "0"
+        run: |
+          set -euo pipefail
+          W="bootstrap/nnue/candidates/gen8-search-ci/nnue_weights_int8.bin"
+          test -s "$W"
+          python tools/experiments/search_telemetry_vs_titanium.py \
+            --zq ./bin/zq_telemetry \
+            --weights "$W" \
+            --titanium /tmp/titanium-engine/target/release/titanium \
+            --openings tools/external/openings_titanium.jsonl \
+            --game-openings 6 \
+            --game-movetime 200 \
+            --game-max-plies 100 \
+            --max-positions 48 \
+            --budgets 50 200 800 \
+            --out-dir results \
+            2>&1 | tee results/run.log
+
+      - name: Upload telemetry evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: vnext-ab-titanium-telemetry
+          path: results/
+          retention-days: 30
+          if-no-files-found: warn
