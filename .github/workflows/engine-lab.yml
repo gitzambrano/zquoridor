@@ -75,7 +75,7 @@ jobs:
   smoke:
     if: ${{ github.event_name == 'push' || inputs.mode == 'smoke' }}
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -119,12 +119,12 @@ jobs:
           bash build/build_arena.sh
           mkdir -p bin
           g++ -std=c++17 -O2 -DNDEBUG -pthread -Isrc tools/external/zquoridor_uci.cpp -o bin/zquoridor_external
-      - name: Build and run core regressions
+      - name: Build tests and run fast infrastructure regressions
         run: |
           bash build/build_tests.sh
           ./bin/test_rules_sanity
           ./bin/test_mcab_core
-          ./bin/test_policy_ab
+          echo 'Full search regressions (including test_policy_ab) stay in candidate/search gates.'
 
   selfplay:
     if: ${{ github.event_name == 'workflow_dispatch' && inputs.mode == 'selfplay' }}
