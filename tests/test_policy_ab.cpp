@@ -6,9 +6,9 @@
 //
 // What is asserted (repo convention for heuristic toggles -- agreement
 // thresholds, not zero divergence):
-//   1. DEFAULTS BIT-IDENTICAL: an engine left untouched and an engine
-//      with every new toggle explicitly OFF produce the same move, the
-//      same score and the same node count over the whole corpus (both
+//   1. PRODUCTION DEFAULTS BIT-IDENTICAL: an untouched engine and one
+//      explicitly configured as policy-LMP ON at 0.10/12 (other new
+//      policy toggles OFF) produce the same move, score and node count (both
 //      eval modes). This is the regression guard for production.
 //   2. EACH VARIANT vs REFERENCE: at least 85% score agreement
 //      (|scoreOn - scoreOff| <= TOL), at least 90% sign agreement among
@@ -136,7 +136,7 @@ int main(int argc, char** argv) {
 
     // --- 1) defaults bit-identical, both eval modes ----------------------
     // Strided subset: the full corpus runs again in the variant comparisons
-    // below; this block only guards the default-off path, so ~1/3 of the
+    // below; this block guards the production-default path, so ~1/3 of the
     // positions keep the whole suite within minutes at -O2.
     {
         std::vector<State> subset;

@@ -109,9 +109,9 @@ constexpr long long POLICY_ORDER_SCALE = 400;
 
 // ---------------------------------------------------------------------
 // Investigation inv/ab-policy (2026-08-23): three cheap ways to let the
-// NNUE policy head carry more weight inside alpha-beta. All three are OFF
-// by default; with every toggle at its default the search is bit-identical
-// to the pre-investigation engine.
+// NNUE policy head carry more weight inside alpha-beta. Policy-LMP is ON
+// by default in production since 2026-09-09 at baseMass=0.10/minCount=12;
+// history-seed and policy-LMR remain OFF by default.
 //
 // Unit-cost context measured on the reference machine (-O3 -march=native
 // AVX2, perf/speed-elo-100 build): forwardPolicyQuant ~= 1.3us and
@@ -276,10 +276,10 @@ public:
     void setPolicyOrderingMinDepth(int d) { policyOrderingMinDepth = d; }
     int getPolicyOrderingMinDepth() const { return policyOrderingMinDepth; }
 
-    // --- inv/ab-policy toggles (all default OFF, see the block comment at
+    // --- inv/ab-policy runtime toggles (see the block comment at
     // POLICY_ORDER_SCALE above). Same runtime-toggle pattern as
     // setQuiescenceEnabled/setLmrPvsEnabled: A/B in one binary without
-    // recompiling, production untouched while off.
+    // recompiling; policy-LMP 0.10/12 is the production baseline.
     void setPolicyHistorySeedEnabled(bool enabled) { policyHistorySeedEnabled = enabled; }
     bool isPolicyHistorySeedEnabled() const { return policyHistorySeedEnabled; }
     void setPolicyHistorySeedScale(long long s) { policyHistorySeedScale = s; }
@@ -835,8 +835,8 @@ private:
     EvalMode evalMode = EvalMode::Heuristic;
     bool policyOrderingEnabled = true;
     int policyOrderingMinDepth = 3;
-    // inv/ab-policy members -- defaults reproduce the pre-investigation
-    // engine exactly (every feature off).
+    // inv/ab-policy members -- production defaults since 2026-09-09:
+    // policy-LMP 0.10/12 ON; history-seed and policy-LMR remain OFF.
     bool policyHistorySeedEnabled = false;
     long long policyHistorySeedScale = POLICY_ORDER_SCALE;
     bool policyLmrEnabled = false;
