@@ -146,10 +146,17 @@ int main(int argc, char** argv) {
             for (const State& s : subset) {
                 Negamax untouched;
                 if (modeIsNnue) untouched.setEvalMode(Negamax::EvalMode::NNUE);
-                Negamax explicitOff;
-                configureVariant(explicitOff, 0, modeIsNnue == 1);
+                Negamax explicitProd;
+                explicitProd.setEvalMode(modeIsNnue ? Negamax::EvalMode::NNUE : Negamax::EvalMode::Heuristic);
+                explicitProd.setPolicyHistorySeedEnabled(false);
+                explicitProd.setPolicyLmrEnabled(false);
+                explicitProd.setPolicyLmpEnabled(true);
+                explicitProd.setPolicyLmpBaseMass(0.10);
+                explicitProd.setPolicyLmpMinCount(12);
+                explicitProd.setPolicyOrderingEnabled(true);
+                explicitProd.setPolicyOrderingMinDepth(3);
                 Result rA = runChoose(untouched, s);
-                Result rB = runChoose(explicitOff, s);
+                Result rB = runChoose(explicitProd, s);
                 if (!(rA.move == rB.move) || rA.score != rB.score || rA.nodes != rB.nodes) {
                     printf("FAIL [defaults-%s]: not bit-exact (move %d/%d score %d/%d nodes %llu/%llu)\n",
                            modeIsNnue ? "nnue" : "heur", (int)rA.move.a, (int)rB.move.a,

@@ -842,9 +842,9 @@ private:
     bool policyLmrEnabled = false;
     float policyLmrHotDelta = 2.5f;
     float policyLmrColdDelta = 5.0f;
-    bool policyLmpEnabled = false;
-    double policyLmpBaseMass = 0.05;
-    int policyLmpMinCount = 8;
+    bool policyLmpEnabled = true;
+    double policyLmpBaseMass = 0.10;
+    int policyLmpMinCount = 12;
     // Membros tunáveis por SPSA -- ver setContempt/setPolicyOrderScale/
     // setCatScoreScale (públicos, acima). Default = valor antigo hardcoded
     // das constantes CONTEMPT/POLICY_ORDER_SCALE (namespace, ainda
