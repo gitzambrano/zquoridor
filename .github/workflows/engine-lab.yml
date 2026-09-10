@@ -83,7 +83,7 @@ jobs:
           python-version: "3.11"
       - name: Syntax and frozen-identity sanity
         run: |
-          python -m py_compile tools/external/titanium_arena.py tools/external/titanium_arena_fixed.py training/teachers/titanium_collect.py
+          python -m py_compile tools/external/titanium_arena.py tools/external/titanium_arena_fixed.py tools/external/analyze_paired_arena.py training/teachers/titanium_collect.py
           bash -n tools/external/build_pinned_titanium.sh
           test -s checkpoints/gen8/nnue_weights.bin
           test -s checkpoints/gen8/nnue_weights_int8.bin
@@ -96,6 +96,22 @@ jobs:
           assert len(rows) == 40, len(rows)
           assert all(isinstance(r.get('moves'), list) for r in rows)
           print(f'frozen Titanium openings: {len(rows)}')
+          PY
+      - name: Pair-aware analysis unit smoke
+        run: |
+          cat > /tmp/pairs.jsonl <<'EOF'
+          {"opening_index":0,"zq_player":0,"result":1.0}
+          {"opening_index":0,"zq_player":1,"result":0.0}
+          {"opening_index":1,"zq_player":0,"result":1.0}
+          {"opening_index":1,"zq_player":1,"result":1.0}
+          EOF
+          python tools/external/analyze_paired_arena.py --games /tmp/pairs.jsonl --out /tmp/paired.json --bootstrap 1000
+          python - <<'PY'
+          import json
+          r=json.load(open('/tmp/paired.json'))
+          assert r['paired_openings'] == 2
+          assert r['games'] == 4
+          assert abs(r['score_pct'] - 75.0) < 1e-9
           PY
       - name: Build permanent runners
         run: |
@@ -244,6 +260,8 @@ jobs:
           printf '%s\n' "$W" > results/titanium/weights_path.txt
           git rev-parse HEAD > results/titanium/candidate_sha.txt
           cp titanium-bin/titanium-sha.txt results/titanium/
+          sha256sum "$W" > results/titanium/weights.sha256
+          sha256sum tools/external/titanium_arena.py tools/external/titanium_arena_fixed.py tools/external/openings_titanium.jsonl > results/titanium/harness.sha256
       - name: Titanium two-game smoke
         shell: bash
         run: |
@@ -263,6 +281,9 @@ jobs:
             --limit-openings "${{ inputs.paired_openings }}" \
             --movetime "${{ inputs.movetime_ms }}" --workers "${{ inputs.workers }}" \
             --json-out results/titanium/result.json --games-out results/titanium/games.jsonl
+          python tools/external/analyze_paired_arena.py \
+            --games results/titanium/games.jsonl \
+            --out results/titanium/paired.json
       - uses: actions/upload-artifact@v4
         if: always()
         with:

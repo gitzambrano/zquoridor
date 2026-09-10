@@ -26,6 +26,10 @@ separately in reports.
 Actions artifacts remain useful caches, but the permanent lab does not depend on their retention period.
 The Gen8 fallback is likewise the versioned production checkpoint, not an expiring artifact.
 
+`tools/external/analyze_paired_arena.py` is deliberately separate from the frozen harness. It groups the
+two color-swapped games of each opening and bootstraps those pairs as the independent units. Keep the
+historical game-level interval for continuity, but prefer the pair-aware interval for promotion decisions.
+
 ## Lab modes
 
 The workflow is manually dispatchable in six modes.
@@ -35,7 +39,8 @@ The workflow is manually dispatchable in six modes.
 - `train`: run an arbitrary Python trainer path plus arbitrary arguments. This makes the orchestration
   independent of a particular neural architecture; the trainer owns its model and output format.
 - `arena`: invoke the internal arena runner with caller-supplied arguments.
-- `titanium`: run a paired direct benchmark against the pinned Titanium, including a two-game smoke first.
+- `titanium`: run a paired direct benchmark against the pinned Titanium, including a two-game smoke first,
+  and save both historical game-level statistics and a paired-opening bootstrap report.
 - `teacher`: collect raw, architecture-neutral Titanium best-move data and raw info lines.
 
 A model with a new runtime format still needs a corresponding evaluator/weight loader in the C++ engine.
