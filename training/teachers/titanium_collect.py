@@ -2,11 +2,12 @@
 """Collect architecture-neutral policy-teacher data from pinned Titanium.
 
 The output is raw JSONL: it deliberately does not depend on SAMPLE_DTYPE,
-feature encoding, network dimensions, or a particular trainer.  A later
+feature encoding, network dimensions, or a particular trainer. A later
 converter/trainer decides how to encode each position and target.
 
-The frozen Titanium benchmark openings are rejected as teacher input so the
-historical external benchmark remains independent from training data.
+Any teacher opening that exactly overlaps the frozen Titanium benchmark set is
+rejected, even if that benchmark file was copied or renamed. This keeps the
+historical external benchmark independent from training data.
 """
 from __future__ import annotations
 
@@ -26,12 +27,7 @@ import titanium_arena_fixed as titanium_fixed  # noqa: E402
 FROZEN_BENCHMARK_OPENINGS = (EXTERNAL / "openings_titanium.jsonl").resolve()
 
 
-def load_openings(path: Path) -> list[list[str]]:
-    if path.resolve() == FROZEN_BENCHMARK_OPENINGS:
-        raise SystemExit(
-            "refusing to use frozen benchmark openings as teacher data; "
-            "provide an independent opening corpus"
-        )
+def _read_openings(path: Path) -> list[list[str]]:
     openings: list[list[str]] = []
     for lineno, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
         if not line.strip():
@@ -43,6 +39,24 @@ def load_openings(path: Path) -> list[list[str]]:
         openings.append(moves)
     if not openings:
         raise SystemExit(f"no openings found in {path}")
+    return openings
+
+
+def load_openings(path: Path) -> list[list[str]]:
+    if path.resolve() == FROZEN_BENCHMARK_OPENINGS:
+        raise SystemExit(
+            "refusing to use frozen benchmark openings as teacher data; "
+            "provide an independent opening corpus"
+        )
+    openings = _read_openings(path)
+    frozen = {tuple(moves) for moves in _read_openings(FROZEN_BENCHMARK_OPENINGS)}
+    overlap = [i for i, moves in enumerate(openings) if tuple(moves) in frozen]
+    if overlap:
+        preview = ",".join(map(str, overlap[:10]))
+        raise SystemExit(
+            f"teacher corpus overlaps frozen benchmark at {len(overlap)} opening(s) "
+            f"(indices {preview}); remove them before collection"
+        )
     return openings
 
 

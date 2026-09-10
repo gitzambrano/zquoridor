@@ -44,8 +44,9 @@ Pipeline agnosticism does not make the production engine understand an unsupport
 ## Benchmark data is not teacher data
 
 The frozen 40-opening Titanium comparison set is an external benchmark. It must not become training data.
-`training/teachers/titanium_collect.py` refuses that file as teacher input. Use an independent opening
-corpus, split by whole openings, and keep a separate unseen external test set.
+`training/teachers/titanium_collect.py` rejects both the benchmark file itself and any independently named
+teacher corpus containing an exact opening from that set. Use an independent opening corpus, split by
+whole openings, and keep a separate unseen external test set.
 
 The raw teacher schema stores move history, side to move, Titanium best move, elapsed think time, and raw
 `info` lines. A later converter can build one-hot, soft/ranking, value, or architecture-specific targets
