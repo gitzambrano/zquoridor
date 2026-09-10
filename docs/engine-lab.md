@@ -8,18 +8,23 @@ Generation-specific workflows remain historical references, while new work shoul
 
 The current external reference setup is intentionally pinned:
 
-- Gen8 champion artifact: run `33973129847`, artifact `gen8-search-ci-completed`.
+- Gen8 production checkpoint: `checkpoints/gen8/nnue_weights.bin` and
+  `checkpoints/gen8/nnue_weights_int8.bin`; provenance is in
+  `checkpoints/gen8/PRODUCTION_MANIFEST.txt` (source run `33973129847`).
 - Titanium: `titaniummachine1/titanium-engine` v19.8.10, commit
-  `1ac94755f69799f01b2e06869403e701bbf0bd51`, binary artifact from run
-  `34294579327`, artifact `pinned-titanium-selected`.
+  `1ac94755f69799f01b2e06869403e701bbf0bd51`.
 - Frozen Titanium harness source: commit
   `0d28b7024ec0a7ac83a7f1a9282d09ec12e483a0`.
 - Frozen comparison openings: `tools/external/openings_titanium.jsonl`.
 - Reference control: 200 ms/move, paired colors, `TITANIUM_PONDERING=0`.
 
-The four files under `tools/external/` are copied byte-for-byte from the frozen harness commit.
+The four benchmark files under `tools/external/` are copied byte-for-byte from the frozen harness commit.
 Do not casually edit them: a harness change creates a new benchmark protocol and must be identified
 separately in reports.
+
+`tools/external/build_pinned_titanium.sh` rebuilds Titanium from the exact external SHA. Historical
+Actions artifacts remain useful caches, but the permanent lab does not depend on their retention period.
+The Gen8 fallback is likewise the versioned production checkpoint, not an expiring artifact.
 
 ## Lab modes
 
