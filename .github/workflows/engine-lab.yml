@@ -1,0 +1,334 @@
+name: Engine lab
+
+on:
+  push:
+    branches:
+      - main
+      - "infra/engine-lab-*"
+    paths:
+      - ".github/workflows/engine-lab.yml"
+      - "tools/external/**"
+      - "training/teachers/**"
+      - "docs/engine-lab.md"
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: Operation to run
+        required: true
+        default: smoke
+        type: choice
+        options: [smoke, selfplay, train, arena, titanium, teacher]
+      games:
+        description: Self-play games
+        required: false
+        default: "96"
+        type: string
+      paired_openings:
+        description: Paired openings for Titanium benchmark
+        required: false
+        default: "40"
+        type: string
+      movetime_ms:
+        description: Fixed move time in milliseconds
+        required: false
+        default: "200"
+        type: string
+      workers:
+        description: Parallel workers
+        required: false
+        default: "2"
+        type: string
+      trainer:
+        description: Python trainer path for train mode
+        required: false
+        default: training/train_nnue.py
+        type: string
+      source_run_id:
+        description: Optional same-repo Actions run containing an input artifact
+        required: false
+        default: ""
+        type: string
+      source_artifact:
+        description: Optional artifact name from source_run_id
+        required: false
+        default: ""
+        type: string
+      teacher_openings:
+        description: Independent teacher opening JSONL path; never use frozen benchmark openings
+        required: false
+        default: source/openings.jsonl
+        type: string
+      extra_args:
+        description: Extra CLI arguments for selfplay/train/arena
+        required: false
+        default: ""
+        type: string
+
+permissions:
+  contents: read
+  actions: read
+
+env:
+  PYTHONUNBUFFERED: "1"
+
+jobs:
+  smoke:
+    if: ${{ github.event_name == 'push' || inputs.mode == 'smoke' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Python syntax and frozen-opening sanity
+        run: |
+          python -m py_compile tools/external/titanium_arena.py tools/external/titanium_arena_fixed.py training/teachers/titanium_collect.py
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          p = Path('tools/external/openings_titanium.jsonl')
+          rows = [json.loads(x) for x in p.read_text().splitlines() if x.strip()]
+          assert len(rows) == 40, len(rows)
+          assert all(isinstance(r.get('moves'), list) for r in rows)
+          print(f'frozen Titanium openings: {len(rows)}')
+          PY
+      - name: Build permanent runners
+        run: |
+          bash build/build_selfplay.sh
+          bash build/build_arena.sh
+          mkdir -p bin
+          g++ -std=c++17 -O2 -DNDEBUG -pthread -Isrc tools/external/zquoridor_uci.cpp -o bin/zquoridor_external
+      - name: Build and run core regressions
+        run: |
+          bash build/build_tests.sh
+          ./bin/test_rules_sanity
+          ./bin/test_mcab_core
+          ./bin/test_policy_ab
+
+  selfplay:
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.mode == 'selfplay' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download optional input artifact
+        if: ${{ inputs.source_run_id != '' && inputs.source_artifact != '' }}
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ inputs.source_artifact }}
+          path: source
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ inputs.source_run_id }}
+      - name: Build self-play
+        run: bash build/build_selfplay.sh
+      - name: Generate self-play
+        shell: bash
+        run: |
+          mkdir -p results/selfplay
+          python tools/selfplay/run_selfplay.py \
+            --games "${{ inputs.games }}" \
+            --time-ms "${{ inputs.movetime_ms }}" \
+            --threads "${{ inputs.workers }}" \
+            ${{ inputs.extra_args }} \
+            --out 'results/selfplay/selfplay_{shard:03d}.bin'
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: engine-lab-selfplay-${{ github.run_id }}
+          if-no-files-found: warn
+          retention-days: 14
+          path: results/selfplay/**
+
+  train:
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.mode == 'train' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install common training dependencies
+        run: python -m pip install --disable-pip-version-check numpy torch --index-url https://download.pytorch.org/whl/cpu
+      - name: Download optional input artifact
+        if: ${{ inputs.source_run_id != '' && inputs.source_artifact != '' }}
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ inputs.source_artifact }}
+          path: source
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ inputs.source_run_id }}
+      - name: Run selected trainer
+        shell: bash
+        run: python "${{ inputs.trainer }}" ${{ inputs.extra_args }}
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: engine-lab-train-${{ github.run_id }}
+          if-no-files-found: warn
+          retention-days: 14
+          path: |
+            results/**
+            data/nnue/**
+            data/checkpoints/**
+
+  arena:
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.mode == 'arena' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download optional input artifact
+        if: ${{ inputs.source_run_id != '' && inputs.source_artifact != '' }}
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ inputs.source_artifact }}
+          path: source
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ inputs.source_run_id }}
+      - name: Build arena
+        run: bash build/build_arena.sh
+      - name: Run internal arena
+        shell: bash
+        run: python tools/arena/run_arena.py ${{ inputs.extra_args }}
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: engine-lab-arena-${{ github.run_id }}
+          if-no-files-found: warn
+          retention-days: 14
+          path: |
+            results/**
+            data/arena/**
+
+  titanium:
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.mode == 'titanium' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    env:
+      TITANIUM_PONDERING: "0"
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download Gen8 fallback weights
+        uses: actions/download-artifact@v4
+        with:
+          name: gen8-search-ci-completed
+          path: bootstrap
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: 33973129847
+      - name: Download optional candidate artifact
+        if: ${{ inputs.source_run_id != '' && inputs.source_artifact != '' }}
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ inputs.source_artifact }}
+          path: candidate
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ inputs.source_run_id }}
+      - name: Download pinned Titanium
+        uses: actions/download-artifact@v4
+        with:
+          name: pinned-titanium-selected
+          path: titanium-bin
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: 34294579327
+      - name: Resolve identities and build adapter
+        shell: bash
+        run: |
+          set -euo pipefail
+          TI="$(find titanium-bin -type f -name titanium | head -n1)"
+          test -n "$TI" && chmod +x "$TI"
+          SHA_FILE="$(find titanium-bin -type f -name titanium-sha.txt | head -n1)"
+          test -s "$SHA_FILE"
+          grep -qx '1ac94755f69799f01b2e06869403e701bbf0bd51' "$SHA_FILE"
+          if [ -d candidate ]; then
+            W="$(find candidate -type f -name 'nnue_weights_int8.bin' | head -n1)"
+          else
+            W=""
+          fi
+          if [ -z "$W" ]; then W="$(find bootstrap -type f -name 'nnue_weights_int8.bin' | head -n1)"; fi
+          test -s "$W"
+          mkdir -p bin results/titanium
+          g++ -std=c++17 -O3 -DNDEBUG -march=native -pthread -Isrc tools/external/zquoridor_uci.cpp -o bin/zq_candidate
+          printf '%s\n' "$TI" > results/titanium/titanium_path.txt
+          printf '%s\n' "$W" > results/titanium/weights_path.txt
+          git rev-parse HEAD > results/titanium/candidate_sha.txt
+      - name: Titanium two-game smoke
+        shell: bash
+        run: |
+          TI="$(cat results/titanium/titanium_path.txt)"; W="$(cat results/titanium/weights_path.txt)"
+          python tools/external/titanium_arena_fixed.py \
+            --zq ./bin/zq_candidate --zq-arg=--nnue --zq-arg="$W" \
+            --titanium "$TI" --openings tools/external/openings_titanium.jsonl \
+            --limit-openings 1 --movetime "${{ inputs.movetime_ms }}" --workers 1 \
+            --json-out results/titanium/smoke.json --games-out results/titanium/smoke-games.jsonl
+      - name: Titanium paired benchmark
+        shell: bash
+        run: |
+          TI="$(cat results/titanium/titanium_path.txt)"; W="$(cat results/titanium/weights_path.txt)"
+          python tools/external/titanium_arena_fixed.py \
+            --zq ./bin/zq_candidate --zq-arg=--nnue --zq-arg="$W" \
+            --titanium "$TI" --openings tools/external/openings_titanium.jsonl \
+            --limit-openings "${{ inputs.paired_openings }}" \
+            --movetime "${{ inputs.movetime_ms }}" --workers "${{ inputs.workers }}" \
+            --json-out results/titanium/result.json --games-out results/titanium/games.jsonl
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: engine-lab-titanium-${{ github.run_id }}
+          if-no-files-found: error
+          retention-days: 30
+          path: results/titanium/**
+
+  teacher:
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.mode == 'teacher' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    env:
+      TITANIUM_PONDERING: "0"
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download optional independent opening corpus
+        if: ${{ inputs.source_run_id != '' && inputs.source_artifact != '' }}
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ inputs.source_artifact }}
+          path: source
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ inputs.source_run_id }}
+      - name: Download pinned Titanium
+        uses: actions/download-artifact@v4
+        with:
+          name: pinned-titanium-selected
+          path: titanium-bin
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: 34294579327
+      - name: Collect architecture-neutral teacher data
+        shell: bash
+        run: |
+          set -euo pipefail
+          TI="$(find titanium-bin -type f -name titanium | head -n1)"
+          SHA_FILE="$(find titanium-bin -type f -name titanium-sha.txt | head -n1)"
+          test -n "$TI" && chmod +x "$TI"
+          test -s "$SHA_FILE"
+          grep -qx '1ac94755f69799f01b2e06869403e701bbf0bd51' "$SHA_FILE"
+          test -s "${{ inputs.teacher_openings }}"
+          python training/teachers/titanium_collect.py \
+            --titanium "$TI" --openings "${{ inputs.teacher_openings }}" \
+            --out-dir results/titanium-teacher \
+            --movetime "${{ inputs.movetime_ms }}" --workers "${{ inputs.workers }}"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: engine-lab-titanium-teacher-${{ github.run_id }}
+          if-no-files-found: error
+          retention-days: 30
+          path: results/titanium-teacher/**
