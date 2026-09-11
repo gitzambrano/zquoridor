@@ -1,0 +1,70 @@
+name: ZQ-deep teacher temporary smoke
+
+on:
+  push:
+    branches: [exp/teacher-distill-multisource]
+    paths:
+      - ".github/workflows/zq-deep-teacher-temp.yml"
+      - "tools/teacher/zq_deep_relabel.cpp"
+      - "training/teachers/zq_deep_relabel.py"
+      - "src/mcab.hpp"
+      - "src/search.hpp"
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install NumPy
+        run: python -m pip install --quiet numpy
+      - name: Build deep teacher bridge
+        run: |
+          set -euo pipefail
+          mkdir -p bin results
+          g++ -std=c++17 -O3 -DNDEBUG -DNO_TABLEBASES -march=native -pthread -Isrc \
+            tools/teacher/zq_deep_relabel.cpp -o bin/zq_deep_relabel
+      - name: Prepare positions
+        env:
+          PYTHONPATH: training/teachers
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          from targets import dumps, make_position
+          rows = [
+              make_position([], split="val", source="zq-deep-smoke", opening_index=0),
+              make_position(["e2", "e8"], split="train", source="zq-deep-smoke", opening_index=1),
+              make_position(["e2", "e8", "e3", "e7"], split="train", source="zq-deep-smoke", opening_index=2),
+          ]
+          Path("results/positions.jsonl").write_text("".join(dumps(r) + "\n" for r in rows), encoding="utf-8")
+          PY
+      - name: Generate multi-budget ZQ-deep targets
+        run: |
+          set -euo pipefail
+          python training/teachers/zq_deep_relabel.py \
+            --positions results/positions.jsonl \
+            --bridge bin/zq_deep_relabel \
+            --nnue checkpoints/gen8/nnue_weights_int8.bin \
+            --node-budgets 200,600 \
+            --out results/zq-deep.npz
+          python - <<'PY'
+          import numpy as np
+          d = np.load("results/zq-deep.npz")
+          assert d["policy"].shape == (3, 209)
+          assert d["action_q"].shape == (3, 209)
+          assert d["value"].shape == (3,)
+          assert np.max(np.abs(d["policy"].astype("float32").sum(axis=1) - 1.0)) < 5e-3
+          assert np.isfinite(d["value"]).all()
+          assert np.isfinite(d["action_q"]).any(axis=1).all()
+          assert ((d["budget_agreement"] >= 0.0) & (d["budget_agreement"] <= 1.0)).all()
+          print('ZQ-deep target smoke OK')
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: zq-deep-teacher-smoke-${{ github.run_id }}
+          retention-days: 7
+          path: results/**
