@@ -6,7 +6,9 @@ on:
     paths:
       - ".github/workflows/zq-deep-teacher-temp.yml"
       - "tools/teacher/zq_deep_relabel.cpp"
+      - "tools/teacher/encode_position.cpp"
       - "training/teachers/zq_deep_relabel.py"
+      - "training/teachers/blunder_mine.py"
       - "src/mcab.hpp"
       - "src/search.hpp"
 
@@ -21,12 +23,14 @@ jobs:
       - uses: actions/checkout@v4
       - name: Install NumPy
         run: python -m pip install --quiet numpy
-      - name: Build deep teacher bridge
+      - name: Build deep teacher bridge and move encoder
         run: |
           set -euo pipefail
           mkdir -p bin results
           g++ -std=c++17 -O3 -DNDEBUG -DNO_TABLEBASES -march=native -pthread -Isrc \
             tools/teacher/zq_deep_relabel.cpp -o bin/zq_deep_relabel
+          g++ -std=c++17 -O2 -DNDEBUG -pthread -Isrc \
+            tools/teacher/encode_position.cpp -o bin/teacher_encode_position
       - name: Prepare positions
         env:
           PYTHONPATH: training/teachers
@@ -35,9 +39,12 @@ jobs:
           from pathlib import Path
           from targets import dumps, make_position
           rows = [
-              make_position([], split="val", source="zq-deep-smoke", opening_index=0),
-              make_position(["e2", "e8"], split="train", source="zq-deep-smoke", opening_index=1),
-              make_position(["e2", "e8", "e3", "e7"], split="train", source="zq-deep-smoke", opening_index=2),
+              make_position([], split="val", source="zq-deep-smoke", opening_index=0,
+                            metadata={"played_move":"e2"}),
+              make_position(["e2", "e8"], split="train", source="zq-deep-smoke", opening_index=1,
+                            metadata={"played_move":"e3"}),
+              make_position(["e2", "e8", "e3", "e7"], split="train", source="zq-deep-smoke", opening_index=2,
+                            metadata={"played_move":"d3"}),
           ]
           Path("results/positions.jsonl").write_text("".join(dumps(r) + "\n" for r in rows), encoding="utf-8")
           PY
@@ -61,6 +68,26 @@ jobs:
           assert np.isfinite(d["action_q"]).any(axis=1).all()
           assert ((d["budget_agreement"] >= 0.0) & (d["budget_agreement"] <= 1.0)).all()
           print('ZQ-deep target smoke OK')
+          PY
+      - name: Mine regret-aware blunders
+        env:
+          PYTHONPATH: training/teachers
+        run: |
+          set -euo pipefail
+          python training/teachers/blunder_mine.py \
+            --positions results/positions.jsonl \
+            --targets results/zq-deep.npz \
+            --encoder bin/teacher_encode_position \
+            --out results/blunder-windows.jsonl \
+            --threshold 0.0 --radius 1
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          rows = [json.loads(x) for x in Path("results/blunder-windows.jsonl.diagnostics.jsonl").read_text().splitlines() if x.strip()]
+          assert len(rows) == 3, rows
+          assert all(r["regret"] >= 0.0 for r in rows)
+          assert any(r["method"] == "action-q" for r in rows), rows
+          print('blunder mining smoke OK', {r['method'] for r in rows})
           PY
       - uses: actions/upload-artifact@v4
         if: always()
