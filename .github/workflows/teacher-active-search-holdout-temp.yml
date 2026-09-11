@@ -1,0 +1,62 @@
+name: Active search-teacher holdout temporary confirmation
+
+on:
+  push:
+    branches: [exp/teacher-distill-multisource]
+    paths:
+      - ".github/workflows/teacher-active-search-holdout-temp.yml"
+
+permissions:
+  contents: read
+  actions: read
+
+env:
+  PYTHONUNBUFFERED: "1"
+
+jobs:
+  holdout:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download frozen fast-screen candidate
+        uses: actions/download-artifact@v4
+        with:
+          name: teacher-active-search-fast-34653712220
+          path: source
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: 34653712220
+      - name: Prepare independent holdout openings
+        run: |
+          set -euo pipefail
+          mkdir -p results/holdout bin
+          HEAD=$(find source -type f -name head_int8.bin -print -quit)
+          EVAL=$(find source -type f -name eval-openings.jsonl -print -quit)
+          test -s "$HEAD" && test -s "$EVAL"
+          cp "$HEAD" results/holdout/head_int8.bin
+          tail -n +11 "$EVAL" | head -n 10 > results/holdout/eval-openings-11-20.jsonl
+          test "$(wc -l < results/holdout/eval-openings-11-20.jsonl)" -eq 10
+          g++ -std=c++17 -O3 -DNDEBUG -DNO_TABLEBASES -march=native -pthread -Isrc \
+            tools/external/zquoridor_uci.cpp -o bin/zquoridor_uci
+      - name: Pair-aware holdout Head vs Gen8
+        run: |
+          set -euo pipefail
+          python tools/external/zq_weights_paired.py \
+            --engine bin/zquoridor_uci \
+            --candidate-arg=--nnue --candidate-arg=results/holdout/head_int8.bin \
+            --baseline-arg=--nnue --baseline-arg=checkpoints/gen8/nnue_weights_int8.bin \
+            --openings results/holdout/eval-openings-11-20.jsonl --limit-openings 10 \
+            --movetime 200 --workers 1 --max-plies 180 \
+            --games-out results/holdout/head-holdout-games.jsonl
+          python tools/external/analyze_paired_arena.py \
+            --games results/holdout/head-holdout-games.jsonl \
+            --out results/holdout/head-holdout-paired.json \
+            --bootstrap 50000 --seed 20260911
+          cat results/holdout/head-holdout-paired.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: teacher-active-search-holdout-${{ github.run_id }}
+          path: results/holdout/**
+          retention-days: 3
