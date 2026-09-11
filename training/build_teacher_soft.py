@@ -5,7 +5,6 @@ from __future__ import annotations
 import argparse
 import json
 import subprocess
-import tempfile
 from pathlib import Path
 from typing import Sequence
 
@@ -69,10 +68,20 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--encoder", default=str(ROOT / "bin" / "teacher_encode_state"), type=Path)
     parser.add_argument("--out", required=True, type=Path)
     parser.add_argument("--disagreement-boost", type=float, default=1.0)
+    parser.add_argument(
+        "--confidence-floor", type=float, default=0.05,
+        help="Minimum sample weight when targets contain ensemble confidence",
+    )
+    parser.add_argument(
+        "--ignore-target-confidence", action="store_true",
+        help="Do not use an optional confidence array from the target NPZ",
+    )
     args = parser.parse_args(argv)
 
     if args.disagreement_boost <= 0.0:
         raise SystemExit("disagreement-boost must be positive")
+    if not 0.0 <= args.confidence_floor <= 1.0:
+        raise SystemExit("confidence-floor must be in [0,1]")
     try:
         positions = load_positions(args.positions)
         target = np.load(args.targets, allow_pickle=False)
@@ -94,11 +103,27 @@ def main(argv: Sequence[str] | None = None) -> int:
         value = target["value"][order].astype(np.float32)
         if policy.shape != (len(positions), 209):
             raise ValueError(f"invalid teacher policy shape: {policy.shape}")
+        target_confidence = None
+        if "confidence" in target.files and not args.ignore_target_confidence:
+            target_confidence = target["confidence"][order].astype(np.float32)
+            if target_confidence.shape != (len(positions),):
+                raise ValueError(f"invalid target confidence shape: {target_confidence.shape}")
+            if not np.isfinite(target_confidence).all():
+                raise ValueError("target confidence contains non-finite values")
+            target_confidence = np.clip(target_confidence, 0.0, 1.0)
         state = encode_states(positions, args.encoder)
     except (OSError, ValueError, json.JSONDecodeError, subprocess.CalledProcessError) as exc:
         raise SystemExit(str(exc)) from exc
 
-    weight = np.ones(len(positions), dtype=np.float32)
+    if target_confidence is None:
+        weight = np.ones(len(positions), dtype=np.float32)
+    else:
+        # Keep low-consensus examples present, but let high-confidence teacher
+        # agreement matter more. This avoids dropping exactly the hard states
+        # active learning selected while still respecting ensemble uncertainty.
+        weight = args.confidence_floor + (1.0 - args.confidence_floor) * target_confidence
+        weight = weight.astype(np.float32)
+
     student_disagrees = np.zeros(len(positions), dtype=np.bool_)
     for i, row in enumerate(positions):
         agrees = row.get("metadata", {}).get("student_agrees")
@@ -117,10 +142,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         opening_index=np.asarray([int(row.get("opening_index", -1)) for row in positions], dtype=np.int32),
         ply=np.asarray([int(row.get("ply", len(row["history"]))) for row in positions], dtype=np.int16),
     )
+    if target_confidence is not None:
+        arrays["target_confidence"] = target_confidence
+
     args.out.parent.mkdir(parents=True, exist_ok=True)
     np.savez(args.out, **arrays)
     manifest = {
-        "schema": "zquoridor.teacher.soft_dataset.v1",
+        "schema": "zquoridor.teacher.soft_dataset.v2",
         "positions": str(args.positions),
         "targets": str(args.targets),
         "dataset": str(args.out),
@@ -128,9 +156,20 @@ def main(argv: Sequence[str] | None = None) -> int:
         "validation_samples": int(arrays["is_val"].sum()),
         "student_disagreements": int(student_disagrees.sum()),
         "disagreement_boost": args.disagreement_boost,
+        "target_confidence_used": target_confidence is not None,
+        "confidence_floor": args.confidence_floor,
+        "weight_mean": float(weight.mean()),
+        "weight_min": float(weight.min()),
+        "weight_max": float(weight.max()),
         "policy_target": "full 209-way teacher soft policy in ZQ canonical frame",
         "value_target": "teacher side-to-move value in [-1,1]",
     }
+    if target_confidence is not None:
+        manifest.update(
+            confidence_mean=float(target_confidence.mean()),
+            confidence_min=float(target_confidence.min()),
+            confidence_max=float(target_confidence.max()),
+        )
     Path(str(args.out) + ".manifest.json").write_text(
         json.dumps(manifest, indent=2) + "\n", encoding="utf-8"
     )
