@@ -1,0 +1,133 @@
+name: Active search-teacher continuation temporary experiment
+
+on:
+  push:
+    branches: [exp/teacher-distill-multisource]
+    paths:
+      - ".github/workflows/teacher-active-search-continue-temp.yml"
+
+permissions:
+  contents: read
+  actions: read
+
+env:
+  PYTHONUNBUFFERED: "1"
+  TITANIUM_PONDERING: "0"
+
+jobs:
+  continue-gate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download saved Claustrophobia labels
+        uses: actions/download-artifact@v4
+        with:
+          name: teacher-active-search-34618740856
+          path: source
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: 34618740856
+      - name: Prepare 64-state continuation
+        run: |
+          set -euo pipefail
+          mkdir -p results/continue bin
+          POS=$(find source -type f -name positions.jsonl -print -quit)
+          EVAL=$(find source -type f -name eval-openings.jsonl -print -quit)
+          CLA=$(find source -type f -name claustrophobia-search.npz -print -quit)
+          test -s "$POS" && test -s "$EVAL" && test -s "$CLA"
+          head -n 64 "$POS" > results/continue/positions.jsonl
+          cp "$EVAL" results/continue/eval-openings.jsonl
+          python - "$CLA" <<'PY'
+          import numpy as np, sys
+          src=np.load(sys.argv[1], allow_pickle=False)
+          out={k:src[k][:64] for k in src.files}
+          np.savez('results/continue/claustrophobia-search.npz', **out)
+          print('claustrophobia subset', len(out['id']))
+          PY
+      - name: Install runtime and build tools
+        run: |
+          set -euo pipefail
+          python -m pip install --quiet numpy
+          python - <<'PY' || python -m pip install --quiet --index-url https://download.pytorch.org/whl/cpu 'torch==2.10.*'
+          import torch, sys
+          sys.exit(0 if torch.__version__.split('+')[0].startswith('2.10.') else 1)
+          PY
+          g++ -std=c++17 -O3 -DNDEBUG -DNO_TABLEBASES -march=native -pthread -Isrc tools/teacher/zq_deep_relabel.cpp -o bin/zq_deep_relabel
+          g++ -std=c++17 -O2 -DNDEBUG -pthread -Isrc tools/teacher/encode_state.cpp -o bin/teacher_encode_state
+          g++ -std=c++17 -O3 -DNDEBUG -DNO_TABLEBASES -march=native -pthread -Isrc tools/external/zquoridor_uci.cpp -o bin/zquoridor_uci
+          tools/external/build_pinned_titanium.sh titanium-bin
+      - name: ZQ-deep labels
+        run: |
+          python training/teachers/zq_deep_relabel.py \
+            --positions results/continue/positions.jsonl \
+            --bridge bin/zq_deep_relabel \
+            --nnue checkpoints/gen8/nnue_weights_int8.bin \
+            --node-budgets 50000,200000 \
+            --out results/continue/zq-deep.npz
+      - name: Titanium labels
+        env:
+          PYTHONPATH: training/teachers
+        run: |
+          python training/teachers/engine_relabel.py \
+            --positions results/continue/positions.jsonl --teacher Titanium --protocol titanium \
+            --engine titanium-bin/titanium --budgets 100,300 --repeats 1 --workers 1 \
+            --out results/continue/titanium.jsonl --hard-targets-out results/continue/titanium-hard.npz
+      - name: Ensemble and train candidates
+        run: |
+          set -euo pipefail
+          python training/teachers/merge_soft_targets.py \
+            --source claustrophobia-search=results/continue/claustrophobia-search.npz=2 \
+            --source zq-deep=results/continue/zq-deep.npz=2 \
+            --source titanium=results/continue/titanium-hard.npz=1 \
+            --out results/continue/ensemble.npz
+          python training/build_teacher_soft.py \
+            --positions results/continue/positions.jsonl --targets results/continue/ensemble.npz \
+            --encoder bin/teacher_encode_state --out results/continue/dataset.npz --confidence-floor 0.10
+          python training/teachers/analyze_student_gap.py \
+            --data results/continue/dataset.npz --student-weights checkpoints/gen8/nnue_weights.bin \
+            --out results/continue/gap.npz --device cpu
+          python training/train_teacher_soft.py \
+            --data results/continue/dataset.npz --init-from checkpoints/gen8/nnue_weights.bin \
+            --out results/continue/tds-head.bin --epochs 20 --batch-size 32 --lr 0.0001 --patience 5 --device cpu
+          python training/train_teacher_soft.py \
+            --data results/continue/dataset.npz --init-from checkpoints/gen8/nnue_weights.bin \
+            --out results/continue/tds-trunk.bin --epochs 20 --batch-size 32 --lr 0.0001 --patience 5 --device cpu \
+            --train-trunk --trunk-lr-scale 0.05
+          python - <<'PY'
+          import json
+          e=json.load(open('results/continue/ensemble.npz.manifest.json'))
+          g=json.load(open('results/continue/gap.npz.manifest.json'))
+          h=json.load(open('results/continue/tds-head.bin.manifest.json'))
+          t=json.load(open('results/continue/tds-trunk.bin.manifest.json'))
+          print('ENSEMBLE', {k:e[k] for k in ('agreement_mean','policy_js_mean','value_std_mean','confidence_mean','unanimous_policy_fraction')})
+          print('GAP', {k:g[k] for k in ('policy_kl_mean','policy_kl_p90','argmax_mismatch_fraction','value_residual_mean')})
+          print('HEAD', h['initial_val']['policy_kl'], h['best_val_policy_kl'])
+          print('TRUNK', t['initial_val']['policy_kl'], t['best_val_policy_kl'], t['optimizer_lrs'])
+          PY
+      - name: Pair-aware Head vs Gen8
+        run: |
+          python tools/external/zq_weights_paired.py \
+            --engine bin/zquoridor_uci \
+            --candidate-arg=--nnue --candidate-arg=results/continue/tds-head_int8.bin \
+            --baseline-arg=--nnue --baseline-arg=checkpoints/gen8/nnue_weights_int8.bin \
+            --openings results/continue/eval-openings.jsonl --limit-openings 20 \
+            --movetime 200 --workers 1 --max-plies 180 \
+            --games-out results/continue/head-games.jsonl
+          python tools/external/analyze_paired_arena.py --games results/continue/head-games.jsonl --out results/continue/head-paired.json --bootstrap 20000 --seed 20260911
+      - name: Pair-aware Trunk vs Gen8
+        run: |
+          python tools/external/zq_weights_paired.py \
+            --engine bin/zquoridor_uci \
+            --candidate-arg=--nnue --candidate-arg=results/continue/tds-trunk_int8.bin \
+            --baseline-arg=--nnue --baseline-arg=checkpoints/gen8/nnue_weights_int8.bin \
+            --openings results/continue/eval-openings.jsonl --limit-openings 20 \
+            --movetime 200 --workers 1 --max-plies 180 \
+            --games-out results/continue/trunk-games.jsonl
+          python tools/external/analyze_paired_arena.py --games results/continue/trunk-games.jsonl --out results/continue/trunk-paired.json --bootstrap 20000 --seed 20260911
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: teacher-active-search-continue-${{ github.run_id }}
+          path: results/continue/**
+          retention-days: 7
