@@ -64,7 +64,7 @@ jobs:
               make_position(["e2", "e8"], split="train", source="smoke", opening_index=2),
               make_position(["e2", "e8", "e3"], split="val", source="smoke", opening_index=3),
               make_position(["e2", "e8", "e3", "e7"], split="train", source="smoke", opening_index=4),
-              make_position(["e2", "e8", "e3", "e7", "d2"], split="train", source="smoke", opening_index=5),
+              make_position(["e2", "e8", "e3", "e7", "d3"], split="train", source="smoke", opening_index=5),
           ]
           Path("results/positions.jsonl").write_text("".join(dumps(r) + "\n" for r in rows), encoding="utf-8")
           PY
