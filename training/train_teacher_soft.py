@@ -22,12 +22,7 @@ def weighted_mean(values: torch.Tensor, weights: torch.Tensor) -> torch.Tensor:
 
 
 def split_soft_indices(data, seed: int, fallback_val_fraction: float) -> tuple[np.ndarray, np.ndarray]:
-    """Use collector train/val flags for a full-soft-policy dataset.
-
-    This intentionally does not reuse train_teacher_policy.split_indices():
-    that helper is for the older one-hot dataset and keys its length from
-    ``policy_idx``. Soft distillation stores one 209-way row in ``policy``.
-    """
+    """Use collector train/val flags for a full-soft-policy dataset."""
     n = len(data["policy"])
     if n < 2:
         raise ValueError("soft teacher training needs at least two samples")
@@ -58,7 +53,15 @@ def run_epoch(model, data, indices: np.ndarray, batch_size: int, device,
     model.train(training)
     order = indices if not training else rng.permutation(indices)
     total_weight = 0.0
-    totals = {"loss": 0.0, "policy": 0.0, "value": 0.0, "top1": 0.0, "value_mae": 0.0}
+    totals = {
+        "loss": 0.0,
+        "policy": 0.0,
+        "teacher_entropy": 0.0,
+        "policy_kl": 0.0,
+        "value": 0.0,
+        "top1": 0.0,
+        "value_mae": 0.0,
+    }
 
     for start in range(0, len(order), batch_size):
         idx = order[start:start + batch_size]
@@ -70,7 +73,13 @@ def run_epoch(model, data, indices: np.ndarray, batch_size: int, device,
 
         with torch.set_grad_enabled(training):
             value_logits, policy_logits = model(x)
-            p_loss = soft_policy_loss(policy_logits, target_policy, weights)
+            log_student = F.log_softmax(policy_logits, dim=1)
+            ce_per = -(target_policy * log_student).sum(dim=1)
+            entropy_per = -(
+                target_policy * torch.log(target_policy.clamp_min(1e-12))
+            ).sum(dim=1)
+            kl_per = (ce_per - entropy_per).clamp_min(0.0)
+            p_loss = weighted_mean(ce_per, weights)
             v_per = F.binary_cross_entropy_with_logits(
                 value_logits, target_value_prob, reduction="none"
             )
@@ -99,6 +108,8 @@ def run_epoch(model, data, indices: np.ndarray, batch_size: int, device,
         value_mae = torch.abs(student_value_signed - target_value_signed)
         totals["loss"] += float(loss.item()) * batch_weight
         totals["policy"] += float(p_loss.item()) * batch_weight
+        totals["teacher_entropy"] += float((entropy_per * weights).sum().item())
+        totals["policy_kl"] += float((kl_per * weights).sum().item())
         totals["value"] += float(v_loss.item()) * batch_weight
         totals["top1"] += float((top1 * weights).sum().item())
         totals["value_mae"] += float((value_mae * weights).sum().item())
@@ -199,6 +210,17 @@ def main(argv: Sequence[str] | None = None) -> int:
     optimizer = torch.optim.AdamW(trainable, lr=args.lr, weight_decay=args.weight_decay)
 
     effective_value_weight = args.value_weight if args.train_value_head else 0.0
+    with torch.no_grad():
+        initial_train = run_epoch(
+            model, data, train_idx, args.batch_size, device,
+            effective_value_weight, optimizer=None, rng=rng, qa=args.qa, qb=args.qb,
+        )
+        initial_val = run_epoch(
+            model, data, val_idx, args.batch_size, device,
+            effective_value_weight, optimizer=None, rng=rng, qa=args.qa, qb=args.qb,
+        )
+    print(json.dumps({"initial": {"train": initial_train, "val": initial_val}}), flush=True)
+
     best_loss = float("inf")
     best_state = None
     bad_epochs = 0
@@ -252,10 +274,17 @@ def main(argv: Sequence[str] | None = None) -> int:
         "mode": "+".join(mode),
         "value_weight": effective_value_weight,
         "frozen_parameters_verified": sorted(frozen),
+        "initial_train": initial_train,
+        "initial_val": initial_val,
         "best_val_loss": best_loss,
         "epochs_ran": len(history),
         "history": history,
     }
+    if history:
+        manifest["best_val_policy_kl"] = min(row["val"]["policy_kl"] for row in history)
+        manifest["initial_to_best_kl_ratio"] = (
+            manifest["best_val_policy_kl"] / max(initial_val["policy_kl"], 1e-12)
+        )
     Path(str(out) + ".manifest.json").write_text(
         json.dumps(manifest, indent=2) + "\n", encoding="utf-8"
     )
