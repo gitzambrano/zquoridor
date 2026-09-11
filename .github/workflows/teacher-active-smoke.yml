@@ -40,6 +40,8 @@ jobs:
             training/train_teacher_policy.py
           python training/teachers/test_common.py
           python training/teachers/test_collect.py
+      - name: Install training dependencies
+        run: python -m pip install --disable-pip-version-check numpy torch --index-url https://download.pytorch.org/whl/cpu
       - name: Build teacher, student, and encoder
         run: |
           set -euo pipefail
@@ -121,8 +123,6 @@ jobs:
           assert m['teachers'] == ['Titanium']
           print(json.dumps({'encoded_samples':m['samples'], 'teacher_disagreements':m['student_disagreements']}, indent=2))
           PY
-      - name: Install training dependencies
-        run: python -m pip install --disable-pip-version-check numpy torch --index-url https://download.pytorch.org/whl/cpu
       - name: Run isolated policy teaching step
         run: |
           set -euo pipefail
