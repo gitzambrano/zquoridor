@@ -6,6 +6,8 @@ on:
     paths:
       - ".github/workflows/tdp-direct-temp.yml"
       - "tools/teacher/generate_openings.cpp"
+      - "training/teachers/select_samples.py"
+      - "training/teachers/export_positions.py"
 
 permissions:
   contents: read
@@ -134,8 +136,6 @@ jobs:
       - name: Paired 200ms sanity H2H against Gen8
         run: |
           set -euo pipefail
-          # run_arena.py has no compiler-flag CLI. For this temporary gate only,
-          # force the project-standard tablebase-off build without changing the repo file.
           sed -i 's|CXX_FLAGS = "-O3 -std=c++17"|CXX_FLAGS = "-O3 -std=c++17 -DNO_TABLEBASES"|' tools/arena/run_arena.py
           python tools/arena/run_arena.py \
             --ref1 "" --ref2 "" \
