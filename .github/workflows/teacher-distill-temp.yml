@@ -1,0 +1,124 @@
+name: Teacher distillation temporary smoke
+
+on:
+  push:
+    branches: [exp/teacher-distill-multisource]
+    paths:
+      - ".github/workflows/teacher-distill-temp.yml"
+      - "training/teachers/**"
+      - "training/build_teacher_soft.py"
+      - "training/train_teacher_soft.py"
+      - "tools/teacher/encode_state.cpp"
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Unit tests
+        run: |
+          set -euo pipefail
+          cd training/teachers
+          python -m unittest test_common.py test_collect.py test_targets.py
+
+      - name: Build ZQ state encoder
+        run: |
+          set -euo pipefail
+          mkdir -p bin results
+          g++ -std=c++17 -O2 -DNDEBUG -pthread -Isrc \
+            tools/teacher/encode_state.cpp -o bin/teacher_encode_state
+
+      - name: Build exact Claustrophobia encoder bridge
+        run: |
+          set -euo pipefail
+          git clone --quiet https://github.com/Plaaasma/Claustrophobia.git /tmp/claustrophobia
+          cd /tmp/claustrophobia
+          git checkout --quiet ae093653e62ad700e201706fa5ed767093d0d68e
+          cp "$GITHUB_WORKSPACE/training/teachers/claustrophobia_encode_bridge.rs" src/bin/zq_encode_bridge.rs
+          cat >> Cargo.toml <<'EOF'
+
+          [[bin]]
+          name = "zq_encode_bridge"
+          path = "src/bin/zq_encode_bridge.rs"
+          EOF
+          cargo build --quiet --release --bin zq_encode_bridge
+          cp target/release/zq_encode_bridge "$GITHUB_WORKSPACE/bin/claustrophobia_encode_bridge"
+
+      - name: Prepare real teacher and tiny independent position corpus
+        run: |
+          set -euo pipefail
+          curl -L --fail --retry 3 -o /tmp/claustrophobia-champion.pt \
+            https://github.com/Plaaasma/Claustrophobia/releases/download/v1.3.1/champion.pt
+          echo '821bd10f2736fc433c82de4dfc090ab95fc81b524f04fa09e68c4a26e30b496c  /tmp/claustrophobia-champion.pt' | sha256sum -c -
+          PYTHONPATH=training/teachers python - <<'PY'
+          from pathlib import Path
+          from targets import dumps, make_position
+          rows = [
+              make_position([], split="val", source="smoke", opening_index=0),
+              make_position(["e2"], split="train", source="smoke", opening_index=1),
+              make_position(["e2", "e8"], split="train", source="smoke", opening_index=2),
+              make_position(["e2", "e8", "e3"], split="val", source="smoke", opening_index=3),
+              make_position(["e2", "e8", "e3", "e7"], split="train", source="smoke", opening_index=4),
+              make_position(["e2", "e8", "e3", "e7", "d2"], split="train", source="smoke", opening_index=5),
+          ]
+          Path("results/positions.jsonl").write_text("".join(dumps(r) + "\n" for r in rows), encoding="utf-8")
+          PY
+
+      - name: Ensure PyTorch
+        run: |
+          set -euo pipefail
+          python - <<'PY' || python -m pip install --quiet --index-url https://download.pytorch.org/whl/cpu torch
+          import torch
+          print(torch.__version__)
+          PY
+
+      - name: Relabel with real Claustrophobia champion network
+        env:
+          PYTHONPATH: training/teachers
+        run: |
+          set -euo pipefail
+          python training/teachers/claustrophobia_relabel.py \
+            --positions results/positions.jsonl \
+            --bridge bin/claustrophobia_encode_bridge \
+            --checkpoint /tmp/claustrophobia-champion.pt \
+            --out results/claustrophobia-soft.npz \
+            --device cpu --store-logits
+          python - <<'PY'
+          import numpy as np
+          d = np.load("results/claustrophobia-soft.npz")
+          assert d["policy"].shape == (6, 209), d["policy"].shape
+          assert d["value"].shape == (6,), d["value"].shape
+          assert d["logits"].shape == (6, 209), d["logits"].shape
+          sums = d["policy"].astype("float32").sum(axis=1)
+          assert np.max(np.abs(sums - 1.0)) < 5e-3, sums
+          assert np.isfinite(d["value"]).all()
+          print("soft-target smoke OK; value range", float(d["value"].min()), float(d["value"].max()))
+          PY
+
+      - name: Build canonical ZQ dataset and fine-tune policy head
+        run: |
+          set -euo pipefail
+          python training/build_teacher_soft.py \
+            --positions results/positions.jsonl \
+            --targets results/claustrophobia-soft.npz \
+            --encoder bin/teacher_encode_state \
+            --out results/teacher-soft-dataset.npz
+          python training/train_teacher_soft.py \
+            --data results/teacher-soft-dataset.npz \
+            --init-from checkpoints/gen8/nnue_weights.bin \
+            --out results/teacher-soft-weights.bin \
+            --epochs 1 --batch-size 4 --device cpu
+          test -s results/teacher-soft-weights.bin
+          test -s results/teacher-soft-weights_int8.bin
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: teacher-distill-smoke-${{ github.run_id }}
+          retention-days: 7
+          path: results/**
