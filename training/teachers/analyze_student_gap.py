@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 from pathlib import Path
 from typing import Sequence
 
@@ -18,8 +19,12 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
-import train_nnue as base
-from train_teacher_policy import dense_features
+TRAINING = Path(__file__).resolve().parents[1]
+if str(TRAINING) not in sys.path:
+    sys.path.insert(0, str(TRAINING))
+
+import train_nnue as base  # noqa: E402
+from train_teacher_policy import dense_features  # noqa: E402
 
 
 def load_positions(path: Path) -> list[dict]:
@@ -70,9 +75,7 @@ def score_gap(data, weights: Path, batch_size: int, device: torch.device) -> dic
             student_value[start:stop] = signed_value.cpu().numpy()
 
     mismatch = (teacher_top1 != student_top1).astype(np.float32)
-    # Priority deliberately uses rank-normalized continuous terms so one scale
-    # cannot dominate merely because its units are larger. Argmax disagreement
-    # gets one extra unit because it is the clearest imitation failure.
+
     def rank01(x: np.ndarray) -> np.ndarray:
         if len(x) <= 1:
             return np.zeros_like(x, dtype=np.float32)
