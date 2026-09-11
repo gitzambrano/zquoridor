@@ -47,6 +47,16 @@ relearn by experiment.
 
 ## 3. History Notes (durable lessons only)
 
+- **Browser zero-wall freeze hotfix (2026-09-11)**: the exact empty-handed
+  race cache used 1024 lazily allocated slots. Each slot stores four arrays
+  for 13,122 states and uses approximately 128 KiB. A browser worker could
+  therefore retain more than 128 MiB in this cache alone near the final-wall
+  transition. The native engine keeps 1024 slots. Emscripten builds use 128
+  slots, which caps these arrays at approximately 16 MiB without changing
+  solver correctness. The web worker facade now also resolves pending requests
+  when the worker stops. A failed worker search no longer falls through to the
+  same long search on the browser main thread.
+
 - **Opening plies removed from the policy loss: NO measurable Elo
   (2026-08-26)**: in montecarlo self-play the temperature window runs no
   search. It samples the move from the policy head itself
