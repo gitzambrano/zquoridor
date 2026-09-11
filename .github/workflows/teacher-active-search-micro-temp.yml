@@ -1,0 +1,141 @@
+name: Active search-teacher micro integration gate
+
+on:
+  push:
+    branches: [exp/teacher-distill-multisource]
+    paths:
+      - ".github/workflows/teacher-active-search-micro-temp.yml"
+
+permissions:
+  contents: read
+  actions: read
+
+env:
+  PYTHONUNBUFFERED: "1"
+  TITANIUM_PONDERING: "0"
+
+jobs:
+  micro:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Recover 16 highest-priority states
+        uses: actions/download-artifact@v4
+        with:
+          name: tdp-direct-34595635610
+          path: source
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: 34595635610
+
+      - name: Slice active corpus
+        run: |
+          set -euo pipefail
+          mkdir -p results/micro bin
+          ACTIVE=$(find source -type f -name 'active-top20.jsonl' -print -quit)
+          test -s "$ACTIVE"
+          head -n 16 "$ACTIVE" > results/micro/positions.jsonl
+          test "$(wc -l < results/micro/positions.jsonl)" -eq 16
+
+      - name: Install runtime and build ZQ tools
+        run: |
+          set -euo pipefail
+          python -m pip install --quiet numpy
+          python - <<'PY' || python -m pip install --quiet --index-url https://download.pytorch.org/whl/cpu 'torch==2.10.*'
+          import torch, sys
+          sys.exit(0 if torch.__version__.split('+')[0].startswith('2.10.') else 1)
+          PY
+          g++ -std=c++17 -O3 -DNDEBUG -DNO_TABLEBASES -march=native -pthread -Isrc \
+            tools/teacher/zq_deep_relabel.cpp -o bin/zq_deep_relabel
+          g++ -std=c++17 -O2 -DNDEBUG -pthread -Isrc \
+            tools/teacher/encode_state.cpp -o bin/teacher_encode_state
+
+      - name: Build pinned external teachers
+        env:
+          LIBTORCH_USE_PYTORCH: "1"
+        run: |
+          set -euo pipefail
+          tools/external/build_pinned_titanium.sh titanium-bin
+          grep -qx '1ac94755f69799f01b2e06869403e701bbf0bd51' titanium-bin/titanium-sha.txt
+          git clone --quiet https://github.com/Plaaasma/Claustrophobia.git /tmp/claustrophobia
+          git -C /tmp/claustrophobia checkout --quiet ae093653e62ad700e201706fa5ed767093d0d68e
+          curl -L --fail --retry 3 -o /tmp/claustrophobia-champion.pt \
+            https://github.com/Plaaasma/Claustrophobia/releases/download/v1.3.1/champion.pt
+          echo '821bd10f2736fc433c82de4dfc090ab95fc81b524f04fa09e68c4a26e30b496c  /tmp/claustrophobia-champion.pt' | sha256sum -c -
+          cp training/teachers/claustrophobia_search_bridge.rs /tmp/claustrophobia/src/bin/zq_search_bridge.rs
+          cat >> /tmp/claustrophobia/Cargo.toml <<'EOF'
+
+          [[bin]]
+          name = "zq_search_bridge"
+          path = "src/bin/zq_search_bridge.rs"
+          required-features = ["nn"]
+          EOF
+          cargo build --quiet --release --features nn --bin zq_search_bridge \
+            --manifest-path /tmp/claustrophobia/Cargo.toml
+          cp /tmp/claustrophobia/target/release/zq_search_bridge bin/claustrophobia_search_bridge
+
+      - name: Relabel all three teachers
+        env:
+          PYTHONPATH: training/teachers
+          LIBTORCH_USE_PYTORCH: "1"
+        run: |
+          set -euo pipefail
+          TORCH_LIB=$(python - <<'PY'
+          import os, torch
+          print(os.path.join(os.path.dirname(torch.__file__), 'lib'))
+          PY
+          )
+          export LD_LIBRARY_PATH="$TORCH_LIB:${LD_LIBRARY_PATH:-}"
+          python training/teachers/claustrophobia_search_relabel.py \
+            --positions results/micro/positions.jsonl --bridge bin/claustrophobia_search_bridge \
+            --checkpoint /tmp/claustrophobia-champion.pt --sims 512,1024,2048 --cpuct 1.5 \
+            --out results/micro/claustrophobia-search.npz
+          python training/teachers/zq_deep_relabel.py \
+            --positions results/micro/positions.jsonl --bridge bin/zq_deep_relabel \
+            --nnue checkpoints/gen8/nnue_weights_int8.bin --node-budgets 50000,200000 \
+            --out results/micro/zq-deep.npz
+          python training/teachers/engine_relabel.py \
+            --positions results/micro/positions.jsonl --teacher Titanium --protocol titanium \
+            --engine titanium-bin/titanium --budgets 100,300 --repeats 1 --workers 1 \
+            --out results/micro/titanium.jsonl --hard-targets-out results/micro/titanium-hard.npz
+
+      - name: Ensemble and both trainers
+        run: |
+          set -euo pipefail
+          python training/teachers/merge_soft_targets.py \
+            --source claustrophobia-search=results/micro/claustrophobia-search.npz=2 \
+            --source zq-deep=results/micro/zq-deep.npz=2 \
+            --source titanium=results/micro/titanium-hard.npz=1 \
+            --out results/micro/ensemble.npz
+          python training/build_teacher_soft.py \
+            --positions results/micro/positions.jsonl --targets results/micro/ensemble.npz \
+            --encoder bin/teacher_encode_state --out results/micro/dataset.npz --confidence-floor 0.10
+          python training/train_teacher_soft.py \
+            --data results/micro/dataset.npz --init-from checkpoints/gen8/nnue_weights.bin \
+            --out results/micro/head.bin --epochs 4 --batch-size 8 --lr 0.0001 --patience 2 --device cpu
+          python training/train_teacher_soft.py \
+            --data results/micro/dataset.npz --init-from checkpoints/gen8/nnue_weights.bin \
+            --out results/micro/trunk.bin --epochs 4 --batch-size 8 --lr 0.0001 --patience 2 --device cpu \
+            --train-trunk --trunk-lr-scale 0.05
+          python - <<'PY'
+          import json, numpy as np
+          e=json.load(open('results/micro/ensemble.npz.manifest.json'))
+          d=json.load(open('results/micro/dataset.npz.manifest.json'))
+          h=json.load(open('results/micro/head.bin.manifest.json'))
+          t=json.load(open('results/micro/trunk.bin.manifest.json'))
+          print('MICRO ENSEMBLE', json.dumps(e, sort_keys=True))
+          print('MICRO DATASET', json.dumps(d, sort_keys=True))
+          print('MICRO HEAD KL', h['initial_val']['policy_kl'], h['best_val_policy_kl'])
+          print('MICRO TRUNK KL', t['initial_val']['policy_kl'], t['best_val_policy_kl'], t['optimizer_lrs'])
+          assert d['target_confidence_used'] is True
+          assert t['optimizer_lrs']['trunk'] < t['optimizer_lrs']['policy']
+          PY
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: teacher-active-search-micro-${{ github.run_id }}
+          retention-days: 3
+          path: results/micro/**
