@@ -60,6 +60,19 @@ def load_openings(path: Path) -> list[list[str]]:
     return openings
 
 
+def _reaches_goal(pre_move_ply: int, move: str) -> bool:
+    """Return True when `move` is the terminal pawn move for the side to move.
+
+    Quoridor has no terminal wall move: player 0 wins on rank 9 and player 1
+    on rank 1. `pre_move_ply & 1` therefore identifies the mover without
+    embedding any network- or architecture-specific state.
+    """
+    if len(move) != 2 or move[0] not in "abcdefghi" or move[1] not in "123456789":
+        return False
+    side = pre_move_ply & 1
+    return (side == 0 and move[1] == "9") or (side == 1 and move[1] == "1")
+
+
 def collect_game(index: int, opening: Sequence[str], titanium: str,
                  movetime_ms: int, max_plies: int, out_dir: Path,
                  val_mod: int) -> dict:
@@ -73,6 +86,7 @@ def collect_game(index: int, opening: Sequence[str], titanium: str,
     try:
         with shard.open("w", encoding="utf-8") as fh:
             while len(history) < max_plies:
+                pre_move_ply = len(history)
                 move, think_s, info = engine.bestmove(history, movetime_ms)
                 if move == "(none)":
                     termination = "no_move"
@@ -82,8 +96,8 @@ def collect_game(index: int, opening: Sequence[str], titanium: str,
                     "opening_index": index,
                     "split": split,
                     "sample_index": samples,
-                    "ply": len(history),
-                    "side_to_move": len(history) & 1,
+                    "ply": pre_move_ply,
+                    "side_to_move": pre_move_ply & 1,
                     "history": history,
                     "bestmove": move,
                     "movetime_ms": movetime_ms,
@@ -93,6 +107,9 @@ def collect_game(index: int, opening: Sequence[str], titanium: str,
                 fh.write(json.dumps(rec, separators=(",", ":")) + "\n")
                 history.append(move)
                 samples += 1
+                if _reaches_goal(pre_move_ply, move):
+                    termination = "goal"
+                    break
     finally:
         engine.close()
     return {
@@ -140,7 +157,8 @@ def main() -> int:
             results.append(result)
             print(
                 f"teacher [{done}/{len(futures)}] opening={result['opening_index']} "
-                f"split={result['split']} samples={result['samples']}",
+                f"split={result['split']} samples={result['samples']} "
+                f"termination={result['termination']}",
                 flush=True,
             )
 
@@ -164,6 +182,10 @@ def main() -> int:
         "train_games": sum(r["split"] == "train" for r in results),
         "val_games": sum(r["split"] == "val" for r in results),
         "samples": sum(r["samples"] for r in results),
+        "terminations": {
+            key: sum(r["termination"] == key for r in results)
+            for key in sorted({r["termination"] for r in results})
+        },
         "target": "raw bestmove + raw info lines",
         "encoding": "architecture-neutral move history",
     }
