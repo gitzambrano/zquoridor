@@ -8,7 +8,10 @@ on:
     paths:
       - ".github/workflows/engine-lab.yml"
       - "tools/external/**"
+      - "tools/teacher/**"
       - "training/teachers/**"
+      - "training/build_teacher_policy.py"
+      - "training/train_teacher_policy.py"
       - "docs/engine-lab.md"
   workflow_dispatch:
     inputs:
