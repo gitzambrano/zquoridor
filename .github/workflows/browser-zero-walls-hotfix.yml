@@ -125,11 +125,22 @@ jobs:
         run: |
           em++ @wasm_args.rsp
           python build_standalone.py
+          python - <<'PY'
+          from pathlib import Path
+          for name in ('zquoridor.js', 'zquoridor.html', '../index.html'):
+              p = Path(name)
+              text = p.read_text(encoding='utf-8')
+              had_nl = text.endswith('\n')
+              text = '\n'.join(line.rstrip() for line in text.splitlines())
+              if had_nl:
+                  text += '\n'
+              p.write_text(text, encoding='utf-8')
+          PY
           node --check app.js
           node --check worker.js
           git diff --check
 
-      - name: Check the worker failure path in Chromium
+      - name: Check zero-wall and worker failure paths in Chromium
         run: |
           python -m pip install playwright
           python -m playwright install --with-deps chromium
@@ -145,6 +156,26 @@ jobs:
               p = b.new_page()
               p.goto('http://127.0.0.1:8129/style.html', wait_until='domcontentloaded')
               p.wait_for_function("() => window.__w && document.querySelector('#status') && !document.querySelector('#status').textContent.includes('Loading')", timeout=15000)
+
+              zero = p.evaluate("""() => {
+                  const W = window.__w;
+                  W.scratchFromLive();
+                  W.editSetWallsLeft(0, 0);
+                  W.editSetWallsLeft(1, 0);
+                  W.editSetTurn(1);
+                  const validity = W.editValidity();
+                  const applied = validity === 0 ? W.editApply() : 0;
+                  const t0 = performance.now();
+                  const ok = applied ? W.engineMove(24, 1000) : 0;
+                  return { validity, applied, ok, elapsedMs: performance.now() - t0,
+                           walls0: W.wallsLeft(0), walls1: W.wallsLeft(1),
+                           plyCount: W.plyCount() };
+              }""")
+              print('zero-wall:', zero)
+              assert zero['validity'] == 0 and zero['applied'] == 1 and zero['ok'] == 1
+              assert zero['walls0'] == 0 and zero['walls1'] == 0 and zero['plyCount'] == 1
+              assert zero['elapsedMs'] < 2000, zero
+
               result = p.evaluate("""() => {
                   window.__drained = null;
                   ANW.pending.set(987654, res => { window.__drained = res && res.type; });
@@ -152,7 +183,7 @@ jobs:
                   return { failed: ANW.failed, ready: ANW.ready,
                            pending: ANW.pending.size, drained: window.__drained };
               }""")
-              print(result)
+              print('worker-failure:', result)
               assert result == {'failed': True, 'ready': False, 'pending': 0, 'drained': 'error'}
               b.close()
           PY
