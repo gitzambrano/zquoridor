@@ -6,8 +6,14 @@ on:
     paths:
       - ".github/workflows/tdp-direct-temp.yml"
       - "tools/teacher/generate_openings.cpp"
+      - "tools/external/zq_weights_paired.py"
       - "training/teachers/select_samples.py"
       - "training/teachers/export_positions.py"
+      - "training/teachers/claustrophobia_encode_bridge.rs"
+      - "training/teachers/claustrophobia_relabel.py"
+      - "training/teachers/analyze_student_gap.py"
+      - "training/build_teacher_soft.py"
+      - "training/train_teacher_soft.py"
 
 permissions:
   contents: read
@@ -15,7 +21,7 @@ permissions:
 jobs:
   tdp:
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 35
     steps:
       - uses: actions/checkout@v4
 
@@ -30,27 +36,50 @@ jobs:
           g++ -std=c++17 -O2 -DNDEBUG -pthread -Isrc \
             tools/teacher/encode_state.cpp -o bin/teacher_encode_state
 
-      - name: Generate independent legal openings
+      - name: Generate disjoint train and evaluation openings
         env:
           PYTHONPATH: training/teachers
         run: |
           set -euo pipefail
-          ./bin/generate_openings 72 4 2026091101 > results/tdp/openings-candidates.jsonl
+          ./bin/generate_openings 96 4 2026091101 > results/tdp/train-candidates.jsonl
+          ./bin/generate_openings 96 4 2026091102 > results/tdp/eval-candidates.jsonl
           python - <<'PY'
           import json
           from pathlib import Path
           from common import read_openings
+
           frozen = {tuple(x) for x in read_openings(Path('tools/external/openings_titanium.jsonl'))}
-          rows=[]
-          for line in Path('results/tdp/openings-candidates.jsonl').read_text().splitlines():
-              obj=json.loads(line)
-              if tuple(obj['moves']) not in frozen:
-                  rows.append(obj)
-              if len(rows) == 48:
-                  break
-          assert len(rows) == 48
-          Path('results/tdp/openings.jsonl').write_text(''.join(json.dumps(x,separators=(',',':'))+'\n' for x in rows))
-          print('training openings', len(rows), 'frozen overlap', sum(tuple(x['moves']) in frozen for x in rows))
+          def load(path):
+              return [json.loads(x) for x in Path(path).read_text().splitlines() if x.strip()]
+
+          train=[]
+          for obj in load('results/tdp/train-candidates.jsonl'):
+              key=tuple(obj['moves'])
+              if key not in frozen and key not in {tuple(x['moves']) for x in train}:
+                  train.append(obj)
+              if len(train)==48: break
+          assert len(train)==48
+          train_keys={tuple(x['moves']) for x in train}
+
+          evaluation=[]
+          for obj in load('results/tdp/eval-candidates.jsonl'):
+              key=tuple(obj['moves'])
+              if key not in frozen and key not in train_keys and key not in {tuple(x['moves']) for x in evaluation}:
+                  evaluation.append(obj)
+              if len(evaluation)==20: break
+          assert len(evaluation)==20
+          eval_keys={tuple(x['moves']) for x in evaluation}
+          assert not (train_keys & eval_keys)
+          assert not (train_keys & frozen)
+          assert not (eval_keys & frozen)
+
+          Path('results/tdp/train-openings.jsonl').write_text(
+              ''.join(json.dumps(x,separators=(',',':'))+'\n' for x in train))
+          Path('results/tdp/eval-openings.jsonl').write_text(
+              ''.join(json.dumps(x,separators=(',',':'))+'\n' for x in evaluation))
+          print('train openings', len(train), 'eval openings', len(evaluation),
+                'train/eval overlap', len(train_keys & eval_keys),
+                'frozen overlap', len((train_keys | eval_keys) & frozen))
           PY
 
       - name: Generate Gen8 trajectories
@@ -61,7 +90,7 @@ jobs:
             --engine bin/zquoridor_uci \
             --engine-arg=--nnue \
             --engine-arg=checkpoints/gen8/nnue_weights_int8.bin \
-            --openings results/tdp/openings.jsonl \
+            --openings results/tdp/train-openings.jsonl \
             --out-dir results/tdp/raw \
             --budgets 15 --repeats 1 --workers 2 --max-plies 100 --val-mod 5
           python training/teachers/export_positions.py \
@@ -101,7 +130,7 @@ jobs:
             https://github.com/Plaaasma/Claustrophobia/releases/download/v1.3.1/champion.pt
           echo '821bd10f2736fc433c82de4dfc090ab95fc81b524f04fa09e68c4a26e30b496c  /tmp/claustrophobia-champion.pt' | sha256sum -c -
 
-      - name: Direct relabel and policy-only distillation
+      - name: Direct relabel, gap analysis, and policy-only distillation
         env:
           PYTHONPATH: training/teachers
         run: |
@@ -116,6 +145,13 @@ jobs:
             --targets results/tdp/claustrophobia-direct.npz \
             --encoder bin/teacher_encode_state \
             --out results/tdp/dataset.npz
+          python training/teachers/analyze_student_gap.py \
+            --data results/tdp/dataset.npz \
+            --student-weights checkpoints/gen8/nnue_weights.bin \
+            --positions results/tdp/positions.jsonl \
+            --out results/tdp/student-gap.npz \
+            --selected-out results/tdp/active-top20.jsonl \
+            --top-fraction 0.20 --device cpu
           python training/train_teacher_soft.py \
             --data results/tdp/dataset.npz \
             --init-from checkpoints/gen8/nnue_weights.bin \
@@ -124,26 +160,35 @@ jobs:
           test -s results/tdp/tdp-direct_int8.bin
           python - <<'PY'
           import json
-          p='results/tdp/tdp-direct.bin.manifest.json'
-          m=json.load(open(p))
-          assert m['mode']=='policy'
-          assert m['value_weight']==0.0
-          assert 'fc1.weight' in m['frozen_parameters_verified']
-          assert 'value2_wl.weight' in m['frozen_parameters_verified']
-          print('TD-P train manifest:', json.dumps({k:m[k] for k in ('samples','train_samples','val_samples','best_val_loss','epochs_ran')}, indent=2))
+          teacher=json.load(open('results/tdp/claustrophobia-direct.npz.manifest.json'))
+          gap=json.load(open('results/tdp/student-gap.npz.manifest.json'))
+          train=json.load(open('results/tdp/tdp-direct.bin.manifest.json'))
+          assert train['mode']=='policy' and train['value_weight']==0.0
+          assert 'fc1.weight' in train['frozen_parameters_verified']
+          assert 'value2_wl.weight' in train['frozen_parameters_verified']
+          print('teacher legality:', {k:teacher[k] for k in (
+              'raw_illegal_policy_mass_mean','raw_illegal_policy_mass_p90','raw_illegal_policy_mass_max')})
+          print('student gap:', {k:gap[k] for k in (
+              'policy_kl_mean','policy_kl_p90','argmax_mismatch_fraction','value_residual_mean','selected')})
+          print('TD-P train:', {k:train[k] for k in (
+              'samples','train_samples','val_samples','best_val_loss','best_val_policy_kl',
+              'initial_to_best_kl_ratio','epochs_ran')})
           PY
 
-      - name: Paired 200ms sanity H2H against Gen8
+      - name: Pair-aware 200ms H2H against Gen8
         run: |
           set -euo pipefail
-          sed -i 's|CXX_FLAGS = "-O3 -std=c++17"|CXX_FLAGS = "-O3 -std=c++17 -DNO_TABLEBASES"|' tools/arena/run_arena.py
-          python tools/arena/run_arena.py \
-            --ref1 "" --ref2 "" \
-            --games 40 --report-games 10 --time 200 --threads 1 \
-            --random-plies 4 --seed 2026091102 \
-            --e1-nnue results/tdp/tdp-direct_int8.bin \
-            --e2-nnue checkpoints/gen8/nnue_weights_int8.bin \
-            | tee results/tdp/h2h.log
+          python tools/external/zq_weights_paired.py \
+            --engine bin/zquoridor_uci \
+            --candidate-arg=--nnue --candidate-arg=results/tdp/tdp-direct_int8.bin \
+            --baseline-arg=--nnue --baseline-arg=checkpoints/gen8/nnue_weights_int8.bin \
+            --openings results/tdp/eval-openings.jsonl --limit-openings 20 \
+            --movetime 200 --workers 1 --max-plies 180 \
+            --games-out results/tdp/h2h-games.jsonl \
+            | tee results/tdp/h2h-summary.log
+          python tools/external/analyze_paired_arena.py \
+            --games results/tdp/h2h-games.jsonl \
+            --out results/tdp/h2h-paired.json --bootstrap 20000 --seed 20260911
 
       - uses: actions/upload-artifact@v4
         if: always()
