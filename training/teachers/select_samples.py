@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Select high-value samples from a teacher v2 corpus."""
+"""Select high-value samples from architecture-neutral teacher corpora."""
 from __future__ import annotations
 
 import argparse
@@ -7,9 +7,14 @@ import json
 from pathlib import Path
 from typing import Iterable, Sequence
 
+SUPPORTED_RAW_SCHEMAS = {
+    "zquoridor.teacher.raw.v2",
+    "zquoridor.teacher.raw.v3",
+}
+
 
 def iter_records(corpus: Path) -> Iterable[dict]:
-    """Yield teacher records from one JSONL file or one corpus directory."""
+    """Yield supported teacher records from one JSONL file or corpus directory."""
     if corpus.is_file():
         paths = [corpus]
     else:
@@ -21,8 +26,12 @@ def iter_records(corpus: Path) -> Iterable[dict]:
             if not line.strip():
                 continue
             record = json.loads(line)
-            if record.get("schema") != "zquoridor.teacher.raw.v2":
-                raise ValueError(f"{path}:{lineno}: unsupported teacher schema")
+            schema = record.get("schema")
+            if schema not in SUPPORTED_RAW_SCHEMAS:
+                raise ValueError(
+                    f"{path}:{lineno}: unsupported teacher schema {schema!r}; "
+                    f"supported={sorted(SUPPORTED_RAW_SCHEMAS)}"
+                )
             yield record
 
 
