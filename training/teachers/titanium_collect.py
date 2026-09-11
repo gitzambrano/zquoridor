@@ -68,7 +68,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             ]
         )
         for engine_arg in args.student_engine_arg:
-            forwarded.extend(["--student-engine-arg", engine_arg])
+            forwarded.append(f"--student-engine-arg={engine_arg}")
     return collect.main(forwarded)
 
 
