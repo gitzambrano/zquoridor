@@ -139,14 +139,18 @@ int main() {
         qr::Move canonicalMove = qr::mirrorMoveForPerspective(teacherMove, mover);
         int policyIndex = qr::moveToPolicyIndex(canonicalMove);
 
+        // wallsLeft is byte-sized in State. Streaming it directly treats it
+        // as a character: 9 becomes a TAB and 10 becomes a newline, which
+        // corrupts this line protocol. Cast every byte-valued scalar before
+        // serializing it as text.
         std::cout
             << PROTO
             << "\tok\t" << ownPawn
             << '\t' << oppPawn
             << '\t' << wallsH
             << '\t' << wallsV
-            << '\t' << state.wallsLeft[mover]
-            << '\t' << state.wallsLeft[opponent]
+            << '\t' << static_cast<int>(state.wallsLeft[mover])
+            << '\t' << static_cast<int>(state.wallsLeft[opponent])
             << '\t' << ownDist
             << '\t' << oppDist
             << '\t' << mover
