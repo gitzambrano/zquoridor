@@ -1,0 +1,71 @@
+name: Titanium teacher capture smoke
+
+on:
+  push:
+    branches: [infra/titanium-teacher-capture-fix]
+    paths:
+      - "tools/external/titanium_arena_fixed.py"
+      - "training/teachers/titanium_collect.py"
+      - ".github/workflows/titanium-teacher-capture-smoke.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  PYTHONUNBUFFERED: "1"
+  TITANIUM_PONDERING: "0"
+
+jobs:
+  smoke:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build exact pinned Titanium
+        run: |
+          set -euo pipefail
+          tools/external/build_pinned_titanium.sh titanium-bin
+          grep -qx '1ac94755f69799f01b2e06869403e701bbf0bd51' titanium-bin/titanium-sha.txt
+      - name: Collect one independent trajectory
+        run: |
+          set -euo pipefail
+          mkdir -p smoke
+          printf '%s\n' '{"moves":[]}' > smoke/openings.jsonl
+          python training/teachers/titanium_collect.py \
+            --titanium ./titanium-bin/titanium \
+            --openings smoke/openings.jsonl \
+            --out-dir smoke/raw \
+            --movetime 30 --workers 1 --max-plies 110 --val-mod 2
+      - name: Verify terminal stop and rich stderr capture
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          m=json.loads(Path('smoke/raw/manifest.json').read_text())
+          assert m['games']==1, m
+          assert m['terminations']=={'goal':1}, m
+          rows=[]
+          for p in Path('smoke/raw').glob('**/opening_*.jsonl'):
+              rows += [json.loads(x) for x in p.read_text().splitlines() if x.strip()]
+          assert rows, 'no teacher rows'
+          rich=0
+          for r in rows:
+              for line in r.get('info',[]):
+                  if not line.startswith('info json '):
+                      continue
+                  try: obj=json.loads(line[len('info json '):])
+                  except json.JSONDecodeError: continue
+                  if isinstance(obj.get('rootMoves'),list) and obj['rootMoves']:
+                      rich += 1
+                      break
+          assert rich>0, f'no rich rootMoves captured across {len(rows)} rows'
+          print(json.dumps({'rows':len(rows),'rich_rows':rich,'terminations':m['terminations']},indent=2))
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: titanium-teacher-capture-smoke-${{ github.run_id }}
+          retention-days: 7
+          path: smoke/**
