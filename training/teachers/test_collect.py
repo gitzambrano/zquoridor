@@ -9,7 +9,7 @@ from pathlib import Path
 from unittest import mock
 
 import collect
-from select_samples import should_select
+from select_samples import iter_records, should_select
 
 
 class FakeEngine:
@@ -67,10 +67,10 @@ class TeacherCollectTests(unittest.TestCase):
             manifest = collect.run_collection(config, [[]], workers=1)
         shard = out / "val" / "opening_000000.jsonl"
         records = [json.loads(line) for line in shard.read_text(encoding="utf-8").splitlines()]
-        return temp, manifest, records
+        return temp, out, manifest, records
 
     def test_collection_records_student_disagreement(self) -> None:
-        temp, manifest, records = self.run_fake_collection("teacher")
+        temp, _out, manifest, records = self.run_fake_collection("teacher")
         try:
             self.assertEqual(manifest["samples"], 2)
             self.assertEqual(manifest["student"]["disagreements"], 2)
@@ -87,7 +87,7 @@ class TeacherCollectTests(unittest.TestCase):
             temp.cleanup()
 
     def test_dagger_advances_by_student_move_but_keeps_teacher_label(self) -> None:
-        temp, manifest, records = self.run_fake_collection("student")
+        temp, _out, manifest, records = self.run_fake_collection("student")
         try:
             self.assertEqual(manifest["trajectory_source"], "student")
             self.assertEqual(len(records), 2)
@@ -95,11 +95,20 @@ class TeacherCollectTests(unittest.TestCase):
             self.assertEqual(first["bestmove"], "e3")
             self.assertEqual(first["played_move"], "e2")
             self.assertEqual(first["history"], [])
-            # This is the DAgger invariant: the next labeled state is the state
-            # the student actually reached, not the teacher's hypothetical line.
             self.assertEqual(second["history"], ["e2"])
             self.assertEqual(second["bestmove"], "e3")
             self.assertEqual(second["played_move"], "e2")
+        finally:
+            temp.cleanup()
+
+    def test_current_v3_collection_is_readable_by_shared_corpus_reader(self) -> None:
+        temp, out, _manifest, records = self.run_fake_collection("teacher")
+        try:
+            self.assertTrue(records)
+            self.assertEqual(records[0]["schema"], "zquoridor.teacher.raw.v3")
+            reread = list(iter_records(out))
+            self.assertEqual(len(reread), len(records))
+            self.assertEqual(reread[0]["id"], records[0]["id"])
         finally:
             temp.cleanup()
 
