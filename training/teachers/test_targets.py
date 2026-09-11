@@ -11,6 +11,7 @@ from targets import (
     mirror_action_lr,
     normalize_policy,
     sample_id,
+    zq_move_to_policy_index,
 )
 
 
@@ -18,6 +19,18 @@ class TargetSchemaTests(unittest.TestCase):
     def test_sample_id_is_stable(self):
         self.assertEqual(sample_id(["E2", " e8 "]), sample_id(["e2", "e8"]))
         self.assertNotEqual(sample_id(["e2"]), sample_id(["e3"]))
+
+    def test_zq_raw_move_mapping_mirrors_only_rows_for_side_one(self):
+        self.assertEqual(zq_move_to_policy_index("a1", 0), 0)
+        self.assertEqual(zq_move_to_policy_index("i9", 0), 80)
+        self.assertEqual(zq_move_to_policy_index("a1", 1), 72)
+        self.assertEqual(zq_move_to_policy_index("i9", 1), 8)
+        self.assertEqual(zq_move_to_policy_index("b2h", 0), 81 + 1 * 8 + 1)
+        self.assertEqual(zq_move_to_policy_index("b2h", 1), 81 + 6 * 8 + 1)
+        self.assertEqual(zq_move_to_policy_index("h8v", 0), 145 + 7 * 8 + 7)
+        self.assertEqual(zq_move_to_policy_index("h8v", 1), 145 + 7)
+        with self.assertRaises(ValueError):
+            zq_move_to_policy_index("i9h", 0)
 
     def test_left_right_action_mirror_is_self_inverse(self):
         for idx in range(POLICY_DIM):
@@ -32,13 +45,9 @@ class TargetSchemaTests(unittest.TestCase):
 
     def test_claustrophobia_mapping_side_one_flips_columns_only(self):
         p = [0.0] * POLICY_DIM
-        # Pawn canonical e3 -> row 2, col 4: center file stays fixed.
         p[2 * 9 + 4] = 0.1
-        # Pawn a3 -> i3.
         p[2 * 9 + 0] = 0.2
-        # H slot (row 3,col 1) -> (row 3,col 6).
         p[81 + 3 * 8 + 1] = 0.3
-        # V slot same transform.
         p[145 + 5 * 8 + 7] = 0.4
         zq = claustrophobia_policy_to_zq(p, 1)
         self.assertAlmostEqual(zq[2 * 9 + 4], 0.1)
