@@ -3,9 +3,9 @@
 // Line protocol on stdin:
 //   <teacher-move>\t<history move 1> <history move 2> ...
 //
-// One tab-separated row is emitted per input line. The process caches the
-// previous history prefix, so sequential trajectory records are replayed
-// incrementally instead of rebuilding the game from the initial state.
+// Protocol rows on stdout are prefixed with "ZQTEACH" so callers can
+// distinguish them from any incidental diagnostic output produced by shared
+// engine code. Exactly one ZQTEACH row is emitted per input line.
 #include <algorithm>
 #include <iostream>
 #include <sstream>
@@ -15,6 +15,8 @@
 #include "nnue.hpp"
 
 namespace {
+
+constexpr const char* PROTO = "ZQTEACH";
 
 bool parseLegalMove(const qr::State& state, const std::string& text, qr::Move& out) {
     if (text.size() != 2 && text.size() != 3) return false;
@@ -86,6 +88,10 @@ std::vector<std::string> splitMoves(const std::string& text) {
     return moves;
 }
 
+void emitError(size_t lineNumber, const std::string& message) {
+    std::cout << PROTO << "\terror\tline " << lineNumber << ": " << message << '\n';
+}
+
 }  // namespace
 
 int main() {
@@ -97,7 +103,7 @@ int main() {
         if (!line.empty() && line.back() == '\r') line.pop_back();
         size_t tab = line.find('\t');
         if (tab == std::string::npos) {
-            std::cout << "error\tline " << lineNumber << ": expected teacher move and tab\n";
+            emitError(lineNumber, "expected teacher move and tab");
             continue;
         }
 
@@ -105,19 +111,18 @@ int main() {
         std::vector<std::string> history = splitMoves(line.substr(tab + 1));
         std::string error;
         if (!cache.setHistory(history, error)) {
-            std::cout << "error\tline " << lineNumber << ": " << error << "\n";
+            emitError(lineNumber, error);
             continue;
         }
 
         const qr::State& state = cache.state();
         if (qr::winner(state) != -1) {
-            std::cout << "error\tline " << lineNumber << ": teacher position is terminal\n";
+            emitError(lineNumber, "teacher position is terminal");
             continue;
         }
         qr::Move teacherMove;
         if (!parseLegalMove(state, teacherText, teacherMove)) {
-            std::cout << "error\tline " << lineNumber << ": illegal teacher move "
-                      << teacherText << "\n";
+            emitError(lineNumber, "illegal teacher move " + teacherText);
             continue;
         }
 
@@ -135,7 +140,8 @@ int main() {
         int policyIndex = qr::moveToPolicyIndex(canonicalMove);
 
         std::cout
-            << "ok\t" << ownPawn
+            << PROTO
+            << "\tok\t" << ownPawn
             << '\t' << oppPawn
             << '\t' << wallsH
             << '\t' << wallsV
