@@ -151,6 +151,14 @@ def _bestmove(self, history: Sequence[str], movetime_ms: int) -> Tuple[str, floa
             f"{' '.join(history)}; {exc}"
         ) from exc
 
+    # Titanium emits rich iterative `info json` diagnostics on stderr. Start a
+    # fresh per-search window so teacher collection can persist those lines
+    # without mixing them with previous moves. stderr remains continuously
+    # drained by the background reader, so this does not affect engine liveness.
+    stderr_tail = getattr(self, "_stderr_tail", None)
+    if stderr_tail is not None:
+        stderr_tail.clear()
+
     t0 = time.monotonic()
     # Titanium's fixed-time argument is in seconds.
     self._send(f"go {movetime_ms / 1000.0:.6f}")
@@ -167,7 +175,15 @@ def _bestmove(self, history: Sequence[str], movetime_ms: int) -> Tuple[str, floa
             elif line.startswith("error "):
                 raise RuntimeError(f"{self.name}: {line}")
             elif line.startswith("bestmove "):
-                return line.split()[1], time.monotonic() - t0, info
+                # Most Titanium progress diagnostics are intentionally on
+                # stderr. Preserve the per-search snapshot alongside any
+                # stdout info so architecture-neutral teacher records include
+                # rootMoves/rootScore/depth/nodes for later distillation.
+                stderr_info = [
+                    s for s in list(getattr(self, "_stderr_tail", ()))
+                    if s.startswith("info ")
+                ]
+                return line.split()[1], time.monotonic() - t0, info + stderr_info
     except Exception as exc:
         raise RuntimeError(
             f"titanium search failed at history ({len(history)} plies): "
