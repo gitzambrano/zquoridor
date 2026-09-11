@@ -39,13 +39,6 @@ def split_soft_indices(data, seed: int, fallback_val_fraction: float) -> tuple[n
     return perm[n_val:], perm[:n_val]
 
 
-def soft_policy_loss(logits: torch.Tensor, target: torch.Tensor,
-                     weights: torch.Tensor) -> torch.Tensor:
-    """Confidence-weighted cross entropy against the full teacher distribution."""
-    per_sample = -(target * F.log_softmax(logits, dim=1)).sum(dim=1)
-    return weighted_mean(per_sample, weights)
-
-
 def run_epoch(model, data, indices: np.ndarray, batch_size: int, device,
               value_weight: float, optimizer=None, rng=None,
               qa=base.QA_DEFAULT, qb=base.QB_DEFAULT) -> dict:
@@ -134,6 +127,32 @@ def verify_frozen(model, before: dict[str, torch.Tensor]) -> None:
         raise RuntimeError("distillation changed frozen parameters: " + ", ".join(changed))
 
 
+def make_optimizer(model, args):
+    groups = [
+        {
+            "name": "policy",
+            "params": list(model.policy.parameters()),
+            "lr": args.lr,
+        }
+    ]
+    if args.train_value_head:
+        value_params = list(model.value1_wl.parameters()) + list(model.value2_wl.parameters())
+        groups.append({
+            "name": "value",
+            "params": value_params,
+            "lr": args.lr * args.value_lr_scale,
+        })
+    if args.train_trunk:
+        groups.append({
+            "name": "trunk",
+            "params": list(model.fc1.parameters()),
+            "lr": args.lr * args.trunk_lr_scale,
+        })
+    return torch.optim.AdamW(groups, weight_decay=args.weight_decay), {
+        group["name"]: float(group["lr"]) for group in groups
+    }
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--data", required=True)
@@ -141,7 +160,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--out", required=True)
     parser.add_argument("--epochs", type=int, default=12)
     parser.add_argument("--batch-size", type=int, default=4096)
-    parser.add_argument("--lr", type=float, default=2e-4)
+    parser.add_argument("--lr", type=float, default=2e-4, help="Policy-head learning rate")
+    parser.add_argument("--trunk-lr-scale", type=float, default=0.1)
+    parser.add_argument("--value-lr-scale", type=float, default=1.0)
     parser.add_argument("--weight-decay", type=float, default=1e-4)
     parser.add_argument("--patience", type=int, default=3)
     parser.add_argument("--seed", type=int, default=20260911)
@@ -156,6 +177,8 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     if args.epochs <= 0 or args.batch_size <= 0 or args.lr <= 0.0 or args.patience <= 0:
         raise SystemExit("epochs, batch-size, lr, and patience must be positive")
+    if args.trunk_lr_scale <= 0.0 or args.value_lr_scale <= 0.0:
+        raise SystemExit("trunk-lr-scale and value-lr-scale must be positive")
     if not 0.0 < args.val_fraction < 1.0 or args.value_weight < 0.0:
         raise SystemExit("val-fraction must be in (0,1) and value-weight non-negative")
 
@@ -183,6 +206,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         raise SystemExit("soft teacher policy rows are not normalized")
     if np.any(data["value"] < -1.001) or np.any(data["value"] > 1.001):
         raise SystemExit("soft teacher values fall outside [-1,1]")
+    if not np.isfinite(data["weight"]).all() or np.any(data["weight"] <= 0.0):
+        raise SystemExit("soft teacher sample weights must be finite and positive")
 
     try:
         train_idx, val_idx = split_soft_indices(data, args.seed, args.val_fraction)
@@ -206,8 +231,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             parameter.requires_grad_(True)
 
     frozen = snapshot_frozen(model)
-    trainable = [parameter for parameter in model.parameters() if parameter.requires_grad]
-    optimizer = torch.optim.AdamW(trainable, lr=args.lr, weight_decay=args.weight_decay)
+    optimizer, optimizer_lrs = make_optimizer(model, args)
 
     effective_value_weight = args.value_weight if args.train_value_head else 0.0
     with torch.no_grad():
@@ -219,7 +243,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             model, data, val_idx, args.batch_size, device,
             effective_value_weight, optimizer=None, rng=rng, qa=args.qa, qb=args.qb,
         )
-    print(json.dumps({"initial": {"train": initial_train, "val": initial_val}}), flush=True)
+    print(json.dumps({"initial": {"train": initial_train, "val": initial_val},
+                      "optimizer_lrs": optimizer_lrs}), flush=True)
 
     best_loss = float("inf")
     best_state = None
@@ -263,7 +288,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.train_trunk:
         mode.append("trunk")
     manifest = {
-        "schema": "zquoridor.teacher.soft_train.v1",
+        "schema": "zquoridor.teacher.soft_train.v2",
         "data": os.path.abspath(args.data),
         "init_from": os.path.abspath(args.init_from),
         "out": os.path.abspath(str(out)),
@@ -272,6 +297,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         "train_samples": len(train_idx),
         "val_samples": len(val_idx),
         "mode": "+".join(mode),
+        "head_lr": args.lr,
+        "trunk_lr_scale": args.trunk_lr_scale,
+        "value_lr_scale": args.value_lr_scale,
+        "optimizer_lrs": optimizer_lrs,
         "value_weight": effective_value_weight,
         "frozen_parameters_verified": sorted(frozen),
         "initial_train": initial_train,
