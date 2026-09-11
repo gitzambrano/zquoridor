@@ -1,0 +1,230 @@
+name: Active search-teacher distillation temporary experiment
+
+on:
+  push:
+    branches: [exp/teacher-distill-multisource]
+    paths:
+      - ".github/workflows/teacher-active-search-temp.yml"
+
+permissions:
+  contents: read
+  actions: read
+
+env:
+  PYTHONUNBUFFERED: "1"
+  TITANIUM_PONDERING: "0"
+
+jobs:
+  active-search:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download prior active-learning corpus
+        uses: actions/download-artifact@v4
+        with:
+          name: tdp-direct-34595635610
+          path: source
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: 34595635610
+
+      - name: Select highest-priority active states
+        run: |
+          set -euo pipefail
+          mkdir -p results/active bin
+          ACTIVE=$(find source -type f -name 'active-top20.jsonl' -print -quit)
+          EVAL=$(find source -type f -name 'eval-openings.jsonl' -print -quit)
+          test -n "$ACTIVE" && test -s "$ACTIVE"
+          test -n "$EVAL" && test -s "$EVAL"
+          cp "$EVAL" results/active/eval-openings.jsonl
+          python - "$ACTIVE" <<'PY'
+          import json, sys
+          from collections import Counter
+          from pathlib import Path
+          src=Path(sys.argv[1])
+          rows=[json.loads(x) for x in src.read_text().splitlines() if x.strip()]
+          assert len(rows) >= 128, len(rows)
+          gate=rows[:128]
+          Path('results/active/positions.jsonl').write_text(
+              ''.join(json.dumps(x,separators=(',',':'))+'\n' for x in gate))
+          p=[float(x.get('metadata',{}).get('active_learning',{}).get('priority',0.0)) for x in gate]
+          print('active gate', len(gate), 'splits', dict(Counter(x.get('split') for x in gate)),
+                'priority range', min(p), max(p))
+          assert len({x['id'] for x in gate}) == len(gate)
+          PY
+
+      - name: Install teacher runtime
+        run: |
+          set -euo pipefail
+          python -m pip install --quiet numpy
+          python - <<'PY' || python -m pip install --quiet --index-url https://download.pytorch.org/whl/cpu 'torch==2.10.*'
+          import torch, sys
+          sys.exit(0 if torch.__version__.split('+')[0].startswith('2.10.') else 1)
+          PY
+          python - <<'PY'
+          import numpy, torch
+          print('numpy', numpy.__version__, 'torch', torch.__version__)
+          PY
+
+      - name: Build ZQuoridor teacher and evaluation tools
+        run: |
+          set -euo pipefail
+          g++ -std=c++17 -O3 -DNDEBUG -DNO_TABLEBASES -march=native -pthread -Isrc \
+            tools/teacher/zq_deep_relabel.cpp -o bin/zq_deep_relabel
+          g++ -std=c++17 -O2 -DNDEBUG -pthread -Isrc \
+            tools/teacher/encode_state.cpp -o bin/teacher_encode_state
+          g++ -std=c++17 -O3 -DNDEBUG -DNO_TABLEBASES -march=native -pthread -Isrc \
+            tools/external/zquoridor_uci.cpp -o bin/zquoridor_uci
+
+      - name: Build pinned Titanium
+        run: |
+          set -euo pipefail
+          tools/external/build_pinned_titanium.sh titanium-bin
+          grep -qx '1ac94755f69799f01b2e06869403e701bbf0bd51' titanium-bin/titanium-sha.txt
+
+      - name: Build pinned Claustrophobia search bridge
+        env:
+          LIBTORCH_USE_PYTORCH: "1"
+        run: |
+          set -euo pipefail
+          git clone --quiet https://github.com/Plaaasma/Claustrophobia.git /tmp/claustrophobia
+          git -C /tmp/claustrophobia checkout --quiet ae093653e62ad700e201706fa5ed767093d0d68e
+          curl -L --fail --retry 3 -o /tmp/claustrophobia-champion.pt \
+            https://github.com/Plaaasma/Claustrophobia/releases/download/v1.3.1/champion.pt
+          echo '821bd10f2736fc433c82de4dfc090ab95fc81b524f04fa09e68c4a26e30b496c  /tmp/claustrophobia-champion.pt' | sha256sum -c -
+          cp training/teachers/claustrophobia_search_bridge.rs /tmp/claustrophobia/src/bin/zq_search_bridge.rs
+          cat >> /tmp/claustrophobia/Cargo.toml <<'EOF'
+
+          [[bin]]
+          name = "zq_search_bridge"
+          path = "src/bin/zq_search_bridge.rs"
+          required-features = ["nn"]
+          EOF
+          cargo build --quiet --release --features nn --bin zq_search_bridge \
+            --manifest-path /tmp/claustrophobia/Cargo.toml
+          cp /tmp/claustrophobia/target/release/zq_search_bridge bin/claustrophobia_search_bridge
+
+      - name: Claustrophobia search-distill active states
+        env:
+          PYTHONPATH: training/teachers
+          LIBTORCH_USE_PYTORCH: "1"
+        run: |
+          set -euo pipefail
+          TORCH_LIB=$(python - <<'PY'
+          import os, torch
+          print(os.path.join(os.path.dirname(torch.__file__), 'lib'))
+          PY
+          )
+          export LD_LIBRARY_PATH="$TORCH_LIB:${LD_LIBRARY_PATH:-}"
+          python training/teachers/claustrophobia_search_relabel.py \
+            --positions results/active/positions.jsonl \
+            --bridge bin/claustrophobia_search_bridge \
+            --checkpoint /tmp/claustrophobia-champion.pt \
+            --sims 512,1024,2048 --cpuct 1.5 \
+            --out results/active/claustrophobia-search.npz
+
+      - name: ZQ-deep search-distill active states
+        run: |
+          set -euo pipefail
+          python training/teachers/zq_deep_relabel.py \
+            --positions results/active/positions.jsonl \
+            --bridge bin/zq_deep_relabel \
+            --nnue checkpoints/gen8/nnue_weights_int8.bin \
+            --node-budgets 50000,200000 \
+            --out results/active/zq-deep.npz
+
+      - name: Titanium active-state labels
+        env:
+          PYTHONPATH: training/teachers
+        run: |
+          set -euo pipefail
+          python training/teachers/engine_relabel.py \
+            --positions results/active/positions.jsonl \
+            --teacher Titanium --protocol titanium \
+            --engine titanium-bin/titanium \
+            --budgets 100,300 --repeats 1 --workers 1 \
+            --out results/active/titanium.jsonl \
+            --hard-targets-out results/active/titanium-hard.npz
+
+      - name: Build confidence-aware search ensemble
+        run: |
+          set -euo pipefail
+          python training/teachers/merge_soft_targets.py \
+            --source claustrophobia-search=results/active/claustrophobia-search.npz=2 \
+            --source zq-deep=results/active/zq-deep.npz=2 \
+            --source titanium=results/active/titanium-hard.npz=1 \
+            --out results/active/search-ensemble.npz
+          python training/build_teacher_soft.py \
+            --positions results/active/positions.jsonl \
+            --targets results/active/search-ensemble.npz \
+            --encoder bin/teacher_encode_state \
+            --out results/active/search-dataset.npz \
+            --confidence-floor 0.10
+          python training/teachers/analyze_student_gap.py \
+            --data results/active/search-dataset.npz \
+            --student-weights checkpoints/gen8/nnue_weights.bin \
+            --out results/active/search-gap.npz --device cpu
+
+      - name: Train TD-S-Head and TD-S-Trunk
+        run: |
+          set -euo pipefail
+          python training/train_teacher_soft.py \
+            --data results/active/search-dataset.npz \
+            --init-from checkpoints/gen8/nnue_weights.bin \
+            --out results/active/tds-head.bin \
+            --epochs 20 --batch-size 64 --lr 0.0001 --patience 5 --device cpu
+          python training/train_teacher_soft.py \
+            --data results/active/search-dataset.npz \
+            --init-from checkpoints/gen8/nnue_weights.bin \
+            --out results/active/tds-trunk.bin \
+            --epochs 20 --batch-size 64 --lr 0.0001 --patience 5 --device cpu \
+            --train-trunk --trunk-lr-scale 0.05
+          python - <<'PY'
+          import json
+          for name in ('tds-head','tds-trunk'):
+              m=json.load(open(f'results/active/{name}.bin.manifest.json'))
+              print(name, 'mode',m['mode'],'initial KL',m['initial_val']['policy_kl'],
+                    'best KL',m['best_val_policy_kl'],'ratio',m['initial_to_best_kl_ratio'],
+                    'LRs',m['optimizer_lrs'])
+          e=json.load(open('results/active/search-ensemble.npz.manifest.json'))
+          g=json.load(open('results/active/search-gap.npz.manifest.json'))
+          print('ensemble', {k:e[k] for k in ('agreement_mean','policy_js_mean','value_std_mean','confidence_mean','unanimous_policy_fraction')})
+          print('baseline gap', {k:g[k] for k in ('policy_kl_mean','policy_kl_p90','argmax_mismatch_fraction','value_residual_mean')})
+          PY
+
+      - name: Pair-aware 200ms TD-S-Head vs Gen8
+        run: |
+          set -euo pipefail
+          python tools/external/zq_weights_paired.py \
+            --engine bin/zquoridor_uci \
+            --candidate-arg=--nnue --candidate-arg=results/active/tds-head_int8.bin \
+            --baseline-arg=--nnue --baseline-arg=checkpoints/gen8/nnue_weights_int8.bin \
+            --openings results/active/eval-openings.jsonl --limit-openings 20 \
+            --movetime 200 --workers 1 --max-plies 180 \
+            --games-out results/active/head-games.jsonl | tee results/active/head-summary.log
+          python tools/external/analyze_paired_arena.py \
+            --games results/active/head-games.jsonl --out results/active/head-paired.json \
+            --bootstrap 20000 --seed 20260911
+
+      - name: Pair-aware 200ms TD-S-Trunk vs Gen8
+        run: |
+          set -euo pipefail
+          python tools/external/zq_weights_paired.py \
+            --engine bin/zquoridor_uci \
+            --candidate-arg=--nnue --candidate-arg=results/active/tds-trunk_int8.bin \
+            --baseline-arg=--nnue --baseline-arg=checkpoints/gen8/nnue_weights_int8.bin \
+            --openings results/active/eval-openings.jsonl --limit-openings 20 \
+            --movetime 200 --workers 1 --max-plies 180 \
+            --games-out results/active/trunk-games.jsonl | tee results/active/trunk-summary.log
+          python tools/external/analyze_paired_arena.py \
+            --games results/active/trunk-games.jsonl --out results/active/trunk-paired.json \
+            --bootstrap 20000 --seed 20260912
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: teacher-active-search-${{ github.run_id }}
+          retention-days: 7
+          path: results/active/**
