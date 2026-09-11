@@ -16,7 +16,7 @@ permissions:
 jobs:
   smoke:
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 35
     steps:
       - uses: actions/checkout@v4
 
@@ -69,12 +69,13 @@ jobs:
           Path("results/positions.jsonl").write_text("".join(dumps(r) + "\n" for r in rows), encoding="utf-8")
           PY
 
-      - name: Ensure PyTorch
+      - name: Ensure PyTorch 2.10 CPU
         run: |
           set -euo pipefail
-          python - <<'PY' || python -m pip install --quiet --index-url https://download.pytorch.org/whl/cpu torch
-          import torch
+          python - <<'PY' || python -m pip install --quiet --index-url https://download.pytorch.org/whl/cpu 'torch==2.10.*'
+          import torch, sys
           print(torch.__version__)
+          sys.exit(0 if torch.__version__.split('+')[0].startswith('2.10.') else 1)
           PY
 
       - name: Relabel with real Claustrophobia champion network
@@ -98,6 +99,65 @@ jobs:
           assert np.max(np.abs(sums - 1.0)) < 5e-3, sums
           assert np.isfinite(d["value"]).all()
           print("soft-target smoke OK; value range", float(d["value"].min()), float(d["value"].max()))
+          PY
+
+      - name: Build Claustrophobia search bridge
+        env:
+          LIBTORCH_USE_PYTORCH: "1"
+        run: |
+          set -euo pipefail
+          cd /tmp/claustrophobia
+          cp "$GITHUB_WORKSPACE/training/teachers/claustrophobia_search_bridge.rs" src/bin/zq_search_bridge.rs
+          cat >> Cargo.toml <<'EOF'
+
+          [[bin]]
+          name = "zq_search_bridge"
+          path = "src/bin/zq_search_bridge.rs"
+          required-features = ["nn"]
+          EOF
+          cargo build --quiet --release --features nn --bin zq_search_bridge
+          cp target/release/zq_search_bridge "$GITHUB_WORKSPACE/bin/claustrophobia_search_bridge"
+
+      - name: Smoke Claustrophobia MCTS search targets
+        env:
+          PYTHONPATH: training/teachers
+          LIBTORCH_USE_PYTORCH: "1"
+        run: |
+          set -euo pipefail
+          TORCH_LIB=$(python - <<'PY'
+          import os, torch
+          print(os.path.join(os.path.dirname(torch.__file__), "lib"))
+          PY
+          )
+          export LD_LIBRARY_PATH="$TORCH_LIB:${LD_LIBRARY_PATH:-}"
+          python training/teachers/claustrophobia_search_relabel.py \
+            --positions results/positions.jsonl \
+            --bridge bin/claustrophobia_search_bridge \
+            --checkpoint /tmp/claustrophobia-champion.pt \
+            --sims 16,32 --out results/claustrophobia-search.npz
+          python - <<'PY'
+          import numpy as np
+          d = np.load("results/claustrophobia-search.npz")
+          assert d["policy"].shape == (6, 209)
+          assert d["policy_sims_16"].shape == (6, 209)
+          assert d["policy_sims_32"].shape == (6, 209)
+          assert np.max(np.abs(d["policy"].astype("float32").sum(1) - 1.0)) < 5e-3
+          assert ((d["budget_agreement"] >= 0.0) & (d["budget_agreement"] <= 1.0)).all()
+          print("search-target smoke OK")
+          PY
+
+      - name: Smoke ensemble merger
+        run: |
+          set -euo pipefail
+          python training/teachers/merge_soft_targets.py \
+            --source network=results/claustrophobia-soft.npz \
+            --source search=results/claustrophobia-search.npz=2 \
+            --out results/ensemble.npz
+          python - <<'PY'
+          import numpy as np
+          d = np.load("results/ensemble.npz")
+          assert d["policy"].shape == (6, 209)
+          assert d["confidence"].shape == (6,)
           PY
 
       - name: Build canonical ZQ dataset and fine-tune policy head
