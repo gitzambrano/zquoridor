@@ -4,12 +4,11 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import subprocess
 import sys
 import tempfile
 from pathlib import Path
-from typing import Iterable, Sequence
+from typing import Sequence
 
 import numpy as np
 
@@ -19,6 +18,7 @@ sys.path.insert(0, str(TEACHERS))
 
 from select_samples import iter_records  # noqa: E402
 
+PROTO = "ZQTEACH"
 FIELDS = (
     ("own_pawn", np.uint8),
     ("opp_pawn", np.uint8),
@@ -76,14 +76,25 @@ def write_encoder_input(corpus: Path, path: Path, disagreement_boost: float) -> 
     return metadata
 
 
-def run_encoder(encoder: Path, input_path: Path, output_path: Path) -> None:
-    """Run the C++ rules engine over the teacher records."""
+def run_encoder(encoder: Path, input_path: Path, output_path: Path, noise_path: Path) -> None:
+    """Run the C++ rules encoder and retain incidental stdout diagnostics separately."""
     if not encoder.is_file():
         raise FileNotFoundError(f"teacher encoder not found: {encoder}")
-    with input_path.open("r", encoding="utf-8") as source, output_path.open(
-        "w", encoding="utf-8"
-    ) as target:
-        subprocess.run([str(encoder)], stdin=source, stdout=target, check=True, text=True)
+    with input_path.open("r", encoding="utf-8") as source:
+        proc = subprocess.run(
+            [str(encoder)], stdin=source, capture_output=True, check=True, text=True
+        )
+    protocol_lines = []
+    noise_lines = []
+    for line in proc.stdout.splitlines():
+        if line.startswith(PROTO + "\t"):
+            protocol_lines.append(line)
+        elif line.strip():
+            noise_lines.append(line)
+    output_path.write_text("\n".join(protocol_lines) + ("\n" if protocol_lines else ""), encoding="utf-8")
+    combined_noise = list(noise_lines)
+    combined_noise.extend(line for line in proc.stderr.splitlines() if line.strip())
+    noise_path.write_text("\n".join(combined_noise) + ("\n" if combined_noise else ""), encoding="utf-8")
 
 
 def read_encoder_output(path: Path, expected: int) -> dict[str, np.ndarray]:
@@ -91,19 +102,20 @@ def read_encoder_output(path: Path, expected: int) -> dict[str, np.ndarray]:
     columns: dict[str, list[int]] = {name: [] for name, _ in FIELDS}
     lines = path.read_text(encoding="utf-8").splitlines()
     if len(lines) != expected:
-        raise ValueError(f"encoder returned {len(lines)} rows for {expected} samples")
+        raise ValueError(f"encoder returned {len(lines)} protocol rows for {expected} samples")
     for index, line in enumerate(lines):
         parts = line.split("\t")
-        if not parts or parts[0] != "ok":
-            raise ValueError(f"encoder failed at sample {index}: {line}")
-        if len(parts) != 1 + len(FIELDS):
-            raise ValueError(f"encoder returned {len(parts) - 1} fields at sample {index}")
-        for (name, _), text in zip(FIELDS, parts[1:]):
+        if len(parts) < 2 or parts[0] != PROTO:
+            raise ValueError(f"invalid encoder protocol at sample {index}: {line}")
+        if parts[1] != "ok":
+            detail = "\t".join(parts[2:]) if len(parts) > 2 else "unknown encoder error"
+            raise ValueError(f"encoder failed at sample {index}: {detail}")
+        values = parts[2:]
+        if len(values) != len(FIELDS):
+            raise ValueError(f"encoder returned {len(values)} fields at sample {index}")
+        for (name, _), text in zip(FIELDS, values):
             columns[name].append(int(text))
-    return {
-        name: np.asarray(columns[name], dtype=dtype)
-        for name, dtype in FIELDS
-    }
+    return {name: np.asarray(columns[name], dtype=dtype) for name, dtype in FIELDS}
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -125,12 +137,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         with tempfile.TemporaryDirectory(prefix="zq_teacher_") as tmp:
             input_path = Path(tmp) / "encoder_input.tsv"
             output_path = Path(tmp) / "encoder_output.tsv"
+            noise_path = Path(tmp) / "encoder_noise.log"
             metadata = write_encoder_input(corpus, input_path, args.disagreement_boost)
             sample_count = len(metadata["weight"])
             if sample_count == 0:
                 raise ValueError("teacher corpus contains no usable samples")
-            run_encoder(Path(args.encoder), input_path, output_path)
+            run_encoder(Path(args.encoder), input_path, output_path, noise_path)
             encoded = read_encoder_output(output_path, sample_count)
+            encoder_noise = noise_path.read_text(encoding="utf-8").splitlines()
     except (ValueError, OSError, subprocess.CalledProcessError) as exc:
         raise SystemExit(str(exc)) from exc
 
@@ -154,12 +168,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         "validation_samples": int(arrays["is_val"].sum()),
         "student_disagreements": int(arrays["student_disagrees"].sum()),
         "disagreement_boost": args.disagreement_boost,
+        "encoder_diagnostic_lines": len(encoder_noise),
         "policy_target": "teacher bestmove, canonical mover perspective",
         "state_encoding": "compact canonical NNUE state; features expanded by trainer",
     }
     Path(str(out) + ".manifest.json").write_text(
-        json.dumps(manifest, indent=2) + "\n",
-        encoding="utf-8",
+        json.dumps(manifest, indent=2) + "\n", encoding="utf-8"
     )
     print(json.dumps(manifest, indent=2), flush=True)
     return 0
