@@ -2,9 +2,11 @@
 """Relabel ZQuoridor positions with a Claustrophobia TorchScript teacher.
 
 The teacher's own Rust encoder is invoked through ``claustrophobia_encode_bridge``
-so feature-plane semantics stay owned by Claustrophobia. The resulting 209-way
-soft policy is converted from Claustrophobia's canonical action frame to the
-ZQuoridor canonical frame before it is written.
+so feature-plane and legal-action semantics stay owned by Claustrophobia. The
+teacher logits are masked with Claustrophobia's exact legal-action mask before
+softmax, matching its real evaluator. The resulting 209-way soft policy is then
+converted from Claustrophobia's canonical action frame to the ZQuoridor
+canonical frame before it is written.
 """
 from __future__ import annotations
 
@@ -55,54 +57,79 @@ def load_positions(path: Path) -> list[dict]:
     return positions
 
 
-def encode_positions(positions: Sequence[dict], bridge: Path) -> np.ndarray:
+def encode_positions(positions: Sequence[dict], bridge: Path) -> tuple[np.ndarray, np.ndarray]:
     if not bridge.is_file():
         raise FileNotFoundError(f"Claustrophobia encoder bridge not found: {bridge}")
     with tempfile.TemporaryDirectory(prefix="zq_claustro_") as tmp:
         tmp = Path(tmp)
         inp = tmp / "positions.tsv"
         raw = tmp / "planes.f32"
+        mask_raw = tmp / "legal.u8"
         with inp.open("w", encoding="utf-8") as fh:
             for row in positions:
                 fh.write(str(row["id"]) + "\t" + " ".join(row["history"]) + "\n")
-        subprocess.run([str(bridge), str(inp), str(raw)], check=True)
+        subprocess.run([str(bridge), str(inp), str(raw), str(mask_raw)], check=True)
         flat = np.fromfile(raw, dtype="<f4")
+        masks = np.fromfile(mask_raw, dtype=np.uint8)
     expected = len(positions) * TENSOR_LEN
     if flat.size != expected:
         raise ValueError(
             f"encoder returned {flat.size} floats; expected {expected} for {len(positions)} positions"
         )
-    return flat.reshape(len(positions), PLANES, BOARD, BOARD)
+    expected_masks = len(positions) * POLICY_DIM
+    if masks.size != expected_masks:
+        raise ValueError(
+            f"encoder returned {masks.size} legal-mask bytes; expected {expected_masks}"
+        )
+    masks = masks.reshape(len(positions), POLICY_DIM).astype(bool)
+    if not masks.any(axis=1).all():
+        raise ValueError("encoder returned a position without legal actions")
+    return flat.reshape(len(positions), PLANES, BOARD, BOARD), masks
 
 
-def forward_teacher(planes: np.ndarray, checkpoint: Path, batch_size: int,
-                    device: torch.device, store_logits: bool) -> tuple[np.ndarray, np.ndarray, np.ndarray | None]:
+def forward_teacher(planes: np.ndarray, legal_masks: np.ndarray, checkpoint: Path,
+                    batch_size: int, device: torch.device,
+                    store_logits: bool) -> tuple[np.ndarray, np.ndarray, np.ndarray | None, np.ndarray]:
     teacher = torch.jit.load(str(checkpoint), map_location=device).eval()
     n = len(planes)
     probs = np.empty((n, POLICY_DIM), dtype=np.float32)
     values = np.empty(n, dtype=np.float32)
     logits_out = np.empty((n, POLICY_DIM), dtype=np.float32) if store_logits else None
+    illegal_mass_raw = np.empty(n, dtype=np.float32)
     with torch.no_grad():
         for start in range(0, n, batch_size):
             stop = min(n, start + batch_size)
             xb = torch.from_numpy(planes[start:stop]).to(device)
+            legal = torch.from_numpy(legal_masks[start:stop]).to(device=device, dtype=torch.bool)
             out = teacher(xb)
             logits = out[0].float()
             value = out[1].float().reshape(-1)
             if logits.ndim != 2 or logits.shape[1] != POLICY_DIM:
                 raise ValueError(f"teacher returned policy shape {tuple(logits.shape)}")
-            probs[start:stop] = torch.softmax(logits, dim=1).cpu().numpy()
+
+            # Diagnostic only: quantify how wrong an unmasked direct softmax
+            # would have been. Training targets below always use the evaluator-
+            # faithful masked softmax.
+            raw_probs = torch.softmax(logits, dim=1)
+            illegal_mass_raw[start:stop] = (
+                raw_probs.masked_fill(legal, 0.0).sum(dim=1).cpu().numpy()
+            )
+
+            masked_logits = logits.masked_fill(~legal, float("-inf"))
+            probs[start:stop] = torch.softmax(masked_logits, dim=1).cpu().numpy()
             values[start:stop] = value.cpu().numpy()
             if logits_out is not None:
+                # Store raw network logits. Legality is separately represented by
+                # the policy target; preserving raw logits is useful for analysis.
                 logits_out[start:stop] = logits.cpu().numpy()
-    return probs, values, logits_out
+    return probs, values, logits_out, illegal_mass_raw
 
 
-def convert_policy_frames(probs: np.ndarray, positions: Sequence[dict]) -> np.ndarray:
-    out = np.empty_like(probs)
+def convert_policy_frames(values: np.ndarray, positions: Sequence[dict]) -> np.ndarray:
+    out = np.empty_like(values)
     for index, row in enumerate(positions):
         out[index] = np.asarray(
-            claustrophobia_policy_to_zq(probs[index], int(row["side_to_move"])),
+            claustrophobia_policy_to_zq(values[index], int(row["side_to_move"])),
             dtype=np.float32,
         )
     return out
@@ -135,9 +162,9 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     try:
         positions = load_positions(args.positions)
-        planes = encode_positions(positions, args.bridge)
-        probs, values, logits = forward_teacher(
-            planes, args.checkpoint, args.batch_size, device, args.store_logits
+        planes, legal_masks = encode_positions(positions, args.bridge)
+        probs, values, logits, illegal_mass_raw = forward_teacher(
+            planes, legal_masks, args.checkpoint, args.batch_size, device, args.store_logits
         )
         probs = convert_policy_frames(probs, positions)
     except (OSError, ValueError, subprocess.CalledProcessError, RuntimeError) as exc:
@@ -149,10 +176,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         "side_to_move": np.asarray([row["side_to_move"] for row in positions], dtype=np.uint8),
         "policy": probs.astype(policy_dtype),
         "value": values.astype(np.float16),
+        "raw_illegal_policy_mass": illegal_mass_raw.astype(np.float16),
     }
     if logits is not None:
-        # Logits are teacher-frame quantities. Convert the action axis with the
-        # same permutation as probabilities before storing them.
         arrays["logits"] = convert_policy_frames(logits, positions).astype(policy_dtype)
     args.out.parent.mkdir(parents=True, exist_ok=True)
     np.savez(args.out, **arrays)
@@ -175,7 +201,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         "stored_logits": logits is not None,
         "device": str(device),
         "policy_frame": "zquoridor canonical mover frame",
-        "teacher_encoder": "Claustrophobia encode20 via exact Rust bridge",
+        "teacher_encoder": "Claustrophobia encode20 + legal_mask_into via exact Rust bridge",
+        "policy_normalization": "softmax after exact teacher legal-action mask",
+        "raw_illegal_policy_mass_mean": float(illegal_mass_raw.mean()),
+        "raw_illegal_policy_mass_p90": float(np.quantile(illegal_mass_raw, 0.90)),
+        "raw_illegal_policy_mass_max": float(illegal_mass_raw.max()),
         "top1_unique_actions": int(len(np.unique(top1))),
         "value_mean": float(values.mean()),
         "value_std": float(values.std()),
