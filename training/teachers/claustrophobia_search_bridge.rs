@@ -88,7 +88,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         if state.is_terminal() {
             return Err(format!("{sample_id}: search position is terminal").into());
         }
-        let result = run_mcts_batched(state, &evaluator, sims, cpuct, cfg());
+        let result = run_mcts_batched(state, &evaluator, sims, cpuct, cfg);
         print!(
             "{{\"id\":\"{}\",\"side_to_move\":{},\"sims\":{},\"best_action\":{},\"root_value\":{:.9},\"visits\":[",
             sample_id,
