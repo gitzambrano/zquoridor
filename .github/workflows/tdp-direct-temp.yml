@@ -1,0 +1,153 @@
+name: TD-P direct distillation temporary experiment
+
+on:
+  push:
+    branches: [exp/teacher-distill-multisource]
+    paths:
+      - ".github/workflows/tdp-direct-temp.yml"
+      - "tools/teacher/generate_openings.cpp"
+
+permissions:
+  contents: read
+
+jobs:
+  tdp:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build ZQ trajectory tools
+        run: |
+          set -euo pipefail
+          mkdir -p bin results/tdp
+          g++ -std=c++17 -O2 -DNDEBUG -pthread -Isrc \
+            tools/teacher/generate_openings.cpp -o bin/generate_openings
+          g++ -std=c++17 -O3 -DNDEBUG -DNO_TABLEBASES -pthread -Isrc \
+            tools/external/zquoridor_uci.cpp -o bin/zquoridor_uci
+          g++ -std=c++17 -O2 -DNDEBUG -pthread -Isrc \
+            tools/teacher/encode_state.cpp -o bin/teacher_encode_state
+
+      - name: Generate independent legal openings
+        env:
+          PYTHONPATH: training/teachers
+        run: |
+          set -euo pipefail
+          ./bin/generate_openings 72 4 2026091101 > results/tdp/openings-candidates.jsonl
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          from common import read_openings
+          frozen = {tuple(x) for x in read_openings(Path('tools/external/openings_titanium.jsonl'))}
+          rows=[]
+          for line in Path('results/tdp/openings-candidates.jsonl').read_text().splitlines():
+              obj=json.loads(line)
+              if tuple(obj['moves']) not in frozen:
+                  rows.append(obj)
+              if len(rows) == 48:
+                  break
+          assert len(rows) == 48
+          Path('results/tdp/openings.jsonl').write_text(''.join(json.dumps(x,separators=(',',':'))+'\n' for x in rows))
+          print('training openings', len(rows), 'frozen overlap', sum(tuple(x['moves']) in frozen for x in rows))
+          PY
+
+      - name: Generate Gen8 trajectories
+        run: |
+          set -euo pipefail
+          python training/teachers/collect.py \
+            --teacher zquoridor-gen8 --protocol uci \
+            --engine bin/zquoridor_uci \
+            --engine-arg=--nnue \
+            --engine-arg=checkpoints/gen8/nnue_weights_int8.bin \
+            --openings results/tdp/openings.jsonl \
+            --out-dir results/tdp/raw \
+            --budgets 15 --repeats 1 --workers 2 --max-plies 100 --val-mod 5
+          python training/teachers/export_positions.py \
+            --corpus results/tdp/raw --out results/tdp/positions.jsonl
+          python - <<'PY'
+          from pathlib import Path
+          n=sum(1 for x in Path('results/tdp/positions.jsonl').open() if x.strip())
+          print('TD-P positions', n)
+          assert n >= 500, n
+          PY
+
+      - name: Build exact Claustrophobia encoder bridge
+        run: |
+          set -euo pipefail
+          git clone --quiet https://github.com/Plaaasma/Claustrophobia.git /tmp/claustrophobia
+          cd /tmp/claustrophobia
+          git checkout --quiet ae093653e62ad700e201706fa5ed767093d0d68e
+          cp "$GITHUB_WORKSPACE/training/teachers/claustrophobia_encode_bridge.rs" src/bin/zq_encode_bridge.rs
+          cat >> Cargo.toml <<'EOF'
+
+          [[bin]]
+          name = "zq_encode_bridge"
+          path = "src/bin/zq_encode_bridge.rs"
+          EOF
+          cargo build --quiet --release --bin zq_encode_bridge
+          cp target/release/zq_encode_bridge "$GITHUB_WORKSPACE/bin/claustrophobia_encode_bridge"
+
+      - name: Install direct-teacher runtime
+        run: |
+          set -euo pipefail
+          python -m pip install --quiet numpy
+          python - <<'PY' || python -m pip install --quiet --index-url https://download.pytorch.org/whl/cpu 'torch==2.10.*'
+          import torch, sys
+          sys.exit(0 if torch.__version__.split('+')[0].startswith('2.10.') else 1)
+          PY
+          curl -L --fail --retry 3 -o /tmp/claustrophobia-champion.pt \
+            https://github.com/Plaaasma/Claustrophobia/releases/download/v1.3.1/champion.pt
+          echo '821bd10f2736fc433c82de4dfc090ab95fc81b524f04fa09e68c4a26e30b496c  /tmp/claustrophobia-champion.pt' | sha256sum -c -
+
+      - name: Direct relabel and policy-only distillation
+        env:
+          PYTHONPATH: training/teachers
+        run: |
+          set -euo pipefail
+          python training/teachers/claustrophobia_relabel.py \
+            --positions results/tdp/positions.jsonl \
+            --bridge bin/claustrophobia_encode_bridge \
+            --checkpoint /tmp/claustrophobia-champion.pt \
+            --out results/tdp/claustrophobia-direct.npz --device cpu
+          python training/build_teacher_soft.py \
+            --positions results/tdp/positions.jsonl \
+            --targets results/tdp/claustrophobia-direct.npz \
+            --encoder bin/teacher_encode_state \
+            --out results/tdp/dataset.npz
+          python training/train_teacher_soft.py \
+            --data results/tdp/dataset.npz \
+            --init-from checkpoints/gen8/nnue_weights.bin \
+            --out results/tdp/tdp-direct.bin \
+            --epochs 6 --batch-size 1024 --lr 0.0001 --patience 3 --device cpu
+          test -s results/tdp/tdp-direct_int8.bin
+          python - <<'PY'
+          import json
+          p='results/tdp/tdp-direct.bin.manifest.json'
+          m=json.load(open(p))
+          assert m['mode']=='policy'
+          assert m['value_weight']==0.0
+          assert 'fc1.weight' in m['frozen_parameters_verified']
+          assert 'value2_wl.weight' in m['frozen_parameters_verified']
+          print('TD-P train manifest:', json.dumps({k:m[k] for k in ('samples','train_samples','val_samples','best_val_loss','epochs_ran')}, indent=2))
+          PY
+
+      - name: Paired 200ms sanity H2H against Gen8
+        run: |
+          set -euo pipefail
+          # run_arena.py has no compiler-flag CLI. For this temporary gate only,
+          # force the project-standard tablebase-off build without changing the repo file.
+          sed -i 's|CXX_FLAGS = "-O3 -std=c++17"|CXX_FLAGS = "-O3 -std=c++17 -DNO_TABLEBASES"|' tools/arena/run_arena.py
+          python tools/arena/run_arena.py \
+            --ref1 "" --ref2 "" \
+            --games 40 --report-games 10 --time 200 --threads 1 \
+            --random-plies 4 --seed 2026091102 \
+            --e1-nnue results/tdp/tdp-direct_int8.bin \
+            --e2-nnue checkpoints/gen8/nnue_weights_int8.bin \
+            | tee results/tdp/h2h.log
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: tdp-direct-${{ github.run_id }}
+          retention-days: 7
+          path: results/tdp/**
