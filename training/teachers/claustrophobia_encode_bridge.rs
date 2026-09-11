@@ -1,14 +1,21 @@
-//! Temporary companion binary compiled inside a pinned Claustrophobia checkout.
+//! Companion binary compiled inside a pinned Claustrophobia checkout.
 //!
 //! Input TSV: `<sample-id>\t<space separated move history>`.
-//! Output binary: raw little-endian f32 tensors, one 20x9x9 tensor per input row.
+//! Outputs:
+//!   1. raw little-endian f32 tensors, one 20x9x9 tensor per input row;
+//!   2. optional raw u8 legal-action masks, one 209-byte row per input row.
+//!
 //! The bridge deliberately uses Claustrophobia's own GameState, move generator,
-//! and encode20() so ZQuoridor never reimplements the teacher's feature planes.
+//! encode20(), and legal_mask_into() so ZQuoridor never reimplements teacher
+//! feature or legality semantics.
 
 use std::fs::File;
 use std::io::{BufRead, BufReader, BufWriter, Write};
 
-use quoridor::{encode20, generate_all_moves, GameState, Move, MoveBuf, TENSOR_LEN20};
+use quoridor::{
+    encode20, generate_all_moves, legal_mask_into, GameState, Move, MoveBuf,
+    ACTION_COUNT, TENSOR_LEN20,
+};
 
 fn parse_move(input: &str, state: &GameState) -> Option<Move> {
     let t = input.trim().to_ascii_lowercase();
@@ -57,12 +64,17 @@ fn replay(history: &str, sample_id: &str) -> Result<GameState, String> {
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = std::env::args().collect();
-    if args.len() != 3 {
-        eprintln!("usage: zq_encode_bridge <input.tsv> <output.f32>");
+    if args.len() != 3 && args.len() != 4 {
+        eprintln!("usage: zq_encode_bridge <input.tsv> <output.f32> [legal.u8]");
         std::process::exit(2);
     }
     let input = BufReader::new(File::open(&args[1])?);
     let mut output = BufWriter::new(File::create(&args[2])?);
+    let mut legal_output = if args.len() == 4 {
+        Some(BufWriter::new(File::create(&args[3])?))
+    } else {
+        None
+    };
     let mut count = 0usize;
 
     for (line_no, line) in input.lines().enumerate() {
@@ -74,14 +86,32 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .split_once('\t')
             .ok_or_else(|| format!("input line {} lacks a tab", line_no + 1))?;
         let state = replay(history, sample_id)?;
+        if state.is_terminal() {
+            return Err(format!("{sample_id}: teacher position is terminal").into());
+        }
+
         let tensor = encode20(&state);
         debug_assert_eq!(tensor.len(), TENSOR_LEN20);
         for value in tensor {
             output.write_all(&value.to_le_bytes())?;
         }
+
+        if let Some(mask_file) = legal_output.as_mut() {
+            let mut legal = [false; ACTION_COUNT];
+            legal_mask_into(&state, &mut legal);
+            if !legal.iter().any(|&x| x) {
+                return Err(format!("{sample_id}: nonterminal state has no legal actions").into());
+            }
+            for flag in legal {
+                mask_file.write_all(&[u8::from(flag)])?;
+            }
+        }
         count += 1;
     }
     output.flush()?;
-    eprintln!("encoded {count} positions with Claustrophobia encode20");
+    if let Some(mask_file) = legal_output.as_mut() {
+        mask_file.flush()?;
+    }
+    eprintln!("encoded {count} positions with Claustrophobia encode20 + legal mask");
     Ok(())
 }
