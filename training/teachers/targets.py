@@ -19,6 +19,36 @@ def sample_id(history: Sequence[str]) -> str:
     return hashlib.sha256(payload).hexdigest()[:24]
 
 
+def zq_move_to_policy_index(move: str, side_to_move: int) -> int:
+    """Map one raw-board move string to ZQuoridor's canonical 209-action index.
+
+    ZQ keeps columns fixed and mirrors only rows for side 1. Wall orientation is
+    preserved. This matches ``mirrorMoveForPerspective`` + ``moveToPolicyIndex``
+    in ``src/nnue.hpp`` / rules code.
+    """
+    text = str(move).strip().lower()
+    if side_to_move not in (0, 1):
+        raise ValueError(f"invalid side_to_move: {side_to_move}")
+    if len(text) not in (2, 3):
+        raise ValueError(f"invalid move syntax: {move!r}")
+    col_ch, row_ch = text[0], text[1]
+    if col_ch not in "abcdefghi" or row_ch not in "123456789":
+        raise ValueError(f"invalid move syntax: {move!r}")
+    col = ord(col_ch) - ord("a")
+    row = ord(row_ch) - ord("1")
+
+    if len(text) == 2:
+        canonical_row = row if side_to_move == 0 else 8 - row
+        return canonical_row * 9 + col
+
+    orientation = text[2]
+    if orientation not in "hv" or row >= 8 or col >= 8:
+        raise ValueError(f"invalid wall move syntax: {move!r}")
+    canonical_row = row if side_to_move == 0 else 7 - row
+    slot = canonical_row * 8 + col
+    return (H_WALL_BASE if orientation == "h" else V_WALL_BASE) + slot
+
+
 def mirror_action_lr(index: int) -> int:
     """Mirror one canonical 209-action index left/right."""
     if not 0 <= index < POLICY_DIM:
