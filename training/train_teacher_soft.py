@@ -14,15 +14,39 @@ import torch.nn.functional as F
 
 import train_nnue as base
 from quantize_nnue import quantize_file
-from train_teacher_policy import dense_features, split_indices
+from train_teacher_policy import dense_features
 
 
 def weighted_mean(values: torch.Tensor, weights: torch.Tensor) -> torch.Tensor:
     return (values * weights).sum() / weights.sum().clamp(min=1e-8)
 
 
+def split_soft_indices(data, seed: int, fallback_val_fraction: float) -> tuple[np.ndarray, np.ndarray]:
+    """Use collector train/val flags for a full-soft-policy dataset.
+
+    This intentionally does not reuse train_teacher_policy.split_indices():
+    that helper is for the older one-hot dataset and keys its length from
+    ``policy_idx``. Soft distillation stores one 209-way row in ``policy``.
+    """
+    n = len(data["policy"])
+    if n < 2:
+        raise ValueError("soft teacher training needs at least two samples")
+    all_indices = np.arange(n, dtype=np.int64)
+    is_val = data["is_val"].astype(bool)
+    train_indices = all_indices[~is_val]
+    val_indices = all_indices[is_val]
+    if len(train_indices) and len(val_indices):
+        return train_indices, val_indices
+
+    rng = np.random.default_rng(seed)
+    perm = rng.permutation(n)
+    n_val = max(1, min(n - 1, int(round(n * fallback_val_fraction))))
+    return perm[n_val:], perm[:n_val]
+
+
 def soft_policy_loss(logits: torch.Tensor, target: torch.Tensor,
                      weights: torch.Tensor) -> torch.Tensor:
+    """Confidence-weighted cross entropy against the full teacher distribution."""
     per_sample = -(target * F.log_softmax(logits, dim=1)).sum(dim=1)
     return weighted_mean(per_sample, weights)
 
@@ -84,10 +108,11 @@ def run_epoch(model, data, indices: np.ndarray, batch_size: int, device,
 
 
 def snapshot_frozen(model) -> dict[str, torch.Tensor]:
+    parameters = dict(model.named_parameters())
     return {
         name: tensor.detach().cpu().clone()
         for name, tensor in model.state_dict().items()
-        if not dict(model.named_parameters()).get(name, torch.empty(0)).requires_grad
+        if name in parameters and not parameters[name].requires_grad
     }
 
 
@@ -149,7 +174,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         raise SystemExit("soft teacher values fall outside [-1,1]")
 
     try:
-        train_idx, val_idx = split_indices(data, args.seed, args.val_fraction)
+        train_idx, val_idx = split_soft_indices(data, args.seed, args.val_fraction)
     except ValueError as exc:
         raise SystemExit(str(exc)) from exc
 
