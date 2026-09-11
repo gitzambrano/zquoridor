@@ -4,9 +4,9 @@
 The teacher's own Rust encoder is invoked through ``claustrophobia_encode_bridge``
 so feature-plane and legal-action semantics stay owned by Claustrophobia. The
 teacher logits are masked with Claustrophobia's exact legal-action mask before
-softmax, matching its real evaluator. The resulting 209-way soft policy is then
-converted from Claustrophobia's canonical action frame to the ZQuoridor
-canonical frame before it is written.
+softmax, matching its real evaluator. The resulting 209-way soft policy and
+legal mask are then converted from Claustrophobia's canonical action frame to
+the ZQuoridor canonical frame before they are written.
 """
 from __future__ import annotations
 
@@ -107,20 +107,14 @@ def forward_teacher(planes: np.ndarray, legal_masks: np.ndarray, checkpoint: Pat
             if logits.ndim != 2 or logits.shape[1] != POLICY_DIM:
                 raise ValueError(f"teacher returned policy shape {tuple(logits.shape)}")
 
-            # Diagnostic only: quantify how wrong an unmasked direct softmax
-            # would have been. Training targets below always use the evaluator-
-            # faithful masked softmax.
             raw_probs = torch.softmax(logits, dim=1)
             illegal_mass_raw[start:stop] = (
                 raw_probs.masked_fill(legal, 0.0).sum(dim=1).cpu().numpy()
             )
-
             masked_logits = logits.masked_fill(~legal, float("-inf"))
             probs[start:stop] = torch.softmax(masked_logits, dim=1).cpu().numpy()
             values[start:stop] = value.cpu().numpy()
             if logits_out is not None:
-                # Store raw network logits. Legality is separately represented by
-                # the policy target; preserving raw logits is useful for analysis.
                 logits_out[start:stop] = logits.cpu().numpy()
     return probs, values, logits_out, illegal_mass_raw
 
@@ -167,14 +161,24 @@ def main(argv: Sequence[str] | None = None) -> int:
             planes, legal_masks, args.checkpoint, args.batch_size, device, args.store_logits
         )
         probs = convert_policy_frames(probs, positions)
+        legal_zq = convert_policy_frames(legal_masks.astype(np.float32), positions) > 0.5
     except (OSError, ValueError, subprocess.CalledProcessError, RuntimeError) as exc:
         raise SystemExit(str(exc)) from exc
+
+    # This is a hard invariant of direct distillation: no probability mass may
+    # survive on an action the teacher itself considers illegal.
+    illegal_mass_after = np.where(legal_zq, 0.0, probs).sum(axis=1)
+    if float(illegal_mass_after.max()) > 1e-7:
+        raise SystemExit(
+            f"masked teacher target still has illegal mass: max={illegal_mass_after.max()}"
+        )
 
     policy_dtype = np.float32 if args.float32_policy else np.float16
     arrays = {
         "id": np.asarray([row["id"] for row in positions], dtype="S24"),
         "side_to_move": np.asarray([row["side_to_move"] for row in positions], dtype=np.uint8),
         "policy": probs.astype(policy_dtype),
+        "legal_mask": legal_zq.astype(np.uint8),
         "value": values.astype(np.float16),
         "raw_illegal_policy_mass": illegal_mass_raw.astype(np.float16),
     }
@@ -199,6 +203,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         "policy_dtype": str(np.dtype(policy_dtype)),
         "value_dtype": "float16",
         "stored_logits": logits is not None,
+        "stored_legal_mask": True,
         "device": str(device),
         "policy_frame": "zquoridor canonical mover frame",
         "teacher_encoder": "Claustrophobia encode20 + legal_mask_into via exact Rust bridge",
@@ -206,6 +211,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         "raw_illegal_policy_mass_mean": float(illegal_mass_raw.mean()),
         "raw_illegal_policy_mass_p90": float(np.quantile(illegal_mass_raw, 0.90)),
         "raw_illegal_policy_mass_max": float(illegal_mass_raw.max()),
+        "masked_illegal_policy_mass_max": float(illegal_mass_after.max()),
+        "legal_action_count_mean": float(legal_zq.sum(axis=1).mean()),
         "top1_unique_actions": int(len(np.unique(top1))),
         "value_mean": float(values.mean()),
         "value_std": float(values.std()),
