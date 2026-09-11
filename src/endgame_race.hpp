@@ -383,7 +383,13 @@ inline RaceOutcome raceExactDTM(uint64_t wallsH, uint64_t wallsV, int pawn0, int
     // visitadas dentro de uma chamada de chooseMove() é pequeno o
     // bastante (dezenas, não milhares) pra um cache de N slots (indexado
     // por hash, sem encadeamento) capturar reuso real.
+#if defined(__EMSCRIPTEN__)
+    // Bound the browser cache. Each allocated slot uses approximately 128 KiB.
+    // A 1024-slot cache can exceed 128 MiB and exhaust the WASM worker.
+    constexpr int NSLOTS = 128;
+#else
     constexpr int NSLOTS = 1024;
+#endif
     struct RaceCacheSlot {
         uint64_t wallsH = 0, wallsV = 0;
         bool valid = false;

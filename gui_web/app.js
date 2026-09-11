@@ -1,4 +1,4 @@
-﻿// app.js -- Zquoridor premium GUI logic (plan gui-premium.md).
+// app.js -- Zquoridor premium GUI logic (plan gui-premium.md).
 // Sections: 1 constants - 2 wasm bindings - 3 settings - 4 state -
 // 5 hud/clocks/race/eval - 6 board bridge - 7 wall input - 8 pawn input -
 // 9 play flow - 10 sound/haptics - 11 modals/toasts - 12 keyboard - 13 boot
@@ -582,7 +582,17 @@ function engineTurn() {
     { moves: allPliesPacked(), depth: 24, timeMs: lv.ms },
     res => {
       if (gen !== engineGen) return;
-      if (!res || res.move == null) { engineLocalMove(gen, finish); return; }
+      if (!res || res.move == null) {
+        if (ANW.failed) {
+          engineThinking = false;
+          syncAll();
+          setStatus('Engine worker stopped - reload to continue');
+          toast('err', 'Engine worker stopped. Reload the page to continue.');
+          return;
+        }
+        engineLocalMove(gen, finish);
+        return;
+      }
       finish(res.move, res.score, false);
     });
   if (offThread) return;
@@ -2055,6 +2065,18 @@ function exportImageModal() {
 const ANW = {
   wk: null, ready: false, failed: false,
   pending: new Map(), nextId: 1,
+  fail(msg) {
+    this.failed = true;
+    this.ready = false;
+    if (this.wk) {
+      try { this.wk.terminate(); } catch (e) { /* worker already stopped */ }
+    }
+    this.wk = null;
+    const callbacks = [...this.pending.values()];
+    this.pending.clear();
+    const err = { type: 'error', msg: msg || 'engine worker stopped' };
+    for (const cb of callbacks) cb(err);
+  },
   ok() {
     return S.worker && typeof Worker !== 'undefined' && !this.failed;
   },
@@ -2065,11 +2087,11 @@ const ANW = {
       this.wk.onmessage = ev => {
         const m = ev.data;
         if (m.type === 'ready') { this.ready = true; return; }
-        if (m.type === 'fatal') { this.failed = true; return; }
+        if (m.type === 'fatal') { this.fail(m.msg); return; }
         const cb = this.pending.get(m.id);
         if (cb) { this.pending.delete(m.id); cb(m); }
       };
-      this.wk.onerror = () => { this.failed = true; };
+      this.wk.onerror = e => { this.fail((e && e.message) || 'engine worker error'); };
     } catch (e) { this.failed = true; }
   },
   // Asks the worker for the engine's own move. It replays the recorded line
@@ -2080,7 +2102,14 @@ const ANW = {
     this.ensure();
     if (!this.ok() || !this.ready) return false;
     const id = this.nextId++;
-    this.pending.set(id, res => cb(res && res.type !== 'error' ? res : null));
+    this.pending.set(id, res => {
+      if (res && res.type === 'error') {
+        if (!this.failed) this.fail(res.msg || 'engine worker search failed');
+        cb(null);
+        return;
+      }
+      cb(res);
+    });
     this.wk.postMessage({ id, cmd: 'bestmove', moves: req.moves,
                           depth: req.depth, timeMs: req.timeMs });
     return true;
