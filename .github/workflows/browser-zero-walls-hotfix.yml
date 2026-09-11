@@ -76,9 +76,9 @@ jobs:
       - name: Run race solver tests
         run: |
           set -euo pipefail
-          g++ -std=c++17 -O2 tests/test_endgame_race.cpp -o /tmp/test_endgame_race
+          g++ -std=c++17 -O2 -Isrc tests/test_endgame_race.cpp -o /tmp/test_endgame_race
           /tmp/test_endgame_race
-          g++ -std=c++17 -O2 tests/test_endgame_race_fuzz.cpp -o /tmp/test_endgame_race_fuzz
+          g++ -std=c++17 -O2 -Isrc tests/test_endgame_race_fuzz.cpp -o /tmp/test_endgame_race_fuzz
           /tmp/test_endgame_race_fuzz
 
       - name: Stress the Emscripten cache bound
