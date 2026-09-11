@@ -24,6 +24,7 @@ from common import (  # noqa: E402
     reaches_goal,
     summarize_probes,
 )
+from targets import sample_id  # noqa: E402
 
 FROZEN_BENCHMARK_OPENINGS = (EXTERNAL / "openings_titanium.jsonl").resolve()
 
@@ -44,6 +45,7 @@ class CollectorConfig:
     student_protocol: str = "uci"
     student_command: tuple[str, ...] = ()
     student_movetime_ms: int = 200
+    trajectory_source: str = "teacher"
 
 
 def make_engine(name: str, protocol: str, command: Sequence[str]):
@@ -86,7 +88,7 @@ def probe_teacher(streams: Sequence[tuple[int, int, object]], history: Sequence[
 
 
 def probe_student(engine, history: Sequence[str], movetime_ms: int) -> dict:
-    """Query the student once at the teacher position."""
+    """Query the student once at the labeled position."""
     move, think_s, info = engine.bestmove(history, movetime_ms)
     return {
         "movetime_ms": movetime_ms,
@@ -112,7 +114,12 @@ def representative_probe(probes: Sequence[dict], diagnostics: dict) -> dict:
 
 
 def collect_game(index: int, opening: Sequence[str], config: CollectorConfig) -> dict:
-    """Collect one teacher trajectory and write one shard."""
+    """Collect one labeled trajectory and write one shard.
+
+    In ``teacher`` mode the teacher both labels and advances the game. In
+    ``student`` mode (DAgger) the student advances the game while the teacher
+    only labels each state the student actually visits.
+    """
     split = "val" if index % config.val_mod == 0 else "train"
     history = list(opening)
     samples = 0
@@ -128,18 +135,22 @@ def collect_game(index: int, opening: Sequence[str], config: CollectorConfig) ->
             config.student_protocol,
             config.student_command,
         )
+    if config.trajectory_source == "student" and student_engine is None:
+        raise ValueError("student trajectory mode requires a configured student engine")
+
     try:
         with shard.open("w", encoding="utf-8") as fh:
             while len(history) < config.max_plies:
                 pre_move_ply = len(history)
                 probes = probe_teacher(teacher_streams, history)
                 diagnostics = summarize_probes(probes, config.budgets)
-                move = diagnostics["selected_move"]
-                if move == "(none)":
-                    termination = "no_move"
+                teacher_move = diagnostics["selected_move"]
+                if teacher_move == "(none)":
+                    termination = "no_teacher_move"
                     break
 
                 student_probe = None
+                student_move = None
                 if student_engine is not None:
                     student_probe = probe_student(
                         student_engine,
@@ -147,15 +158,24 @@ def collect_game(index: int, opening: Sequence[str], config: CollectorConfig) ->
                         config.student_movetime_ms,
                     )
                     student_move = student_probe["bestmove"]
-                    student_agrees = student_move == move
+                    student_agrees = student_move == teacher_move
                     diagnostics["student_bestmove"] = student_move
                     diagnostics["student_agrees"] = student_agrees
                     if not student_agrees:
                         disagreements += 1
 
+                played_move = (
+                    student_move if config.trajectory_source == "student" else teacher_move
+                )
+                if played_move in (None, "(none)"):
+                    termination = "no_student_move"
+                    break
+
                 selected = representative_probe(probes, diagnostics)
+                position_id = sample_id(history)
                 record = {
-                    "schema": "zquoridor.teacher.raw.v2",
+                    "schema": "zquoridor.teacher.raw.v3",
+                    "id": position_id,
                     "teacher": config.teacher,
                     "protocol": config.protocol,
                     "opening_index": index,
@@ -163,8 +183,10 @@ def collect_game(index: int, opening: Sequence[str], config: CollectorConfig) ->
                     "sample_index": samples,
                     "ply": pre_move_ply,
                     "side_to_move": pre_move_ply & 1,
-                    "history": history,
-                    "bestmove": move,
+                    "history": list(history),
+                    "bestmove": teacher_move,
+                    "played_move": played_move,
+                    "trajectory_source": config.trajectory_source,
                     "movetime_ms": selected["movetime_ms"],
                     "think_s": selected["think_s"],
                     "info": selected["info"],
@@ -176,9 +198,9 @@ def collect_game(index: int, opening: Sequence[str], config: CollectorConfig) ->
                     record["student"] = config.student
                     record["student_probe"] = student_probe
                 fh.write(json.dumps(record, separators=(",", ":")) + "\n")
-                history.append(move)
+                history.append(played_move)
                 samples += 1
-                if reaches_goal(pre_move_ply, move):
+                if reaches_goal(pre_move_ply, played_move):
                     termination = "goal"
                     break
     finally:
@@ -195,6 +217,7 @@ def collect_game(index: int, opening: Sequence[str], config: CollectorConfig) ->
         "samples": samples,
         "disagreements": disagreements,
         "termination": termination,
+        "trajectory_source": config.trajectory_source,
         "shard": str(shard.relative_to(config.out_dir)),
     }
 
@@ -215,7 +238,8 @@ def run_collection(config: CollectorConfig, openings: Sequence[Sequence[str]], w
                 f"teacher [{done}/{len(futures)}] opening={result['opening_index']} "
                 f"split={result['split']} samples={result['samples']} "
                 f"disagreements={result['disagreements']} "
-                f"termination={result['termination']}",
+                f"termination={result['termination']} "
+                f"trajectory={result['trajectory_source']}",
                 flush=True,
             )
 
@@ -228,7 +252,7 @@ def run_collection(config: CollectorConfig, openings: Sequence[Sequence[str]], w
     sample_count = sum(item["samples"] for item in results)
     disagreement_count = sum(item["disagreements"] for item in results)
     manifest = {
-        "schema": "zquoridor.teacher.manifest.v2",
+        "schema": "zquoridor.teacher.manifest.v3",
         "teacher": config.teacher,
         "protocol": config.protocol,
         "command": list(config.command),
@@ -238,6 +262,7 @@ def run_collection(config: CollectorConfig, openings: Sequence[Sequence[str]], w
         "workers": workers,
         "max_plies": config.max_plies,
         "val_mod": config.val_mod,
+        "trajectory_source": config.trajectory_source,
         "games": len(results),
         "train_games": sum(item["split"] == "train" for item in results),
         "val_games": sum(item["split"] == "val" for item in results),
@@ -246,7 +271,7 @@ def run_collection(config: CollectorConfig, openings: Sequence[Sequence[str]], w
             key: sum(item["termination"] == key for item in results)
             for key in sorted({item["termination"] for item in results})
         },
-        "target": "best move plus repeated multi-budget raw probes",
+        "target": "teacher labels plus repeated multi-budget raw probes",
         "encoding": "architecture-neutral move history",
     }
     if config.student is not None:
@@ -285,6 +310,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--student-engine")
     parser.add_argument("--student-engine-arg", action="append", default=[])
     parser.add_argument("--student-movetime", type=int, default=200)
+    parser.add_argument("--trajectory-source", choices=("teacher", "student"), default="teacher")
     parser.add_argument("--openings", required=True)
     parser.add_argument("--out-dir", required=True)
     parser.add_argument("--budgets", default="200")
@@ -308,6 +334,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         raise SystemExit("student-movetime must be positive")
     if (args.student is None) != (args.student_engine is None):
         raise SystemExit("set both --student and --student-engine, or set neither")
+    if args.trajectory_source == "student" and args.student is None:
+        raise SystemExit("--trajectory-source student requires --student and --student-engine")
 
     student_command: tuple[str, ...] = ()
     if args.student is not None:
@@ -330,6 +358,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         student_protocol=args.student_protocol,
         student_command=student_command,
         student_movetime_ms=args.student_movetime,
+        trajectory_source=args.trajectory_source,
     )
     manifest = run_collection(config, openings, args.workers)
     print(json.dumps(manifest, indent=2), flush=True)
