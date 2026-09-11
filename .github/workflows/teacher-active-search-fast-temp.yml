@@ -1,0 +1,122 @@
+name: Active search-teacher fast temporary screen
+
+on:
+  push:
+    branches: [exp/teacher-distill-multisource]
+    paths:
+      - ".github/workflows/teacher-active-search-fast-temp.yml"
+
+permissions:
+  contents: read
+  actions: read
+
+env:
+  PYTHONUNBUFFERED: "1"
+  TITANIUM_PONDERING: "0"
+
+jobs:
+  fast-screen:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download saved active labels
+        uses: actions/download-artifact@v4
+        with:
+          name: teacher-active-search-34618740856
+          path: source
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: 34618740856
+      - name: Prepare 32-state screen
+        run: |
+          set -euo pipefail
+          python -m pip install --quiet numpy
+          mkdir -p results/fast bin
+          POS=$(find source -type f -name positions.jsonl -print -quit)
+          EVAL=$(find source -type f -name eval-openings.jsonl -print -quit)
+          CLA=$(find source -type f -name claustrophobia-search.npz -print -quit)
+          test -s "$POS" && test -s "$EVAL" && test -s "$CLA"
+          head -n 32 "$POS" > results/fast/positions.jsonl
+          cp "$EVAL" results/fast/eval-openings.jsonl
+          python - "$CLA" <<'PY'
+          import numpy as np, sys
+          src=np.load(sys.argv[1], allow_pickle=False)
+          np.savez('results/fast/claustrophobia-search.npz', **{k:src[k][:32] for k in src.files})
+          PY
+      - name: Build runtime and tools
+        run: |
+          set -euo pipefail
+          python - <<'PY' || python -m pip install --quiet --index-url https://download.pytorch.org/whl/cpu 'torch==2.10.*'
+          import torch, sys
+          sys.exit(0 if torch.__version__.split('+')[0].startswith('2.10.') else 1)
+          PY
+          g++ -std=c++17 -O3 -DNDEBUG -DNO_TABLEBASES -march=native -pthread -Isrc tools/teacher/zq_deep_relabel.cpp -o bin/zq_deep_relabel
+          g++ -std=c++17 -O2 -DNDEBUG -pthread -Isrc tools/teacher/encode_state.cpp -o bin/teacher_encode_state
+          g++ -std=c++17 -O3 -DNDEBUG -DNO_TABLEBASES -march=native -pthread -Isrc tools/external/zquoridor_uci.cpp -o bin/zquoridor_uci
+          tools/external/build_pinned_titanium.sh titanium-bin
+      - name: Relabel fast teachers
+        env:
+          PYTHONPATH: training/teachers
+        run: |
+          set -euo pipefail
+          python training/teachers/zq_deep_relabel.py \
+            --positions results/fast/positions.jsonl --bridge bin/zq_deep_relabel \
+            --nnue checkpoints/gen8/nnue_weights_int8.bin --node-budgets 20000,50000 \
+            --out results/fast/zq-deep.npz
+          python training/teachers/engine_relabel.py \
+            --positions results/fast/positions.jsonl --teacher Titanium --protocol titanium \
+            --engine titanium-bin/titanium --budgets 100,300 --repeats 1 --workers 1 \
+            --out results/fast/titanium.jsonl --hard-targets-out results/fast/titanium-hard.npz
+      - name: Ensemble and train
+        run: |
+          set -euo pipefail
+          python training/teachers/merge_soft_targets.py \
+            --source claustrophobia-search=results/fast/claustrophobia-search.npz=2 \
+            --source zq-deep=results/fast/zq-deep.npz=2 \
+            --source titanium=results/fast/titanium-hard.npz=1 \
+            --out results/fast/ensemble.npz
+          python training/build_teacher_soft.py \
+            --positions results/fast/positions.jsonl --targets results/fast/ensemble.npz \
+            --encoder bin/teacher_encode_state --out results/fast/dataset.npz --confidence-floor 0.10
+          python training/train_teacher_soft.py \
+            --data results/fast/dataset.npz --init-from checkpoints/gen8/nnue_weights.bin \
+            --out results/fast/head.bin --epochs 12 --batch-size 16 --lr 0.0001 --patience 4 --device cpu
+          python training/train_teacher_soft.py \
+            --data results/fast/dataset.npz --init-from checkpoints/gen8/nnue_weights.bin \
+            --out results/fast/trunk.bin --epochs 12 --batch-size 16 --lr 0.0001 --patience 4 --device cpu \
+            --train-trunk --trunk-lr-scale 0.05
+          python - <<'PY'
+          import json
+          e=json.load(open('results/fast/ensemble.npz.manifest.json'))
+          h=json.load(open('results/fast/head.bin.manifest.json'))
+          t=json.load(open('results/fast/trunk.bin.manifest.json'))
+          print('ENSEMBLE', {k:e[k] for k in ('agreement_mean','policy_js_mean','confidence_mean','unanimous_policy_fraction')})
+          print('HEAD_KL', h['initial_val']['policy_kl'], h['best_val_policy_kl'])
+          print('TRUNK_KL', t['initial_val']['policy_kl'], t['best_val_policy_kl'])
+          PY
+      - name: Pair-aware screens
+        run: |
+          set -euo pipefail
+          python tools/external/zq_weights_paired.py \
+            --engine bin/zquoridor_uci \
+            --candidate-arg=--nnue --candidate-arg=results/fast/head_int8.bin \
+            --baseline-arg=--nnue --baseline-arg=checkpoints/gen8/nnue_weights_int8.bin \
+            --openings results/fast/eval-openings.jsonl --limit-openings 10 \
+            --movetime 200 --workers 1 --max-plies 180 --games-out results/fast/head-games.jsonl
+          python tools/external/analyze_paired_arena.py --games results/fast/head-games.jsonl --out results/fast/head-paired.json --bootstrap 10000 --seed 20260911
+          python tools/external/zq_weights_paired.py \
+            --engine bin/zquoridor_uci \
+            --candidate-arg=--nnue --candidate-arg=results/fast/trunk_int8.bin \
+            --baseline-arg=--nnue --baseline-arg=checkpoints/gen8/nnue_weights_int8.bin \
+            --openings results/fast/eval-openings.jsonl --limit-openings 10 \
+            --movetime 200 --workers 1 --max-plies 180 --games-out results/fast/trunk-games.jsonl
+          python tools/external/analyze_paired_arena.py --games results/fast/trunk-games.jsonl --out results/fast/trunk-paired.json --bootstrap 10000 --seed 20260911
+          cat results/fast/head-paired.json
+          cat results/fast/trunk-paired.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: teacher-active-search-fast-${{ github.run_id }}
+          path: results/fast/**
+          retention-days: 3
