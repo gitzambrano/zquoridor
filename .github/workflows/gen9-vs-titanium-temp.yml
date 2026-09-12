@@ -1,0 +1,122 @@
+name: Gen9 vs Titanium temporary benchmark
+
+on:
+  push:
+    branches: [exp/teacher-distill-multisource]
+    paths:
+      - ".github/workflows/gen9-vs-titanium-temp.yml"
+
+permissions:
+  contents: read
+  actions: read
+
+env:
+  PYTHONUNBUFFERED: "1"
+  TITANIUM_PONDERING: "0"
+
+jobs:
+  arena:
+    name: arena-${{ matrix.shard }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3, 4]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+      - name: Build Gen9 adapter, opening generator and pinned Titanium
+        run: |
+          set -euo pipefail
+          mkdir -p bin results
+          g++ -std=c++17 -O3 -DNDEBUG -DNO_TABLEBASES -march=native -pthread -Isrc \
+            tools/external/zquoridor_uci.cpp -o bin/zquoridor_uci
+          g++ -std=c++17 -O2 -DNDEBUG -Isrc tools/teacher/generate_openings.cpp -o bin/generate_openings
+          tools/external/build_pinned_titanium.sh titanium-bin
+      - name: Run 20 paired openings at 200 ms
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: |
+          set -euo pipefail
+          ./bin/generate_openings 100 4 2026091209 > results/openings-100.jsonl
+          START=$((SHARD * 20 + 1))
+          END=$((START + 19))
+          sed -n "${START},${END}p" results/openings-100.jsonl > results/openings-${SHARD}.jsonl
+          test "$(wc -l < results/openings-${SHARD}.jsonl)" -eq 20
+          python tools/external/titanium_arena_fixed.py \
+            --zq bin/zquoridor_uci \
+            --zq-arg=--nnue --zq-arg=data/nnue/nnue_weights_int8.bin \
+            --titanium titanium-bin/titanium \
+            --openings results/openings-${SHARD}.jsonl \
+            --movetime 200 --workers 1 --max-plies 180 \
+            --json-out results/summary-${SHARD}.json \
+            --games-out results/games-${SHARD}.jsonl
+          python - "$SHARD" results/games-${SHARD}.jsonl <<'PY'
+          import json, sys
+          shard=int(sys.argv[1]); path=sys.argv[2]
+          rows=[]
+          with open(path, encoding='utf-8') as f:
+              for line in f:
+                  if line.strip():
+                      r=json.loads(line)
+                      r['opening_index']=int(r['opening_index']) + shard*20
+                      rows.append(r)
+          assert len(rows)==40, len(rows)
+          with open(path,'w',encoding='utf-8') as f:
+              for r in rows: f.write(json.dumps(r,separators=(',',':'))+'\n')
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: gen9-vs-titanium-shard-${{ matrix.shard }}-${{ github.run_id }}
+          path: |
+            results/games-${{ matrix.shard }}.jsonl
+            results/summary-${{ matrix.shard }}.json
+          retention-days: 7
+
+  aggregate:
+    needs: arena
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: gen9-vs-titanium-shard-*-${{ github.run_id }}
+          path: shards
+          merge-multiple: true
+      - name: Aggregate pair-aware result
+        run: |
+          set -euo pipefail
+          mkdir -p results/final
+          cat shards/games-*.jsonl > results/final/all-games.jsonl
+          test "$(wc -l < results/final/all-games.jsonl)" -eq 200
+          python tools/external/analyze_paired_arena.py \
+            --games results/final/all-games.jsonl \
+            --out results/final/paired-100.json \
+            --bootstrap 100000 --seed 2026091209
+          python - <<'PY'
+          import json
+          p=json.load(open('results/final/paired-100.json'))
+          print('GEN9_vs_TITANIUM')
+          print(json.dumps({
+              'games':p['games'],
+              'paired_openings':p['paired_openings'],
+              'score_pct':p['score_pct'],
+              'elo':p['elo'],
+              'score_95_low_pct':p['paired_bootstrap']['score_95_low_pct'],
+              'score_95_high_pct':p['paired_bootstrap']['score_95_high_pct'],
+              'elo_95_low':p['paired_bootstrap']['elo_95_low'],
+              'elo_95_high':p['paired_bootstrap']['elo_95_high'],
+              'pair_outcomes':p['pair_outcomes'],
+              'by_zq_color':p['by_zq_color'],
+          }, indent=2))
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: gen9-vs-titanium-final-${{ github.run_id }}
+          path: results/final/**
+          retention-days: 7
