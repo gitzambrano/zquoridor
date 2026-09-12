@@ -67,6 +67,7 @@ jobs:
 
       - name: Validate C++ inference with the new weight layout
         run: |
+          mkdir -p data/selfplay/full-acc-candidate
           ./bin/selfplay --games 2 --time-ms 5 --threads 1 --max-plies 120 \
             --nnue-weights data/nnue/full-acc-smoke/nnue_weights_int8.bin \
             --out data/selfplay/full-acc-candidate/selfplay_000.bin
