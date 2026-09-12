@@ -1,0 +1,333 @@
+name: Claustrophobia big race-aware NNUE temporary experiment
+
+on:
+  push:
+    branches: [exp/claustrophobia-big-race-net-v1]
+    paths:
+      - ".github/workflows/claustrophobia-big-race-net-temp.yml"
+      - "tools/teacher/patch_big_race_net.py"
+      - "training/train_big_race_teacher.py"
+
+permissions:
+  contents: read
+  actions: read
+
+env:
+  PYTHONUNBUFFERED: "1"
+  TITANIUM_PONDERING: "0"
+
+jobs:
+  train-and-gate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Checkout production main for baseline trajectories and arena
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          path: baseline
+
+      - name: Install Python runtime
+        run: |
+          set -euo pipefail
+          python -m pip install --quiet numpy
+          python - <<'PY' || python -m pip install --quiet --index-url https://download.pytorch.org/whl/cpu 'torch==2.10.*'
+          import torch, sys
+          sys.exit(0 if torch.__version__.split('+')[0].startswith('2.10.') else 1)
+          PY
+          python - <<'PY'
+          import numpy, torch
+          print('numpy', numpy.__version__, 'torch', torch.__version__)
+          PY
+
+      - name: Build production trajectory and state tools
+        run: |
+          set -euo pipefail
+          mkdir -p bin results/big
+          g++ -std=c++17 -O2 -DNDEBUG -pthread -Ibaseline/src \
+            tools/teacher/generate_openings.cpp -o bin/generate_openings
+          g++ -std=c++17 -O3 -DNDEBUG -DNO_TABLEBASES -march=native -pthread -Ibaseline/src \
+            baseline/tools/external/zquoridor_uci.cpp -o bin/baseline_uci
+          g++ -std=c++17 -O2 -DNDEBUG -pthread -Isrc \
+            tools/teacher/encode_state.cpp -o bin/teacher_encode_state
+
+      - name: Generate many independent Gen8 trajectories
+        env:
+          PYTHONPATH: training/teachers
+        run: |
+          set -euo pipefail
+          ./bin/generate_openings 900 4 2026091201 > results/big/train-candidates.jsonl
+          ./bin/generate_openings 180 4 2026091202 > results/big/eval-candidates.jsonl
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          from common import read_openings
+
+          frozen={tuple(x) for x in read_openings(Path('tools/external/openings_titanium.jsonl'))}
+          def load(p):
+              return [json.loads(x) for x in Path(p).read_text().splitlines() if x.strip()]
+          train=[]; seen=set()
+          for row in load('results/big/train-candidates.jsonl'):
+              k=tuple(row['moves'])
+              if k in frozen or k in seen: continue
+              train.append(row); seen.add(k)
+              if len(train)==600: break
+          assert len(train)==600
+          evaluation=[]; eseen=set()
+          for row in load('results/big/eval-candidates.jsonl'):
+              k=tuple(row['moves'])
+              if k in frozen or k in seen or k in eseen: continue
+              evaluation.append(row); eseen.add(k)
+              if len(evaluation)==60: break
+          assert len(evaluation)==60
+          Path('results/big/train-openings.jsonl').write_text(''.join(json.dumps(x,separators=(',',':'))+'\n' for x in train))
+          Path('results/big/eval-openings.jsonl').write_text(''.join(json.dumps(x,separators=(',',':'))+'\n' for x in evaluation))
+          print('train openings',len(train),'eval openings',len(evaluation))
+          PY
+          python training/teachers/collect.py \
+            --teacher zquoridor-main --protocol uci \
+            --engine bin/baseline_uci \
+            --engine-arg=--nnue --engine-arg=baseline/checkpoints/gen8/nnue_weights_int8.bin \
+            --openings results/big/train-openings.jsonl \
+            --out-dir results/big/raw --budgets 6 --repeats 1 \
+            --workers 6 --max-plies 120 --val-mod 7
+          python training/teachers/export_positions.py \
+            --corpus results/big/raw --out results/big/positions.jsonl
+          python - <<'PY'
+          from pathlib import Path
+          n=sum(1 for x in Path('results/big/positions.jsonl').open() if x.strip())
+          print('teacher positions',n)
+          assert n >= 25000, n
+          PY
+
+      - name: Build pinned Claustrophobia network and search bridges
+        env:
+          LIBTORCH_USE_PYTORCH: "1"
+        run: |
+          set -euo pipefail
+          git clone --quiet https://github.com/Plaaasma/Claustrophobia.git /tmp/claustrophobia
+          git -C /tmp/claustrophobia checkout --quiet ae093653e62ad700e201706fa5ed767093d0d68e
+          curl -L --fail --retry 3 -o /tmp/claustrophobia-champion.pt \
+            https://github.com/Plaaasma/Claustrophobia/releases/download/v1.3.1/champion.pt
+          echo '821bd10f2736fc433c82de4dfc090ab95fc81b524f04fa09e68c4a26e30b496c  /tmp/claustrophobia-champion.pt' | sha256sum -c -
+          cp training/teachers/claustrophobia_encode_bridge.rs /tmp/claustrophobia/src/bin/zq_encode_bridge.rs
+          cp training/teachers/claustrophobia_search_bridge.rs /tmp/claustrophobia/src/bin/zq_search_bridge.rs
+          cat >> /tmp/claustrophobia/Cargo.toml <<'EOF'
+
+          [[bin]]
+          name = "zq_encode_bridge"
+          path = "src/bin/zq_encode_bridge.rs"
+
+          [[bin]]
+          name = "zq_search_bridge"
+          path = "src/bin/zq_search_bridge.rs"
+          required-features = ["nn"]
+          EOF
+          cargo build --quiet --release --manifest-path /tmp/claustrophobia/Cargo.toml --bin zq_encode_bridge
+          cargo build --quiet --release --features nn --manifest-path /tmp/claustrophobia/Cargo.toml --bin zq_search_bridge
+          cp /tmp/claustrophobia/target/release/zq_encode_bridge bin/claustrophobia_encode_bridge
+          cp /tmp/claustrophobia/target/release/zq_search_bridge bin/claustrophobia_search_bridge
+
+      - name: Label full corpus with Claustrophobia champion
+        env:
+          PYTHONPATH: training/teachers
+        run: |
+          set -euo pipefail
+          python training/teachers/claustrophobia_relabel.py \
+            --positions results/big/positions.jsonl \
+            --bridge bin/claustrophobia_encode_bridge \
+            --checkpoint /tmp/claustrophobia-champion.pt \
+            --out results/big/claustrophobia-direct.npz \
+            --batch-size 2048 --device cpu
+          python training/build_teacher_soft.py \
+            --positions results/big/positions.jsonl \
+            --targets results/big/claustrophobia-direct.npz \
+            --encoder bin/teacher_encode_state \
+            --out results/big/direct-dataset.npz
+
+      - name: Select wandering-like low-wall states for deep teacher search
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json, numpy as np
+          from pathlib import Path
+          d=np.load('results/big/direct-dataset.npz',allow_pickle=False)
+          rows=[json.loads(x) for x in Path('results/big/positions.jsonl').read_text().splitlines() if x.strip()]
+          ow=d['walls_left_own'].astype(int); pw=d['walls_left_opp'].astype(int)
+          od=d['own_dist'].astype(int); pd=d['opp_dist'].astype(int)
+          ply=d['ply'].astype(int); opening=d['opening_index'].astype(int)
+          tiers=[
+              np.where((ow==0)&(pw>=3)&(od<=9)&((pd-od)>=2)&(ply>=18))[0],
+              np.where((ow==0)&(pw>=2)&(od<=11)&(ply>=16))[0],
+              np.where((np.minimum(ow,pw)==0)&(ply>=14))[0],
+              np.where((np.minimum(ow,pw)<=1)&(ply>=12))[0],
+          ]
+          chosen=[]; used=set(); used_open=set()
+          # First pass: maximize trajectory diversity.
+          for tier in tiers:
+              for i in tier:
+                  i=int(i); op=int(opening[i])
+                  if i in used or op in used_open: continue
+                  chosen.append(i); used.add(i); used_open.add(op)
+                  if len(chosen)>=96: break
+              if len(chosen)>=96: break
+          # Second pass: fill if the strict wandering regime was sparse.
+          if len(chosen)<96:
+              for tier in tiers:
+                  for i in tier:
+                      i=int(i)
+                      if i in used: continue
+                      chosen.append(i); used.add(i)
+                      if len(chosen)>=96: break
+                  if len(chosen)>=96: break
+          assert len(chosen)>=64, len(chosen)
+          chosen=chosen[:96]
+          Path('results/big/lowwall-positions.jsonl').write_text(
+              ''.join(json.dumps(rows[i],separators=(',',':'))+'\n' for i in chosen))
+          stats={
+              'selected':len(chosen),
+              'own_zero':int(sum(ow[i]==0 for i in chosen)),
+              'opp_zero':int(sum(pw[i]==0 for i in chosen)),
+              'wandering_like':int(sum((ow[i]==0 and pw[i]>=3 and od[i]<=9 and pd[i]-od[i]>=2) for i in chosen)),
+              'unique_openings':len({int(opening[i]) for i in chosen}),
+          }
+          Path('results/big/lowwall-selection.json').write_text(json.dumps(stats,indent=2)+'\n')
+          print(json.dumps(stats,indent=2))
+          PY
+
+      - name: Deep-search low-wall anchors with Claustrophobia
+        env:
+          PYTHONPATH: training/teachers
+          LIBTORCH_USE_PYTORCH: "1"
+        run: |
+          set -euo pipefail
+          TORCH_LIB=$(python - <<'PY'
+          import os, torch
+          print(os.path.join(os.path.dirname(torch.__file__), 'lib'))
+          PY
+          )
+          export LD_LIBRARY_PATH="$TORCH_LIB:${LD_LIBRARY_PATH:-}"
+          python training/teachers/claustrophobia_search_relabel.py \
+            --positions results/big/lowwall-positions.jsonl \
+            --bridge bin/claustrophobia_search_bridge \
+            --checkpoint /tmp/claustrophobia-champion.pt \
+            --sims 256,512 --cpuct 1.5 \
+            --out results/big/claustrophobia-lowwall-search.npz
+          python training/build_teacher_soft.py \
+            --positions results/big/lowwall-positions.jsonl \
+            --targets results/big/claustrophobia-lowwall-search.npz \
+            --encoder bin/teacher_encode_state \
+            --out results/big/lowwall-anchor-dataset.npz
+
+      - name: Patch experimental architecture and compile smoke
+        run: |
+          set -euo pipefail
+          python tools/teacher/patch_big_race_net.py src/nnue.hpp
+          git diff -- src/nnue.hpp > results/big/nnue-big-race.patch
+          grep -q 'constexpr int NUM_FEATURES = WALL_MARGIN_BASE + WALL_MARGIN_BUCKETS' src/nnue.hpp
+          grep -q 'constexpr int HIDDEN = 512' src/nnue.hpp
+          g++ -std=c++17 -O2 -DNDEBUG -pthread -Isrc tools/teacher/encode_state.cpp -o bin/teacher_encode_state_big
+          printf '\n' | bin/teacher_encode_state_big | grep -q '^ZQSTATE'
+
+      - name: Train 1340-to-512 race-aware NNUE from scratch
+        run: |
+          set -euo pipefail
+          python training/train_big_race_teacher.py \
+            --data results/big/direct-dataset.npz \
+            --anchor-data results/big/lowwall-anchor-dataset.npz \
+            --anchor-weight 8 \
+            --out results/big/big-race.bin \
+            --epochs 36 --batch-size 768 --lr 0.0008 --lr-min 0.00002 \
+            --value-weight 2.0 --patience 7 --device cpu
+          test -s results/big/big-race_int8.bin
+
+      - name: Compile candidate and run wandering diagnostics
+        run: |
+          set -euo pipefail
+          g++ -std=c++17 -O3 -DNDEBUG -DNO_TABLEBASES -march=native -pthread -Isrc \
+            tools/external/zquoridor_uci.cpp -o bin/candidate_uci
+          g++ -std=c++17 -O3 -DNDEBUG -DNO_TABLEBASES -march=native -pthread -Isrc \
+            benchmarks/diag_wander.cpp -o bin/diag_wander_candidate
+          g++ -std=c++17 -O3 -DNDEBUG -DNO_TABLEBASES -march=native -pthread -Isrc \
+            benchmarks/repro_wander.cpp -o bin/repro_wander_candidate
+          g++ -std=c++17 -O3 -DNDEBUG -DNO_TABLEBASES -march=native -pthread -Ibaseline/src \
+            baseline/benchmarks/diag_wander.cpp -o bin/diag_wander_baseline
+          mkdir -p /tmp/baseline-run/data/nnue
+          cp baseline/data/nnue/nnue_weights_int8.bin /tmp/baseline-run/data/nnue/
+          (cd /tmp/baseline-run && "$GITHUB_WORKSPACE/bin/diag_wander_baseline") \
+            | tee results/big/diag-wander-baseline.log
+          cp results/big/big-race_int8.bin data/nnue/nnue_weights_int8.bin
+          bin/diag_wander_candidate | tee results/big/diag-wander-candidate.log
+          bin/repro_wander_candidate | tee results/big/repro-wander-candidate.log
+
+      - name: Paired arena candidate versus production Gen8
+        run: |
+          set -euo pipefail
+          cat > /tmp/dual_zq_engine.sh <<'EOF'
+          #!/usr/bin/env bash
+          set -euo pipefail
+          which="$1"; shift
+          if [ "$which" = candidate ]; then
+            exec "$GITHUB_WORKSPACE/bin/candidate_uci" "$@"
+          elif [ "$which" = baseline ]; then
+            exec "$GITHUB_WORKSPACE/bin/baseline_uci" "$@"
+          else
+            echo "unknown engine selector: $which" >&2; exit 2
+          fi
+          EOF
+          chmod +x /tmp/dual_zq_engine.sh
+          python tools/external/zq_weights_paired.py \
+            --engine /tmp/dual_zq_engine.sh \
+            --candidate-arg=candidate --candidate-arg=--nnue --candidate-arg=results/big/big-race_int8.bin \
+            --baseline-arg=baseline --baseline-arg=--nnue --baseline-arg=baseline/checkpoints/gen8/nnue_weights_int8.bin \
+            --openings results/big/eval-openings.jsonl --limit-openings 60 \
+            --movetime 100 --workers 4 --max-plies 180 \
+            --games-out results/big/h2h-games.jsonl \
+            | tee results/big/h2h-summary.log
+          python tools/external/analyze_paired_arena.py \
+            --games results/big/h2h-games.jsonl \
+            --out results/big/h2h-paired.json --bootstrap 20000 --seed 20260912
+          cat results/big/h2h-paired.json
+
+      - name: Build concise result summary
+        if: always()
+        run: |
+          python - <<'PY'
+          import json, re
+          from pathlib import Path
+          out={}
+          for name,path in [
+              ('direct_teacher','results/big/claustrophobia-direct.npz.manifest.json'),
+              ('deep_teacher','results/big/claustrophobia-lowwall-search.npz.manifest.json'),
+              ('selection','results/big/lowwall-selection.json'),
+              ('training','results/big/big-race.bin.manifest.json'),
+              ('arena','results/big/h2h-paired.json'),
+          ]:
+              p=Path(path)
+              if p.exists(): out[name]=json.loads(p.read_text())
+          for name in ('diag-wander-baseline.log','diag-wander-candidate.log','repro-wander-candidate.log'):
+              p=Path('results/big')/name
+              if p.exists(): out[name]=p.read_text()[-12000:]
+          Path('results/big/RESULTS.json').write_text(json.dumps(out,indent=2)+'\n')
+          print(json.dumps(out,indent=2)[-20000:])
+          PY
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: claustrophobia-big-race-net-${{ github.run_id }}
+          retention-days: 7
+          path: |
+            results/big/RESULTS.json
+            results/big/*manifest.json
+            results/big/lowwall-selection.json
+            results/big/lowwall-positions.jsonl
+            results/big/big-race.bin
+            results/big/big-race_int8.bin
+            results/big/nnue-big-race.patch
+            results/big/diag-wander-*.log
+            results/big/repro-wander-candidate.log
+            results/big/h2h-*.json
+            results/big/h2h-summary.log
