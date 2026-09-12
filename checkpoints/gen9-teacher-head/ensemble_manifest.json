@@ -1,0 +1,51 @@
+{
+  "schema": "zquoridor.teacher.ensemble.v2",
+  "out": "results/fast/ensemble.npz",
+  "samples": 32,
+  "sources": [
+    {
+      "name": "claustrophobia-search",
+      "path": "results/fast/claustrophobia-search.npz",
+      "weight": 2.0,
+      "has_policy": true,
+      "has_value": true
+    },
+    {
+      "name": "zq-deep",
+      "path": "results/fast/zq-deep.npz",
+      "weight": 2.0,
+      "has_policy": true,
+      "has_value": true
+    },
+    {
+      "name": "titanium",
+      "path": "results/fast/titanium-hard.npz",
+      "weight": 1.0,
+      "has_policy": true,
+      "has_value": false
+    }
+  ],
+  "policy_sources": [
+    "claustrophobia-search",
+    "zq-deep",
+    "titanium"
+  ],
+  "policy_weights_normalized": [
+    0.4000000059604645,
+    0.4000000059604645,
+    0.20000000298023224
+  ],
+  "value_sources": [
+    "claustrophobia-search",
+    "zq-deep"
+  ],
+  "value_weights_normalized": [
+    0.5,
+    0.5
+  ],
+  "agreement_mean": 0.71875,
+  "policy_js_mean": 0.39046037197113037,
+  "value_std_mean": 0.2395915985107422,
+  "confidence_mean": 0.47307685017585754,
+  "unanimous_policy_fraction": 0.40625
+}

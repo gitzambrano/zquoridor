@@ -1,0 +1,14 @@
+generation=Gen9-TeacherHead
+source_run=34653712220
+source_artifact=teacher-active-search-fast-34653712220
+promotion_gate_run=34700860861
+promotion_games=200
+promotion_paired_openings=100
+promotion_wld=104-84-12
+promotion_score_pct=55.0
+promotion_elo=34.860070287560106
+promotion_score_95_pct=49.0..61.0
+promotion_elo_95=-6.949638427769096..77.70609119370712
+promotion_override=user-approved-positive-point-estimate
+float_sha256=5252208c7beca4c4cae885a226581ac0bbd9788c1fdae2d381a543b8296e56f8
+int8_sha256=e7f74ef64d55d4695053f75802745e050e8abf8234b6a47c14ba0b7107eb453f
