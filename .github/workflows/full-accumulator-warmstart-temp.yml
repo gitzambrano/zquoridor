@@ -1,0 +1,90 @@
+name: Full accumulator warm-start validation
+
+on:
+  push:
+    branches:
+      - exp/full-accumulator
+    paths:
+      - ".github/workflows/full-accumulator-warmstart-temp.yml"
+
+permissions:
+  contents: write
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: exp/full-accumulator
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install numpy
+        run: python -m pip install --disable-pip-version-check numpy
+
+      - name: Preserve legacy production TD-S-Head and migrate losslessly
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(stat -c%s data/nnue/nnue_weights.bin)" -eq 611400
+          mkdir -p /tmp/full-acc
+          cp data/nnue/nnue_weights.bin /tmp/full-acc/legacy.bin
+          python training/migrate_full_accumulator.py \
+            /tmp/full-acc/legacy.bin /tmp/full-acc/full.bin
+          test "$(stat -c%s /tmp/full-acc/full.bin)" -eq 858184
+          python training/quantize_nnue.py \
+            /tmp/full-acc/full.bin /tmp/full-acc/full_int8.bin
+          test -s /tmp/full-acc/full_int8.bin
+
+      - name: Build tests against full-accumulator engine
+        run: bash build/build_tests.sh
+
+      - name: Install migrated weights ephemerally
+        run: |
+          cp /tmp/full-acc/full.bin data/nnue/nnue_weights.bin
+          cp /tmp/full-acc/full_int8.bin data/nnue/nnue_weights_int8.bin
+
+      - name: Verify float/int8 and incremental inference
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./bin/nnue_verify data/nnue/nnue_weights.bin data/nnue/nnue_weights_int8.bin
+          ./bin/nnue_incremental_check data/nnue/nnue_weights_int8.bin
+          ./bin/nnue_sign_check data/nnue/nnue_weights_int8.bin
+
+      - name: Run correctness suite with migrated production baseline
+        shell: bash
+        run: |
+          set -euo pipefail
+          for t in \
+            test_rules_sanity \
+            test_search_staging \
+            test_move_ordering \
+            test_endgame_race \
+            test_lmr_pvs \
+            test_search_leaf_smoke \
+            test_mcab_core \
+            test_mcab_dispatch \
+            test_mcab_phase9 \
+            test_wall_qextension \
+            test_policy_ab \
+            test_contempt_repetition \
+            test_endgame_race_fuzz \
+            test_mcab_endgame_leaf \
+            test_notation; do
+            echo "== $t =="
+            "./bin/$t"
+          done
+
+      - name: Remove temporary validator
+        run: |
+          rm .github/workflows/full-accumulator-warmstart-temp.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add .github/workflows/full-accumulator-warmstart-temp.yml
+          git commit -m "ci: remove full accumulator warm-start validator"
+          git push origin HEAD:exp/full-accumulator
