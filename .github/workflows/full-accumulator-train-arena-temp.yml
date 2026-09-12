@@ -1,0 +1,59 @@
+name: Full accumulator train and arena
+
+on:
+  push:
+    branches: [exp/full-accumulator]
+    paths: [.github/workflows/full-accumulator-train-arena-temp.yml]
+
+permissions:
+  contents: read
+
+jobs:
+  train-arena:
+    runs-on: ubuntu-latest
+    timeout-minutes: 330
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: exp/full-accumulator
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install training deps
+        run: python -m pip install --disable-pip-version-check numpy torch matplotlib
+      - name: Migrate production TD-S-Head to full accumulator
+        run: |
+          mkdir -p /tmp/fullacc/init /tmp/fullacc/out /tmp/fullacc/ckpt
+          python training/migrate_full_accumulator.py data/nnue/nnue_weights.bin /tmp/fullacc/init/full.bin
+      - name: Fine-tune full accumulator
+        run: |
+          python training/train_nnue.py --fresh --init-from /tmp/fullacc/init/full.bin --out /tmp/fullacc/out/full.bin --ckpt-dir /tmp/fullacc/ckpt --epochs 30 --lr 5e-5 --device cpu
+      - name: Quantize candidate
+        run: python training/quantize_nnue.py /tmp/fullacc/out/full.bin /tmp/fullacc/out/full_int8.bin
+      - name: Build tests and arena
+        run: |
+          bash build/build_tests.sh
+          bash tools/arena/build_arena.sh
+      - name: Verify candidate
+        run: |
+          ./bin/nnue_verify /tmp/fullacc/out/full.bin /tmp/fullacc/out/full_int8.bin
+          ./bin/nnue_incremental_check /tmp/fullacc/out/full_int8.bin
+          ./bin/nnue_sign_check /tmp/fullacc/out/full_int8.bin
+      - name: Show arena CLI
+        run: python tools/arena/run_arena.py --help
+      - name: Arena candidate vs production TD-S-Head
+        shell: bash
+        run: |
+          set -euo pipefail
+          python tools/arena/run_arena.py --games 200 --time-ms 200 --threads 4 --weights1 /tmp/fullacc/out/full_int8.bin --weights2 data/nnue/nnue_weights_int8.bin 2>&1 | tee /tmp/fullacc/arena.txt
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: full-accumulator-candidate-${{ github.run_id }}
+          path: |
+            /tmp/fullacc/out/full.bin
+            /tmp/fullacc/out/full_int8.bin
+            /tmp/fullacc/arena.txt
+            /tmp/fullacc/ckpt
+          retention-days: 14
