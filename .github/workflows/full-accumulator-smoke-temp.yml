@@ -40,7 +40,7 @@ jobs:
       - name: Generate a small architecture dataset
         run: |
           mkdir -p data/selfplay/full-acc-smoke
-          ./bin/selfplay --games 12 --time-ms 5 --threads 2 --max-plies 160 --heuristic --out data/selfplay/full-acc-smoke/selfplay_000.bin
+          ./bin/selfplay --games 12 --time-ms 5 --threads 2 --max-plies 160 --heuristic --no-mcab --out data/selfplay/full-acc-smoke/selfplay_000.bin
           test -s data/selfplay/full-acc-smoke/selfplay_000.bin
 
       - name: Train and quantize a fresh full-accumulator network
