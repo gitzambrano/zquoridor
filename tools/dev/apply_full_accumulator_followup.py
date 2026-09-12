@@ -14,7 +14,7 @@ def replace(path, old, new, expected=1):
 
 
 old = "                forwardPolicyQuant(mcabAccStack[depthInTree].acc[node.side], policyOut);"
-new = "                resolvePending(mcabAccStack[depthInTree], 1 - node.side, mcabPathCache(engine, 0));\n                forwardPolicyQuant(mcabAccStack[depthInTree].acc[node.side],\n                                   mcabAccStack[depthInTree].acc[1 - node.side], policyOut);"
+new = "                resolvePending(mcabAccStack[depthInTree], 1 - node.side);\n                forwardPolicyQuant(mcabAccStack[depthInTree].acc[node.side],\n                                   mcabAccStack[depthInTree].acc[1 - node.side], policyOut);"
 replace("src/mcab.hpp", old, new, expected=2)
 
 replace(
