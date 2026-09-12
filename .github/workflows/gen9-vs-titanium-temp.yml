@@ -27,13 +27,18 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: main
+      - uses: actions/checkout@v4
+        with:
+          ref: exp/teacher-distill-multisource
+          path: exp-tools
       - name: Build Gen9 adapter, opening generator and pinned Titanium
         run: |
           set -euo pipefail
           mkdir -p bin results
           g++ -std=c++17 -O3 -DNDEBUG -DNO_TABLEBASES -march=native -pthread -Isrc \
             tools/external/zquoridor_uci.cpp -o bin/zquoridor_uci
-          g++ -std=c++17 -O2 -DNDEBUG -Isrc tools/teacher/generate_openings.cpp -o bin/generate_openings
+          g++ -std=c++17 -O2 -DNDEBUG -Iexp-tools/src \
+            exp-tools/tools/teacher/generate_openings.cpp -o bin/generate_openings
           tools/external/build_pinned_titanium.sh titanium-bin
       - name: Run 20 paired openings at 200 ms
         env:
