@@ -1,0 +1,171 @@
+name: Search-teacher Head promotion gate
+
+on:
+  push:
+    branches: [exp/teacher-distill-multisource]
+    paths:
+      - ".github/workflows/teacher-head-promotion-gate-temp.yml"
+
+permissions:
+  contents: read
+  actions: read
+
+env:
+  PYTHONUNBUFFERED: "1"
+
+jobs:
+  prepare:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download frozen candidate
+        uses: actions/download-artifact@v4
+        with:
+          name: teacher-active-search-fast-34653712220
+          path: source
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: 34653712220
+      - name: Prepare frozen weights and 100 independent openings
+        run: |
+          set -euo pipefail
+          mkdir -p promotion-input bin
+          HEAD8=$(find source -type f -name head_int8.bin -print -quit)
+          HEADF=$(find source -type f -name head.bin -print -quit)
+          OLD_EVAL=$(find source -type f -name eval-openings.jsonl -print -quit)
+          test -s "$HEAD8" && test -s "$HEADF" && test -s "$OLD_EVAL"
+          cp "$HEAD8" promotion-input/head_int8.bin
+          cp "$HEADF" promotion-input/head.bin
+          g++ -std=c++17 -O2 -DNDEBUG -DNO_TABLEBASES -Isrc tools/teacher/generate_openings.cpp -o bin/generate_openings
+          bin/generate_openings 100 4 2026091207 > promotion-input/openings-100.jsonl
+          test "$(wc -l < promotion-input/openings-100.jsonl)" -eq 100
+          python - "$OLD_EVAL" promotion-input/openings-100.jsonl <<'PY'
+          import json, sys
+          def keys(path):
+              out=set()
+              with open(path, encoding='utf-8') as f:
+                  for line in f:
+                      if not line.strip(): continue
+                      row=json.loads(line)
+                      out.add(tuple(row['moves']))
+              return out
+          old=keys(sys.argv[1]); new=keys(sys.argv[2])
+          assert len(new)==100, len(new)
+          overlap=old & new
+          assert not overlap, f'new promotion openings overlap prior eval: {sorted(overlap)[:3]}'
+          print({'promotion_openings': len(new), 'prior_eval': len(old), 'overlap': 0})
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: teacher-head-promotion-input-${{ github.run_id }}
+          path: promotion-input/**
+          retention-days: 7
+
+  arena:
+    needs: prepare
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3, 4]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download promotion input
+        uses: actions/download-artifact@v4
+        with:
+          name: teacher-head-promotion-input-${{ github.run_id }}
+          path: promotion-input
+      - name: Build timing engine
+        run: |
+          set -euo pipefail
+          mkdir -p bin results
+          g++ -std=c++17 -O3 -DNDEBUG -DNO_TABLEBASES -march=native -pthread -Isrc \
+            tools/external/zquoridor_uci.cpp -o bin/zquoridor_uci
+      - name: Run 20 paired openings at 200 ms
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: |
+          set -euo pipefail
+          START=$((SHARD * 20 + 1))
+          END=$((START + 19))
+          sed -n "${START},${END}p" promotion-input/openings-100.jsonl > results/openings-${SHARD}.jsonl
+          test "$(wc -l < results/openings-${SHARD}.jsonl)" -eq 20
+          python tools/external/zq_weights_paired.py \
+            --engine bin/zquoridor_uci \
+            --candidate-arg=--nnue --candidate-arg=promotion-input/head_int8.bin \
+            --baseline-arg=--nnue --baseline-arg=checkpoints/gen8/nnue_weights_int8.bin \
+            --openings results/openings-${SHARD}.jsonl --limit-openings 20 \
+            --movetime 200 --workers 1 --max-plies 180 \
+            --games-out results/games-${SHARD}.jsonl
+          python - "$SHARD" results/games-${SHARD}.jsonl <<'PY'
+          import json, sys
+          shard=int(sys.argv[1]); path=sys.argv[2]
+          rows=[]
+          with open(path, encoding='utf-8') as f:
+              for line in f:
+                  if line.strip():
+                      row=json.loads(line)
+                      row['opening_index']=int(row['opening_index']) + shard*20
+                      rows.append(row)
+          assert len(rows)==40, len(rows)
+          with open(path, 'w', encoding='utf-8') as f:
+              for row in rows: f.write(json.dumps(row, separators=(',',':'))+'\n')
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: teacher-head-promotion-shard-${{ matrix.shard }}-${{ github.run_id }}
+          path: results/games-${{ matrix.shard }}.jsonl
+          retention-days: 7
+
+  aggregate:
+    needs: arena
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download all arena shards
+        uses: actions/download-artifact@v4
+        with:
+          pattern: teacher-head-promotion-shard-*-${{ github.run_id }}
+          path: promotion-shards
+          merge-multiple: true
+      - name: Aggregate 100 pairs and decide promotion
+        run: |
+          set -euo pipefail
+          mkdir -p results/promotion
+          cat promotion-shards/games-*.jsonl > results/promotion/all-games.jsonl
+          test "$(wc -l < results/promotion/all-games.jsonl)" -eq 200
+          python tools/external/analyze_paired_arena.py \
+            --games results/promotion/all-games.jsonl \
+            --out results/promotion/paired-100.json \
+            --bootstrap 100000 --seed 20260912
+          python - <<'PY'
+          import json
+          p=json.load(open('results/promotion/paired-100.json'))
+          lo=float(p['paired_bootstrap']['score_95_low_pct'])
+          score=float(p['score_pct'])
+          decision={
+              'schema':'zquoridor.teacher_head.promotion_decision.v1',
+              'candidate':'frozen TD-S-Head from run 34653712220',
+              'paired_openings':p['paired_openings'],
+              'games':p['games'],
+              'score_pct':score,
+              'elo':p['elo'],
+              'score_95_low_pct':lo,
+              'score_95_high_pct':p['paired_bootstrap']['score_95_high_pct'],
+              'elo_95_low':p['paired_bootstrap']['elo_95_low'],
+              'elo_95_high':p['paired_bootstrap']['elo_95_high'],
+              'promotion_gate':'score_95_low_pct > 50.0',
+              'promote': bool(score > 50.0 and lo > 50.0),
+          }
+          open('results/promotion/decision.json','w').write(json.dumps(decision, indent=2)+'\n')
+          print(json.dumps(decision, indent=2))
+          PY
+          cat results/promotion/paired-100.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: teacher-head-promotion-result-${{ github.run_id }}
+          path: results/promotion/**
+          retention-days: 7
