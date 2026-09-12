@@ -1,6 +1,7 @@
 name: Full accumulator architecture smoke
 
 # Temporary validation workflow. Removed after a successful architecture smoke.
+# This revision also validates legacy MCAB dispatch compatibility.
 on:
   push:
     branches:
