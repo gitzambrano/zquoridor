@@ -1,5 +1,6 @@
 name: Full accumulator architecture smoke
 
+# Temporary validation workflow. Removed after a successful architecture smoke.
 on:
   push:
     branches:
