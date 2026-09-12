@@ -24,7 +24,9 @@ jobs:
           python-version: "3.11"
 
       - name: Apply architecture patch
-        run: python tools/dev/apply_full_accumulator_patch.py
+        run: |
+          python tools/dev/apply_full_accumulator_patch.py
+          python tools/dev/apply_full_accumulator_followup.py
 
       - name: Check Python syntax
         run: python -m py_compile training/train_nnue.py training/quantize_nnue.py
@@ -73,6 +75,6 @@ jobs:
           rm .github/workflows/full-accumulator-smoke-temp.yml
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add src/nnue.hpp src/search.hpp tools/selfplay/selfplay.hpp training/train_nnue.py training/quantize_nnue.py tests/nnue_verify.cpp status.md tools/dev/apply_full_accumulator_patch.py .github/workflows/full-accumulator-smoke-temp.yml
-          git commit -m "feat(nnue): add full accumulator heads" -m "Concatenate both 256-wide perspective accumulators for 512-wide value and policy head inputs. Keep the sparse transformer shared and incremental. Update training, quantization, search, self-play, and parity verification."
+          git add src/nnue.hpp src/search.hpp src/mcab.hpp tools/selfplay/selfplay.hpp training/train_nnue.py training/quantize_nnue.py tests/nnue_verify.cpp tests/test_mcab_core.cpp status.md tools/dev/apply_full_accumulator_patch.py tools/dev/apply_full_accumulator_followup.py .github/workflows/full-accumulator-smoke-temp.yml
+          git commit -m "feat(nnue): add full accumulator heads" -m "Concatenate both 256-wide perspective accumulators for 512-wide value and policy head inputs. Keep the sparse transformer shared and incremental. Update training, quantization, alpha-beta, MCAB, self-play, and parity verification."
           git push origin HEAD:exp/full-accumulator
