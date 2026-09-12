@@ -1,0 +1,146 @@
+name: Promote approved TD-S-Head to main
+
+on:
+  push:
+    branches: [exp/teacher-distill-multisource]
+    paths:
+      - ".github/workflows/teacher-head-promote-approved-temp.yml"
+
+permissions:
+  contents: write
+  actions: read
+
+jobs:
+  promote:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Download frozen approved candidate
+        uses: actions/download-artifact@v4
+        with:
+          name: teacher-active-search-fast-34653712220
+          path: candidate
+          github-token: ${{ github.token }}
+          repository: gitzambrano/zquoridor
+          run-id: 34653712220
+
+      - name: Download 200-game promotion evidence
+        uses: actions/download-artifact@v4
+        with:
+          name: teacher-head-promotion-result-34700860861
+          path: gate
+          github-token: ${{ github.token }}
+          repository: gitzambrano/zquoridor
+          run-id: 34700860861
+
+      - name: Install emscripten
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq emscripten
+          em++ --version
+
+      - name: Promote exact tested weights and archive checkpoint
+        run: |
+          set -euo pipefail
+          FLOAT=$(find candidate -type f -name head.bin -print -quit)
+          INT8=$(find candidate -type f -name head_int8.bin -print -quit)
+          HMAN=$(find candidate -type f -name 'head.bin.manifest.json' -print -quit)
+          EMAN=$(find candidate -type f -name 'ensemble.npz.manifest.json' -print -quit)
+          DEC=$(find gate -type f -name decision.json -print -quit)
+          PAIR=$(find gate -type f -name paired-100.json -print -quit)
+          test -s "$FLOAT" && test -s "$INT8" && test -s "$DEC" && test -s "$PAIR"
+
+          python - "$PAIR" <<'PY'
+          import json, sys
+          p=json.load(open(sys.argv[1]))
+          assert p['games']==200 and p['paired_openings']==100, p
+          assert abs(p['score_pct']-55.0) < 1e-9, p
+          assert p['elo'] > 0.0, p
+          print('approved gate:', p['score_pct'], p['elo'])
+          PY
+
+          mkdir -p checkpoints/gen9-teacher-head
+          cp "$FLOAT" checkpoints/gen9-teacher-head/nnue_weights.bin
+          cp "$INT8" checkpoints/gen9-teacher-head/nnue_weights_int8.bin
+          cp "$DEC" checkpoints/gen9-teacher-head/promotion_decision.json
+          cp "$PAIR" checkpoints/gen9-teacher-head/paired_100.json
+          if [[ -n "${HMAN:-}" && -s "$HMAN" ]]; then cp "$HMAN" checkpoints/gen9-teacher-head/train_manifest.json; fi
+          if [[ -n "${EMAN:-}" && -s "$EMAN" ]]; then cp "$EMAN" checkpoints/gen9-teacher-head/ensemble_manifest.json; fi
+
+          cp "$FLOAT" data/nnue/nnue_weights.bin
+          cp "$INT8" data/nnue/nnue_weights_int8.bin
+
+          FLOAT_SHA=$(sha256sum data/nnue/nnue_weights.bin | awk '{print $1}')
+          INT8_SHA=$(sha256sum data/nnue/nnue_weights_int8.bin | awk '{print $1}')
+          cat > checkpoints/gen9-teacher-head/PRODUCTION_MANIFEST.txt <<EOF
+          generation=Gen9-TeacherHead
+          source_run=34653712220
+          source_artifact=teacher-active-search-fast-34653712220
+          promotion_gate_run=34700860861
+          promotion_games=200
+          promotion_paired_openings=100
+          promotion_wld=104-84-12
+          promotion_score_pct=55.0
+          promotion_elo=34.860070287560106
+          promotion_score_95_pct=49.0..61.0
+          promotion_elo_95=-6.949638427769096..77.70609119370712
+          promotion_override=user-approved-positive-point-estimate
+          float_sha256=$FLOAT_SHA
+          int8_sha256=$INT8_SHA
+          EOF
+          sed -i 's/^          //' checkpoints/gen9-teacher-head/PRODUCTION_MANIFEST.txt
+
+          cat > checkpoints/gen9-teacher-head/README.md <<'EOF'
+          # Gen9 Teacher-Head production checkpoint
+
+          Policy-head-only search-teacher distillation candidate promoted from frozen run `34653712220`.
+
+          Promotion evidence: 100 paired openings / 200 games at 200 ms, workers=1, tablebases disabled, against Gen8. Result: 104 wins, 84 losses, 12 draws; 55.0% score; +34.86 Elo. Pair-aware bootstrap 95% interval: score 49-61%, Elo -6.95 to +77.71. Promotion was explicitly approved based on the positive point estimate despite the interval crossing zero.
+
+          The float and int8 files here are the exact candidate weights used in the promotion arena.
+          EOF
+          sed -i 's/^          //' checkpoints/gen9-teacher-head/README.md
+
+      - name: Regression smoke with promoted weights
+        run: |
+          set -euo pipefail
+          mkdir -p bin
+          g++ -std=c++17 -O3 -DNDEBUG -Isrc tests/repro_wandering.cpp -o bin/repro_wandering
+          ./bin/repro_wandering data/nnue/nnue_weights_int8.bin | tee /tmp/wandering.log
+          python - <<'PY'
+          from pathlib import Path
+          p=Path('/tmp/wandering.log').read_text()
+          start=p.index('=== production MCAB NNUE, 500ms/move ===')
+          tail=p[start:]
+          end=tail.find('\n===', 4)
+          sec=tail if end < 0 else tail[:end]
+          assert 'engine chegou! winner=0' in sec, 'wandering regression failed'
+          print('wandering regression passed')
+          PY
+
+      - name: Rebuild browser bundle with promoted int8
+        run: |
+          set -euo pipefail
+          bash build/build_wasm.sh
+          test -s gui_web/zquoridor.js
+          test -s gui_web/zquoridor.wasm
+          test -s gui_web/zquoridor.html
+          test -s index.html
+
+      - name: Commit promotion to main
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add data/nnue/nnue_weights.bin data/nnue/nnue_weights_int8.bin \
+                  checkpoints/gen9-teacher-head \
+                  gui_web/zquoridor.js gui_web/zquoridor.wasm gui_web/zquoridor.html index.html
+          git status --short
+          git commit -m "nnue: promote Gen9 teacher-head after 200-game gate"
+          git push origin HEAD:main
