@@ -68,6 +68,29 @@
 
 namespace mcab {
 
+template <typename AccPairT>
+inline auto mcabResolveOtherView(AccPairT& ap, int side, int)
+    -> decltype(resolvePending(ap, side), void()) {
+    resolvePending(ap, side);
+}
+
+template <typename AccPairT>
+inline void mcabResolveOtherView(AccPairT&, int, long) {}
+
+template <typename AccT, size_t PolicyDim>
+inline auto mcabForwardPolicy(const AccT& own, const AccT& opp,
+                              std::array<float, PolicyDim>& out, int)
+    -> decltype(forwardPolicyQuant(own, opp, out), void()) {
+    forwardPolicyQuant(own, opp, out);
+}
+
+template <typename AccT, size_t PolicyDim>
+inline auto mcabForwardPolicy(const AccT& own, const AccT&,
+                              std::array<float, PolicyDim>& out, long)
+    -> decltype(forwardPolicyQuant(own, out), void()) {
+    forwardPolicyQuant(own, out);
+}
+
 // =========================================================================
 // 4.3.1 -- Conversão score -> Q
 // =========================================================================
@@ -1023,7 +1046,9 @@ private:
 
             if (nm > 0) {
                 std::array<float, PolicyDim> policyOut{};
-                forwardPolicyQuant(mcabAccStack[depthInTree].acc[node.side], policyOut);
+                mcabResolveOtherView(mcabAccStack[depthInTree], 1 - node.side, 0);
+                mcabForwardPolicy(mcabAccStack[depthInTree].acc[node.side],
+                                  mcabAccStack[depthInTree].acc[1 - node.side], policyOut, 0);
                 // perf/speed-elo-100: era std::vector<float> alocado por
                 // expansao; nm <= 131 < PolicyDim(=209), entao um buffer de
                 // pilha elimina o malloc do caminho quente.
@@ -1056,7 +1081,9 @@ private:
             node.candidateP.assign(nc, 0.f);
             if (nc > 0) {
                 std::array<float, PolicyDim> policyOut{};
-                forwardPolicyQuant(mcabAccStack[depthInTree].acc[node.side], policyOut);
+                mcabResolveOtherView(mcabAccStack[depthInTree], 1 - node.side, 0);
+                mcabForwardPolicy(mcabAccStack[depthInTree].acc[node.side],
+                                  mcabAccStack[depthInTree].acc[1 - node.side], policyOut, 0);
                 std::vector<float> logits(nc);
                 for (size_t i = 0; i < nc; i++)
                     logits[i] = policyLogitForMove(policyOut, node.candidateMoves[i], node.side);

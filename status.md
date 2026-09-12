@@ -1034,3 +1034,8 @@ Two results worth keeping because they say what NOT to do.
 | Heuristic | `evalSimple` | ~[-600, 600] | mover-relative |
 | Dataset field | `TrainingSample::evalNNUE` | 0..65535 | absolute White |
 | GUI display | `formatEval` | 0%..100% | absolute White |
+
+
+### 2026-09-12 - Full accumulator experiment
+
+The `exp/full-accumulator` branch widens the NNUE head input from 256 to 512 activations. The first 256 activations use the side-to-move perspective. The second 256 activations use the opponent perspective. Both views use the same 354 to 256 sparse transformer. Search keeps both views incremental through `AccPair`. The value and policy heads now consume both views. The dataset layout does not change because the trainer derives the opponent view from each canonical sample. The weight layout changes. Therefore, this branch rejects the current production weights until a full-accumulator network is trained and quantized. Do not promote this architecture to `main` before float and quantized parity tests pass and an arena shows a strength gain over the current TD-S-Head production network.

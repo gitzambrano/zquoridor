@@ -75,6 +75,7 @@ WALLS_LEFT_BUCKETS = WALLS_PER_PLAYER + 1  # 11
 # repetir de novo).
 NUM_FEATURES = N * N + N * N + WS * WS * 2 + 2 * DIST_BUCKETS + 2 * WALLS_LEFT_BUCKETS  # 354
 HIDDEN = 256
+HEAD_INPUT = 2 * HIDDEN
 POLICY_OUT = N * N + WS * WS * 2  # 209
 
 # QAT: constantes fixas -- devem bater com QA_DEFAULT/QB_DEFAULT em
@@ -95,9 +96,9 @@ _HEAD_FIELDS = ("wv1_wl", "bv1_wl", "wv2_wl", "bv2_wl")
 
 
 def load_float_weights(path):
-    head_floats = HIDDEN * 32 + 32 + 32 + 1  # wv1 + bv1 + wv2 + bv2 de UMA cabeça 256->32->1
+    head_floats = HEAD_INPUT * 32 + 32 + 32 + 1  # wv1 + bv1 + wv2 + bv2 de UMA cabeça 256->32->1
     base = NUM_FEATURES * HIDDEN + HIDDEN + head_floats
-    tail = POLICY_OUT * HIDDEN + POLICY_OUT
+    tail = POLICY_OUT * HEAD_INPUT + POLICY_OUT
     expected_new = base + tail                # sem cabeça auxiliar (2026-08+)
     expected_old = base + head_floats + tail   # com cabeça auxiliar (formato antigo)
     expected_new_bytes = expected_new * 4
@@ -118,7 +119,7 @@ def load_float_weights(path):
         b1 = np.fromfile(f, dtype="<f4", count=HIDDEN)
 
         def read_head():
-            wv1 = np.fromfile(f, dtype="<f4", count=HIDDEN * 32).reshape(HIDDEN, 32)
+            wv1 = np.fromfile(f, dtype="<f4", count=HEAD_INPUT * 32).reshape(HEAD_INPUT, 32)
             bv1 = np.fromfile(f, dtype="<f4", count=32)
             wv2 = np.fromfile(f, dtype="<f4", count=32)
             bv2 = np.fromfile(f, dtype="<f4", count=1)[0]
@@ -129,7 +130,7 @@ def load_float_weights(path):
             read_head()  # cabeça auxiliar antiga -- lê pra avançar o cursor, descarta
             print(f"'{path}' está no formato antigo (com cabeça auxiliar) -- "
                   f"cabeça auxiliar ignorada, só w1/b1/cabeça WL/policy são quantizados.")
-        wp = np.fromfile(f, dtype="<f4", count=POLICY_OUT * HIDDEN).reshape(POLICY_OUT, HIDDEN)
+        wp = np.fromfile(f, dtype="<f4", count=POLICY_OUT * HEAD_INPUT).reshape(POLICY_OUT, HEAD_INPUT)
         bp = np.fromfile(f, dtype="<f4", count=POLICY_OUT)
     got = w1.size + b1.size + wv1_wl.size + bv1_wl.size + wv2_wl.size + 1 + wp.size + bp.size
     if got != expected_new:

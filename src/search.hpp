@@ -484,7 +484,7 @@ public:
         if (!policyHistorySeedEnabled || evalMode != EvalMode::NNUE) return;
         AccPair local = buildAccPairRoot(root, &xdistCache);
         std::array<float, POLICY_OUT> pArr;
-        forwardPolicyQuant(local.acc[root.turn], pArr);
+        forwardPolicyQuant(local.acc[root.turn], local.acc[1 - root.turn], pArr);
         int side = root.turn;
         MoveList rootMoves = legalMoves(root);
         for (size_t i = 0; i < rootMoves.size(); i++) {
@@ -1075,7 +1075,7 @@ private:
         PlayerPathCache sideCache, oppCache;
         int standPat;
         if (curAcc) {
-            standPat = nnueEvalInt(*curAcc, side);
+            standPat = nnueEvalInt(*curAcc, side, &xdistCache);
             if (standPat >= beta) return standPat;
             computeDistCached(s.wallsH, s.wallsV, s.pawn[side], side, &xdistCache, sideCache);
             computeDistCached(s.wallsH, s.wallsV, s.pawn[opp],  opp,  &xdistCache, oppCache);
@@ -1299,7 +1299,7 @@ private:
             // resolvido acima, então não há necessidade de checá-lo de
             // novo aqui -- mesma garantia que quiescence() já tinha.
             if (!quiescenceEnabled) {
-                if (curAcc) return nnueEvalInt(*curAcc, s.turn);
+                if (curAcc) return nnueEvalInt(*curAcc, s.turn, &xdistCache);
                 return evalSimpleW(s, s.turn, weights, nullptr, nullptr, &xdistCache);
             }
             return quiescence(s, alpha, beta, 0, stats, reptbl, ply % 2 == 0, curAcc);
@@ -1342,14 +1342,15 @@ private:
         // é a perspectiva de quem vai jogar agora -- garantidamente já
         // resolvida (eager) pela invariante de AccPair documentada em
         // nnue.hpp, então nenhuma chamada extra a resolvePending é
-        // necessária aqui (mesma premissa que o `nnueEvalInt(*curAcc, s.turn)`
+        // necessária aqui (mesma premissa que o `nnueEvalInt(*curAcc, s.turn, &xdistCache)`
         // de depth==0 acima já depende). policyArr fica fora do `if` (RAII
         // de pilha, sem custo quando não inicializado/usado) -- policyPtr
         // só aponta pra ela quando de fato computada.
         std::array<float, POLICY_OUT> policyArr;
         const std::array<float, POLICY_OUT>* policyPtr = nullptr;
         if (policyOrderingEnabled && curAcc && depth >= policyOrderingMinDepth) {
-            forwardPolicyQuant(curAcc->acc[side], policyArr);
+            resolvePending(*curAcc, 1 - side, &xdistCache);
+            forwardPolicyQuant(curAcc->acc[side], curAcc->acc[1 - side], policyArr);
             policyPtr = &policyArr;
             stats.policyNodes++;
         }

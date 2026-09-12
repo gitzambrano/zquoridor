@@ -205,7 +205,7 @@ void testScoreToQMatchesWinProb() {
     AccPair ap = buildAccPairRoot(root, nullptr);
 
     for (int side = 0; side < 2; side++) {
-        float winProb = nnueWinProbQuant(ap.acc[side]);
+        float winProb = nnueWinProbQuant(ap.acc[side], ap.acc[1 - side]);
         int score = nnueEvalInt(ap, side);  // round(logit * NNUE_EVAL_SCALE)
         double q = mcab::scoreToQ(score, (double)NNUE_EVAL_SCALE);
 

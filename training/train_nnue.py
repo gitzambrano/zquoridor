@@ -334,6 +334,7 @@ WALLS_LEFT_BUCKETS = WALLS_PER_PLAYER + 1  # 11
 # já causou) em quantize_nnue.py.
 NUM_FEATURES = N * N + N * N + WS * WS * 2 + 2 * DIST_BUCKETS + 2 * WALLS_LEFT_BUCKETS  # 354
 HIDDEN = 256
+HEAD_INPUT = 2 * HIDDEN
 POLICY_OUT = N * N + WS * WS * 2                                # 209
 # VALUE_SCALE (200.0) removida 2026-08: so era usada pra normalizar a loss
 # MSE da cabeca auxiliar (search_score/VALUE_SCALE), que nao existe mais --
@@ -367,13 +368,28 @@ class QuoridorNNUE(nn.Module):
     def __init__(self):
         super().__init__()
         self.fc1 = nn.Linear(NUM_FEATURES, HIDDEN)
-        self.value1_wl = nn.Linear(HIDDEN, 32)
+        self.value1_wl = nn.Linear(HEAD_INPUT, 32)
         self.value2_wl = nn.Linear(32, 1)
-        self.policy = nn.Linear(HIDDEN, POLICY_OUT)
+        self.policy = nn.Linear(HEAD_INPUT, POLICY_OUT)
+
+    @staticmethod
+    def opponent_view(x: torch.Tensor) -> torch.Tensor:
+        y = torch.empty_like(x)
+        y[:, 0:81] = x[:, 81:162].reshape(-1, N, N).flip(1).reshape(-1, 81)
+        y[:, 81:162] = x[:, 0:81].reshape(-1, N, N).flip(1).reshape(-1, 81)
+        y[:, 162:226] = x[:, 162:226].reshape(-1, WS, WS).flip(1).reshape(-1, 64)
+        y[:, 226:290] = x[:, 226:290].reshape(-1, WS, WS).flip(1).reshape(-1, 64)
+        y[:, 290:290 + DIST_BUCKETS] = x[:, 290 + DIST_BUCKETS:290 + 2 * DIST_BUCKETS]
+        y[:, 290 + DIST_BUCKETS:290 + 2 * DIST_BUCKETS] = x[:, 290:290 + DIST_BUCKETS]
+        wl = 290 + 2 * DIST_BUCKETS
+        y[:, wl:wl + WALLS_LEFT_BUCKETS] = x[:, wl + WALLS_LEFT_BUCKETS:wl + 2 * WALLS_LEFT_BUCKETS]
+        y[:, wl + WALLS_LEFT_BUCKETS:wl + 2 * WALLS_LEFT_BUCKETS] = x[:, wl:wl + WALLS_LEFT_BUCKETS]
+        return y
 
     def forward(self, x: torch.Tensor):
-        acc = self.fc1(x)
-        a = screlu(acc)
+        own = screlu(self.fc1(x))
+        opp = screlu(self.fc1(self.opponent_view(x)))
+        a = torch.cat((own, opp), dim=1)
         h_wl = clipped_relu(self.value1_wl(a))
         value_wl = self.value2_wl(h_wl).squeeze(-1)
         policy_logits = self.policy(a)
@@ -535,7 +551,7 @@ def compute_auto_batch_size(vram_budget_gb, reserved_gb=1.0, min_bs=64, max_bs=B
     intermediarios que o autograd mantem vivos durante o backward.
     `max_bs` e so um teto de seguranca (ver --batch-size-max) -- nao deveria
     ser o fator dominante quando o orcamento de VRAM informado da folga."""
-    elems_per_sample = NUM_FEATURES + HIDDEN + 2 * 32 + POLICY_OUT
+    elems_per_sample = NUM_FEATURES + 2 * HIDDEN + HEAD_INPUT + 2 * 32 + POLICY_OUT
     bytes_per_sample = elems_per_sample * 4 * 4  # float32, fwd+bwd, margem 4x
     usable = max(0.0, (vram_budget_gb - reserved_gb)) * (1024 ** 3)
     bs = int(usable // max(1, bytes_per_sample))
@@ -678,8 +694,8 @@ def compute_fingerprint(args):
     salvo tiver uma impressao diferente da rodada atual (mudou HIDDEN,
     trocou QA/QB etc.), ele e incompativel e nao pode ser usado pra
     resume -- os tensores nem teriam o shape certo."""
-    return dict(num_features=NUM_FEATURES, hidden=HIDDEN, policy_out=POLICY_OUT,
-                qa=args.qa, qb=args.qb)
+    return dict(num_features=NUM_FEATURES, hidden=HIDDEN, head_input=HEAD_INPUT, full_accumulator=True,
+                policy_out=POLICY_OUT, qa=args.qa, qb=args.qb)
  
  
 # --- caminhos versionados (<ciclo>_ep<epoch>) em --ckpt-dir ------------------
@@ -959,8 +975,8 @@ def export_weights(model: QuoridorNNUE, path: str):
         bp = model.policy.bias.detach().cpu().numpy().astype(np.float32)
 
     assert w1.shape == (NUM_FEATURES, HIDDEN)
-    assert wv1_wl.shape == (HIDDEN, 32)
-    assert wp.shape == (POLICY_OUT, HIDDEN)
+    assert wv1_wl.shape == (HEAD_INPUT, 32)
+    assert wp.shape == (POLICY_OUT, HEAD_INPUT)
 
     dir_name = os.path.dirname(os.path.abspath(path))
     if dir_name:
