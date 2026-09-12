@@ -1,0 +1,63 @@
+name: Promote TD-S-Head candidate
+
+on:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/promote-td-s-head-temp.yml']
+
+permissions:
+  contents: write
+  actions: read
+
+jobs:
+  promote:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Download frozen candidate artifact
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh run download 34653712220 -n teacher-active-search-fast-34653712220 -D /tmp/tdhead
+          test -s /tmp/tdhead/head.bin
+          test -s /tmp/tdhead/head_int8.bin
+          test "$(stat -c%s /tmp/tdhead/head.bin)" = 611400
+          test "$(stat -c%s /tmp/tdhead/head_int8.bin)" = 244464
+      - name: Archive Gen8 and candidate, then promote
+        run: |
+          set -euxo pipefail
+          mkdir -p data/nnue/checkpoints/gen8-pre-td-s-head-20260912
+          mkdir -p data/nnue/checkpoints/td-s-head-20260912-run34653712220
+          cp data/nnue/nnue_weights.bin data/nnue/checkpoints/gen8-pre-td-s-head-20260912/nnue_weights.bin
+          cp data/nnue/nnue_weights_int8.bin data/nnue/checkpoints/gen8-pre-td-s-head-20260912/nnue_weights_int8.bin
+          cp /tmp/tdhead/head.bin data/nnue/checkpoints/td-s-head-20260912-run34653712220/nnue_weights.bin
+          cp /tmp/tdhead/head_int8.bin data/nnue/checkpoints/td-s-head-20260912-run34653712220/nnue_weights_int8.bin
+          cp /tmp/tdhead/head.bin data/nnue/nnue_weights.bin
+          cp /tmp/tdhead/head_int8.bin data/nnue/nnue_weights_int8.bin
+          cp /tmp/tdhead/head_int8.bin gui_web/zquoridor.data
+          cmp data/nnue/nnue_weights_int8.bin gui_web/zquoridor.data
+      - name: Rebuild standalone web bundle
+        run: |
+          python gui_web/build_standalone.py
+          test -s index.html
+          grep -q 'zquoridor' index.html
+      - name: Minimal regression checks
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          assert Path('data/nnue/nnue_weights.bin').stat().st_size == 611400
+          assert Path('data/nnue/nnue_weights_int8.bin').stat().st_size == 244464
+          assert Path('gui_web/zquoridor.data').read_bytes() == Path('data/nnue/nnue_weights_int8.bin').read_bytes()
+          print('NNUE promotion payload checks: OK')
+          PY
+      - name: Commit promotion and remove temporary workflow
+        run: |
+          set -euxo pipefail
+          rm .github/workflows/promote-td-s-head-temp.yml
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add -A
+          git commit -m "feat(nnue): promote TD-S-Head to production" -m "User-approved promotion of frozen candidate from run 34653712220 after 100-pair arena: 104-12-84, 55.0% score, +34.9 Elo, score 95% CI 49.0-61.0%. Preserve prior Gen8 checkpoint and update browser-embedded int8 payload."
+          git push origin HEAD:main
