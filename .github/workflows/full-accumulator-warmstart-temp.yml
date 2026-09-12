@@ -23,6 +23,9 @@ jobs:
         with:
           python-version: "3.11"
 
+      - name: Apply mutable-accumulator MCAB detection fix
+        run: python tools/dev/fix_full_accumulator_sfinane.py
+
       - name: Install numpy
         run: python -m pip install --disable-pip-version-check numpy
 
@@ -80,11 +83,12 @@ jobs:
             "./bin/$t"
           done
 
-      - name: Remove temporary validator
+      - name: Commit validated fast-leaf fix and remove temporary validator
         run: |
           rm .github/workflows/full-accumulator-warmstart-temp.yml
+          rm tools/dev/fix_full_accumulator_sfinane.py
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add .github/workflows/full-accumulator-warmstart-temp.yml
-          git commit -m "ci: remove full accumulator warm-start validator"
+          git add src/mcab.hpp tools/dev/fix_full_accumulator_sfinane.py .github/workflows/full-accumulator-warmstart-temp.yml
+          git commit -m "fix(mcab): detect mutable full accumulator eval" -m "Keep leafDepth=0 on the fast NNUE path after nnueEvalInt became mutable to resolve both accumulator perspectives."
           git push origin HEAD:exp/full-accumulator
