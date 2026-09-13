@@ -2,7 +2,7 @@ name: Gen9 vs Titanium temporary benchmark
 
 on:
   push:
-    branches: [exp/teacher-distill-multisource]
+    branches: [exp/gen9-titanium-benchmark]
     paths:
       - ".github/workflows/gen9-vs-titanium-temp.yml"
 
@@ -29,7 +29,7 @@ jobs:
           ref: main
       - uses: actions/checkout@v4
         with:
-          ref: exp/teacher-distill-multisource
+          ref: exp/gen9-titanium-benchmark
           path: exp-tools
       - name: Build Gen9 adapter, opening generator and pinned Titanium
         run: |
@@ -40,6 +40,7 @@ jobs:
           g++ -std=c++17 -O2 -DNDEBUG -Iexp-tools/src \
             exp-tools/tools/teacher/generate_openings.cpp -o bin/generate_openings
           tools/external/build_pinned_titanium.sh titanium-bin
+          grep -qx '1ac94755f69799f01b2e06869403e701bbf0bd51' titanium-bin/titanium-sha.txt
       - name: Run 20 paired openings at 200 ms
         env:
           SHARD: ${{ matrix.shard }}
