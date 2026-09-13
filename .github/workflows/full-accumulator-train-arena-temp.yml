@@ -20,40 +20,109 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-      - name: Install training deps
-        run: python -m pip install --disable-pip-version-check numpy torch matplotlib
-      - name: Migrate production TD-S-Head to full accumulator
+      - name: Install CPU training deps
         run: |
-          mkdir -p /tmp/fullacc/init /tmp/fullacc/out /tmp/fullacc/ckpt
-          python training/migrate_full_accumulator.py data/nnue/nnue_weights.bin /tmp/fullacc/init/full.bin
-      - name: Fine-tune full accumulator
-        run: |
-          python training/train_nnue.py --fresh --init-from /tmp/fullacc/init/full.bin --out /tmp/fullacc/out/full.bin --ckpt-dir /tmp/fullacc/ckpt --epochs 30 --lr 5e-5 --device cpu
-      - name: Quantize candidate
-        run: python training/quantize_nnue.py /tmp/fullacc/out/full.bin /tmp/fullacc/out/full_int8.bin
-      - name: Build tests and arena
-        run: |
-          bash build/build_tests.sh
-          bash tools/arena/build_arena.sh
-      - name: Verify candidate
-        run: |
-          ./bin/nnue_verify /tmp/fullacc/out/full.bin /tmp/fullacc/out/full_int8.bin
-          ./bin/nnue_incremental_check /tmp/fullacc/out/full_int8.bin
-          ./bin/nnue_sign_check /tmp/fullacc/out/full_int8.bin
-      - name: Show arena CLI
-        run: python tools/arena/run_arena.py --help
-      - name: Arena candidate vs production TD-S-Head
+          python -m pip install --disable-pip-version-check numpy torch --index-url https://download.pytorch.org/whl/cpu
+          python -m pip install --disable-pip-version-check matplotlib
+      - name: Apply and validate full-accumulator warm-start loader
         shell: bash
         run: |
           set -euo pipefail
-          python tools/arena/run_arena.py --games 200 --time-ms 200 --threads 4 --weights1 /tmp/fullacc/out/full_int8.bin --weights2 data/nnue/nnue_weights_int8.bin 2>&1 | tee /tmp/fullacc/arena.txt
+          python tools/dev/fix_full_accumulator_loader.py
+          python -m py_compile training/train_nnue.py
+      - name: Migrate production TD-S-Head to full accumulator
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/fullacc/init /tmp/fullacc/out /tmp/fullacc/ckpt /tmp/fullacc/selfplay
+          python training/migrate_full_accumulator.py data/nnue/nnue_weights.bin /tmp/fullacc/init/full.bin
+          python training/quantize_nnue.py /tmp/fullacc/init/full.bin /tmp/fullacc/init/full_int8.bin
+          python - <<'PY'
+          from training.train_nnue import _load_raw_weights, HEAD_INPUT, POLICY_OUT
+          r = _load_raw_weights('/tmp/fullacc/init/full.bin')
+          assert r['wv1_wl'].shape == (HEAD_INPUT, 32), r['wv1_wl'].shape
+          assert r['wp'].shape == (POLICY_OUT, HEAD_INPUT), r['wp'].shape
+          print('warm-start loader OK:', r['wv1_wl'].shape, r['wp'].shape)
+          PY
+      - name: Build full-accumulator selfplay and tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp /tmp/fullacc/init/full.bin data/nnue/nnue_weights.bin
+          cp /tmp/fullacc/init/full_int8.bin data/nnue/nnue_weights_int8.bin
+          bash build/build_selfplay.sh
+          bash build/build_tests.sh
+      - name: Verify migrated production baseline
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./bin/nnue_verify /tmp/fullacc/init/full.bin /tmp/fullacc/init/full_int8.bin
+          ./bin/nnue_incremental_check /tmp/fullacc/init/full_int8.bin
+          ./bin/nnue_sign_check /tmp/fullacc/init/full_int8.bin
+      - name: Generate fresh search-driven self-play
+        shell: bash
+        run: |
+          set -euo pipefail
+          python tools/selfplay/run_selfplay.py \
+            --games 5000 \
+            --chunk-games 1250 \
+            --time-ms 20 \
+            --threads 4 \
+            --seed 20260912 \
+            --mode montecarlo \
+            --mc-obvious-plies 0 \
+            --mc-temp-decay-plies 0 \
+            --epsilon-midgame 0.01 \
+            --out '/tmp/fullacc/selfplay/selfplay_{shard:03d}.bin'
+          python training/audit_selfplay.py /tmp/fullacc/selfplay --fail-on-legacy
+      - name: Fine-tune full accumulator
+        shell: bash
+        run: |
+          set -euo pipefail
+          python training/train_nnue.py \
+            --fresh \
+            --init-from /tmp/fullacc/init/full.bin \
+            --data /tmp/fullacc/selfplay \
+            --data-sources '[]' \
+            --out /tmp/fullacc/out/full.bin \
+            --quant-out /tmp/fullacc/out/full_int8.bin \
+            --ckpt-dir /tmp/fullacc/ckpt \
+            --epochs 30 \
+            --lr 5e-5 \
+            --wl-gamma 0.99 \
+            --device cpu
+      - name: Verify trained candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -s /tmp/fullacc/out/full.bin
+          test -s /tmp/fullacc/out/full_int8.bin
+          ./bin/nnue_verify /tmp/fullacc/out/full.bin /tmp/fullacc/out/full_int8.bin
+          ./bin/nnue_incremental_check /tmp/fullacc/out/full_int8.bin
+          ./bin/nnue_sign_check /tmp/fullacc/out/full_int8.bin
+      - name: Arena candidate vs functionally identical production baseline
+        shell: bash
+        run: |
+          set -euo pipefail
+          python tools/arena/run_arena.py \
+            --ref1 '' --ref2 '' \
+            --games 200 \
+            --time 200 \
+            --threads 4 \
+            --random-plies 4 \
+            --e1-nnue /tmp/fullacc/out/full_int8.bin \
+            --e2-nnue /tmp/fullacc/init/full_int8.bin \
+            2>&1 | tee /tmp/fullacc/arena.txt
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: full-accumulator-candidate-${{ github.run_id }}
           path: |
+            /tmp/fullacc/init/full.bin
+            /tmp/fullacc/init/full_int8.bin
             /tmp/fullacc/out/full.bin
             /tmp/fullacc/out/full_int8.bin
             /tmp/fullacc/arena.txt
             /tmp/fullacc/ckpt
+            /tmp/fullacc/selfplay
           retention-days: 14
