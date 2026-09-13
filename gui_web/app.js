@@ -100,7 +100,9 @@ function bindEngine(m) {
     lastC: c('_qr_last_move_c'),
     lastEval: c('_qr_last_move_eval'),
     isDraw: c('_qr_is_draw'),
-    loadNnue: c('_qr_load_nnue_weights'),
+    // Raw Emscripten exports take a char*; marshal the JS path explicitly.
+    loadNnue: path => withCStr(path, p => m._qr_load_nnue_weights(p)),
+    evalModeIsNnue: c('_qr_eval_mode_is_nnue'),
     // P6: history navigation
     plyCount: c('_qr_ply_count'),
     cursor: c('_qr_cursor'),
@@ -3105,7 +3107,7 @@ ZquoridorModule().then((Module) => {
   try {
     bindEngine(Module);
     let nnueOk = false;
-    try { nnueOk = !!Module._qr_load_nnue_weights('/data/nnue/nnue_weights_int8.bin'); } catch (e3) {}
+    try { nnueOk = !!W.loadNnue('/data/nnue/nnue_weights_int8.bin'); } catch (e3) {}
     boot();
     if (!nnueOk) toast('warn', 'NNUE weights unavailable - heuristic mode');
   } catch (e) {

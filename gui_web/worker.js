@@ -34,6 +34,11 @@ function lastErr() {
   const buf = M._malloc(640);
   try { M._qr_last_error(buf, 640); return readCStr(buf); } finally { M._free(buf); }
 }
+function withCStr(str, fn) {
+  const bytes = new TextEncoder().encode(String(str) + '\0');
+  const p = M._malloc(bytes.length);
+  try { M.HEAPU8.set(bytes, p); return fn(p); } finally { M._free(p); }
+}
 function importQfenRoot(qfen) {
   const bytes = new TextEncoder().encode(String(qfen) + '\0');
   const p = M._malloc(bytes.length);
@@ -112,6 +117,8 @@ self.onmessage = ev => {
 ZquoridorModule().then(m => {
   M = m;
   let nnue = false;
-  try { nnue = !!m._qr_load_nnue_weights('/data/nnue/nnue_weights_int8.bin'); } catch (e) {}
+  try {
+    nnue = !!withCStr('/data/nnue/nnue_weights_int8.bin', p => m._qr_load_nnue_weights(p));
+  } catch (e) {}
   postMessage({ type: 'ready', nnue });
 }).catch(e => postMessage({ type: 'fatal', msg: String(e) }));
