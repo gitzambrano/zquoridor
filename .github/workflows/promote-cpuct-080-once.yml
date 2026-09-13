@@ -1,0 +1,33 @@
+name: Promote cPuct 0.80 once
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/promote-cpuct-080-once.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  promote:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Promote proven MCAB cPuct default
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(grep -c 'double cPuct = 1.20;' src/mcab.hpp)" -eq 1
+          sed -i 's/double cPuct = 1\.20;/double cPuct = 0.80;/' src/mcab.hpp
+          grep -q 'double cPuct = 0.80;' src/mcab.hpp
+          git diff --check
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add src/mcab.hpp
+          git commit -m 'strength: promote MCAB cPuct 0.80'
+          git push origin HEAD:main
