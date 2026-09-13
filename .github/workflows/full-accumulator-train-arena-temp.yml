@@ -7,6 +7,7 @@ on:
 
 permissions:
   contents: read
+  actions: read
 
 jobs:
   train-arena:
@@ -17,26 +18,35 @@ jobs:
         with:
           ref: exp/full-accumulator
           fetch-depth: 0
+
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
+
       - name: Install CPU training deps
         run: |
           python -m pip install --disable-pip-version-check numpy torch --index-url https://download.pytorch.org/whl/cpu
           python -m pip install --disable-pip-version-check matplotlib
+
+      - name: Restore validated baseline and 5000-game selfplay
+        uses: actions/download-artifact@v4
+        with:
+          name: full-accumulator-candidate-34731228503
+          path: /tmp/fullacc
+          github-token: ${{ github.token }}
+          repository: gitzambrano/zquoridor
+          run-id: 34731228503
+
       - name: Apply and validate full-accumulator warm-start loader
         shell: bash
         run: |
           set -euo pipefail
           python tools/dev/fix_full_accumulator_loader.py
           python -m py_compile training/train_nnue.py
-      - name: Migrate production TD-S-Head to full accumulator
-        shell: bash
-        run: |
-          set -euo pipefail
-          mkdir -p /tmp/fullacc/init /tmp/fullacc/out /tmp/fullacc/ckpt /tmp/fullacc/selfplay
-          python training/migrate_full_accumulator.py data/nnue/nnue_weights.bin /tmp/fullacc/init/full.bin
-          python training/quantize_nnue.py /tmp/fullacc/init/full.bin /tmp/fullacc/init/full_int8.bin
+          test -s /tmp/fullacc/init/full.bin
+          test -s /tmp/fullacc/init/full_int8.bin
+          test "$(find /tmp/fullacc/selfplay -maxdepth 1 -name 'selfplay_*.bin' | wc -l)" -eq 4
+          python training/audit_selfplay.py /tmp/fullacc/selfplay --fail-on-legacy
           python - <<'PY'
           from training.train_nnue import _load_raw_weights, HEAD_INPUT, POLICY_OUT
           r = _load_raw_weights('/tmp/fullacc/init/full.bin')
@@ -44,46 +54,27 @@ jobs:
           assert r['wp'].shape == (POLICY_OUT, HEAD_INPUT), r['wp'].shape
           print('warm-start loader OK:', r['wv1_wl'].shape, r['wp'].shape)
           PY
-      - name: Build full-accumulator selfplay and tests
+
+      - name: Build and verify migrated production baseline
         shell: bash
         run: |
           set -euo pipefail
           cp /tmp/fullacc/init/full.bin data/nnue/nnue_weights.bin
           cp /tmp/fullacc/init/full_int8.bin data/nnue/nnue_weights_int8.bin
-          bash build/build_selfplay.sh
           bash build/build_tests.sh
-      - name: Verify migrated production baseline
-        shell: bash
-        run: |
-          set -euo pipefail
           ./bin/nnue_verify /tmp/fullacc/init/full.bin /tmp/fullacc/init/full_int8.bin
           ./bin/nnue_incremental_check /tmp/fullacc/init/full_int8.bin
           ./bin/nnue_sign_check /tmp/fullacc/init/full_int8.bin
-      - name: Generate fresh search-driven self-play
+
+      - name: Fine-tune full accumulator on saved modern selfplay
         shell: bash
         run: |
           set -euo pipefail
-          python tools/selfplay/run_selfplay.py \
-            --games 5000 \
-            --chunk-games 1250 \
-            --time-ms 20 \
-            --threads 4 \
-            --seed 20260912 \
-            --mode montecarlo \
-            --mc-obvious-plies 0 \
-            --mc-temp-decay-plies 0 \
-            --epsilon-midgame 0.01 \
-            --out '/tmp/fullacc/selfplay/selfplay_{shard:03d}.bin'
-          python training/audit_selfplay.py /tmp/fullacc/selfplay --fail-on-legacy
-      - name: Fine-tune full accumulator
-        shell: bash
-        run: |
-          set -euo pipefail
+          mkdir -p /tmp/fullacc/out /tmp/fullacc/ckpt
           python training/train_nnue.py \
             --fresh \
             --init-from /tmp/fullacc/init/full.bin \
-            --data /tmp/fullacc/selfplay \
-            --data-sources '[]' \
+            --data-sources '[{"path":"/tmp/fullacc/selfplay","frac":1.0,"k":0.65}]' \
             --out /tmp/fullacc/out/full.bin \
             --quant-out /tmp/fullacc/out/full_int8.bin \
             --ckpt-dir /tmp/fullacc/ckpt \
@@ -91,6 +82,7 @@ jobs:
             --lr 5e-5 \
             --wl-gamma 0.99 \
             --device cpu
+
       - name: Verify trained candidate
         shell: bash
         run: |
@@ -100,6 +92,7 @@ jobs:
           ./bin/nnue_verify /tmp/fullacc/out/full.bin /tmp/fullacc/out/full_int8.bin
           ./bin/nnue_incremental_check /tmp/fullacc/out/full_int8.bin
           ./bin/nnue_sign_check /tmp/fullacc/out/full_int8.bin
+
       - name: Arena candidate vs functionally identical production baseline
         shell: bash
         run: |
@@ -113,6 +106,7 @@ jobs:
             --e1-nnue /tmp/fullacc/out/full_int8.bin \
             --e2-nnue /tmp/fullacc/init/full_int8.bin \
             2>&1 | tee /tmp/fullacc/arena.txt
+
       - uses: actions/upload-artifact@v4
         if: always()
         with:
