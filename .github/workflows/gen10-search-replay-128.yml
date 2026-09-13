@@ -53,7 +53,9 @@ jobs:
             training/teachers/engine_relabel.py \
             training/teachers/merge_soft_targets.py \
             training/teachers/targets.py \
-            training/teachers/zq_deep_relabel.py
+            training/teachers/zq_deep_relabel.py \
+            tools/teacher/zq_deep_relabel.cpp \
+            tools/teacher/encode_state.cpp
           git diff --check
 
       - name: Download 128-state search labels
@@ -200,7 +202,6 @@ jobs:
               out[k]=np.concatenate([replay[k][keep], active[k]])
           out['policy']=np.concatenate([replay_policy, active['policy'].astype(np.float32)])
           out['value']=np.concatenate([replay_value, active['value'].astype(np.float32)])
-          # Broad replay is only a retention anchor. Search-enhanced states carry the learning signal.
           replay_weight=np.full(2788, 0.02, dtype=np.float32)
           active_weight=active['weight'].astype(np.float32)
           out['weight']=np.concatenate([replay_weight, active_weight])
