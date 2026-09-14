@@ -237,6 +237,8 @@ struct McabParams {
     double wideningExponent = 0.5;      // exponent alpha in c*N^alpha
     bool treeReuse = true;               // reuso de subárvore entre lances (Seção 8)
     bool clearTTPerMove = false;
+    // Separate bounded policy/value inference caches; experimental opt-in.
+    bool evalCache = true;
     bool rootNoiseEnabled = false;       // ruído de Dirichlet nos priors da raiz (Seção 9) -- só self-play
     double rootNoiseAlpha = 0.3;
     double rootNoiseEpsilon = 0.25;
@@ -304,6 +306,12 @@ struct McabStats {
     bool treeReused = false;         // esta chamada reaproveitou a subárvore do lance anterior (Seção 8)
     int reusedNodes = 0;             // tamanho do pool herdado após compactação
     long long leafTruncated = 0;     // folhas que estouraram o teto de tempo e foram descartadas
+    long long evalCachePolicyHits = 0;
+    long long evalCachePolicyMisses = 0;
+    long long evalCacheValueHits = 0;
+    long long evalCacheValueMisses = 0;
+    long long evalCachePolicyEvictions = 0;
+    long long evalCacheValueEvictions = 0;
                                      // (ver evaluateLeaf). Muitas = leafDepth alto demais para o
                                      // controle de tempo em uso; a árvore fica cega nessas folhas.
 };
@@ -322,6 +330,28 @@ inline auto mcabStateKey(const S& s, int) -> decltype((uint64_t)s.hash) {
 template <typename S>
 inline uint64_t mcabStateKey(const S&, ...) {
     return 0;
+}
+
+// The board Zobrist key does not encode wall ownership, while NNUE consumes
+// both remaining-wall counts. Include both stocks in inference-cache identity.
+template <typename S>
+inline auto mcabEvalStateKey(const S& s, int)
+    -> decltype((void)s.wallsLeft[0], (uint64_t)s.hash) {
+    uint64_t key = mcabStateKey(s, 0);
+    if (key == 0) return 0;
+    uint64_t stocks = (uint64_t)(uint8_t)s.wallsLeft[0]
+                    | ((uint64_t)(uint8_t)s.wallsLeft[1] << 8);
+    key ^= stocks + 0x9E3779B97F4A7C15ull + (key << 6) + (key >> 2);
+    key ^= key >> 30;
+    key *= 0xBF58476D1CE4E5B9ull;
+    key ^= key >> 27;
+    key *= 0x94D049BB133111EBull;
+    key ^= key >> 31;
+    return key;
+}
+template <typename S>
+inline uint64_t mcabEvalStateKey(const S& s, ...) {
+    return mcabStateKey(s, 0);
 }
 
 // Cache de BFS de distância (PlayerPathCacheTable em rules.hpp) usado ao
@@ -528,6 +558,16 @@ public:
         McabStats localStats;
         McabStats& mstats = outStats ? *outStats : localStats;
         mstats = McabStats{};
+        if (params.evalCache) {
+            if (policyEvalCache.empty()) policyEvalCache.resize(kEvalCacheEntries);
+            if (valueEvalCache.empty()) valueEvalCache.resize(kEvalCacheEntries);
+            ++evalCacheGeneration;
+            if (evalCacheGeneration == 0) {
+                for (auto& entry : policyEvalCache) entry.generation = 0;
+                for (auto& entry : valueEvalCache) entry.generation = 0;
+                evalCacheGeneration = 1;
+            }
+        }
 
         // Passo 1 (Seção 5): atalho de final "mãos vazias" -- delega
         // direto para o solver exato já existente em chooseMove(). Não
@@ -712,6 +752,88 @@ public:
     void seedNoise(uint32_t seed) { rng.seed(seed); noiseSeeded = true; }
 
 private:
+    static constexpr size_t kEvalCacheWays = 4;
+    static constexpr size_t kEvalCacheSets = 1024;
+    static constexpr size_t kEvalCacheEntries = kEvalCacheWays * kEvalCacheSets;
+
+    struct PolicyEvalCacheEntry {
+        uint64_t key = 0;
+        uint32_t generation = 0;
+        std::array<float, PolicyDim> policy{};
+    };
+    struct ValueEvalCacheEntry {
+        uint64_t key = 0;
+        uint32_t generation = 0;
+        int score = 0;
+    };
+
+    std::vector<PolicyEvalCacheEntry> policyEvalCache;
+    std::vector<ValueEvalCacheEntry> valueEvalCache;
+    uint32_t evalCacheGeneration = 0;
+
+    size_t evalCacheSet(uint64_t key) const {
+        uint64_t mixed = key ^ (key >> 33) ^ (key >> 17);
+        return (size_t)mixed & (kEvalCacheSets - 1);
+    }
+
+    PolicyEvalCacheEntry* findPolicyEvalCache(uint64_t key) {
+        if (!params.evalCache || key == 0 || policyEvalCache.empty()) return nullptr;
+        size_t base = evalCacheSet(key) * kEvalCacheWays;
+        for (size_t way = 0; way < kEvalCacheWays; ++way) {
+            auto& entry = policyEvalCache[base + way];
+            if (entry.generation == evalCacheGeneration && entry.key == key) return &entry;
+        }
+        return nullptr;
+    }
+
+    PolicyEvalCacheEntry& storePolicyEvalCache(uint64_t key, McabStats& mstats) {
+        size_t base = evalCacheSet(key) * kEvalCacheWays;
+        for (size_t way = 0; way < kEvalCacheWays; ++way) {
+            auto& entry = policyEvalCache[base + way];
+            if (entry.generation == evalCacheGeneration && entry.key == key) return entry;
+            if (entry.generation != evalCacheGeneration) {
+                entry.key = key;
+                entry.generation = evalCacheGeneration;
+                return entry;
+            }
+        }
+        size_t victim = (size_t)((key >> 10) & (kEvalCacheWays - 1));
+        auto& entry = policyEvalCache[base + victim];
+        ++mstats.evalCachePolicyEvictions;
+        entry.key = key;
+        entry.generation = evalCacheGeneration;
+        return entry;
+    }
+
+    ValueEvalCacheEntry* findValueEvalCache(uint64_t key) {
+        if (!params.evalCache || key == 0 || valueEvalCache.empty()) return nullptr;
+        size_t base = evalCacheSet(key) * kEvalCacheWays;
+        for (size_t way = 0; way < kEvalCacheWays; ++way) {
+            auto& entry = valueEvalCache[base + way];
+            if (entry.generation == evalCacheGeneration && entry.key == key) return &entry;
+        }
+        return nullptr;
+    }
+
+    ValueEvalCacheEntry& storeValueEvalCache(uint64_t key, McabStats& mstats) {
+        size_t base = evalCacheSet(key) * kEvalCacheWays;
+        for (size_t way = 0; way < kEvalCacheWays; ++way) {
+            auto& entry = valueEvalCache[base + way];
+            if (entry.generation == evalCacheGeneration && entry.key == key) return entry;
+            if (entry.generation != evalCacheGeneration) {
+                entry.key = key;
+                entry.generation = evalCacheGeneration;
+                return entry;
+            }
+        }
+        size_t victim = (size_t)((key >> 18) & (kEvalCacheWays - 1));
+        auto& entry = valueEvalCache[base + victim];
+        ++mstats.evalCacheValueEvictions;
+        entry.key = key;
+        entry.generation = evalCacheGeneration;
+        return entry;
+    }
+
     std::vector<NodeT> pool;
     std::vector<AccPairT> mcabAccStack;   // Seção 4.3.3 -- pilha por caminho de descida
     RepTblT localRepTbl;                  // cópia mutável de gameHistory, 1x por chooseMoveMCAB (ver Seção 5, negamax/searchLeaf)
@@ -1010,6 +1132,24 @@ private:
         activateWidening(node, desired);
     }
 
+    void policyOutputForNode(const NodeT& node, int depthInTree,
+                             std::array<float, PolicyDim>& out, McabStats& mstats) {
+        uint64_t key = params.evalCache ? mcabEvalStateKey(node.state, 0) : 0;
+        if (key != 0) {
+            if (auto* entry = findPolicyEvalCache(key)) {
+                out = entry->policy;
+                ++mstats.evalCachePolicyHits;
+                return;
+            }
+        }
+        forwardPolicyQuant(mcabAccStack[depthInTree].acc[node.side], out);
+        if (key != 0) {
+            auto& entry = storePolicyEvalCache(key, mstats);
+            entry.policy = out;
+            ++mstats.evalCachePolicyMisses;
+        }
+    }
+
     void expandNode(int idx, int depthInTree, McabStats& mstats) {
         NodeT& node = pool[idx];
 
@@ -1023,7 +1163,7 @@ private:
 
             if (nm > 0) {
                 std::array<float, PolicyDim> policyOut{};
-                forwardPolicyQuant(mcabAccStack[depthInTree].acc[node.side], policyOut);
+                policyOutputForNode(node, depthInTree, policyOut, mstats);
                 // perf/speed-elo-100: era std::vector<float> alocado por
                 // expansao; nm <= 131 < PolicyDim(=209), entao um buffer de
                 // pilha elimina o malloc do caminho quente.
@@ -1056,7 +1196,7 @@ private:
             node.candidateP.assign(nc, 0.f);
             if (nc > 0) {
                 std::array<float, PolicyDim> policyOut{};
-                forwardPolicyQuant(mcabAccStack[depthInTree].acc[node.side], policyOut);
+                policyOutputForNode(node, depthInTree, policyOut, mstats);
                 std::vector<float> logits(nc);
                 for (size_t i = 0; i < nc; i++)
                     logits[i] = policyLogitForMove(policyOut, node.candidateMoves[i], node.side);
@@ -1262,8 +1402,24 @@ private:
         if (leafDepth <= 0) {
             if constexpr (hasNnueEvalInt<AccPairT>::value) {
                 AccPairT& ap = mcabAccStack[depthInTree];
+                // Always resolve pending accumulator work first: cache lookup must
+                // not alter descendant accumulator state or search semantics.
                 mcabResolvePending(ap, node.side, mcabPathCache(engine, 0), 0);
-                int score = nnueEvalInt(ap, node.side);
+                uint64_t key = params.evalCache ? mcabEvalStateKey(node.state, 0) : 0;
+                int score = 0;
+                if (key != 0) {
+                    if (auto* entry = findValueEvalCache(key)) {
+                        score = entry->score;
+                        ++mstats.evalCacheValueHits;
+                    } else {
+                        score = nnueEvalInt(ap, node.side);
+                        auto& stored = storeValueEvalCache(key, mstats);
+                        stored.score = score;
+                        ++mstats.evalCacheValueMisses;
+                    }
+                } else {
+                    score = nnueEvalInt(ap, node.side);
+                }
                 mstats.leafSearches++;
                 mstats.leafDepthSum += 0;
                 return scoreToQ(score, params.scoreScale);
