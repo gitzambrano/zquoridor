@@ -1,0 +1,318 @@
+name: Gen10 search-replay resume v3
+
+on:
+  push:
+    branches: [exp/gen10-search-replay-resume-v3]
+    paths:
+      - .github/workflows/gen10-search-replay-resume-v3.yml
+
+permissions:
+  contents: read
+  actions: read
+
+env:
+  NO_TABLEBASES: "1"
+  PYTHONUNBUFFERED: "1"
+  TITANIUM_PONDERING: "0"
+  TOOLING_SHA: "05c3b4624142101ab4132e61b202367267b8271a"
+  PREV_RUN: "34955733941"
+  GEN9_FLOAT_SHA256: "5252208c7beca4c4cae885a226581ac0bbd9788c1fdae2d381a543b8296e56f8"
+  GEN9_INT8_SHA256: "e7f74ef64d55d4695053f75802745e050e8abf8234b6a47c14ba0b7107eb453f"
+
+jobs:
+  missing-deep:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        block: [0, 1, 2, 3]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Verify baseline and restore deep relabel tooling
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "$GEN9_INT8_SHA256  data/nnue/nnue_weights_int8.bin" | sha256sum -c -
+          grep -q '^generation=Gen9-TeacherHead$' checkpoints/gen9-teacher-head/PRODUCTION_MANIFEST.txt
+          git fetch --no-tags origin "$TOOLING_SHA" --depth=1
+          git checkout "$TOOLING_SHA" -- training/teachers/zq_deep_relabel.py tools/teacher/zq_deep_relabel.cpp
+      - name: Download active-search corpus
+        uses: actions/download-artifact@v4
+        with:
+          name: teacher-active-search-34618740856
+          path: source-active
+          github-token: ${{ github.token }}
+          repository: gitzambrano/zquoridor
+          run-id: 34618740856
+      - name: Relabel one 4-state missing block
+        env:
+          BLOCK: ${{ matrix.block }}
+          PYTHONPATH: training/teachers
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --quiet numpy
+          mkdir -p results/missing bin
+          ACTIVE_POS=$(find source-active -type f -name positions.jsonl -print -quit)
+          test -s "$ACTIVE_POS"
+          export ACTIVE_POS
+          python - <<'PY'
+          import os
+          from pathlib import Path
+          block=int(os.environ['BLOCK'])
+          lines=[x for x in Path(os.environ['ACTIVE_POS']).read_text().splitlines() if x.strip()]
+          assert len(lines)==128, len(lines)
+          start=32+4*block
+          part=lines[start:start+4]
+          assert len(part)==4
+          Path('results/missing/positions.jsonl').write_text('\n'.join(part)+'\n')
+          print('missing block', block, 'rows', start, start+3)
+          PY
+          g++ -std=c++17 -O3 -DNDEBUG -DNO_TABLEBASES -march=native -pthread -Isrc \
+            tools/teacher/zq_deep_relabel.cpp -o bin/zq_deep_relabel
+          python training/teachers/zq_deep_relabel.py \
+            --positions results/missing/positions.jsonl \
+            --bridge bin/zq_deep_relabel \
+            --nnue data/nnue/nnue_weights_int8.bin \
+            --node-budgets 50000,200000 \
+            --out results/missing/zq-deep.npz
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: gen10-zqdeep-missing-${{ matrix.block }}-${{ github.run_id }}
+          path: results/missing/**
+          retention-days: 7
+          if-no-files-found: warn
+
+  train-and-gate:
+    needs: missing-deep
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Verify current production baseline
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "$GEN9_FLOAT_SHA256  data/nnue/nnue_weights.bin" | sha256sum -c -
+          echo "$GEN9_INT8_SHA256  data/nnue/nnue_weights_int8.bin" | sha256sum -c -
+          grep -q '^generation=Gen9-TeacherHead$' checkpoints/gen9-teacher-head/PRODUCTION_MANIFEST.txt
+          grep -q 'double cPuct = 0.80;' src/mcab.hpp
+          grep -q 'bool evalCache = true;' src/mcab.hpp
+      - name: Restore proven teacher tooling
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin "$TOOLING_SHA" --depth=1
+          git checkout "$TOOLING_SHA" -- \
+            training/build_teacher_soft.py \
+            training/train_teacher_policy.py \
+            training/train_teacher_soft.py \
+            training/teachers/analyze_student_gap.py \
+            training/teachers/common.py \
+            training/teachers/engine_relabel.py \
+            training/teachers/merge_soft_targets.py \
+            training/teachers/targets.py \
+            tools/teacher/encode_state.cpp
+      - name: Download active-search labels
+        uses: actions/download-artifact@v4
+        with:
+          name: teacher-active-search-34618740856
+          path: source-active
+          github-token: ${{ github.token }}
+          repository: gitzambrano/zquoridor
+          run-id: 34618740856
+      - name: Download broad replay corpus
+        uses: actions/download-artifact@v4
+        with:
+          name: tdp-direct-34595635610
+          path: source-replay
+          github-token: ${{ github.token }}
+          repository: gitzambrano/zquoridor
+          run-id: 34595635610
+      - name: Download seven preserved successful shards
+        uses: actions/download-artifact@v4
+        with:
+          pattern: gen10-zqdeep-shard-*-${{ env.PREV_RUN }}
+          path: prior-shards
+          github-token: ${{ github.token }}
+          repository: gitzambrano/zquoridor
+          run-id: ${{ env.PREV_RUN }}
+      - name: Download recovered missing blocks
+        uses: actions/download-artifact@v4
+        with:
+          pattern: gen10-zqdeep-missing-*-${{ github.run_id }}
+          path: missing-shards
+      - name: Install runtime and merge complete 128-state deep corpus
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --quiet numpy
+          python - <<'PY' || python -m pip install --quiet --index-url https://download.pytorch.org/whl/cpu 'torch==2.10.*'
+          import torch, sys
+          sys.exit(0 if torch.__version__.split('+')[0].startswith('2.10.') else 1)
+          PY
+          mkdir -p results/gen10 bin
+          ACTIVE_POS=$(find source-active -type f -name positions.jsonl -print -quit)
+          ACTIVE_CLA=$(find source-active -type f -name claustrophobia-search.npz -print -quit)
+          REPLAY=$(find source-replay -type f -name dataset.npz -print -quit)
+          test -s "$ACTIVE_POS" && test -s "$ACTIVE_CLA" && test -s "$REPLAY"
+          cp "$ACTIVE_POS" results/gen10/positions.jsonl
+          cp "$ACTIVE_CLA" results/gen10/claustrophobia-search.npz
+          cp "$REPLAY" results/gen10/replay-source.npz
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          import numpy as np
+          rows=[json.loads(x) for x in open('results/gen10/positions.jsonl') if x.strip()]
+          assert len(rows)==128 and len({r['id'] for r in rows})==128
+          prior=sorted(Path('prior-shards').glob('**/zq-deep.npz'))
+          missing=sorted(Path('missing-shards').glob('**/zq-deep.npz'))
+          assert len(prior)==7, prior
+          assert len(missing)==4, missing
+          files=prior+missing
+          parts=[np.load(p,allow_pickle=False) for p in files]
+          keys=list(parts[0].files)
+          assert all(list(p.files)==keys for p in parts)
+          cat={k:np.concatenate([p[k] for p in parts],axis=0) for k in keys}
+          ids=[x.decode() for x in cat['id']]
+          assert len(ids)==128 and len(set(ids))==128, (len(ids),len(set(ids)))
+          lookup={v:i for i,v in enumerate(ids)}
+          order=np.array([lookup[r['id']] for r in rows],dtype=np.int64)
+          merged={k:v[order] for k,v in cat.items()}
+          np.savez('results/gen10/zq-deep.npz',**merged)
+          assert [x.decode() for x in merged['id']]==[r['id'] for r in rows]
+          cla=np.load('results/gen10/claustrophobia-search.npz',allow_pickle=False)
+          replay=np.load('results/gen10/replay-source.npz',allow_pickle=False)
+          assert len(cla['id'])==128 and len(replay['id'])==2916
+          print('deep corpus complete: 128 states')
+          print('zq budget agreement mean', float(merged['budget_agreement'].mean()))
+          PY
+      - name: Build encoder and pinned Titanium
+        shell: bash
+        run: |
+          set -euo pipefail
+          g++ -std=c++17 -O2 -DNDEBUG -pthread -Isrc tools/teacher/encode_state.cpp -o bin/teacher_encode_state
+          tools/external/build_pinned_titanium.sh titanium-bin
+          grep -qx '1ac94755f69799f01b2e06869403e701bbf0bd51' titanium-bin/titanium-sha.txt
+      - name: Relabel active states with Titanium
+        env:
+          PYTHONPATH: training/teachers
+        shell: bash
+        run: |
+          set -euo pipefail
+          python training/teachers/engine_relabel.py \
+            --positions results/gen10/positions.jsonl \
+            --teacher Titanium --protocol titanium \
+            --engine titanium-bin/titanium \
+            --budgets 100,300 --repeats 1 --workers 1 \
+            --out results/gen10/titanium.jsonl \
+            --hard-targets-out results/gen10/titanium-hard.npz
+      - name: Build 40-40-20 ensemble and active dataset
+        shell: bash
+        run: |
+          set -euo pipefail
+          python training/teachers/merge_soft_targets.py \
+            --source claustrophobia-search=results/gen10/claustrophobia-search.npz=2 \
+            --source zq-deep=results/gen10/zq-deep.npz=2 \
+            --source titanium=results/gen10/titanium-hard.npz=1 \
+            --out results/gen10/search-ensemble.npz
+          python training/build_teacher_soft.py \
+            --positions results/gen10/positions.jsonl \
+            --targets results/gen10/search-ensemble.npz \
+            --encoder bin/teacher_encode_state \
+            --out results/gen10/active-dataset.npz \
+            --confidence-floor 0.10
+          PYTHONPATH=training python training/teachers/analyze_student_gap.py \
+            --data results/gen10/active-dataset.npz \
+            --student-weights data/nnue/nnue_weights.bin \
+            --out results/gen10/gen9-gap.npz --device cpu
+      - name: Build Gen9-anchored replay mix
+        env:
+          PYTHONPATH: training
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          import numpy as np
+          import torch
+          import torch.nn.functional as F
+          import train_nnue as base
+          from train_teacher_policy import dense_features
+          replay=np.load('results/gen10/replay-source.npz',allow_pickle=False)
+          active=np.load('results/gen10/active-dataset.npz',allow_pickle=False)
+          active_ids={x.decode() for x in active['id']}
+          replay_ids=np.array([x.decode() for x in replay['id']])
+          keep=np.array([x not in active_ids for x in replay_ids],dtype=bool)
+          assert int(keep.sum())==2788
+          model=base.QuoridorNNUE().cpu().eval()
+          base._load_into_model(model,base._load_raw_weights('data/nnue/nnue_weights.bin'))
+          idx=np.flatnonzero(keep); policies=[]; values=[]
+          with torch.no_grad():
+              for start in range(0,len(idx),256):
+                  j=idx[start:start+256]
+                  x=torch.from_numpy(dense_features(replay,j))
+                  value_logits,policy_logits=model(x)
+                  policies.append(F.softmax(policy_logits,dim=1).cpu().numpy().astype(np.float32))
+                  values.append((2.0*torch.sigmoid(value_logits)-1.0).cpu().numpy().astype(np.float32))
+          keys=['own_pawn','opp_pawn','walls_h','walls_v','walls_left_own','walls_left_opp','own_dist','opp_dist','mover','id','is_val','opening_index','ply']
+          out={k:np.concatenate([replay[k][keep],active[k]]) for k in keys}
+          out['policy']=np.concatenate([np.concatenate(policies,axis=0),active['policy'].astype(np.float32)])
+          out['value']=np.concatenate([np.concatenate(values,axis=0),active['value'].astype(np.float32)])
+          replay_weight=np.full(2788,0.02,dtype=np.float32)
+          active_weight=active['weight'].astype(np.float32)
+          out['weight']=np.concatenate([replay_weight,active_weight])
+          np.savez('results/gen10/mixed-dataset.npz',**out)
+          manifest={'schema':'zquoridor.teacher.gen10_replay_mix.v3','base_search':'current-main-cpuct080-evalcache','replay_samples':2788,'active_search_samples':128,'total_samples':2916,'replay_target':'Gen9 self-policy/self-value','active_target':'0.4 Claustrophobia-search + 0.4 Gen9-deep + 0.2 Titanium','replay_weight_per_sample':0.02,'replay_weight_total':float(replay_weight.sum()),'active_weight_total':float(active_weight.sum())}
+          Path('results/gen10/mix-manifest.json').write_text(json.dumps(manifest,indent=2)+'\n')
+          print(json.dumps(manifest,indent=2))
+          PY
+      - name: Train policy-head-only Gen10 candidate
+        env:
+          PYTHONPATH: training
+        shell: bash
+        run: |
+          set -euo pipefail
+          python training/train_teacher_soft.py \
+            --data results/gen10/mixed-dataset.npz \
+            --init-from data/nnue/nnue_weights.bin \
+            --out results/gen10/gen10-replay.bin \
+            --epochs 24 --batch-size 64 --lr 0.0001 --patience 5 --device cpu
+          python - <<'PY'
+          import json
+          m=json.load(open('results/gen10/gen10-replay.bin.manifest.json'))
+          assert m['mode']=='policy',m['mode']
+          frozen=set(m['frozen_parameters_verified'])
+          assert 'fc1.weight' in frozen and 'value1_wl.weight' in frozen and 'value2_wl.weight' in frozen
+          print('Gen10 head-only verified; val KL',m['initial_val']['policy_kl'],'->',m['best_val_policy_kl'])
+          PY
+      - name: Current-main 200-game Gen10 vs Gen9 H2H
+        shell: bash
+        run: |
+          set -euo pipefail
+          python tools/arena/run_arena.py \
+            --ref1 '' --ref2 '' \
+            --games 200 --time 200 --threads 1 --random-plies 4 \
+            --e1-nnue results/gen10/gen10-replay_int8.bin \
+            --e2-nnue data/nnue/nnue_weights_int8.bin \
+            2>&1 | tee results/gen10/h2h-gen10-vs-gen9-current-main.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: gen10-search-replay-resume-v3-${{ github.run_id }}
+          path: results/gen10/**
+          retention-days: 14
+          if-no-files-found: warn
