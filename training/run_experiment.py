@@ -1,5 +1,13 @@
 #!/usr/bin/env python3
-"""Train, export and build a compact NNUE experiment from cached teaching."""
+"""Train, export, and build one compact NNUE experiment.
+
+Input is a teaching ``dataset.npz``.  ``base`` uses 354 features and ``race``
+uses 456; hidden widths 128, 256, 384, and 512 are supported.  The output
+directory receives float and int8 weights, an architecture manifest, a
+restart checkpoint, a training report, and a native executable compiled with
+matching feature and width flags.  The top-level ``CONFIG`` supplies defaults
+and CLI options override them.
+"""
 from __future__ import annotations
 import argparse
 import copy

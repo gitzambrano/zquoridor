@@ -77,6 +77,29 @@ The current `exp/gen11-teacher-features` branch is a negative control: its 320-w
 
 All students keep the compact value and policy heads and fixed quantization scales. The trainer supports full-network, heads-only, or policy-only optimization; QAT; widths 128, 256, 384, and 512; initialization from a compatible old model; and direct output distillation from scratch. Expanding a model preserves its initial function. Shrinking requires `--from-scratch`.
 
+### Architecture and search compatibility
+
+The search algorithm is shared by all NNUE variants: alpha-beta, MCAB, move
+ordering, wall quiescence, and the endgame race solver do not change merely
+because the network width changes. The network changes the leaf value and
+policy-ordering scores used by that search. The C++ executable is therefore
+compiled for the exact student shape and loads the matching quantized file:
+
+| Student | Compile flags | Quantized layout |
+| --- | --- | --- |
+| `base:256` | `ZQ_NNUE_RACE_FEATURES=0`, `ZQ_NNUE_HIDDEN=256` | 354 x 256 |
+| `base:384` | `ZQ_NNUE_RACE_FEATURES=0`, `ZQ_NNUE_HIDDEN=384` | 354 x 384 |
+| `race:256` | `ZQ_NNUE_RACE_FEATURES=1`, `ZQ_NNUE_HIDDEN=256` | 456 x 256 |
+| `race:384` | `ZQ_NNUE_RACE_FEATURES=1`, `ZQ_NNUE_HIDDEN=384` | 456 x 384 |
+
+`run_experiment.py` builds these flags and records them in
+`student.architecture.json`. Loading a `race` or wider weight file into the
+production executable is rejected by the size check; it is not a runtime
+architecture switch. To compare students, build one executable per student
+and pass its weights to the arena. Search tuning can still differ per
+executable through its normal runtime options, but it must be reported as a
+separate search configuration rather than attributed to the NNUE alone.
+
 ```powershell
 python training/run_experiment.py --no-teaching --data data/teaching/mixed/dataset.npz --architecture race --hidden 384 --out-dir results/race384
 python training/run_experiment.py --no-teaching --data data/teaching/mixed/dataset.npz --architecture race --hidden 128 --from-scratch --out-dir results/race128

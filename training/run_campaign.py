@@ -1,5 +1,13 @@
 #!/usr/bin/env python3
-"""Compare NNUE architectures on shared teaching data and independent arenas."""
+"""Train and compare several NNUE students on shared teaching data.
+
+The campaign prepares replay and optional fresh teaching data, trains each
+``base`` or ``race`` student at the requested hidden width, builds a matching
+C++ executable, and runs paired arenas and optional external benchmarks.
+Results are written below ``out_dir``.  The top-level ``CONFIG`` is the
+default; CLI options override it.  This optional lab does not replace
+``strong_cycle.py`` or promote production weights automatically.
+"""
 from __future__ import annotations
 import argparse
 import copy

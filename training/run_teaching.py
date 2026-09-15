@@ -1,5 +1,19 @@
 #!/usr/bin/env python3
-"""Collect and cache direct or searched teaching targets for NNUE students."""
+"""Create a multi-teacher dataset for an NNUE student.
+
+When ``--positions`` is supplied, consume an architecture-neutral JSONL file.
+Without it, generate fresh ZQuoridor trajectories from the configured number
+of games.  ``direct`` combines the old NNUE and direct Claustrophobia outputs;
+``search`` combines ZQuoridor search and Claustrophobia MCTS; ``mixed`` uses
+all four sources.  Temporal discount, outcome targets, own-search bootstrap,
+temperatures, teacher weights, CPU/GPU device, and resumable caches are
+configurable in the top-level ``CONFIG`` block or through CLI overrides.
+
+Output is ``positions.jsonl`` (when generated), source caches under ``cache/``,
+``teacher_targets.npz``, the final ``dataset.npz`` consumed by
+``train_nnue.py``, and ``manifest.json``.  This script does not train or
+promote a network.
+"""
 from pathlib import Path
 import sys
 sys.path.insert(0, str(Path(__file__).resolve().parent / "teachers"))

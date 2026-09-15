@@ -1,5 +1,21 @@
 #!/usr/bin/env python3
-"""Relabel existing canonical self-play positions with both direct teachers."""
+"""Build a replay dataset from existing canonical self-play shards.
+
+Input:
+    ``data/selfplay/<generation>/selfplay_*.bin`` (32/64-byte canonical
+    records; legacy ambiguous 27-byte shards are skipped), plus the old
+    NNUE weights and the pinned Claustrophobia checkpoint.
+
+Output:
+    ``<out-dir>/dataset.npz`` with train/validation splits and blended policy
+    and value targets.  Resumable ``direct_*.npz`` caches, SHA-256 files, and
+    ``replay_manifest.json`` are written beside it.  This script never creates
+    self-play games, runs search, or trains a student network.
+
+The configuration block is the default; every field can be overridden with a
+matching CLI option.  Use a new output directory when inputs or settings
+change.
+"""
 from __future__ import annotations
 import argparse
 import hashlib

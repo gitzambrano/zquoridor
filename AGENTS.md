@@ -94,7 +94,7 @@ Web GUI (`gui_web/`): compiled `zquoridor.js`/`.wasm` are gitignored, but the bu
 
 **Quantization is QAT**, not post-hoc: `QA=255`/`QB=64` are fixed *before* training and weights are clamped each optimizer step. **These constants appear in three places — `src/nnue.hpp`, `training/train_nnue.py` (`--qa`/`--qb`), and `training/quantize_nnue.py` — and must be changed together**, or `nnue_verify` parity breaks.
 
-**Self-play binary format is the dataset.** `selfplay.exe` writes the exact struct the trainer reads; there is no preprocessing step. `TrainingSample` is 27 bytes, asserted in `training/read_selfplay.py` (`SAMPLE_DTYPE.itemsize == 27`) — changing the C++ struct requires updating that dtype in lockstep.
+**Self-play binary format is the dataset.** `selfplay.exe` writes the exact struct the trainer reads. Legacy records are 27 bytes; current canonical V3 records are 32/64 bytes and are detected by `training/read_selfplay.py`. Changing a C++ record requires updating the matching dtype and format detection in lockstep.
 
 **Eval mode**: `Negamax::setEvalMode(EvalMode::Heuristic | EvalMode::NNUE)` selects `evalSimpleW` vs. the quantized net. NNUE mode requires weights loaded and maintains `nnueAccStack` incrementally across the search stack; heuristic mode leaves `accForSearch` null. Selfplay, arena, bench, and the WASM shell all expose this switch.
 
@@ -197,7 +197,7 @@ Web GUI (`gui_web/`): compiled `zquoridor.js`/`.wasm` are gitignored, but the bu
 
 **Quantization is QAT**, not post-hoc: `QA=255`/`QB=64` are fixed *before* training and weights are clamped each optimizer step. **These constants appear in three places — `src/nnue.hpp`, `training/train_nnue.py` (`--qa`/`--qb`), and `training/quantize_nnue.py` — and must be changed together**, or `nnue_verify` parity breaks.
 
-**Self-play binary format is the dataset.** `selfplay.exe` writes the exact struct the trainer reads; there is no preprocessing step. `TrainingSample` is 27 bytes, asserted in `training/read_selfplay.py` (`SAMPLE_DTYPE.itemsize == 27`) — changing the C++ struct requires updating that dtype in lockstep.
+**Self-play binary format is the dataset.** `selfplay.exe` writes the exact struct the trainer reads. Legacy records are 27 bytes; current canonical V3 records are 32/64 bytes and are detected by `training/read_selfplay.py`. Changing a C++ record requires updating the matching dtype and format detection in lockstep.
 
 **Eval mode**: `Negamax::setEvalMode(EvalMode::Heuristic | EvalMode::NNUE)` selects `evalSimpleW` vs. the quantized net. NNUE mode requires weights loaded and maintains `nnueAccStack` incrementally across the search stack; heuristic mode leaves `accForSearch` null. Selfplay, arena, bench, and the WASM shell all expose this switch.
 
@@ -207,3 +207,30 @@ Web GUI (`gui_web/`): compiled `zquoridor.js`/`.wasm` are gitignored, but the bu
 - Continuous-parameter tuning (`contempt`/`policyOrderScale`/`catScoreScale`) goes through `teste/tune_spsa.cpp` (SPSA, usually via `teste/run_spsa.py`; `--mode spsa|sweep-mindepth|hybrid`, checkpoints to `spsa_checkpoint.txt`, per-iteration CSV history for `teste/plot_spsa.py`, run from repo root). It no longer tunes `evalSimple` weights (dropped once the engine went NNUE-first). Several thresholds (`QS_CRITICAL_*`, `RFP_MARGIN_*`, `LMP_COUNT_*`, `robustnessWeight`) are still uncalibrated placeholders inherited from another engine — tracked in `status.md`.
 - Real strength claims come from `run_arena.py` games, not from nodes/s.
 - When you fix a bug, find a regression, make an architectural call, or leave something uncalibrated/unfinished, log it in `status.md` (with a dated changelog entry if it's a concrete change) rather than in a code comment alone or nowhere.
+
+## Teaching and architecture lab
+
+`training/prepare_replay.py` samples distinct states from existing canonical
+self-play shards and relabels them with the old NNUE and direct Claustrophobia.
+It writes a resumable cache and `dataset.npz`; it does not generate games,
+run search, or train a network.
+
+`training/run_teaching.py` is the general teaching entry point. With
+`--positions` it consumes architecture-neutral `positions.jsonl`; without it,
+it generates fresh trajectories. `direct` uses old-NNUE and Claustrophobia
+inference, `search` uses ZQuoridor search and Claustrophobia MCTS, and `mixed`
+uses all four. It writes positions, source caches, `teacher_targets.npz`, and
+the `dataset.npz` consumed by `train_nnue.py`. Both scripts use their top-level
+`CONFIG` as defaults and accept CLI overrides.
+
+`training/strong_cycle.py` is the standard end-to-end cycle. It calls the
+canonical self-play runner, trains with `train_nnue.py`, and gates promotion
+with the internal arena. `training/run_campaign.py` is optional architecture
+lab code. Its students are `base` or `race` with hidden widths 128, 256, 384,
+or 512. `base` has 354 inputs; `race` adds 102 incremental race/resource
+inputs. Compile each student with matching `-DZQ_NNUE_RACE_FEATURES` and
+`-DZQ_NNUE_HIDDEN` flags. A weight file cannot be loaded into an executable
+compiled for a different shape.
+
+See `docs/local-teaching.md` for the operational input/output tree and
+`docs/engine-lab.md` for benchmark protocol and promotion rules.
