@@ -18,7 +18,7 @@ from tools.external import local_arena
 from tools import run_benchmark
 
 CONFIG = {
-    "out_dir": str(ROOT / "results/campaign-million"),
+    "out_dir": str(ROOT / "results/campaign-million-parallel"),
     "source": str(ROOT / "data/selfplay/gen7-montecarlo"),
     "positions": 1000000,
     "fresh_positions": 16384,
@@ -33,7 +33,10 @@ CONFIG = {
     "architectures": ["base:256", "base:384", "race:256", "race:384"],
     "seeds": [20260914, 20260915],
     "epochs": 30,
-    "batch_size": 1024,
+    "replay_chunk_size": 8192,
+    "replay_batch_size": 4096,
+    "fresh_workers": 8,
+    "batch_size": 4096,
     "device": "auto",
     "screen_pairs": 100,
     "screen_time_ms": 50,
@@ -215,7 +218,8 @@ def _run_campaign(argv=None):
     blocked = arena_holdouts(folder, config) if config["arena"] else set()
     status("replay_teaching")
     replay_config = dict(prepare_replay.CONFIG, source=config["source"], out_dir=str(folder/"replay"),
-                         max_positions=config["positions"], device=config["device"], seed=config["seed"])
+                         max_positions=config["positions"], device=config["device"], seed=config["seed"],
+                         chunk_size=config["replay_chunk_size"], batch_size=config["replay_batch_size"])
     prepare_replay.run(replay_config)
     fresh = None
     if config["fresh_positions"]:
@@ -226,7 +230,8 @@ def _run_campaign(argv=None):
             "--max-positions",str(config["fresh_positions"]),"--claustro-sims",str(config["claustro_sims"]),
             "--zq-nodes",str(config["zq_nodes"]),"--gamma",str(config["gamma"]),
             "--outcome-weight",str(config["outcome_weight"]),"--bootstrap-weight",str(config["bootstrap_weight"]),
-            "--trajectory-movetime-ms",str(config["trajectory_time_ms"]),"--device",config["device"],
+            "--trajectory-movetime-ms",str(config["trajectory_time_ms"]),"--workers",str(config["fresh_workers"]),
+            "--batch-size",str(config["replay_batch_size"]),"--device",config["device"],
             "--seed",str(config["seed"])],check=True,cwd=ROOT)
     dataset = folder/"dataset.npz"
     dataset_info = combine_datasets(folder/"replay/dataset.npz",fresh,dataset,config["fresh_weight_fraction"],blocked)
