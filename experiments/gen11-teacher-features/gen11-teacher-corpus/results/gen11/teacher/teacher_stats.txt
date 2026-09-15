@@ -1,0 +1,2 @@
+train: files=3 games=96 positions=6150 teacher_policy_positions=5438 coverage=0.8842
+val: files=1 games=32 positions=2094 teacher_policy_positions=1743 coverage=0.8324
