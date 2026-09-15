@@ -48,6 +48,8 @@ ENV/
 .idea/
 .worktrees/
 external_bots/
+data/logs/
+data/nnue/champions/
 tc_out.txt
 tpa_dbg.exe
 tpa_g.exe
