@@ -18,15 +18,15 @@ from tools.external import local_arena
 from tools import run_benchmark
 
 CONFIG = {
-    "out_dir": str(ROOT / "results/campaign-large"),
+    "out_dir": str(ROOT / "results/campaign-million"),
     "source": str(ROOT / "data/selfplay/gen7-montecarlo"),
-    "positions": 250000,
-    "fresh_positions": 8192,
-    "fresh_games": 512,
+    "positions": 1000000,
+    "fresh_positions": 16384,
+    "fresh_games": 1024,
     "fresh_weight_fraction": 0.2,
     "trajectory_time_ms": 10,
-    "claustro_sims": 128,
-    "zq_nodes": 512,
+    "claustro_sims": 256,
+    "zq_nodes": 1024,
     "gamma": 0.995,
     "outcome_weight": 1.0,
     "bootstrap_weight": 1.0,
