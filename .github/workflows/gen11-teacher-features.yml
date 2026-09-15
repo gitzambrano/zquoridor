@@ -1,0 +1,330 @@
+name: Gen11 teacher features
+
+on:
+  push:
+    branches:
+      - exp/gen11-teacher-features
+    paths:
+      - ".github/workflows/gen11-teacher-features.yml"
+      - "tools/dev/gen11_teacher_features.py"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  PYTHONUNBUFFERED: "1"
+  BASE_SHA: "ec29daa081025439d6f5596aa10250057a3e0af1"
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install patcher dependency
+        run: python -m pip install --disable-pip-version-check numpy
+      - name: Validate helper syntax
+        run: python -m py_compile tools/dev/gen11_teacher_features.py
+      - name: Apply race320 architecture patch
+        run: |
+          python tools/dev/gen11_teacher_features.py patch-model --variant race320
+          python -m py_compile training/train_nnue.py training/quantize_nnue.py
+      - name: Expand production weights without changing initial outputs
+        run: |
+          test -s data/nnue/nnue_weights.bin
+          python tools/dev/gen11_teacher_features.py expand-weights \
+            --variant race320 \
+            --src data/nnue/nnue_weights.bin \
+            --dst /tmp/race320_init.bin
+          python training/quantize_nnue.py /tmp/race320_init.bin /tmp/race320_init_int8.bin
+          test -s /tmp/race320_init_int8.bin
+      - name: Compile patched engine and wandering regression
+        run: |
+          bash build/build_selfplay.sh
+          g++ -O3 -std=c++17 -DNDEBUG -pthread -Isrc benchmarks/repro_wander.cpp -o /tmp/repro_wander
+          g++ -O3 -std=c++17 -DNDEBUG -pthread -Isrc benchmarks/bench_mcab.cpp -o /tmp/bench_mcab
+
+  teacher:
+    needs: smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install data dependency
+        run: python -m pip install --disable-pip-version-check numpy
+      - name: Patch self-play to expose searched root value
+        run: python tools/dev/gen11_teacher_features.py patch-teacher
+      - name: Build self-play engine
+        run: bash build/build_selfplay.sh
+      - name: Generate MCAB teacher corpus
+        run: |
+          mkdir -p data/selfplay/gen11-teacher/all
+          python tools/selfplay/run_selfplay.py \
+            --games 128 \
+            --chunk-games 32 \
+            --time-ms 100 \
+            --threads 2 \
+            --mode montecarlo \
+            --mc-obvious-plies 0 \
+            --mc-temp-decay-plies 0 \
+            --epsilon-midgame 0.0 \
+            --mcab-nodes 6000 \
+            --out 'data/selfplay/gen11-teacher/all/selfplay_{shard:03d}.bin'
+      - name: Split whole-game shards into train and validation
+        run: |
+          mkdir -p data/selfplay/gen11-teacher/train data/selfplay/gen11-teacher/val results/gen11/teacher
+          mv data/selfplay/gen11-teacher/all/selfplay_000.bin data/selfplay/gen11-teacher/train/
+          mv data/selfplay/gen11-teacher/all/selfplay_001.bin data/selfplay/gen11-teacher/train/
+          mv data/selfplay/gen11-teacher/all/selfplay_002.bin data/selfplay/gen11-teacher/train/
+          mv data/selfplay/gen11-teacher/all/selfplay_003.bin data/selfplay/gen11-teacher/val/
+          rmdir data/selfplay/gen11-teacher/all
+      - name: Measure teacher coverage
+        env:
+          PYTHONPATH: training
+        run: |
+          python - <<'PY' | tee results/gen11/teacher/teacher_stats.txt
+          from pathlib import Path
+          import numpy as np
+          from read_selfplay import SAMPLE_DTYPE, game_start_mask
+
+          for split in ("train", "val"):
+              paths = sorted(Path(f"data/selfplay/gen11-teacher/{split}").glob("*.bin"))
+              arrays = [np.memmap(p, dtype=SAMPLE_DTYPE, mode="r") for p in paths]
+              positions = sum(len(a) for a in arrays)
+              games = sum(int(game_start_mask(a).sum()) for a in arrays)
+              teacher = sum(int((a["policy_top_prob"][:, 0] > 0).sum()) for a in arrays)
+              coverage = teacher / max(1, positions)
+              print(f"{split}: files={len(paths)} games={games} positions={positions} teacher_policy_positions={teacher} coverage={coverage:.4f}")
+              assert positions > 0 and games > 0
+              assert coverage > 0.85, f"teacher coverage too low: {coverage:.3f}"
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: gen11-teacher-corpus
+          retention-days: 14
+          if-no-files-found: error
+          path: |
+            data/selfplay/gen11-teacher/**
+            results/gen11/teacher/teacher_stats.txt
+
+  variants:
+    needs: teacher
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: wide320_teacher
+            variant: wide320
+            k: "0.55"
+          - name: race320_teacher
+            variant: race320
+            k: "0.55"
+          - name: race320_no_value_teacher
+            variant: race320
+            k: "1.00"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install training dependencies
+        run: python -m pip install --disable-pip-version-check numpy torch --index-url https://download.pytorch.org/whl/cpu
+      - uses: actions/download-artifact@v4
+        with:
+          name: gen11-teacher-corpus
+          path: /tmp/gen11-teacher-artifact
+      - name: Restore teacher corpus paths
+        run: |
+          mkdir -p data/selfplay/gen11-teacher
+          cp -R /tmp/gen11-teacher-artifact/train data/selfplay/gen11-teacher/train
+          cp -R /tmp/gen11-teacher-artifact/val data/selfplay/gen11-teacher/val
+      - name: Preserve production baseline and compile baseline probes
+        run: |
+          mkdir -p results/gen11/${{ matrix.name }} data/nnue/gen11/${{ matrix.name }} data/checkpoints/gen11/${{ matrix.name }}
+          cp data/nnue/nnue_weights.bin /tmp/base_float.bin
+          cp data/nnue/nnue_weights_int8.bin /tmp/base_int8.bin
+          g++ -O3 -std=c++17 -DNDEBUG -pthread -Isrc benchmarks/bench_mcab.cpp -o /tmp/bench_mcab_base
+          g++ -O3 -std=c++17 -DNDEBUG -pthread -Isrc benchmarks/repro_wander.cpp -o /tmp/repro_wander_base
+          /tmp/bench_mcab_base 2500 0 | tee results/gen11/${{ matrix.name }}/baseline_mcab.txt
+          /tmp/repro_wander_base 80 12 | tee results/gen11/${{ matrix.name }}/baseline_wander.txt
+      - name: Patch candidate architecture and create exact-function warm start
+        run: |
+          python tools/dev/gen11_teacher_features.py patch-model --variant ${{ matrix.variant }}
+          python tools/dev/gen11_teacher_features.py expand-weights \
+            --variant ${{ matrix.variant }} \
+            --src /tmp/base_float.bin \
+            --dst data/nnue/gen11/${{ matrix.name }}/init_weights.bin
+          python -m py_compile training/train_nnue.py training/quantize_nnue.py
+          bash build/build_selfplay.sh
+      - name: Train candidate from MCAB policy and value teacher
+        run: |
+          DATA_JSON='[{"path":"data/selfplay/gen11-teacher/train","frac":1.0,"k":${{ matrix.k }}}]'
+          python training/train_nnue.py \
+            --fresh \
+            --init-from data/nnue/gen11/${{ matrix.name }}/init_weights.bin \
+            --data-sources "$DATA_JSON" \
+            --val-data data/selfplay/gen11-teacher/val \
+            --out data/nnue/gen11/${{ matrix.name }}/nnue_weights.bin \
+            --ckpt-dir data/checkpoints/gen11/${{ matrix.name }} \
+            --plot-dir '' \
+            --epochs 12 \
+            --lr 1e-4 \
+            --lr-min 2e-6 \
+            --lr-schedule cosine \
+            --warmup-epochs 1 \
+            --batch-size 512 \
+            --chunk-size 8192 \
+            --device cpu \
+            --monitor val_loss \
+            --policy-opening-plies 0 \
+            --wl-gamma 0.99 \
+            --wall-poor-wl-weight 2.0 \
+            --no-early-stop | tee results/gen11/${{ matrix.name }}/training.txt
+          test -s data/nnue/gen11/${{ matrix.name }}/nnue_weights_int8.bin
+          sha256sum data/nnue/gen11/${{ matrix.name }}/nnue_weights.bin data/nnue/gen11/${{ matrix.name }}/nnue_weights_int8.bin \
+            | tee results/gen11/${{ matrix.name }}/weights.sha256
+      - name: Measure candidate search throughput and wandering behavior
+        run: |
+          cp data/nnue/gen11/${{ matrix.name }}/nnue_weights_int8.bin data/nnue/nnue_weights_int8.bin
+          g++ -O3 -std=c++17 -DNDEBUG -pthread -Isrc benchmarks/bench_mcab.cpp -o /tmp/bench_mcab_candidate
+          g++ -O3 -std=c++17 -DNDEBUG -pthread -Isrc benchmarks/repro_wander.cpp -o /tmp/repro_wander_candidate
+          /tmp/bench_mcab_candidate 2500 0 | tee results/gen11/${{ matrix.name }}/candidate_mcab.txt
+          /tmp/repro_wander_candidate 80 12 | tee results/gen11/${{ matrix.name }}/candidate_wander.txt
+      - name: Screen candidate Elo against pinned production source and weights
+        run: |
+          python tools/arena/run_arena.py \
+            --ref1 '' \
+            --ref2 "$BASE_SHA" \
+            --games 160 \
+            --time 80 \
+            --threads 2 \
+            --report-games 40 \
+            --random-plies 4 \
+            --e1-nnue data/nnue/gen11/${{ matrix.name }}/nnue_weights_int8.bin \
+            --e2-nnue /tmp/base_int8.bin \
+            | tee results/gen11/${{ matrix.name }}/arena.txt
+      - name: Record experiment identity
+        run: |
+          {
+            echo "name=${{ matrix.name }}"
+            echo "variant=${{ matrix.variant }}"
+            echo "value_target_k=${{ matrix.k }}"
+            echo "base_sha=$BASE_SHA"
+            echo "candidate_source_sha=$(git rev-parse HEAD)"
+          } | tee results/gen11/${{ matrix.name }}/identity.txt
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: gen11-${{ matrix.name }}
+          retention-days: 14
+          if-no-files-found: warn
+          path: |
+            results/gen11/${{ matrix.name }}/**
+            data/nnue/gen11/${{ matrix.name }}/nnue_weights.bin
+            data/nnue/gen11/${{ matrix.name }}/nnue_weights_int8.bin
+
+  publish-results:
+    needs: variants
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: gen11-*
+          path: /tmp/gen11-results
+      - name: Collect text results
+        run: |
+          rm -rf experiments/gen11-teacher-features
+          mkdir -p experiments/gen11-teacher-features
+          find /tmp/gen11-results -type f \( -name '*.txt' -o -name '*.sha256' \) -print0 | while IFS= read -r -d '' f; do
+            rel="${f#/tmp/gen11-results/}"
+            mkdir -p "experiments/gen11-teacher-features/$(dirname "$rel")"
+            cp "$f" "experiments/gen11-teacher-features/$rel"
+          done
+      - name: Build compact report
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import re
+
+          root = Path('experiments/gen11-teacher-features')
+          lines = [
+              '# Gen11 teacher and feature experiment',
+              '',
+              f'Baseline source: `{__import__("os").environ["BASE_SHA"]}`.',
+              '',
+              '| Variant | Elo vs baseline | Arena NPS candidate/base | MCAB expansion ratio | Wander progress candidate/base |',
+              '|---|---:|---:|---:|---:|',
+          ]
+          for name in ('wide320_teacher', 'race320_teacher', 'race320_no_value_teacher'):
+              matches = list(root.glob(f'gen11-{name}/**/arena.txt'))
+              if not matches:
+                  lines.append(f'| {name} | failed/no result | - | - | - |')
+                  continue
+              arena = matches[0].read_text(errors='replace')
+              base_mcab = next(root.glob(f'gen11-{name}/**/baseline_mcab.txt')).read_text(errors='replace')
+              cand_mcab = next(root.glob(f'gen11-{name}/**/candidate_mcab.txt')).read_text(errors='replace')
+              base_wander = next(root.glob(f'gen11-{name}/**/baseline_wander.txt')).read_text(errors='replace')
+              cand_wander = next(root.glob(f'gen11-{name}/**/candidate_wander.txt')).read_text(errors='replace')
+
+              elo_m = re.search(r'Diferenca Elo Engine 1 vs 2\s*:\s*([+-]?[0-9.]+) \(Margem ±([0-9.]+)\)', arena)
+              nps = re.findall(r'NPS:\s*([0-9,]+) nps', arena)
+              elo = f'{elo_m.group(1)} ±{elo_m.group(2)}' if elo_m else 'parse-fail'
+              arena_nps = f'{nps[0]}/{nps[1]}' if len(nps) >= 2 else 'parse-fail'
+
+              def expansion_rate(text):
+                  m = re.search(r'nos MCTS expandidos\s*:\s*\d+\s*\(([0-9.]+)/s\)', text)
+                  return float(m.group(1)) if m else 0.0
+
+              b_rate = expansion_rate(base_mcab)
+              c_rate = expansion_rate(cand_mcab)
+              ratio = c_rate / b_rate if b_rate else 0.0
+
+              def progress_score(text):
+                  section = text.split('=== REPLAY HYBRID, treeReuse=ON  (production)', 1)
+                  if len(section) < 2:
+                      return (0, 0)
+                  section = section[1].split('=== REPLAY', 1)[0]
+                  pairs = re.findall(r'ENGINE\s+\S+\s+d0=(\d+)->(\d+)', section)
+                  progress = sum(int(b) < int(a) for a, b in pairs)
+                  return progress, len(pairs)
+
+              cp, cn = progress_score(cand_wander)
+              bp, bn = progress_score(base_wander)
+              lines.append(f'| {name} | {elo} | {arena_nps} | {ratio:.3f} | {cp}/{cn} vs {bp}/{bn} |')
+
+          lines += [
+              '',
+              'The race feature package adds exact race differential, wall-stock differential, and a 5x5 interaction bucket. It performs no additional BFS.',
+              'The value-teacher variants use `k=0.55`, so the WL target blends 55% final game outcome with 45% searched MCAB root value. All variants use the existing top-8 MCAB visit distribution as the policy teacher.',
+              '',
+          ]
+          (root / 'REPORT.md').write_text('\n'.join(lines), encoding='utf-8')
+          print('\n'.join(lines))
+          PY
+      - name: Commit experiment results to branch
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add experiments/gen11-teacher-features
+          if git diff --cached --quiet; then
+            echo 'No result changes to commit.'
+          else
+            git commit -m 'experiment: record Gen11 teacher feature results'
+            git push origin HEAD:exp/gen11-teacher-features
+          fi
