@@ -1,0 +1,82 @@
+
+=== REPLAY HYBRID, treeReuse=ON  (production) (time=80ms) ===
+22. ENGINE e6     d0=5->4   d1=13   reused=0 nodes=0 sims=113
+    human  g3     d1=12
+23. ENGINE d6     d0=4->3   d1=12   reused=1 nodes=58 sims=105
+    human  f3     d1=11
+24. ENGINE d7     d0=3->2   d1=11   reused=1 nodes=9 sims=139
+    human  e3     d1=10
+25. ENGINE d8     d0=2->1   d1=10   reused=1 nodes=1 sims=146
+    human  d3     d1=9
+26. ENGINE d9     d0=1->0   d1=9   reused=1 nodes=1 sims=309097
+winner: p0
+
+=== REPLAY HYBRID, treeReuse=OFF (time=80ms) ===
+22. ENGINE e6     d0=5->4   d1=13   reused=0 nodes=0 sims=113
+    human  g3     d1=12
+23. ENGINE d6     d0=4->3   d1=12   reused=0 nodes=0 sims=159
+    human  f3     d1=11
+24. ENGINE d7     d0=3->2   d1=11   reused=0 nodes=0 sims=147
+    human  e3     d1=10
+25. ENGINE d8     d0=2->1   d1=10   reused=0 nodes=0 sims=147
+    human  d3     d1=9
+26. ENGINE d9     d0=1->0   d1=9   reused=0 nodes=0 sims=307490
+winner: p0
+
+=== REPLAY HYBRID, treeReuse=ON, clearTTPerMove=ON (time=80ms) ===
+22. ENGINE e6     d0=5->4   d1=13   reused=0 nodes=0 sims=114
+    human  g3     d1=12
+23. ENGINE d6     d0=4->3   d1=12   reused=0 nodes=0 sims=102
+    human  f3     d1=11
+24. ENGINE d7     d0=3->2   d1=11   reused=0 nodes=0 sims=130
+    human  e3     d1=10
+25. ENGINE d8     d0=2->1   d1=10   reused=0 nodes=0 sims=131
+    human  d3     d1=9
+26. ENGINE d9     d0=1->0   d1=9   reused=0 nodes=0 sims=304659
+winner: p0
+
+=== REPLAY PURE ALPHA-BETA (time=80ms) ===
+22. ENGINE e6     d0=5->4   d1=13   reused=0 nodes=0 sims=0
+    human  g3     d1=12
+23. ENGINE e5     d0=4->5   d1=12   reused=0 nodes=0 sims=0
+    human  f3     d1=11
+24. ENGINE d5     d0=5->4   d1=11   reused=0 nodes=0 sims=0
+    human  e3     d1=10
+25. ENGINE c5     d0=4->4   d1=10   reused=0 nodes=0 sims=0
+    human  d3     d1=9
+26. ENGINE c6     d0=4->3   d1=9   reused=0 nodes=0 sims=0
+    human  c3     d1=8
+27. ENGINE c7     d0=3->2   d1=8   reused=0 nodes=0 sims=0
+    human  b3     d1=7
+28. ENGINE d7     d0=2->2   d1=7   reused=0 nodes=0 sims=0
+    human  a3     d1=6
+
+=== HYBRID MCTS (production) (time=80ms) ===
+start: p0=e5 d0=5 | p1=c3 d1=8
+ply  0  ENGINE e6     d0=5->4  d1=8  sims=143
+ply  1  opp    b3     d1=8->7
+ply  2  ENGINE d6     d0=4->3  d1=7  sims=142
+ply  3  opp    a3     d1=7->6
+ply  4  ENGINE d7     d0=3->2  d1=6  sims=157
+ply  5  opp    a2     d1=6->5
+ply  6  ENGINE d8     d0=2->1  d1=5  sims=176
+ply  7  opp    b2     d1=5->4
+ply  8  ENGINE d9     d0=1->0  d1=4  sims=308662
+winner: p0
+end: p0=d9 d0=0 | p1=b2 d1=4
+
+=== PURE ALPHA-BETA (time=80ms) ===
+start: p0=e5 d0=5 | p1=c3 d1=8
+ply  0  ENGINE d5     d0=5->4  d1=8  sims=0
+ply  1  opp    b3     d1=8->7
+ply  2  ENGINE c5     d0=4->4  d1=7  sims=0
+ply  3  opp    a3     d1=7->6
+ply  4  ENGINE c6     d0=4->3  d1=6  sims=0
+ply  5  opp    a2     d1=6->5
+ply  6  ENGINE c7     d0=3->2  d1=5  sims=0
+ply  7  opp    b2     d1=5->4
+ply  8  ENGINE c8     d0=2->1  d1=4  sims=0
+ply  9  opp    c2     d1=4->3
+ply 10  ENGINE c9     d0=1->0  d1=3  sims=0
+winner: p0
+end: p0=c9 d0=0 | p1=c2 d1=3

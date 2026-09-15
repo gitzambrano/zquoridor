@@ -1,0 +1,64 @@
+=========================================================================================================================================
+MODO: TREINO A PARTIR DE PESOS EXISTENTES
+  pesos: data/nnue/gen11-retry/wide320_teacher/init_weights.bin
+  ciclo novo: 20260915-033729
+  otimizador comeca do zero (p/ retomar COM otimizador/schedule, use o mesmo --ckpt-dir de uma rodada anterior em vez de --init-from)
+=========================================================================================================================================
+fontes de treino (1 pasta(s), sorteio aleatorio por posicao, seed=0):
+  - data/selfplay/gen11-teacher/train (data/selfplay/gen11-teacher/train): 3 arquivo(s), 6,150 posicoes, frac=1.00 k=0.55 -> 6,150 selecionadas
+total (todas as fontes, pos-amostragem): 6,150 / 6,150 posicoes (100.0%)
+dados de treino: 3 arquivo(s), 6,150 posicoes no total (--data-sources ativo -- ver amostragem por fonte acima)
+gamma do alvo WL (treino): 0.99 -- desconto medio 0.725 na mediana de 32 lances restantes (maximo 74 lances)
+dados de validacao (explicitos): 1 arquivo(s), 2,094 posicoes
+gamma do alvo WL (validacao): 0.99 -- desconto medio 0.725 na mediana de 32 lances restantes (maximo 74 lances)
+device: cpu  (CPU -- nenhuma GPU CUDA em uso; passe --device cuda se esperava usar uma)
+orcamento de VRAM: 6.0 GB -> batch_size=512
+orcamento de RAM: 32.0 GB -> chunk_size=8,192 posicoes/bloco
+transferencia GPU em blocos de 4,096 posicoes (8x o batch_size)
+gradient clipping: max_norm=1.0
+chunks por epoch (RAM): ~1
+QAT: QA=255 QB=64 (pesos travados a cada passo)
+epoch   1/12  lr=1.00e-04  wd=1.00e-04  time=00m00s  total=00m00s  ETA=00m01s *
+  treino  loss=2.2484  acc=0.677  (outcome=0.5651 policy=1.6829)
+  valid   loss=2.0413  acc=0.742  (outcome=0.5216 policy=1.5189)
+epoch   2/12  lr=9.80e-05  wd=9.80e-05  time=00m00s  total=00m00s  ETA=00m01s *
+  treino  loss=1.9850  acc=0.773  (outcome=0.5461 policy=1.4392)
+  valid   loss=1.8263  acc=0.810  (outcome=0.4991 policy=1.3264)
+epoch   3/12  lr=9.22e-05  wd=9.21e-05  time=00m00s  total=00m00s  ETA=00m00s *
+  treino  loss=1.8251  acc=0.818  (outcome=0.5379 policy=1.2870)
+  valid   loss=1.6933  acc=0.850  (outcome=0.4877 policy=1.2047)
+epoch   4/12  lr=8.31e-05  wd=8.27e-05  time=00m00s  total=00m00s  ETA=00m00s *
+  treino  loss=1.7207  acc=0.858  (outcome=0.5330 policy=1.1880)
+  valid   loss=1.6094  acc=0.869  (outcome=0.4823 policy=1.1263)
+epoch   5/12  lr=7.14e-05  wd=7.08e-05  time=00m00s  total=00m00s  ETA=00m00s *
+  treino  loss=1.6546  acc=0.892  (outcome=0.5298 policy=1.1248)
+  valid   loss=1.5574  acc=0.890  (outcome=0.4794 policy=1.0773)
+epoch   6/12  lr=5.80e-05  wd=5.71e-05  time=00m00s  total=00m00s  ETA=00m00s *
+  treino  loss=1.6116  acc=0.903  (outcome=0.5275 policy=1.0842)
+  valid   loss=1.5236  acc=0.909  (outcome=0.4760 policy=1.0470)
+epoch   7/12  lr=4.40e-05  wd=4.29e-05  time=00m00s  total=00m00s  ETA=00m00s *
+  treino  loss=1.5851  acc=0.916  (outcome=0.5259 policy=1.0591)
+  valid   loss=1.5024  acc=0.930  (outcome=0.4742 policy=1.0277)
+epoch   8/12  lr=3.06e-05  wd=2.92e-05  time=00m00s  total=00m00s  ETA=00m00s *
+  treino  loss=1.5677  acc=0.927  (outcome=0.5249 policy=1.0427)
+  valid   loss=1.4896  acc=0.930  (outcome=0.4733 policy=1.0158)
+epoch   9/12  lr=1.89e-05  wd=1.73e-05  time=00m00s  total=00m00s  ETA=00m00s *
+  treino  loss=1.5574  acc=0.920  (outcome=0.5243 policy=1.0329)
+  valid   loss=1.4824  acc=0.919  (outcome=0.4728 policy=1.0091)
+epoch  10/12  lr=9.78e-06  wd=7.94e-06  time=00m00s  total=00m00s  ETA=00m00s *
+  treino  loss=1.5512  acc=0.916  (outcome=0.5239 policy=1.0275)
+  valid   loss=1.4789  acc=0.917  (outcome=0.4727 policy=1.0057)
+epoch  11/12  lr=3.98e-06  wd=2.03e-06  time=00m00s  total=00m01s  ETA=00m00s *
+  treino  loss=1.5484  acc=0.914  (outcome=0.5237 policy=1.0249)
+  valid   loss=1.4774  acc=0.917  (outcome=0.4726 policy=1.0044)
+epoch  12/12  lr=2.00e-06  wd=0.00e+00  time=00m00s  total=00m01s  ETA=00m00s *
+  treino  loss=1.5476  acc=0.914  (outcome=0.5236 policy=1.0238)
+  valid   loss=1.4767  acc=0.917  (outcome=0.4725 policy=1.0037)
+
+melhor epoch registrado: 12 (val_loss=1.4767); export final usa os pesos do ultimo epoch (--no-restore-best)
+pesos exportados para data/nnue/gen11-retry/wide320_teacher/nnue_weights.bin
+quantizando int8/int16 -> data/nnue/gen11-retry/wide320_teacher/nnue_weights_int8.bin (QA=255 QB=64)
+QA=255  QB=64  (max_abs entre wv1_wl/wv2_wl/wp = 1.9844)
+pesos quantizados gravados em data/nnue/gen11-retry/wide320_teacher/nnue_weights_int8.bin
+
+resumo: 12 epoch(s) executados, melhor val_loss=1.4767 no epoch 12, tempo total 1s

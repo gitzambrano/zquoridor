@@ -1,0 +1,5 @@
+name=race320_teacher
+variant=race320
+value_target_k=0.55
+base_sha=ec29daa081025439d6f5596aa10250057a3e0af1
+experiment_sha=e21eb3602dc0cd937edd2b827b177f52c2a0b0ad

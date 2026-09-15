@@ -1,0 +1,45 @@
+=================================================================
+        ZQUORIDOR ARENA SELFPLAY - BENCHMARK MULTI-CORE
+=================================================================
+  Engine 1 : LOCAL (Nao Comitado)
+  Engine 2 : ec29daa081025439d6f5596aa10250057a3e0af1
+  Config   : 160 jogos | 2 threads | 80ms/lance | Relatorio a cada 40 jogos
+  Salvar .bin: True
+  Politica NNUE na ordenacao: Engine 1 LIGADA (min-depth=3) | Engine 2 LIGADA (min-depth=3)
+=================================================================
+
+[*] Engine: Versao Local Atual (inclui alteracoes nao comitadas)
+[*] Engine: Criando git worktree temporario para 'ec29daa081025439d6f5596aa10250057a3e0af1' em /tmp/zquoridor_ref_ec29daa081025439d6f5596aa10250057a3e0af1_7gqch8_4
+[*] Engine 1: pesos copiados para local persistente (sobrevive ao cleanup do worktree) -> /tmp/zquoridor_arena_weights_wou40f21/e1_nnue_weights_int8.bin
+[*] Engine 2: pesos copiados para local persistente (sobrevive ao cleanup do worktree) -> /tmp/zquoridor_arena_weights_wou40f21/e2_nnue_weights_int8.bin
+[*] Compilando executavel de arena (engine1=LOCAL (Nao Comitado) + engine2=ec29daa081025439d6f5596aa10250057a3e0af1 no mesmo binario)...
+[+] Compilacao concluida com sucesso! (as duas engines sao codigo REAL de cada ref, nao a mesma engine duplicada)
+[*] Removendo git worktree temporario /tmp/zquoridor_ref_ec29daa081025439d6f5596aa10250057a3e0af1_7gqch8_4...
+  [arena] Engine 1 usando NNUE ('/tmp/zquoridor_arena_weights_wou40f21/e1_nnue_weights_int8.bin')
+  [arena] Engine 2 usando NNUE ('/tmp/zquoridor_arena_weights_wou40f21/e2_nnue_weights_int8.bin')
+  [arena] Engine 1: ordenacao por politica LIGADA (min-depth=3)
+  [arena] Engine 2: ordenacao por politica LIGADA (min-depth=3)
+  [arena] Engine 1: MCTS HIBRIDO (nodes=20000, leaf-depth=0, cpuct=0.80, fpu=0.00, scale=160, root-select=visits, backup=avg, widening=off(16+2.00*N^0.50), tree-reuse=on)
+  [arena] Engine 1: folha AB de fim de jogo LIGADA (muros do lado da vez <= 0 -> leaf-depth=2)
+  [arena] Engine 2: MCTS HIBRIDO (nodes=20000, leaf-depth=0, cpuct=0.80, fpu=0.00, scale=160, root-select=visits, backup=avg, widening=off(16+2.00*N^0.50), tree-reuse=on)
+  [arena] Engine 2: folha AB de fim de jogo LIGADA (muros do lado da vez <= 0 -> leaf-depth=2)
+  [Progresso:   40/ 160 jogos] Eng1:  14 (39,986 nps) | Eng2:  26 (42,244 nps) | Empates:  0 | Elo: -107.5 (±112.9)
+  [Progresso:   80/ 160 jogos] Eng1:  25 (40,065 nps) | Eng2:  53 (42,398 nps) | Empates:  2 | Elo: -127.0 (±80.1)
+  [Progresso:  120/ 160 jogos] Eng1:  36 (40,310 nps) | Eng2:  81 (42,241 nps) | Empates:  3 | Elo: -137.0 (±66.1)
+  [Progresso:  160/ 160 jogos] Eng1:  49 (40,490 nps) | Eng2: 103 (41,610 nps) | Empates:  8 | Elo: -122.0 (±55.6)
+
+[+] DATASET SALVO COM SUCESSO:
+    Arquivo  : /home/runner/work/zquoridor/zquoridor/data/arena/arena_LOCAL_ec29daa081025439d6f5596aa10250057a3e0af1_160_000.bin
+    Amostras : 18,762 posicoes (0.57 MB)
+
+=================================================================
+                  RELATORIO FINAL DE ELO & NODES/S
+=================================================================
+  Engine 1 (LOCAL (Nao Comitado)):  49 vitorias ( 30.6%) | NPS:     40,490 nps
+  Engine 2 (ec29daa081025439d6f5596aa10250057a3e0af1): 103 vitorias ( 64.4%) | NPS:     41,610 nps
+  Empates                     :   8          (  5.0%)
+-----------------------------------------------------------------
+  Diferenca Elo Engine 1 vs 2 : -122.0 (Margem ±55.6)
+  Status                      : [X] ENGINE 2 EH ESTATISTICAMENTE SUPERIOR!
+=================================================================
+

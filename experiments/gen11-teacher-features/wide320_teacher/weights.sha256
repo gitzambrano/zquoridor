@@ -1,0 +1,2 @@
+bcdd97ecd179b9b615e2d1b865baf9b99057e04811e402b64ae5bc583c24ba49  data/nnue/gen11-retry/wide320_teacher/nnue_weights.bin
+4e4058528abddf2b3154345b7bf87f922dbb77a177482589ee875f6ba709fabf  data/nnue/gen11-retry/wide320_teacher/nnue_weights_int8.bin
