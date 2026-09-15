@@ -93,7 +93,9 @@ def sample_states(config, blocked=()):
         for index in candidates:
             row = data[index]
             key = tuple(int(row[name]) for name in STATE_FIELDS)
-            if key in seen or row["own_pawn"] >= 72 or row["opp_pawn"] <= 8:
+            if (key in seen or row["own_pawn"] >= 72 or row["opp_pawn"] <= 8
+                    or not (0 <= row["walls_left_own"] <= 10)
+                    or not (0 <= row["walls_left_opp"] <= 10)):
                 continue
             seen.add(key)
             rows.append(tuple(int(row[name]) for name in (*STATE_FIELDS, "own_dist", "opp_dist", "game_result")))
@@ -120,7 +122,9 @@ def sample_states(config, blocked=()):
                 for index in rng.permutation(len(data)):
                     row = data[index]
                     key = tuple(int(row[name]) for name in STATE_FIELDS)
-                    if key in seen or row["own_pawn"] >= 72 or row["opp_pawn"] <= 8:
+                    if (key in seen or row["own_pawn"] >= 72 or row["opp_pawn"] <= 8
+                            or not (0 <= row["walls_left_own"] <= 10)
+                            or not (0 <= row["walls_left_opp"] <= 10)):
                         continue
                     seen.add(key)
                     rows.append(tuple(int(row[name]) for name in (*STATE_FIELDS, "own_dist", "opp_dist", "game_result")))
