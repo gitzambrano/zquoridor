@@ -90,6 +90,34 @@ def sample_states(config, blocked=()):
         del data
         if len(rows) >= config["max_positions"]:
             break
+    # Some shards contain fewer eligible, distinct positions than the uniform
+    # quota. Borrow the shortfall from the training shards first, then from
+    # validation shards if necessary. `seen` keeps this second pass disjoint
+    # from the balanced first pass and preserves whole-shard group identities.
+    if len(rows) < config["max_positions"]:
+        for validation in (False, True):
+            for file_index, (path, dtype, _size) in enumerate(valid):
+                if (file_index < n_val) != validation:
+                    continue
+                digest = provenance[file_index]["sha256"]
+                data = np.memmap(path, dtype=dtype, mode="r")
+                for index in rng.permutation(len(data)):
+                    row = data[index]
+                    key = tuple(int(row[name]) for name in STATE_FIELDS)
+                    if key in seen or row["own_pawn"] >= 72 or row["opp_pawn"] <= 8:
+                        continue
+                    seen.add(key)
+                    rows.append(tuple(int(row[name]) for name in (*STATE_FIELDS, "own_dist", "opp_dist", "game_result")))
+                    ids.append(hashlib.sha256(f"{digest}:{index}".encode()).hexdigest()[:24])
+                    groups.append(digest)
+                    splits.append(validation)
+                    if len(rows) >= config["max_positions"]:
+                        break
+                del data
+                if len(rows) >= config["max_positions"]:
+                    break
+            if len(rows) >= config["max_positions"]:
+                break
     if len(rows) < config["max_positions"]:
         raise ValueError(f"requested {config['max_positions']} positions but found only {len(rows)} distinct eligible samples")
     if len(rows) < 2 or not any(splits) or all(splits):
