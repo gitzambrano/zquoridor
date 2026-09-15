@@ -25,7 +25,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        shard: [0, 1, 2, 3]
+        shard: [0, 1, 2, 3, 4, 5, 6, 7]
     steps:
       - uses: actions/checkout@v4
         with:
@@ -55,7 +55,7 @@ jobs:
           repository: gitzambrano/zquoridor
           run-id: 34618740856
 
-      - name: Relabel 32-state shard at 50k and 200k nodes
+      - name: Relabel 16-state shard at 50k and 200k nodes
         env:
           SHARD: ${{ matrix.shard }}
           PYTHONPATH: training/teachers
@@ -73,10 +73,10 @@ jobs:
           shard=int(os.environ['SHARD'])
           lines=[x for x in Path(os.environ['ACTIVE_POS']).read_text().splitlines() if x.strip()]
           assert len(lines)==128, len(lines)
-          part=lines[32*shard:32*(shard+1)]
-          assert len(part)==32
+          part=lines[16*shard:16*(shard+1)]
+          assert len(part)==16
           Path('results/shard/positions.jsonl').write_text('\n'.join(part)+'\n')
-          print('shard', shard, 'rows', 32*shard, 32*(shard+1)-1)
+          print('shard', shard, 'rows', 16*shard, 16*(shard+1)-1)
           PY
           g++ -std=c++17 -O3 -DNDEBUG -DNO_TABLEBASES -march=native -pthread -Isrc \
             tools/teacher/zq_deep_relabel.cpp -o bin/zq_deep_relabel
@@ -183,7 +183,7 @@ jobs:
           rows=[json.loads(x) for x in open('results/gen10/positions.jsonl') if x.strip()]
           assert len(rows)==128 and len({r['id'] for r in rows})==128
           files=sorted(Path('zq-shards').glob('**/zq-deep.npz'))
-          assert len(files)==4, files
+          assert len(files)==8, files
           parts=[np.load(p,allow_pickle=False) for p in files]
           keys=list(parts[0].files)
           assert all(list(p.files)==keys for p in parts)
