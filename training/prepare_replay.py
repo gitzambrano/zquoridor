@@ -69,9 +69,11 @@ def sample_states(config, blocked=()):
         provenance.append(dict(path=str(path.resolve()), sha256=digest, record_bytes=size))
         data = np.memmap(path, dtype=dtype, mode="r")
         accepted = 0
-        # A bounded oversample handles duplicate opening positions without
-        # loading or shuffling the complete multimillion-position corpus.
-        candidates = rng.choice(len(data), min(len(data), quota * 4), replace=False)
+        # Use a per-shard random permutation rather than a fixed oversample.
+        # Small runs still stop as soon as their quota is filled, while a large
+        # run can consume the long tail of a shard when duplicate openings or
+        # holdouts reject more rows than the former 4x bound allowed.
+        candidates = rng.permutation(len(data))
         for index in candidates:
             row = data[index]
             key = tuple(int(row[name]) for name in STATE_FIELDS)
