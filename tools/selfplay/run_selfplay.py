@@ -167,7 +167,7 @@ MCAB_NODES        = None   # produção: 20000 nós de árvore por lance
 MCAB_LEAF_DEPTH   = None   # produção: 0 -- plies de alpha-beta em cada folha (medido)
 MCAB_LEAF_DEPTH_MAX = None # produção: 8 (teto quando MCAB_ADAPTIVE_LEAF_DEPTH)
 MCAB_ADAPTIVE_LEAF_DEPTH = None  # produção: desligado
-MCAB_CPUCT        = None   # produção: 1.5
+MCAB_CPUCT        = None   # produção: 0.80
 MCAB_FPU          = None   # produção: 0.0 (medido)
 MCAB_SCORE_SCALE  = None   # produção: 200.0 (= NNUE_EVAL_SCALE)
 MCAB_TREE_REUSE   = None   # produção: ligado (reuso de subárvore entre lances)
@@ -270,6 +270,19 @@ def compile_selfplay(root):
             return ret == 0
     return False
 
+def selfplay_needs_rebuild(root, exe):
+    """Rebuild when an engine or self-play source is newer than the binary."""
+    if exe is None or not os.path.isfile(exe):
+        return True
+    binary_time = os.path.getmtime(exe)
+    for relative in ("src", os.path.join("tools", "selfplay")):
+        source_root = os.path.join(root, relative)
+        for base, _dirs, names in os.walk(source_root):
+            for name in names:
+                if name.endswith((".hpp", ".cpp", ".h")) and os.path.getmtime(os.path.join(base, name)) > binary_time:
+                    return True
+    return False
+
 def next_free_shard(root, template):
     """Retorna o menor índice de shard que ainda não existe em disco."""
     shard = 0
@@ -343,7 +356,7 @@ def parse_args():
     p.add_argument("--mcab-leaf-depth-max", type=int, default=None, help="teto de leaf-depth no modo adaptativo (producao: 8)")
     p.add_argument("--mcab-adaptive-leaf-depth", dest="mcab_adaptive_leaf_depth", action="store_true", default=None,
                     help="escala leaf-depth com as visitas do no pai (producao: desligado)")
-    p.add_argument("--mcab-cpuct", type=float, default=None, help="constante de exploracao do PUCT (producao: 1.5)")
+    p.add_argument("--mcab-cpuct", type=float, default=None, help="constante de exploracao do PUCT (producao: 0.80)")
     p.add_argument("--mcab-fpu", type=float, default=None, help="first-play-urgency: Q(pai) - X (producao: 0.0)")
     p.add_argument("--mcab-score-scale", type=float, default=None, help="escala do sigmoide score->Q (producao: 200)")
     p.add_argument("--mcab-no-tree-reuse", dest="mcab_tree_reuse", action="store_false", default=None,
@@ -382,7 +395,8 @@ def main():
     root = find_project_root()
     exe  = find_selfplay_exe(root)
 
-    if exe is None:
+    if selfplay_needs_rebuild(root, exe):
+        print("[run_selfplay] fontes mais novas que selfplay.exe. Recompilando...")
         ok = compile_selfplay(root)
         exe = find_selfplay_exe(root)
         if exe is None:
