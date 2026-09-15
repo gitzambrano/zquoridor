@@ -23,6 +23,7 @@ import json
 import math
 from pathlib import Path
 import sys
+from collections import deque
 import numpy as np
 import torch
 
@@ -53,6 +54,46 @@ CONFIG = {
     "resume": True,
 }
 STATE_FIELDS = ("own_pawn", "opp_pawn", "walls_h", "walls_v", "walls_left_own", "walls_left_opp")
+
+
+def legal_wall_topology(walls_h: int, walls_v: int, own_pawn: int, opp_pawn: int) -> bool:
+    """Validate a recorded board before sending it to the Claustrophobia bridge.
+
+    Historical shards may contain a few corrupt wall sets.  The direct bridge
+    correctly rejects them, but filtering at sampling time lets a million-row
+    relabel run replace the bad row instead of stopping after hours.  A wall
+    crossing uses the same anchor in both bitboards; both pawns must retain a
+    path to their respective goal rows.
+    """
+    walls_h, walls_v = int(walls_h), int(walls_v)
+    if walls_h & walls_v:
+        return False
+
+    def blocked(row, col, next_row, next_col):
+        if row == next_row:
+            anchor_row, anchor_col = row, min(col, next_col)
+            return ((anchor_row > 0 and (walls_v >> ((anchor_row - 1) * 8 + anchor_col)) & 1)
+                    or (anchor_row < 8 and (walls_v >> (anchor_row * 8 + anchor_col)) & 1))
+        anchor_row, anchor_col = min(row, next_row), col
+        return ((anchor_col > 0 and (walls_h >> (anchor_row * 8 + anchor_col - 1)) & 1)
+                or (anchor_col < 8 and (walls_h >> (anchor_row * 8 + anchor_col)) & 1))
+
+    def has_path(cell, goal_row):
+        queue, seen = deque([cell]), {cell}
+        while queue:
+            current = queue.popleft()
+            row, col = divmod(current, 9)
+            if row == goal_row:
+                return True
+            for dr, dc in ((-1, 0), (1, 0), (0, -1), (0, 1)):
+                nr, nc = row + dr, col + dc
+                nxt = nr * 9 + nc
+                if 0 <= nr < 9 and 0 <= nc < 9 and nxt not in seen and not blocked(row, col, nr, nc):
+                    seen.add(nxt)
+                    queue.append(nxt)
+        return False
+
+    return has_path(int(own_pawn), 8) and has_path(int(opp_pawn), 0)
 
 
 def sha(path):
@@ -95,7 +136,8 @@ def sample_states(config, blocked=()):
             key = tuple(int(row[name]) for name in STATE_FIELDS)
             if (key in seen or row["own_pawn"] >= 72 or row["opp_pawn"] <= 8
                     or not (0 <= row["walls_left_own"] <= 10)
-                    or not (0 <= row["walls_left_opp"] <= 10)):
+                    or not (0 <= row["walls_left_opp"] <= 10)
+                    or not legal_wall_topology(row["walls_h"], row["walls_v"], row["own_pawn"], row["opp_pawn"])):
                 continue
             seen.add(key)
             rows.append(tuple(int(row[name]) for name in (*STATE_FIELDS, "own_dist", "opp_dist", "game_result")))
@@ -124,7 +166,8 @@ def sample_states(config, blocked=()):
                     key = tuple(int(row[name]) for name in STATE_FIELDS)
                     if (key in seen or row["own_pawn"] >= 72 or row["opp_pawn"] <= 8
                             or not (0 <= row["walls_left_own"] <= 10)
-                            or not (0 <= row["walls_left_opp"] <= 10)):
+                            or not (0 <= row["walls_left_opp"] <= 10)
+                            or not legal_wall_topology(row["walls_h"], row["walls_v"], row["own_pawn"], row["opp_pawn"])):
                         continue
                     seen.add(key)
                     rows.append(tuple(int(row[name]) for name in (*STATE_FIELDS, "own_dist", "opp_dist", "game_result")))
@@ -193,7 +236,14 @@ def run(config):
     if manifest_path.exists():
         previous = json.loads(manifest_path.read_text())
         if previous["fingerprint"] != fingerprint:
-            raise ValueError("replay inputs changed; use a new out_dir")
+            stable = (previous.get("config") == identity["config"]
+                      and previous.get("provenance") == identity["provenance"]
+                      and previous.get("old_sha") == identity["old_sha"]
+                      and previous.get("claustro_sha") == identity["claustro_sha"]
+                      and previous.get("encoder_sha") == identity["encoder_sha"])
+            if not (config["resume"] and stable):
+                raise ValueError("replay inputs changed; use a new out_dir")
+            print("Replay code changed; verifying resumable chunks by sample id.", flush=True)
     manifest = dict(fingerprint=fingerprint, **identity, complete=False)
     manifest_path.write_text(json.dumps(manifest, indent=2)+"\n", encoding="utf-8")
     device = config["device"]

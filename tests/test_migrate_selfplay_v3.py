@@ -9,6 +9,7 @@ sys.path.insert(0, str(ROOT / "training"))
 
 import migrate_selfplay_v3 as migration  # noqa: E402
 from read_selfplay import SAMPLE_DTYPE_LEGACY  # noqa: E402
+import prepare_replay  # noqa: E402
 
 
 def test_legacy_conversion_marks_turn_and_mirrors_second_player_policy():
@@ -42,3 +43,10 @@ def test_legacy_partial_prefix_is_discarded_before_turn_inference():
     assert len(converted) == 2
     assert dropped == 1
     assert converted["mover"].tolist() == [0, 1]
+
+
+def test_replay_filters_crossed_or_path_blocking_wall_topologies():
+    assert not prepare_replay.legal_wall_topology(1, 1, 4, 76)
+    # Eight horizontal walls form a complete fence between rows zero and one.
+    assert not prepare_replay.legal_wall_topology((1 << 8) - 1, 0, 4, 76)
+    assert prepare_replay.legal_wall_topology(1, 0, 4, 76)
