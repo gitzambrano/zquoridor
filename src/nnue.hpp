@@ -69,8 +69,44 @@ inline int wallsLeftBucket(int n) {
 // warm-start via --init-from de um checkpoint antigo (o fingerprint em
 // compute_fingerprint()/try_load_train_state() já detecta e recusa isso).
 // É preciso retreinar do zero com training/train_nnue.py atualizado.
-constexpr int NUM_FEATURES = N * N + N * N + WS * WS * 2 + 2 * DIST_BUCKETS + 2 * WALLS_LEFT_BUCKETS;  // 354
-constexpr int HIDDEN = 256;
+#ifndef ZQ_NNUE_RACE_FEATURES
+#define ZQ_NNUE_RACE_FEATURES 0
+#endif
+#ifndef ZQ_NNUE_HIDDEN
+#define ZQ_NNUE_HIDDEN 256
+#endif
+constexpr int BASE_FEATURES = N * N + N * N + WS * WS * 2 + 2 * DIST_BUCKETS + 2 * WALLS_LEFT_BUCKETS;
+constexpr int NUM_FEATURES = BASE_FEATURES + (ZQ_NNUE_RACE_FEATURES ? 102 : 0);
+constexpr int HIDDEN = ZQ_NNUE_HIDDEN;
+static_assert(HIDDEN == 128 || HIDDEN == 256 || HIDDEN == 384 || HIDDEN == 512,
+              "unsupported NNUE width");
+
+// These relations use the cached distance buckets, without additional BFS.
+inline std::array<int, 3> raceFeatureIndices(int ownDist, int oppDist, int ownWalls, int oppWalls) {
+    int delta = ownDist - oppDist;
+    int margin = delta < -16 ? -16 : (delta > 16 ? 16 : delta);
+    int race = (delta > 0) - (delta < 0) + 1;
+    int ownClass = ownWalls < 3 ? ownWalls : 3;
+    int oppClass = oppWalls < 3 ? oppWalls : 3;
+    return {{BASE_FEATURES + margin + 16,
+             BASE_FEATURES + 33 + ownWalls - oppWalls + 10,
+             BASE_FEATURES + 54 + race * 16 + ownClass * 4 + oppClass}};
+}
+
+template<class Acc> inline std::array<int, 3> raceFeatures(const Acc& acc) {
+    return raceFeatureIndices(acc.ownDistBucket, acc.oppDistBucket,
+                              acc.ownWallsLeftBucket, acc.oppWallsLeftBucket);
+}
+
+template<class Acc> inline void updateRaceFeatures(Acc& acc, const std::array<int, 3>& previous) {
+    auto current = raceFeatures(acc);
+    for (int i = 0; i < 3; ++i) {
+        if (current[i] != previous[i]) {
+            acc.removeFeature(previous[i]);
+            acc.addFeature(current[i]);
+        }
+    }
+}
 constexpr int POLICY_OUT = N * N + WS * WS * 2;             // 81 destino peão + 128 muro = 209
 
 // Espelha a coordenada bruta do tabuleiro para a perspectiva do jogador 1
@@ -318,6 +354,9 @@ inline Accumulator buildAccumulator(const State& s, int perspective, PlayerPathC
     acc.oppWallsLeftBucket = wallsLeftBucket(s.wallsLeft[opp]);
     acc.addFeature(featOwnWallsLeft(acc.ownWallsLeftBucket));
     acc.addFeature(featOppWallsLeft(acc.oppWallsLeftBucket));
+#if ZQ_NNUE_RACE_FEATURES
+    for (int feature : raceFeatures(acc)) acc.addFeature(feature);
+#endif
     return acc;
 }
 
@@ -403,6 +442,9 @@ inline void forwardPolicy(const Accumulator& acc, std::array<float, POLICY_OUT>&
 // nasce de buildAccumulator e só é mutado por esta função).
 inline void updateAccumulatorForMove(Accumulator& acc, bool viewerIsMover, const State& before, const Move& m,
                                       PlayerPathCacheTable* xtable = nullptr) {
+#if ZQ_NNUE_RACE_FEATURES
+    const auto previousRaceFeatures = raceFeatures(acc);
+#endif
     State after = applyMove(before, m);
     int mover = before.turn, opp = 1 - mover;
     if (!m.isWall) {
@@ -466,6 +508,9 @@ inline void updateAccumulatorForMove(Accumulator& acc, bool viewerIsMover, const
             }
         }
     }
+#if ZQ_NNUE_RACE_FEATURES
+    updateRaceFeatures(acc, previousRaceFeatures);
+#endif
 }
 
 // =========================================================================
@@ -688,6 +733,9 @@ inline AccumulatorQuant buildAccumulatorQuant(const State& s, int perspective, P
     acc.oppWallsLeftBucket = wallsLeftBucket(s.wallsLeft[opp]);
     acc.addFeature(featOwnWallsLeft(acc.ownWallsLeftBucket));
     acc.addFeature(featOppWallsLeft(acc.oppWallsLeftBucket));
+#if ZQ_NNUE_RACE_FEATURES
+    for (int feature : raceFeatures(acc)) acc.addFeature(feature);
+#endif
     return acc;
 }
 
@@ -699,6 +747,9 @@ inline AccumulatorQuant buildAccumulatorQuant(const State& s, int perspective, P
 // nos pontos de chamada da busca.
 inline void updateAccumulatorForMoveQuant(AccumulatorQuant& acc, bool viewerIsMover, const State& before, const Move& m,
                                            PlayerPathCacheTable* xtable = nullptr) {
+#if ZQ_NNUE_RACE_FEATURES
+    const auto previousRaceFeatures = raceFeatures(acc);
+#endif
     State after = applyMove(before, m);
     int mover = before.turn, opp = 1 - mover;
     if (!m.isWall) {
@@ -760,6 +811,9 @@ inline void updateAccumulatorForMoveQuant(AccumulatorQuant& acc, bool viewerIsMo
             }
         }
     }
+#if ZQ_NNUE_RACE_FEATURES
+    updateRaceFeatures(acc, previousRaceFeatures);
+#endif
 }
 
 // SCReLU inteira: clamp(x,0,QA)^2 / QA, resultado em [0,QA] -> cabe em uint8

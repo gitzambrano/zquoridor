@@ -1,0 +1,146 @@
+//! Companion binary compiled inside a pinned Claustrophobia checkout.
+//!
+//! Input TSV: `<sample-id>\t<space separated move history>`.
+//! Outputs:
+//!   1. raw little-endian f32 tensors, one 20x9x9 tensor per input row;
+//!   2. optional raw u8 legal-action masks, one 209-byte row per input row.
+//!
+//! The bridge deliberately uses Claustrophobia's own GameState, move generator,
+//! encode20(), and legal_mask_into() so ZQuoridor never reimplements teacher
+//! feature or legality semantics.
+
+use std::fs::File;
+use std::io::{BufRead, BufReader, BufWriter, Write};
+
+use quoridor::{
+    encode20, generate_all_moves, legal_mask_into, GameState, Move, MoveBuf,
+    ACTION_COUNT, TENSOR_LEN20,
+};
+
+fn parse_move(input: &str, state: &GameState) -> Option<Move> {
+    let t = input.trim().to_ascii_lowercase();
+    let b = t.as_bytes();
+    let mut buf = MoveBuf::new();
+    generate_all_moves(state, &mut buf);
+
+    let candidate = if b.len() == 3
+        && (b'a'..=b'i').contains(&b[0])
+        && (b'1'..=b'9').contains(&b[1])
+    {
+        let col = (b[0] - b'a') as usize;
+        let row = (b[1] - b'1') as usize;
+        if row >= 8 || col >= 8 || (b[2] != b'h' && b[2] != b'v') {
+            return None;
+        }
+        Move::wall((row * 8 + col) as u8, b[2] == b'h')
+    } else if b.len() == 2
+        && (b'a'..=b'i').contains(&b[0])
+        && (b'1'..=b'9').contains(&b[1])
+    {
+        let col = (b[0] - b'a') as usize;
+        let row = (b[1] - b'1') as usize;
+        Move::step((row * 9 + col) as u8)
+    } else {
+        return None;
+    };
+    buf.as_slice().iter().copied().find(|&m| m == candidate)
+}
+
+fn replay(history: &str, sample_id: &str) -> Result<GameState, String> {
+    // Explicit canonical states allow replay of historical position datasets.
+    // They contain no repetition history and are used for direct inference only.
+    if history.starts_with("@state ") {
+        let fields: Vec<&str> = history.split_whitespace().collect();
+        if fields.len() != 7 { return Err("state requires six fields".into()); }
+        let own: u8 = fields[1].parse().map_err(|_| "invalid own pawn")?;
+        let opp: u8 = fields[2].parse().map_err(|_| "invalid opponent pawn")?;
+        let wh: u64 = fields[3].parse().map_err(|_| "invalid horizontal walls")?;
+        let wv: u64 = fields[4].parse().map_err(|_| "invalid vertical walls")?;
+        let ow: u8 = fields[5].parse().map_err(|_| "invalid own reserve")?;
+        let pw: u8 = fields[6].parse().map_err(|_| "invalid opponent reserve")?;
+        if own >= 81 || opp >= 81 || own == opp || ow > 10 || pw > 10
+            || wh.count_ones() + wv.count_ones() != 20 - ow as u32 - pw as u32 {
+            return Err("invalid canonical state resources or pawns".into());
+        }
+        let mut state = GameState::with_pawns(own, opp, 0);
+        for (walls, horizontal) in [(wh, true), (wv, false)] {
+            for slot in 0..64 {
+                if (walls >> slot) & 1 == 0 { continue; }
+                let mv = Move::wall(slot as u8, horizontal);
+                let mut legal = MoveBuf::new();
+                generate_all_moves(&state, &mut legal);
+                if !legal.as_slice().contains(&mv) { return Err("illegal wall topology".into()); }
+                state.setup_wall(slot, horizontal);
+            }
+        }
+        state.walls_left = [ow, pw];
+        return Ok(state);
+    }
+    let mut state = GameState::start();
+    if history.trim().is_empty() {
+        return Ok(state);
+    }
+    for (ply, token) in history.split_whitespace().enumerate() {
+        if state.is_terminal() {
+            return Err(format!("{sample_id}: terminal before ply {ply}"));
+        }
+        let mv = parse_move(token, &state)
+            .ok_or_else(|| format!("{sample_id}: illegal move `{token}` at ply {ply}"))?;
+        state.make_move(mv);
+    }
+    Ok(state)
+}
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let args: Vec<String> = std::env::args().collect();
+    if args.len() != 3 && args.len() != 4 {
+        eprintln!("usage: zq_encode_bridge <input.tsv> <output.f32> [legal.u8]");
+        std::process::exit(2);
+    }
+    let input = BufReader::new(File::open(&args[1])?);
+    let mut output = BufWriter::new(File::create(&args[2])?);
+    let mut legal_output = if args.len() == 4 {
+        Some(BufWriter::new(File::create(&args[3])?))
+    } else {
+        None
+    };
+    let mut count = 0usize;
+
+    for (line_no, line) in input.lines().enumerate() {
+        let line = line?;
+        if line.trim().is_empty() {
+            continue;
+        }
+        let (sample_id, history) = line
+            .split_once('\t')
+            .ok_or_else(|| format!("input line {} lacks a tab", line_no + 1))?;
+        let state = replay(history, sample_id)?;
+        if state.is_terminal() {
+            return Err(format!("{sample_id}: teacher position is terminal").into());
+        }
+
+        let tensor = encode20(&state);
+        debug_assert_eq!(tensor.len(), TENSOR_LEN20);
+        for value in tensor {
+            output.write_all(&value.to_le_bytes())?;
+        }
+
+        if let Some(mask_file) = legal_output.as_mut() {
+            let mut legal = [false; ACTION_COUNT];
+            legal_mask_into(&state, &mut legal);
+            if !legal.iter().any(|&x| x) {
+                return Err(format!("{sample_id}: nonterminal state has no legal actions").into());
+            }
+            for flag in legal {
+                mask_file.write_all(&[u8::from(flag)])?;
+            }
+        }
+        count += 1;
+    }
+    output.flush()?;
+    if let Some(mask_file) = legal_output.as_mut() {
+        mask_file.flush()?;
+    }
+    eprintln!("encoded {count} positions with Claustrophobia encode20 + legal mask");
+    Ok(())
+}

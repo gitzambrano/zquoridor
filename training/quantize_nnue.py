@@ -193,7 +193,7 @@ def quantize(W, qa=QA_DEFAULT, qb=QB_DEFAULT):
         wv1_q = quantize_int8_saturating(W[f"wv1_{prefix}"], qb, f"wv1_{prefix}")
         bv1_q = np.round(W[f"bv1_{prefix}"] * qa * qb).astype(np.int32)
         wv2_q = quantize_int8_saturating(W[f"wv2_{prefix}"], qb, f"wv2_{prefix}")
-        bv2_q = np.int32(round(float(W[f"bv2_{prefix}"]) * qa * qb * qb))
+        bv2_q = np.int32(round(float(np.asarray(W[f"bv2_{prefix}"]).item()) * qa * qb * qb))
         return wv1_q, bv1_q, wv2_q, bv2_q
 
     wv1_wl_q, bv1_wl_q, wv2_wl_q, bv2_wl_q = quantize_head("wl")

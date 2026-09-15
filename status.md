@@ -47,6 +47,46 @@ relearn by experiment.
 
 ## 3. History Notes (durable lessons only)
 
+- **Local teaching and external benchmark lab (2026-09-15)**: The local
+  runners provision pinned Titanium and Claustrophobia sources in the ignored
+  `external_bots` directory. The benchmark uses paired openings and a complete
+  referee. It records failures separately from draws, hashes executables,
+  weights, openings, and the bridge, and resumes only a matching experiment.
+  Claustrophobia keeps its upstream MCTS. A local Rust bridge sends batched
+  inputs to a persistent Python TorchScript process. The bridge is practical
+  on Windows without an MSVC libtorch build. It has IPC cost, so its simulation
+  budget and engine time are recorded separately.
+
+  Teaching can combine direct old-NNUE and Claustrophobia targets with both
+  search teachers. Policy and value source weights are independent. Signed
+  outcomes use optional temporal discount. An optional ZQuoridor search target
+  provides bootstrap supervision. Caches include data, teacher, bridge, and
+  settings hashes. Train and validation use complete trajectory groups. The
+  pipeline excludes frozen benchmark states and cross-split duplicate states.
+  Existing 27-byte self-play records remain excluded because their position
+  frame is ambiguous.
+
+  The first experimental network adds 102 sparse race inputs to the existing
+  354. These inputs encode distance margin, wall-stock margin, and a compact
+  race and resource interaction. They use the existing cached path distances.
+  The default engine remains 354 inputs and 256 hidden units. Candidate builds
+  opt in through compile definitions and have an architecture manifest. Native
+  incremental checks and Python to native parity checks cover the extension.
+
+  A small mixed-teaching campaign completed all four teachers, three candidate
+  architectures, and paired external games without protocol failures. It did
+  not produce a strength claim. The production weights remain unchanged. The
+  larger campaign reserves independent screening, confirmation, and external
+  books before data assembly. It requires 100 completed pairs for a reported
+  strength-ready result and 400 pairs for the baseline confirmation.
+
+- **Wall-quiescence NNUE fixture refreshed (2026-09-15)**: The frozen deep
+  NNUE values in `tests/wall_qextension_reference.inc` used a predecessor
+  weight blob. The current production blob changed in a later promotion. The
+  heuristic reference remained exact, while every NNUE entry diverged. Refresh
+  the eight NNUE values against the current tracked production weights. Do not
+  interpret this fixture change as a wall-quiescence tuning result.
+
 - **Browser zero-wall freeze hotfix (2026-09-11)**: the exact empty-handed
   race cache used 1024 lazily allocated slots. Each slot stores four arrays
   for 13,122 states and uses approximately 128 KiB. A browser worker could

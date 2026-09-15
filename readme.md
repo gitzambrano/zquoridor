@@ -6,6 +6,8 @@ A high-performance Quoridor engine for the 9×9, 2-player variant (10 walls per 
 
 🎮 [Play online](https://gitzambrano.github.io/zquoridor/) — *WebAssembly build.*
 
+Local Titanium and Claustrophobia benchmarks, multi-source teaching, and compact NNUE architecture experiments are available through scripts with editable defaults and optional CLI arguments. See the [local teaching guide](docs/local-teaching.md).
+
 ---
 
 ## Features

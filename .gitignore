@@ -47,6 +47,7 @@ ENV/
 .vscode/
 .idea/
 .worktrees/
+external_bots/
 tc_out.txt
 tpa_dbg.exe
 tpa_g.exe
@@ -54,3 +55,9 @@ tpa_g.exe
 data_policy_ab.*
 data_wall_qext.*
 data/camping_survey.csv
+
+# Local teaching and benchmark artifacts
+results/
+benchmark_results/
+data/teaching/
+.pytest_cache/
