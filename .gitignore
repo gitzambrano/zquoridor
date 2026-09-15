@@ -16,6 +16,7 @@ gui_web/zquoridor.wasm
 
 # Dados de Selfplay (Fase 4)
 data/selfplay/
+data/selfplay_canonical_v3/
 data/selfplay_*.bin
 data/arena/
 data/arena_*.bin
@@ -33,6 +34,7 @@ training/checkpoints/
 # Pesos da NNUE (opcional, mas bom ignorar arquivos pesados de pesos se não forem a versão final de release)
 # data/nnue/nnue_weights.bin
 # data/nnue/nnue_weights_int8.bin
+data/nnue/smoke-*.bin
 
 # Python
 __pycache__/

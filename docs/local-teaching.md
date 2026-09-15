@@ -58,7 +58,12 @@ The empty-handed production solver exports a legal selected move and its solved 
 
 ## Data and architectures
 
-Use existing canonical self-play for broad direct teaching, then add fresh complete trajectories for searched and temporally discounted targets. `prepare_replay.py` samples distinct states from independent shards. It excludes ambiguous 27-byte legacy records. Fresh JSONL data must contain real histories; the pipeline never invents a history for an old binary position.
+Use `data/selfplay_canonical_v3` for all replay and standard NNUE training.
+`training/migrate_selfplay_v3.py` is the only migration entry point for old
+27-byte, V2, or V3 shards. It preserves originals, writes 64-byte V3 shards,
+and emits a manifest for every generation. `prepare_replay.py` samples only
+this canonical corpus. Fresh JSONL data must contain real histories; the
+pipeline never invents a history for an old binary position.
 
 The default campaign labels 1,000,000 replay positions and requests up to 16,384 fresh positions from 1,024 games. It uses replay chunks of 8,192, GPU inference batches of 4,096, GPU training batches of 4,096, and eight CPU workers for trajectory collection. Fresh targets contribute 20% of the loss weight in each split. The fresh teacher uses 1,024 Zquoridor nodes and 256 Claustrophobia simulations per position. The final manifest gives actual counts after filtering. Splits use whole shards or trajectory groups. Identical states cannot cross train and validation. Frozen benchmark opening states are excluded. The campaign reserves separate screening, confirmation, and external opening states before training and excludes their prefixes from the combined dataset.
 

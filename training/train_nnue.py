@@ -178,16 +178,7 @@ DATA_ROOT_DEFAULT = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath
 # "esqueca" padroes antigos e drifte para o otimo local do gen mais recente.
 # Vazia = comportamento antigo, direto de DATA_DEFAULT/--data sem amostragem.
 DATA_SOURCES_DEFAULT = [
-      {"path": "selfplay/gen1", "frac": 0.1, "k": 1.0},
-      {"path": "selfplay/gen2", "frac": 0.2, "k": 1.0},
-      {"path": "selfplay/gen3", "frac": 1.0, "k": 1.0},
-      {"path": "selfplay/gen4", "frac": 1.0, "k": 0.7},
-      {"path": "selfplay/gen5-epsilon", "frac": 1.0, "k": 0.7},
-      {"path": "selfplay/gen5-montecarlo", "frac": 1.0, "k": 0.65},
-      {"path": "selfplay/gen6-montecarlo", "frac": 1.0, "k": 0.65},
-      {"path": "selfplay/gen7-montecarlo", "frac": 1.0, "k": 0.65},
-      {"path": "arena/gen1",    "frac": 0.3, "k": 1.0},
-      {"path": "arena/gen2",    "frac": 0.2, "k": 1.0},
+      {"path": "selfplay_canonical_v3", "frac": 1.0, "k": 1.0},
 ]
  
 OUT_DEFAULT = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data", "nnue", "nnue_weights.bin")

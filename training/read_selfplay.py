@@ -2,15 +2,19 @@
 read_selfplay.py -- leitura do dataset binario de self-play gerado por
 `selfplay` (harness C++, ver selfplay.hpp).
 
-Dois formatos suportados (deteccao automatica por `load_selfplay`):
-  - 32 bytes/posicao (SAMPLE_DTYPE, formato atual 2026-08): inclui `mover`,
+Formatos reconhecidos (deteccao automatica por `load_selfplay`):
+  - 64 bytes/posicao (SAMPLE_DTYPE, contrato V3 atual): inclui `mover`,
     `own_cat_total`, `opp_cat_total` e own_pawn/opp_pawn/walls_*/policy_target
     JA ESPELHADOS para a perspectiva canonica do mover.
-  - 27 bytes/posicao (SAMPLE_DTYPE_LEGACY, formato anterior): sem os 5 bytes
+  - 32 bytes/posicao (SAMPLE_DTYPE_V2, contrato canônico anterior): sem a
+    política top-8 do V3.
+  - 27 bytes/posicao (SAMPLE_DTYPE_LEGACY, somente para migração): sem os 5 bytes
     extras acima; os campos comuns tem os mesmos offsets. `load_selfplay`
     detecta automaticamente e faz upcast para SAMPLE_DTYPE (os 3 campos novos
     ficam com valor 0), permitindo que o resto do pipeline use sempre
-    SAMPLE_DTYPE independentemente do formato no disco.
+    SAMPLE_DTYPE independentemente do formato no disco. Treino e teaching
+    usam exclusivamente V3 em `data/selfplay_canonical_v3`; rode
+    `migrate_selfplay_v3.py` para converter arquivos históricos.
 
 `load_multi_selfplay`/`MultiFileSelfPlay` fazem o mesmo para varios
 arquivos ao mesmo tempo SEM concatenar em RAM: cada shard continua
@@ -307,6 +311,8 @@ def expand_data_paths(spec) -> list:
             continue
         if os.path.isdir(token):
             matches = sorted(glob.glob(os.path.join(token, "*.bin")))
+            if not matches:
+                matches = sorted(glob.glob(os.path.join(token, "**", "*.bin"), recursive=True))
             if not matches:
                 raise ValueError(
                     f"diretorio '{token}' nao contem nenhum arquivo .bin "

@@ -36,7 +36,7 @@ from teachers.claustrophobia_inference_worker import infer
 from tools.external.bot_setup import ensure_bot
 
 CONFIG = {
-    "source": str(ROOT / "data/selfplay/gen7-montecarlo"),
+    "source": str(ROOT / "data/selfplay_canonical_v3"),
     "out_dir": str(ROOT / "data/teaching/replay"),
     "max_positions": 50000,
     "seed": 20260914,

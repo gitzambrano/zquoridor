@@ -13,7 +13,7 @@ selfplay_000.bin, selfplay_001.bin, etc. O train_nnue.py aceita passar
 vários arquivos de uma vez com --data.
 
 SIZING GUIDE (hardware: 32 GB RAM, 6 GB VRAM):
-  - TrainingSample = 32 bytes; partida media ~120 posicoes -> ~3.8 KB/partida
+  - TrainingSample V3 = 64 bytes; partida media ~120 posicoes -> ~7.7 KB/partida
   - CHUNK_GAMES = 2000 -> arquivo de ~7.7 MB (carrega inteiro em RAM sem stress)
   - TOTAL_GAMES = 20000 -> 10 chunks, ~77 MB total -> dataset sólido p/ inicio
   - Para treino com train_nnue.py: o default --ram-budget-gb 32 e
@@ -21,10 +21,13 @@ SIZING GUIDE (hardware: 32 GB RAM, 6 GB VRAM):
 """
 
 import argparse
+import hashlib
+import json
 import os
 import subprocess
 import sys
 import time
+from pathlib import Path
 
 # =============================================================================
 # CONFIG -- edite estas variaveis conforme necessario
@@ -563,6 +566,26 @@ def main():
 
     print()
     if ret == 0:
+        output_dir = Path(out_full).parent
+        shards = sorted(output_dir.glob("*.bin"))
+        manifest = {
+            "schema": "zquoridor.selfplay.v3.canonical.mover-mirrored.v1",
+            "record_bytes": 64,
+            "board_frame": "mover-mirrored",
+            "policy_frame": "mover-mirrored",
+            "mover_field": "absolute-player-index",
+            "command": cmd,
+            "shards": [
+                {"name": path.name, "bytes": path.stat().st_size,
+                 "sha256": hashlib.sha256(path.read_bytes()).hexdigest()}
+                for path in shards
+            ],
+        }
+        output_dir.mkdir(parents=True, exist_ok=True)
+        (output_dir / "manifest.json").write_text(
+            json.dumps(manifest, indent=2) + "\n", encoding="utf-8"
+        )
+        print(f"[run_selfplay] Manifesto V3: {output_dir / 'manifest.json'}")
         print(f"[run_selfplay] Concluído em {elapsed:.1f} s")
         print()
         print("Próximos passos -- treinar a NNUE com os chunks gerados:")
