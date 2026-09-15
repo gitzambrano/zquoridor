@@ -60,13 +60,14 @@ The empty-handed production solver exports a legal selected move and its solved 
 
 Use existing canonical self-play for broad direct teaching, then add fresh complete trajectories for searched and temporally discounted targets. `prepare_replay.py` samples distinct states from independent shards. It excludes ambiguous 27-byte legacy records. Fresh JSONL data must contain real histories; the pipeline never invents a history for an old binary position.
 
-The default campaign labels 50,000 replay positions and requests up to 2,048 fresh positions from 128 games. Fresh targets contribute 20% of the loss weight in each split. The final manifest gives actual counts after filtering. Splits use whole shards or trajectory groups. Identical states cannot cross train and validation. Frozen benchmark opening states are excluded. The campaign reserves separate screening, confirmation, and external opening states before training and excludes their prefixes from the combined dataset.
+The default campaign labels 250,000 replay positions and requests up to 8,192 fresh positions from 512 games. Fresh targets contribute 20% of the loss weight in each split. The final manifest gives actual counts after filtering. Splits use whole shards or trajectory groups. Identical states cannot cross train and validation. Frozen benchmark opening states are excluded. The campaign reserves separate screening, confirmation, and external opening states before training and excludes their prefixes from the combined dataset.
 
 The first candidates are:
 
 | Architecture | Inputs | Accumulator |
 | --- | ---: | ---: |
 | `base:256` | 354 | 256 |
+| `base:384` | 354 | 384 |
 | `race:256` | 456 | 256 |
 | `race:384` | 456 | 384 |
 
