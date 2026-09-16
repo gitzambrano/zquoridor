@@ -113,19 +113,50 @@ python training/build_search_priority_dataset.py --source-dataset data/teaching/
 
 ## Fase 5 — arquiteturas
 
-| Variante | Features | Uso |
-|---|---:|---|
-| `base:256` | 354 | controle de produção |
-| `base:384` | 354 | ablação de capacidade |
-| `race:256` | 456 | corrida e reservas |
-| `race:384` | 456 | corrida com mais capacidade |
-| `corridor:*` | futuro | só após hipótese e custo medido |
+Uma arquitetura é uma hipótese mensurável, não apenas uma largura maior. Toda
+variante precisa de export float/int8, atualização incremental, paridade
+Python/C++ e arena antes de entrar na busca de produção.
 
-`race` é incremental: três slots ativos derivados de BFS/reservas são
-substituídos quando o estado muda. Não reconstrói o acumulador inteiro.
-`corridor` só deve entrar se puder reutilizar BFS/cache ou atualizar poucos
-slots; métricas globais de múltiplos caminhos não entram no hot path sem
-benchmark de custo.
+### Matriz já suportada
+
+Estas oito combinações já são aceitas por `run_experiment.py`, export e o
+binário C++. Cada uma pode ser selecionada por `--architecture` e `--hidden`.
+
+| Família | Features | Larguras | Estado |
+|---|---:|---|---|
+| `base` | 354: peões, muros, buckets BFS e reservas | 128, 256, 384, 512 | 384 treinada; 128/256/512 pendentes |
+| `race` | 456: `base` + margem de distância, margem de reservas e interação corrida/reservas | 128, 256, 384, 512 | 384 treinada e candidata atual; 128/256/512 pendentes |
+
+`race` é incremental: três slots ativos derivados das distâncias BFS e das
+reservas são removidos e recolocados em cada lance. Não reconstrói o
+acumulador inteiro.
+
+Ordem de execução para a matriz já suportada:
+
+1. Encerrar os gates de arena de `base:384`, `race:384` e seu fine-tuning.
+2. Treinar `base:256` e `race:256` para medir capacidade menor.
+3. Treinar `base:512` e `race:512` para medir capacidade maior e custo de
+   search. A rede 512 só continua se a arena justificar sua queda de nós/s.
+4. Repetir somente as duas melhores arquiteturas com o corpus de teaching por
+   search e comparar fine-tuning contra treino direto.
+
+### Extensões de feature a implementar e testar
+
+| Família proposta | Sinal adicional | Custo esperado | Pré-requisito |
+|---|---|---|---|
+| `phase` | buckets de ply, total de paredes e fase da partida | constante; contadores incrementais | nova codificação e paridade |
+| `topology-lite` | contagem de muros H/V e diferença de orientação | constante; contadores incrementais | nova codificação e paridade |
+| `race-phase` | interação margem BFS × fase × reservas | constante; sparse, sem nova BFS | ablação contra `race` |
+| `corridor-touch` | slots tocados pelos caminhos mínimos de ambos os lados | usa cache BFS; pode variar com paredes | microbenchmark e atualização incremental comprovada |
+| `multi-path` | robustez ou número de desvios de rota | mais caro; múltiplas travessias BFS | cache, limite de custo e ganho em arena |
+| `wall-threat` | ameaça local de parede perto do caminho e do peão | depende de geometria local e cache | definição que não faça BFS por candidato |
+
+`phase`, `topology-lite` e `race-phase` são as próximas extensões baratas.
+`corridor-touch`, `multi-path` e `wall-threat` ainda não existem no código e
+não podem ser declaradas disponíveis. Só entram depois de uma hipótese escrita,
+benchmark de custo no hot path e teste incremental. Métricas globais de
+múltiplos caminhos não entram no acumulador se exigirem BFS extra por lance ou
+por candidato de parede.
 
 ## Fase 6 — treino, QAT e paridade
 
@@ -199,7 +230,7 @@ de confiança favorável e repetição em conjunto independente.
 
 - Triagem externa do `race:384` direct de 2M contra Titanium e Claustrophobia:
   40 pares por adversário, 200 ms para ZQuoridor e Titanium, 512 simulações
-  para Claustrophobia em CPU. Há 114 das 160 partidas gravadas; aguardar o
+  para Claustrophobia em CPU. Há 119 das 160 partidas gravadas; aguardar o
   resumo pareado final antes de reportar força.
 - O teaching mixed de 1.024 trajetórias mantém as posições e os caches direct
   e Claustrophobia-search. Ele ainda depende do target ZQuoridor para gerar
