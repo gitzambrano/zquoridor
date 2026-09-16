@@ -27,6 +27,20 @@ PLANES = 20
 BOARD = 9
 TENSOR_LEN = PLANES * BOARD * BOARD
 
+# Edit this block for a no-CLI run. Every value also has a matching CLI option.
+CONFIG = {
+    "positions": "",
+    "bridge": "",
+    "checkpoint": "",
+    "out": "",
+    "teacher_name": "claustrophobia-v1.3.1",
+    "teacher_commit": "ae093653e62ad700e201706fa5ed767093d0d68e",
+    "batch_size": 1024,
+    "device": "auto",
+    "store_logits": False,
+    "float32_policy": False,
+}
+
 
 def sha256(path: Path) -> str:
     h = hashlib.sha256()
@@ -132,18 +146,20 @@ def convert_policy_frames(values: np.ndarray, positions: Sequence[dict]) -> np.n
 
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--positions", required=True, type=Path)
-    parser.add_argument("--bridge", required=True, type=Path)
-    parser.add_argument("--checkpoint", required=True, type=Path)
-    parser.add_argument("--out", required=True, type=Path)
-    parser.add_argument("--teacher-name", default="claustrophobia-v1.3.1")
-    parser.add_argument("--teacher-commit", default="ae093653e62ad700e201706fa5ed767093d0d68e")
-    parser.add_argument("--batch-size", type=int, default=1024)
-    parser.add_argument("--device", default="auto")
-    parser.add_argument("--store-logits", action="store_true")
-    parser.add_argument("--float32-policy", action="store_true")
+    parser.add_argument("--positions", type=Path, default=Path(CONFIG["positions"]) if CONFIG["positions"] else None)
+    parser.add_argument("--bridge", type=Path, default=Path(CONFIG["bridge"]) if CONFIG["bridge"] else None)
+    parser.add_argument("--checkpoint", type=Path, default=Path(CONFIG["checkpoint"]) if CONFIG["checkpoint"] else None)
+    parser.add_argument("--out", type=Path, default=Path(CONFIG["out"]) if CONFIG["out"] else None)
+    parser.add_argument("--teacher-name", default=CONFIG["teacher_name"])
+    parser.add_argument("--teacher-commit", default=CONFIG["teacher_commit"])
+    parser.add_argument("--batch-size", type=int, default=CONFIG["batch_size"])
+    parser.add_argument("--device", default=CONFIG["device"])
+    parser.add_argument("--store-logits", action=argparse.BooleanOptionalAction, default=CONFIG["store_logits"])
+    parser.add_argument("--float32-policy", action=argparse.BooleanOptionalAction, default=CONFIG["float32_policy"])
     args = parser.parse_args(argv)
 
+    if not all((args.positions, args.bridge, args.checkpoint, args.out)):
+        raise SystemExit("set positions, bridge, checkpoint, and out in CONFIG or pass their CLI options")
     if args.batch_size <= 0:
         raise SystemExit("batch-size must be positive")
     if not args.checkpoint.is_file():

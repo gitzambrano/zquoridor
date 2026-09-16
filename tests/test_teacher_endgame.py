@@ -50,3 +50,8 @@ def test_bulk_search_default_has_a_per_position_time_limit():
     """Snapshot batches must not run an endgame alpha-beta leaf forever."""
     import zq_deep_relabel
     assert zq_deep_relabel.CONFIG["time_ms"] > 0
+
+
+def test_claustrophobia_direct_relabel_has_top_level_config():
+    import claustrophobia_relabel
+    assert isinstance(claustrophobia_relabel.CONFIG, dict)
