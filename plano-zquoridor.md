@@ -193,7 +193,7 @@ Todo candidato tem três comparações obrigatórias, registradas no mesmo gate:
 |---|---|---|
 | Candidato × rede anterior | medir ganho real da NNUE | arena pareada, mesmas aberturas e cores invertidas |
 | Candidato × Titanium | medir força externa | pares completos e orçamento de tempo registrado |
-| Candidato × Claustrophobia | medir força externa forte | pares completos, simulações e dispositivo registrados |
+| Candidato × Claustrophobia | medir força externa forte | pares completos, tempo por jogada e dispositivo registrados |
 
 `training/run_campaign.py` já executa a comparação direta e as duas externas
 para os candidatos selecionados. Experimentos avulsos devem usar a mesma
@@ -203,7 +203,7 @@ não substituem esse gate.
 Screening curto:
 
 ```powershell
-python tools/run_benchmark.py --opponents titanium,claustrophobia --pairs 40 --zq-executable results/experiments/race384/zquoridor.exe --nnue results/experiments/race384/student_int8.bin --zq-move-time-ms 50 --titanium-move-time-ms 50 --claustrophobia-sims 256 --claustrophobia-device gpu --output benchmark_results/race384-screen
+python tools/run_benchmark.py --opponents titanium,claustrophobia --pairs 40 --zq-executable results/experiments/race384/zquoridor.exe --nnue results/experiments/race384/student_int8.bin --zq-move-time-ms 200 --titanium-move-time-ms 200 --claustrophobia-move-time-ms 200 --claustrophobia-device gpu --output benchmark_results/race384-screen
 ```
 
 Depois rodar confirmação com outro livro de aberturas, mais pares e orçamento
@@ -240,17 +240,21 @@ de confiança favorável e repetição em conjunto independente.
 
 ### Em execução
 
-- Triagem externa do `race:384` direct de 2M contra Titanium e Claustrophobia:
-  40 pares por adversário, 200 ms para ZQuoridor e Titanium, 512 simulações
-  para Claustrophobia em CPU. Há 119 das 160 partidas gravadas; aguardar o
-  resumo pareado final antes de reportar força.
+- A triagem externa anterior do `race:384` direct de 2M ficou inválida para
+  promoção. Claustrophobia usou simulações em vez de um relógio por jogada.
+  O processo foi interrompido. Nenhum resultado desse diretório decide força.
+- O benchmark externo usa agora 200 ms por jogada para cada lado. A ponte do
+  Claustrophobia calibra uma busca curta, limita as simulações e completa o
+  orçamento de parede. O registro inclui o relógio, as simulações e o tempo
+  medido de cada resposta.
 - O teaching mixed de 1.024 trajetórias mantém as posições e os caches direct
   e Claustrophobia-search. Ele ainda depende do target ZQuoridor para gerar
   seu dataset final.
 
 ### Próximos gates
 
-1. Terminar a triagem externa do `race:384` direct de 2M.
+1. Reexecutar a triagem externa do `race:384` direct de 2M sob o mesmo relógio
+   por jogada para todos os motores.
 2. Rodar arena pareada `race:384` direct de 2M contra a rede anterior.
 3. Rodar a mesma matriz para o `race:384` fine-tuned. Somente a arena pode
    decidir se o teaching por search ajuda.

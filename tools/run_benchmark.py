@@ -30,7 +30,8 @@ CONFIG = {
     "zq_args": [],
     "zq_move_time_ms": 200,
     "titanium_move_time_ms": 200,
-    "claustrophobia_sims": 512,
+    "claustrophobia_move_time_ms": 200,
+    "claustrophobia_max_sims": 4096,
     "claustrophobia_cpuct": 1.5,
     "claustrophobia_device": "cpu",
     "startup_timeout_s": 120.0,
@@ -58,7 +59,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--zq-arg", dest="zq_args", action="append")
     parser.add_argument("--zq-move-time-ms", type=int)
     parser.add_argument("--titanium-move-time-ms", type=int)
-    parser.add_argument("--claustrophobia-sims", type=int)
+    parser.add_argument("--claustrophobia-move-time-ms", type=int)
+    parser.add_argument("--claustrophobia-max-sims", type=int)
     parser.add_argument("--claustrophobia-cpuct", type=float)
     parser.add_argument("--claustrophobia-device", choices=("cpu", "gpu"))
     parser.add_argument("--startup-timeout-s", type=float)
@@ -85,12 +87,18 @@ def resolve_config(args: argparse.Namespace) -> dict:
     if unknown:
         raise ValueError(f"unknown opponent: {', '.join(sorted(unknown))}")
     for key in ("pairs", "workers", "zq_move_time_ms", "titanium_move_time_ms",
-                "claustrophobia_sims", "max_plies", "bootstrap"):
+                "claustrophobia_move_time_ms", "claustrophobia_max_sims", "max_plies", "bootstrap"):
         if int(config[key]) <= 0:
             raise ValueError(f"{key} must be positive")
     for key in ("startup_timeout_s", "move_timeout_s", "claustrophobia_cpuct"):
         if float(config[key]) <= 0:
             raise ValueError(f"{key} must be positive")
+    if "titanium" in config["opponents"] and (
+            int(config["titanium_move_time_ms"]) != int(config["zq_move_time_ms"])):
+        raise ValueError("Titanium and Zquoridor must use the same move clock")
+    if "claustrophobia" in config["opponents"] and (
+            int(config["claustrophobia_move_time_ms"]) != int(config["zq_move_time_ms"])):
+        raise ValueError("Claustrophobia and Zquoridor must use the same move clock")
     return config
 
 
@@ -178,7 +186,7 @@ def run(config: dict) -> dict:
         "zquoridor": "cpu fixed move time",
         "titanium": "cpu fixed move time" if "titanium" in bot_info else None,
         "claustrophobia": (
-            f"{config['claustrophobia_device']} exact MCTS simulations"
+            f"{config['claustrophobia_device']} fixed move time"
             if "claustrophobia" in bot_info else None
         ),
     }
@@ -228,12 +236,13 @@ def run(config: dict) -> dict:
             info = bot_info[opponent]
             opponent_factory = lambda: local_arena.ClaustrophobiaPlayer(
                 Path(info["benchmark_bridge"]), Path(info["checkpoint"]),
-                sims=int(config["claustrophobia_sims"]),
+                move_time_ms=int(config["claustrophobia_move_time_ms"]),
+                max_sims=int(config["claustrophobia_max_sims"]),
                 cpuct=float(config["claustrophobia_cpuct"]),
                 device=str(config["claustrophobia_device"]),
                 startup_timeout_s=float(config["startup_timeout_s"]),
             )
-            opponent_budget = int(config["claustrophobia_sims"])
+            opponent_budget = int(config["claustrophobia_move_time_ms"])
         return local_arena.play_game(
             opponent=opponent,
             opening_index=opening_index,
@@ -258,7 +267,8 @@ def run(config: dict) -> dict:
                            "device": "cpu"},
             "titanium": {"type": "move_time_ms", "value": config["titanium_move_time_ms"],
                          "device": "cpu"},
-            "claustrophobia": {"type": "mcts_simulations", "value": config["claustrophobia_sims"],
+            "claustrophobia": {"type": "move_time_ms", "value": config["claustrophobia_move_time_ms"],
+                               "max_sims": config["claustrophobia_max_sims"],
                                "device": config["claustrophobia_device"]},
         },
     }, indent=2), flush=True)
@@ -288,7 +298,8 @@ def run(config: dict) -> dict:
                            "device": "cpu"},
             "titanium": {"type": "move_time_ms", "value": config["titanium_move_time_ms"],
                          "device": "cpu"},
-            "claustrophobia": {"type": "mcts_simulations", "value": config["claustrophobia_sims"],
+            "claustrophobia": {"type": "move_time_ms", "value": config["claustrophobia_move_time_ms"],
+                               "max_sims": config["claustrophobia_max_sims"],
                                "device": config["claustrophobia_device"]},
         },
         "summaries": summaries,

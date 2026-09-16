@@ -346,14 +346,14 @@ class TitaniumPlayer(LinePlayer):
 
 
 class ClaustrophobiaPlayer(LinePlayer):
-    """Use a persistent Claustrophobia model and an exact MCTS budget."""
+    """Use a persistent Claustrophobia model and a fixed move clock."""
 
-    def __init__(self, bridge: Path, checkpoint: Path, *, sims: int, cpuct: float,
+    def __init__(self, bridge: Path, checkpoint: Path, *, move_time_ms: int, max_sims: int, cpuct: float,
                  device: str, startup_timeout_s: float = 120.0) -> None:
         environment = os.environ.copy()
         environment["ZQ_PYTHON"] = sys.executable
         super().__init__(
-            [str(bridge), str(checkpoint), str(sims), str(cpuct), device],
+            [str(bridge), str(checkpoint), str(move_time_ms), str(cpuct), device, str(max_sims)],
             "claustrophobia",
             startup_timeout_s=startup_timeout_s,
             env=environment,
@@ -371,8 +371,8 @@ class ClaustrophobiaPlayer(LinePlayer):
             raise EngineError(f"claustrophobia: invalid JSON output {line!r}") from exc
         if "error" in result:
             raise EngineError(f"claustrophobia: {result['error']}")
-        if int(result.get("sims", -1)) != budget:
-            raise EngineError("claustrophobia: the reported search budget does not match")
+        if int(result.get("move_time_ms", -1)) != budget:
+            raise EngineError("claustrophobia: the reported move clock does not match")
         return str(result["bestmove"]), time.monotonic() - started, [line]
 
 
@@ -394,6 +394,7 @@ def play_game(*, opponent: str, opening_index: int, opening: Sequence[str],
     history: list[str] = []
     referee = Referee()
     think = {"zquoridor": 0.0, opponent: 0.0}
+    move_times: list[dict[str, float | int | str]] = []
     state_visits = defaultdict(int)
     repeated_states = 0
     def count_state():
@@ -420,6 +421,7 @@ def play_game(*, opponent: str, opening_index: int, opening: Sequence[str],
             budget = zq_budget if side == zq_player else opponent_budget
             move, elapsed, _ = player.bestmove(history, budget=budget, timeout_s=move_timeout_s)
             think[name] += elapsed
+            move_times.append({"player": name, "budget_ms": budget, "elapsed_ms": elapsed * 1000.0})
             referee.apply(move)
             history.append(move)
             count_state()
@@ -439,6 +441,7 @@ def play_game(*, opponent: str, opening_index: int, opening: Sequence[str],
             "plies": len(history),
             "moves": history,
             "think_s": think,
+            "move_times": move_times,
         }
     except BaseException as exc:
         if isinstance(exc, KeyboardInterrupt):
@@ -452,6 +455,7 @@ def play_game(*, opponent: str, opening_index: int, opening: Sequence[str],
             "plies": len(history),
             "moves": history,
             "think_s": think,
+            "move_times": move_times,
         }
     finally:
         for player in (zq, other):

@@ -156,6 +156,20 @@ class ResumeAndConfigTests(unittest.TestCase):
         self.assertEqual(cfg["workers"], run_benchmark.CONFIG["workers"])
         self.assertEqual(run_benchmark.CONFIG["opponents"], ["titanium", "claustrophobia"])
 
+    def test_claustrophobia_uses_a_fixed_move_clock(self) -> None:
+        parser = run_benchmark.build_parser()
+        cfg = run_benchmark.resolve_config(parser.parse_args([]))
+        self.assertEqual(cfg["claustrophobia_move_time_ms"], cfg["zq_move_time_ms"])
+        self.assertNotIn("claustrophobia_sims", cfg)
+
+    def test_rejects_unequal_clocks(self) -> None:
+        parser = run_benchmark.build_parser()
+        with self.assertRaisesRegex(ValueError, "same move clock"):
+            run_benchmark.resolve_config(parser.parse_args([
+                "--opponents", "claustrophobia", "--zq-move-time-ms", "200",
+                "--claustrophobia-move-time-ms", "100",
+            ]))
+
 
 if __name__ == "__main__":
     unittest.main()

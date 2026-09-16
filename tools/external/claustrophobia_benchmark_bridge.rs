@@ -1,5 +1,7 @@
 //! Keep one Claustrophobia model loaded for all searches in one benchmark game.
 use std::io::{self, BufRead, Write};
+use std::thread;
+use std::time::{Duration, Instant};
 
 use quoridor::mcts::{run_mcts_batched, BatchedConfig};
 #[cfg(feature = "nn")]
@@ -82,14 +84,15 @@ fn json_error(message: &str) -> String {
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = std::env::args().collect();
-    if args.len() != 5 {
-        eprintln!("usage: zq_benchmark_bridge <checkpoint.pt> <sims> <cpuct> <cpu|gpu>");
+    if args.len() != 5 && args.len() != 6 {
+        eprintln!("usage: zq_benchmark_bridge <checkpoint.pt> <move-time-ms> <cpuct> <cpu|gpu> [max-sims]");
         std::process::exit(2);
     }
-    let sims: u32 = args[2].parse()?;
+    let move_time_ms: u64 = args[2].parse()?;
     let cpuct: f64 = args[3].parse()?;
-    if sims == 0 || cpuct <= 0.0 {
-        return Err("sims and cpuct must be positive".into());
+    let max_sims: u32 = if args.len() == 6 { args[5].parse()? } else { 4096 };
+    if move_time_ms == 0 || max_sims == 0 || cpuct <= 0.0 {
+        return Err("move-time-ms, max-sims, and cpuct must be positive".into());
     }
     if args[4] != "cpu" && args[4] != "gpu" {
         return Err("device must be cpu or gpu".into());
@@ -101,6 +104,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut config = BatchedConfig::new(8);
     config.eval_tt = true;
     config.solver = true;
+
+    // Measure a small deterministic search once. The bridge then keeps each
+    // search below the clock and sleeps until the complete move budget ends.
+    // The cap protects positions that are slower than the start position.
+    let calibration_sims = 8u32.min(max_sims);
+    let calibration_start = Instant::now();
+    let _ = run_mcts_batched(GameState::start(), &evaluator, calibration_sims, cpuct, config);
+    let calibration_ms = calibration_start.elapsed().as_secs_f64() * 1000.0;
+    let sims_per_ms = calibration_sims as f64 / calibration_ms.max(1.0);
 
     println!("ready");
     io::stdout().flush()?;
@@ -121,12 +133,25 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         match replay(history) {
             Ok(state) => {
+                let started = Instant::now();
+                // Reserve one quarter of the clock for position variance. The
+                // remaining time is spent as a deterministic MCTS search.
+                let search_budget_ms = (move_time_ms as f64 * 0.75).max(1.0);
+                let sims = ((sims_per_ms * search_budget_ms).floor() as u32)
+                    .clamp(1, max_sims);
                 let result = run_mcts_batched(state, &evaluator, sims, cpuct, config);
                 match index_to_move(&state, result.best_action) {
                     Some(chosen) if parse_move(&move_text(chosen), &state).is_some() => {
+                        let search_ms = started.elapsed().as_secs_f64() * 1000.0;
+                        let remaining_ms = move_time_ms as f64 - search_ms;
+                        if remaining_ms > 0.0 {
+                            thread::sleep(Duration::from_secs_f64(remaining_ms / 1000.0));
+                        }
+                        let elapsed_ms = started.elapsed().as_secs_f64() * 1000.0;
                         println!(
-                            "{{\"bestmove\":\"{}\",\"sims\":{},\"root_value\":{:.9}}}",
-                            move_text(chosen), sims, result.root_value_side_to_move()
+                            "{{\"bestmove\":\"{}\",\"move_time_ms\":{},\"sims\":{},\"search_ms\":{:.3},\"elapsed_ms\":{:.3},\"root_value\":{:.9}}}",
+                            move_text(chosen), move_time_ms, sims, search_ms, elapsed_ms,
+                            result.root_value_side_to_move()
                         );
                     }
                     _ => println!("{}", json_error("search returned an illegal action")),

@@ -51,7 +51,8 @@ CONFIG = {
     "confirmation_pairs": 400,
     "confirmation_time_ms": 200,
     "external_pairs": 100,
-    "external_sims": 512,
+    "external_move_time_ms": 200,
+    "external_max_sims": 4096,
     "external_device": "gpu",
     "bootstrap": 20000,
     "seed": 2026091407,
@@ -288,7 +289,9 @@ def _run_campaign(argv=None):
                 output=str(folder/("external-"+label)),pairs=config["external_pairs"],
                 openings=str(folder/"external_openings.jsonl"), seed=config["seed"],
                 zq_move_time_ms=config["confirmation_time_ms"], titanium_move_time_ms=config["confirmation_time_ms"],
-                claustrophobia_sims=config["external_sims"],claustrophobia_device=config["external_device"])
+                claustrophobia_move_time_ms=config["external_move_time_ms"],
+                claustrophobia_max_sims=config["external_max_sims"],
+                claustrophobia_device=config["external_device"])
             decision["external_"+label] = check_external_report(run_benchmark.run(options), config["external_pairs"])
         candidate_report = decision["external_"+name]["summaries"]
         main_report = decision["external_main"]["summaries"]

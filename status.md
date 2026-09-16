@@ -54,8 +54,11 @@ relearn by experiment.
   weights, openings, and the bridge, and resumes only a matching experiment.
   Claustrophobia keeps its upstream MCTS. A local Rust bridge sends batched
   inputs to a persistent Python TorchScript process. The bridge is practical
-  on Windows without an MSVC libtorch build. It has IPC cost, so its simulation
-  budget and engine time are recorded separately.
+  on Windows without an MSVC libtorch build. Every external benchmark uses a
+  fixed clock per move. The bridge calibrates a bounded MCTS search, then
+  waits until the clock ends. It records the clock, search time, and simulation
+  count for each Claustrophobia response. A simulation-only result is invalid
+  for a strength claim.
 
   Teaching can combine direct old-NNUE and Claustrophobia targets with both
   search teachers. Policy and value source weights are independent. Signed
