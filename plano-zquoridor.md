@@ -29,6 +29,7 @@ Todos os scripts têm bloco `CONFIG` no topo e argumentos CLI equivalentes.
 | Replay directo | `training/prepare_replay.py` | V3 | dataset com teachers direct |
 | Teaching | `training/run_teaching.py` | história ou partidas novas | dataset direct/search/mixed |
 | Search profundo | `training/teachers/zq_deep_relabel.py` | histórias ou `@state` V3 | visitas MCAB, valor e Q |
+| Seleção e mistura search | `training/select_replay_disagreement.py`, `training/build_search_priority_dataset.py` | replay directo + dois searches | dataset V3 ponderado |
 | Experimento | `training/run_experiment.py` | dataset | pesos QAT, binário e relatório |
 | Campanha | `training/run_campaign.py` | corpus e matriz | teaching, treino e arena |
 | Benchmark | `tools/run_benchmark.py` | candidato | pares contra Titanium/Claustrophobia |
@@ -43,6 +44,9 @@ Todos os scripts têm bloco `CONFIG` no topo e argumentos CLI equivalentes.
 
 Um milhão de linhas não é um milhão de exemplos. O gen12 V2 ilustra o risco:
 1.497.673 registros produziram apenas 83.244 estados independentes elegíveis.
+O lote `gen-rich-v1-montecarlo` atual tem 4.713 partidas e 311.930 registros;
+ele foi gerado com temperatura e ruído de abertura e deve passar pela auditoria
+global de unicidade antes de entrar em teaching.
 
 ## Fase 2 — selfplay novo
 
@@ -92,14 +96,19 @@ Misturar por grupos completos, sem estado compartilhado entre treino e
 validação. Base inicial: 70–85% replay direto/histórico e 15–30% posições
 novas ou relabeladas com search.
 
-O trainer já consome `weight` por amostra. O próximo aprimoramento é gerar:
+O trainer já consome `weight` por amostra. O caminho selecionado já gera:
 
 ```text
-weight = clip(1 + divergência de política + divergência de valor + risco de wandering)
+weight = clip(base * (1 + escala * (JS_política + |valor|)) * estabilidade_budget)
 ```
 
 Comparar sempre uniforme versus priorizado. Divergência aumenta atenção; não
 substitui confiança, clipping e validação independente.
+
+```powershell
+python training/select_replay_disagreement.py --replay-dir data/teaching/replay-old-gen1-500k --out data/teaching/search-priority/positions.jsonl --max-positions 10000
+python training/build_search_priority_dataset.py --source-dataset data/teaching/replay-old-gen1-500k/dataset.npz --positions data/teaching/search-priority/top2000.jsonl --zq-targets data/teaching/search-priority/zq-search.npz --claustro-targets data/teaching/search-priority/claustro-search.npz --out data/teaching/search-priority/dataset.npz
+```
 
 ## Fase 5 — arquiteturas
 

@@ -13,6 +13,17 @@ import numpy as np
 
 from targets import POLICY_DIM, mirror_action_lr
 
+# Edit this block for a no-CLI run. Every value also has a matching CLI option.
+CONFIG = {
+    "positions": "",
+    "bridge": "",
+    "checkpoint": "",
+    "sims": "512,1024,2048",
+    "cpuct": 1.5,
+    "out": "",
+    "teacher_name": "claustrophobia-v1.3.1",
+}
+
 
 def parse_budgets(text: str) -> list[int]:
     values = sorted({int(part.strip()) for part in text.split(",") if part.strip()})
@@ -84,15 +95,17 @@ def run_budget(bridge: Path, checkpoint: Path, tsv: Path, sims: int,
 
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--positions", required=True, type=Path)
-    parser.add_argument("--bridge", required=True, type=Path)
-    parser.add_argument("--checkpoint", required=True, type=Path)
-    parser.add_argument("--sims", default="512,1024,2048")
-    parser.add_argument("--cpuct", type=float, default=1.5)
-    parser.add_argument("--out", required=True, type=Path)
-    parser.add_argument("--teacher-name", default="claustrophobia-v1.3.1")
+    parser.add_argument("--positions", type=Path, default=Path(CONFIG["positions"]) if CONFIG["positions"] else None)
+    parser.add_argument("--bridge", type=Path, default=Path(CONFIG["bridge"]) if CONFIG["bridge"] else None)
+    parser.add_argument("--checkpoint", type=Path, default=Path(CONFIG["checkpoint"]) if CONFIG["checkpoint"] else None)
+    parser.add_argument("--sims", default=CONFIG["sims"])
+    parser.add_argument("--cpuct", type=float, default=CONFIG["cpuct"])
+    parser.add_argument("--out", type=Path, default=Path(CONFIG["out"]) if CONFIG["out"] else None)
+    parser.add_argument("--teacher-name", default=CONFIG["teacher_name"])
     args = parser.parse_args(argv)
 
+    if not all((args.positions, args.bridge, args.checkpoint, args.out)):
+        raise SystemExit("set positions, bridge, checkpoint, and out in CONFIG or pass their CLI options")
     if args.cpuct <= 0.0:
         raise SystemExit("cpuct must be positive")
     try:

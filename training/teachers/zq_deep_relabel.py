@@ -17,6 +17,18 @@ import numpy as np
 
 POLICY_DIM = 209
 
+# Edit this block for a no-CLI run. Every value also has a matching CLI option.
+CONFIG = {
+    "positions": "",
+    "bridge": "",
+    "nnue": "",
+    "node_budgets": "100000,500000",
+    "time_ms": 0,
+    "leaf_depth": 0,
+    "out": "",
+    "teacher_name": "zquoridor-deep",
+}
+
 
 def parse_budgets(text: str) -> list[int]:
     values = sorted({int(part.strip()) for part in text.split(",") if part.strip()})
@@ -100,16 +112,18 @@ def run_budget(bridge: Path, nnue: Path, positions: Sequence[dict], nodes: int,
 
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--positions", required=True, type=Path)
-    parser.add_argument("--bridge", required=True, type=Path)
-    parser.add_argument("--nnue", required=True, type=Path)
-    parser.add_argument("--node-budgets", default="100000,500000")
-    parser.add_argument("--time-ms", type=int, default=0)
-    parser.add_argument("--leaf-depth", type=int, default=0)
-    parser.add_argument("--out", required=True, type=Path)
-    parser.add_argument("--teacher-name", default="zquoridor-deep")
+    parser.add_argument("--positions", type=Path, default=Path(CONFIG["positions"]) if CONFIG["positions"] else None)
+    parser.add_argument("--bridge", type=Path, default=Path(CONFIG["bridge"]) if CONFIG["bridge"] else None)
+    parser.add_argument("--nnue", type=Path, default=Path(CONFIG["nnue"]) if CONFIG["nnue"] else None)
+    parser.add_argument("--node-budgets", default=CONFIG["node_budgets"])
+    parser.add_argument("--time-ms", type=int, default=CONFIG["time_ms"])
+    parser.add_argument("--leaf-depth", type=int, default=CONFIG["leaf_depth"])
+    parser.add_argument("--out", type=Path, default=Path(CONFIG["out"]) if CONFIG["out"] else None)
+    parser.add_argument("--teacher-name", default=CONFIG["teacher_name"])
     args = parser.parse_args(argv)
 
+    if not all((args.positions, args.bridge, args.nnue, args.out)):
+        raise SystemExit("set positions, bridge, nnue, and out in CONFIG or pass their CLI options")
     if args.time_ms < 0 or args.leaf_depth < 0:
         raise SystemExit("time-ms and leaf-depth must be non-negative")
     try:
