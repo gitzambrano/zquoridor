@@ -29,6 +29,7 @@ Todos os scripts têm bloco `CONFIG` no topo e argumentos CLI equivalentes.
 | Replay directo | `training/prepare_replay.py` | V3 | dataset com teachers direct |
 | Teaching | `training/run_teaching.py` | história ou partidas novas | dataset direct/search/mixed |
 | Search profundo | `training/teachers/zq_deep_relabel.py` | histórias ou `@state` V3 | visitas MCAB, valor e Q |
+| Relabel Claustrophobia | `training/teachers/claustrophobia_relabel.py` | posições canônicas | política e valor direct |
 | Seleção e mistura search | `training/select_replay_disagreement.py`, `training/build_search_priority_dataset.py` | replay directo + dois searches | dataset V3 ponderado |
 | Experimento | `training/run_experiment.py` | dataset | pesos QAT, binário e relatório |
 | Campanha | `training/run_campaign.py` | corpus e matriz | teaching, treino e arena |
@@ -136,7 +137,25 @@ Treinar controles e uma hipótese por vez. Cada candidato precisa exportar
 float/int8, checkpoint, manifesto de arquitetura e executável com as flags
 corretas. Exigir `incremental_check.exe` sem divergências antes da arena.
 
+Fine-tuning parte do melhor candidato com learning rate menor e um corpus que
+mistura teaching por search. A loss de um fine-tuning com alvos ou pesos
+diferentes não é comparável numericamente à loss do treino direto. Ela só
+decide se o artefato está estável; a arena decide se ele é melhor.
+
 ## Fase 7 — benchmark e promoção
+
+Todo candidato tem três comparações obrigatórias, registradas no mesmo gate:
+
+| Comparação | Objetivo | Critério |
+|---|---|---|
+| Candidato × rede anterior | medir ganho real da NNUE | arena pareada, mesmas aberturas e cores invertidas |
+| Candidato × Titanium | medir força externa | pares completos e orçamento de tempo registrado |
+| Candidato × Claustrophobia | medir força externa forte | pares completos, simulações e dispositivo registrados |
+
+`training/run_campaign.py` já executa a comparação direta e as duas externas
+para os candidatos selecionados. Experimentos avulsos devem usar a mesma
+matriz antes de qualquer promoção. Loss, nós por segundo e partidas parciais
+não substituem esse gate.
 
 Screening curto:
 
@@ -148,14 +167,52 @@ Depois rodar confirmação com outro livro de aberturas, mais pares e orçamento
 maior. Loss não promove rede. Promover somente com pares completos, intervalo
 de confiança favorável e repetição em conjunto independente.
 
-## Estado atual
+## Estado atual em 2026-09-16
+
+### Concluído
 
 - Corpus V3 auditado: 72.298.778 registros, sem shards legados.
-- Replay direto completo: um milhão de estados históricos mistos e 500 mil
-  estados distintos do gen1.
-- `gen7-montecarlo` é a próxima fonte histórica rica para seleção e search.
-- Selfplay rico de 3.000 jogos/14 threads está sendo concluído e será auditado.
-- `race:384` e `base:384` foram treinadas; `race:384` teve melhor validação,
-  mas o benchmark curto ainda não sustenta promoção contra Claustrophobia.
-- O bridge de MCAB já aceita snapshots V3; o próximo uso é relabel seletivo
-  por search, antes de criar qualquer feature `corridor`.
+- Selfplay rico: 4.713 partidas e 311.930 registros em
+  `gen-rich-v1-montecarlo`; ele usa temperatura, ruído de abertura e 14
+  threads. Falta a auditoria global de unicidade antes de sua entrada no
+  teaching.
+- Replay direct histórico: 1.000.000 de estados mistos, 500.000 estados
+  distintos do gen1 e um novo corpus amplo de 2.000.000 de estados. O último
+  foi relabelado em CUDA, com 1.602.929 estados de treino e 397.071 de
+  validação.
+- Teaching por search: 2.000 posições gen1 selecionadas por divergência,
+  relabeladas por ZQuoridor MCAB (512 e 2.048 nós) e Claustrophobia MCTS (256
+  e 1.024 simulações). O dataset ponderado está em
+  `data/teaching/search-priority-gen1/dataset.npz`.
+- Redes QAT treinadas no corpus direct de 2M:
+
+| Rede | Melhor loss de validação | Situação |
+|---|---:|---|
+| `base:384` | 0,74457 | controle concluído |
+| `race:384` | 0,74254 | melhor loss; paridade incremental aprovada |
+
+- Fine-tuning `race:384` com 10% do peso de teaching por search concluído.
+  A loss 0,87903 é medida contra alvos ponderados diferentes e não pode ser
+  comparada às perdas acima.
+
+### Em execução
+
+- Triagem externa do `race:384` direct de 2M contra Titanium e Claustrophobia:
+  40 pares por adversário, 200 ms para ZQuoridor e Titanium, 512 simulações
+  para Claustrophobia em CPU. Há 114 das 160 partidas gravadas; aguardar o
+  resumo pareado final antes de reportar força.
+- O teaching mixed de 1.024 trajetórias mantém as posições e os caches direct
+  e Claustrophobia-search. Ele ainda depende do target ZQuoridor para gerar
+  seu dataset final.
+
+### Próximos gates
+
+1. Terminar a triagem externa do `race:384` direct de 2M.
+2. Rodar arena pareada `race:384` direct de 2M contra a rede anterior.
+3. Rodar a mesma matriz para o `race:384` fine-tuned. Somente a arena pode
+   decidir se o teaching por search ajuda.
+4. Se algum candidato passar a triagem, repetir com livro independente e mais
+   pares antes de promoção.
+5. Só então ampliar a matriz para `base/race` 256 e 512 ou introduzir uma
+   hipótese de corredor incremental. Não criar features de corredor antes de
+   medir o valor das features race e do teaching por search.
