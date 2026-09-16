@@ -29,10 +29,12 @@ CONFIG = {
     "zq_targets": str(ROOT / "data/teaching/search-priority-gen1/zq-search.npz"),
     "claustro_targets": str(ROOT / "data/teaching/search-priority-gen1/claustro-search.npz"),
     "out": str(ROOT / "data/teaching/search-priority-gen1/dataset.npz"),
-    "zq_policy_weight": 0.5,
-    "claustro_policy_weight": 0.5,
-    "zq_value_weight": 0.5,
-    "claustro_value_weight": 0.5,
+    # ZQuoridor search is useful but may wander in wall-poor races.  Keep it
+    # as a corroborating teacher until arena results support a larger share.
+    "zq_policy_weight": 0.25,
+    "claustro_policy_weight": 0.75,
+    "zq_value_weight": 0.25,
+    "claustro_value_weight": 0.75,
     "base_weight": 1.0,
     "disagreement_scale": 3.0,
     "stability_floor": 0.25,

@@ -35,16 +35,19 @@ CONFIG = {
     "init_hidden": 256,
     "from_scratch": False,
     "qat": True,
-    "epochs": 12,
+    "epochs": 80,
     "batch_size": 256,
     "lr": 0.0001,
+    "schedule": "cosine",
+    "warmup_epochs": 4,
+    "min_lr": 0.000005,
     "trunk_lr_scale": 0.1,
     "weight_decay": 0.00001,
     "policy_weight": 1.0,
     "value_weight": 1.0,
     "train_scope": "full",
     "grad_clip": 1.0,
-    "patience": 4,
+    "patience": 12,
     "seed": 20260914,
     "device": "auto",
     "cpu_threads": 4,
@@ -128,6 +131,31 @@ def _hash(path):
     return h.hexdigest()
 
 
+def learning_rate(config, epoch: int) -> float:
+    """Return the base learning rate for zero-based ``epoch``.
+
+    QAT is active throughout training.  Warmup avoids an abrupt first update;
+    cosine annealing then leaves a low-rate QAT tail for final quantized
+    weight adjustment.  The final scheduled epoch is exactly ``min_lr``.
+    """
+    if not 0 <= epoch < config["epochs"]:
+        raise ValueError("epoch is outside the configured training range")
+    if config["schedule"] == "constant":
+        return float(config["lr"])
+    if config["schedule"] != "cosine":
+        raise ValueError("schedule must be constant or cosine")
+    warmup = min(int(config["warmup_epochs"]), int(config["epochs"]))
+    if warmup and epoch < warmup:
+        return float(config["lr"]) * (epoch + 1) / warmup
+    remaining = config["epochs"] - warmup
+    if remaining <= 1:
+        return float(config["min_lr"])
+    progress = (epoch - warmup) / (remaining - 1)
+    return float(config["min_lr"]) + (float(config["lr"]) - float(config["min_lr"])) * 0.5 * (
+        1.0 + math.cos(math.pi * progress)
+    )
+
+
 def _epoch(model, data, indices, config, device, optimizer=None, rng=None):
     model.train(optimizer is not None)
     order = rng.permutation(indices) if optimizer is not None else indices
@@ -159,10 +187,10 @@ def _epoch(model, data, indices, config, device, optimizer=None, rng=None):
 
 
 def train(config):
-    for key in ("epochs", "batch_size", "patience", "cpu_threads"):
+    for key in ("epochs", "batch_size", "patience", "cpu_threads", "warmup_epochs"):
         if config[key] <= 0:
             raise ValueError(f"{key} must be positive")
-    for key in ("lr", "trunk_lr_scale", "grad_clip"):
+    for key in ("lr", "min_lr", "trunk_lr_scale", "grad_clip"):
         if not math.isfinite(config[key]) or config[key] <= 0:
             raise ValueError(f"{key} must be finite and positive")
     for key in ("policy_weight", "value_weight", "weight_decay"):
@@ -170,6 +198,10 @@ def train(config):
             raise ValueError(f"{key} must be finite and nonnegative")
     if config["policy_weight"] + config["value_weight"] == 0:
         raise ValueError("at least one loss weight must be positive")
+    if config["min_lr"] > config["lr"]:
+        raise ValueError("min_lr must not exceed lr")
+    if config["schedule"] not in ("constant", "cosine"):
+        raise ValueError("schedule must be constant or cosine")
     if config["train_scope"] not in ("full", "policy", "heads"):
         raise ValueError("train_scope must be full, policy, or heads")
     path, folder = _path(config["data"]), _path(config["out_dir"])
@@ -195,8 +227,8 @@ def train(config):
     groups = []
     for name, param in model.named_parameters():
         if param.requires_grad:
-            groups.append({"params": [param], "lr": config["lr"] *
-                           (config["trunk_lr_scale"] if name.startswith("fc1") else 1)})
+            scale = config["trunk_lr_scale"] if name.startswith("fc1") else 1.0
+            groups.append({"params": [param], "lr": config["lr"] * scale, "lr_scale": scale})
     optimizer = torch.optim.AdamW(groups, weight_decay=config["weight_decay"])
     identity_config = {k: v for k, v in config.items() if k not in
                        ("resume", "build", "benchmark", "benchmark_args", "dry_run", "teaching", "teaching_args")}
@@ -225,9 +257,12 @@ def train(config):
     for epoch in range(start, config["epochs"]):
         if bad >= config["patience"]:
             break
+        base_lr = learning_rate(config, epoch)
+        for group in optimizer.param_groups:
+            group["lr"] = base_lr * group["lr_scale"]
         training = _epoch(model, data, train_idx, config, device, optimizer, rng)
         validation = _epoch(model, data, val_idx, config, device)
-        row = dict(epoch=epoch + 1, train=training, val=validation)
+        row = dict(epoch=epoch + 1, lr=base_lr, train=training, val=validation)
         history.append(row)
         print(json.dumps(row), flush=True)
         if validation["loss"] < best_loss:
@@ -247,6 +282,8 @@ def train(config):
     report = dict(fingerprint=fingerprint, architecture=architecture, initial_val=initial,
                   best_val_loss=best_loss, samples=len(data["value"]), train_samples=len(train_idx),
                   val_samples=len(val_idx), epochs=len(history), history=history,
+                  schedule=dict(name=config["schedule"], warmup_epochs=config["warmup_epochs"],
+                                initial_lr=config["lr"], min_lr=config["min_lr"]),
                   improved_validation=best_loss < initial["loss"], promoted=False)
     (folder / "train_report.json").write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
     return report

@@ -24,6 +24,15 @@ class ExperimentTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "group"):
             r.split_indices({"is_val": np.array([False, True]), "group_id": np.array(["x", "x"])})
 
+    def test_cosine_schedule_warms_up_then_anneals_to_minimum(self):
+        import run_experiment as r
+        config = dict(r.CONFIG, epochs=10, lr=1e-3, min_lr=1e-5,
+                      warmup_epochs=2, schedule="cosine")
+        self.assertAlmostEqual(r.learning_rate(config, 0), 5e-4)
+        self.assertAlmostEqual(r.learning_rate(config, 1), 1e-3)
+        self.assertLess(r.learning_rate(config, 8), r.learning_rate(config, 2))
+        self.assertAlmostEqual(r.learning_rate(config, 9), 1e-5)
+
 
 if __name__ == "__main__":
     unittest.main()

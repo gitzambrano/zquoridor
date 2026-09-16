@@ -33,5 +33,12 @@ def test_blends_search_targets_and_reweights_disagreement(tmp_path):
         assert result["id"].tolist() == [b"b", b"a"]
         assert np.isclose(result["policy"][0, :2].sum(), 1.0)
         assert result["weight"][0] > result["weight"][1]
-        assert np.isclose(result["value"][0], 0.0)
+        assert np.isclose(result["value"][0], -0.1)
     assert manifest["samples"] == 2
+
+
+def test_default_search_blend_limits_the_zquoridor_teacher():
+    assert builder.CONFIG["zq_policy_weight"] == 0.25
+    assert builder.CONFIG["zq_value_weight"] == 0.25
+    assert builder.CONFIG["claustro_policy_weight"] == 0.75
+    assert builder.CONFIG["claustro_value_weight"] == 0.75

@@ -106,6 +106,12 @@ weight = clip(base * (1 + escala * (JS_política + |valor|)) * estabilidade_budg
 Comparar sempre uniforme versus priorizado. Divergência aumenta atenção; não
 substitui confiança, clipping e validação independente.
 
+O ZQuoridor search é auxiliar, não âncora: enquanto o wandering em corridas
+com poucas paredes não estiver resolvido por arena, os novos datasets de
+search usam 25% ZQuoridor e 75% Claustrophobia em política e valor. O
+ZQuoridor ainda fornece cobertura de visitas e Q; não recebe peso dominante.
+WDL histórico não entra no alvo principal de distillation.
+
 ```powershell
 python training/select_replay_disagreement.py --replay-dir data/teaching/replay-old-gen1-500k --out data/teaching/search-priority/positions.jsonl --max-positions 10000
 python training/build_search_priority_dataset.py --source-dataset data/teaching/replay-old-gen1-500k/dataset.npz --positions data/teaching/search-priority/top2000.jsonl --zq-targets data/teaching/search-priority/zq-search.npz --claustro-targets data/teaching/search-priority/claustro-search.npz --out data/teaching/search-priority/dataset.npz
@@ -168,10 +174,16 @@ Treinar controles e uma hipótese por vez. Cada candidato precisa exportar
 float/int8, checkpoint, manifesto de arquitetura e executável com as flags
 corretas. Exigir `incremental_check.exe` sem divergências antes da arena.
 
-Fine-tuning parte do melhor candidato com learning rate menor e um corpus que
-mistura teaching por search. A loss de um fine-tuning com alvos ou pesos
-diferentes não é comparável numericamente à loss do treino direto. Ela só
-decide se o artefato está estável; a arena decide se ele é melhor.
+QAT é ligado durante todo o treino. O trainer usa quatro épocas de warmup e
+cosine annealing até `min_lr=5e-6`; o padrão passa a 80 épocas e paciência 12.
+A cauda de baixa taxa é o fine-tuning final dos pesos já quantizados. A taxa
+por época e o schedule entram em `train_report.json` e no checkpoint, portanto
+uma retomada mantém o mesmo recozimento.
+
+Fine-tuning também parte do melhor candidato com learning rate menor e um
+corpus que mistura teaching por search. A loss de um fine-tuning com alvos ou
+pesos diferentes não é comparável numericamente à loss do treino direto. Ela
+só decide se o artefato está estável; a arena decide se ele é melhor.
 
 ## Fase 7 — benchmark e promoção
 
