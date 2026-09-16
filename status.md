@@ -66,6 +66,16 @@ relearn by experiment.
   Existing 27-byte self-play records remain excluded because their position
   frame is ambiguous.
 
+  `select_replay_disagreement.py` supplies the selective search path. It ranks
+  completed direct-replay rows by Jensen-Shannon policy divergence plus value
+  difference, then emits canonical V3 snapshots. Both deep-search relabelers
+  consume the identical snapshot file. `build_search_priority_dataset.py`
+  checks IDs, blends their targets, and produces the usual `dataset.npz` with
+  a larger weight for teacher disagreement and a smaller weight when a teacher
+  changes its best move between requested budgets. Snapshot searches have no
+  repetition history, so they supplement rather than replace trajectory
+  teaching for repetition positions.
+
   The first experimental network adds 102 sparse race inputs to the existing
   354. These inputs encode distance margin, wall-stock margin, and a compact
   race and resource interaction. They use the existing cached path distances.

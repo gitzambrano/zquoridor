@@ -210,6 +210,16 @@ Web GUI (`gui_web/`): compiled `zquoridor.js`/`.wasm` are gitignored, but the bu
 
 ## Teaching and architecture lab
 
+For difficult replay positions, keep direct and searched labels separate.
+`training/select_replay_disagreement.py` writes canonical snapshot JSONL from
+a completed direct replay.  Run both search relabelers on exactly that JSONL,
+then use `training/build_search_priority_dataset.py` to make a standard,
+weighted `dataset.npz`.  The output is accepted by `run_experiment.py` and by
+the campaign dataset combiner.  Its weights favor teacher disagreement and
+penalize disagreement between requested search budgets.  Snapshot records have
+no repetition history; use `run_teaching.py` trajectory modes when repetition
+is part of the target.
+
 `training/prepare_replay.py` samples distinct states from existing canonical
 self-play shards and relabels them with the old NNUE and direct Claustrophobia.
 It writes a resumable cache and `dataset.npz`; it does not generate games,

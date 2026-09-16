@@ -35,6 +35,32 @@ Summaries include paired bootstrap intervals and a conservative bounded-score in
 
 ## Teaching choices
 
+### Selected expensive search
+
+Direct labels give broad coverage, but they do not replace a search target on
+wall tactics, corridor blocks, or other unstable positions.  Use the following
+three independent scripts for the high-information subset.  They all use the
+same mover-relative V3 state contract as replay and training.
+
+```bash
+# Select states where the two direct teachers disagree.
+python training/select_replay_disagreement.py --replay-dir data/teaching/replay-old-gen1-500k --out data/teaching/search-priority/positions.jsonl --max-positions 10000
+
+# Relabel the selected JSONL with each search teacher.  Use top2000.jsonl for a
+# first expensive run, then increase the selection after inspecting manifests.
+python training/teachers/zq_deep_relabel.py --positions data/teaching/search-priority/top2000.jsonl --bridge bin/zq_deep_relabel_v3.exe --nnue data/nnue/nnue_weights_int8.bin --node-budgets 512,2048 --out data/teaching/search-priority/zq-search.npz
+python training/teachers/claustrophobia_search_relabel.py --positions data/teaching/search-priority/top2000.jsonl --bridge external_bots/claustrophobia/repo/target/release/zq_search_bridge.exe --checkpoint external_bots/claustrophobia/champion.pt --sims 256,1024 --out data/teaching/search-priority/claustro-search.npz
+
+# Build normal weighted dataset.npz.  It can go directly to run_experiment.py.
+python training/build_search_priority_dataset.py --positions data/teaching/search-priority/top2000.jsonl --zq-targets data/teaching/search-priority/zq-search.npz --claustro-targets data/teaching/search-priority/claustro-search.npz --out data/teaching/search-priority/dataset.npz
+```
+
+`build_search_priority_dataset.py` blends the two search policies and values.
+It raises each sample weight where the search teachers disagree, and lowers it
+when either teacher changes its best move at the larger budget.  The manifest
+records both summaries and the exact formula.  Snapshot inputs do not contain
+repetition history; use trajectory teaching for repetition-specific labels.
+
 `run_teaching.py` supports three modes:
 
 | Mode | Sources |
