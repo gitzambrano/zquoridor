@@ -46,6 +46,36 @@ fn parse_move(input: &str, state: &GameState) -> Option<Move> {
 }
 
 fn replay(history: &str, sample_id: &str) -> Result<GameState, String> {
+    // V3 snapshots are already mirrored to the mover.  Reconstruct them as
+    // side zero so the emitted actions remain in the V3 action frame.  The
+    // record has no repetition history, therefore MCTS starts with none.
+    if history.starts_with("@state ") {
+        let fields: Vec<&str> = history.split_whitespace().collect();
+        if fields.len() != 7 { return Err("state requires six fields".into()); }
+        let own: u8 = fields[1].parse().map_err(|_| "invalid own pawn")?;
+        let opp: u8 = fields[2].parse().map_err(|_| "invalid opponent pawn")?;
+        let wh: u64 = fields[3].parse().map_err(|_| "invalid horizontal walls")?;
+        let wv: u64 = fields[4].parse().map_err(|_| "invalid vertical walls")?;
+        let ow: u8 = fields[5].parse().map_err(|_| "invalid own reserve")?;
+        let pw: u8 = fields[6].parse().map_err(|_| "invalid opponent reserve")?;
+        if own >= 81 || opp >= 81 || own == opp || ow > 10 || pw > 10
+            || wh.count_ones() + wv.count_ones() != 20 - ow as u32 - pw as u32 {
+            return Err("invalid canonical state resources or pawns".into());
+        }
+        let mut state = GameState::with_pawns(own, opp, 0);
+        for (walls, horizontal) in [(wh, true), (wv, false)] {
+            for slot in 0..64 {
+                if (walls >> slot) & 1 == 0 { continue; }
+                let mv = Move::wall(slot as u8, horizontal);
+                let mut legal = MoveBuf::new();
+                generate_all_moves(&state, &mut legal);
+                if !legal.as_slice().contains(&mv) { return Err("illegal wall topology".into()); }
+                state.setup_wall(slot, horizontal);
+            }
+        }
+        state.walls_left = [ow, pw];
+        return Ok(state);
+    }
     let mut state = GameState::start();
     if history.trim().is_empty() {
         return Ok(state);
