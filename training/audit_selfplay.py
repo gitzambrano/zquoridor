@@ -136,7 +136,7 @@ def parse_args():
     p.add_argument(
         "paths",
         nargs="*",
-        help="files or directories to audit. Default: data/selfplay",
+        help="files or directories to audit. Default: data/selfplay_canonical_v3",
     )
     p.add_argument(
         "--fail-on-legacy",

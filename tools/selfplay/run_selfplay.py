@@ -110,12 +110,10 @@ SEED          = 150    # semente base do RNG; chunks subsequentes variam automat
 
 # --- Saída ---
 # Use {shard:03d} para nomear os chunks automaticamente e {mode} para o
-# modo desta execução ("epsilon" ou "montecarlo") -- separa os dois em
-# pastas distintas automaticamente (data/selfplay/epsilon/... vs.
-# data/selfplay/montecarlo/...) pra dar pra treinar misturando as duas
-# fontes com pesos por-fonte (k diferentes) em train_nnue.py, sem que uma
-# rodada sobrescreva/misture shards da outra sem querer.
-OUT_TEMPLATE  = "data/selfplay/gen7-{mode}/selfplay_{shard:03d}.bin"
+# modo desta execução ("epsilon" ou "montecarlo") -- cada execução nasce
+# diretamente no contrato V3 em `data/selfplay_canonical_v3`. Os diretórios
+# históricos em `data/selfplay` existem somente como fonte da migração.
+OUT_TEMPLATE  = "data/selfplay_canonical_v3/gen-current-{mode}/selfplay_{shard:03d}.bin"
 
 # --- Avaliação de folha (NNUE vs. heurística) ---
 # NNUE é o default de avaliação deste binário desde 2026-08 (selfplay
@@ -588,12 +586,9 @@ def main():
         print(f"[run_selfplay] Manifesto V3: {output_dir / 'manifest.json'}")
         print(f"[run_selfplay] Concluído em {elapsed:.1f} s")
         print()
-        print("Próximos passos -- treinar a NNUE com os chunks gerados:")
-        print(f"  cd training")
-        print(f"  python3 train_nnue.py \\")
-        print(f"      --data ../data/selfplay/*.bin \\")
-        print(f"      --out ../data/nnue/nnue_weights.bin \\")
-        print(f"      --plot-dir ../data/nnue/plots")
+        print("Próximos passos -- treinar a NNUE com o corpus canônico:")
+        print("  python3 training/train_nnue.py")
+        print("  # default: data/selfplay_canonical_v3 (todos os shards V3)")
     else:
         print(f"[run_selfplay] ERRO: selfplay terminou com código {ret}", file=sys.stderr)
         sys.exit(ret)

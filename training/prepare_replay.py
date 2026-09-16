@@ -2,8 +2,8 @@
 """Build a replay dataset from existing canonical self-play shards.
 
 Input:
-    ``data/selfplay/<generation>/selfplay_*.bin`` (32/64-byte canonical
-    records; legacy ambiguous 27-byte shards are skipped), plus the old
+    ``data/selfplay_canonical_v3/<generation>/selfplay_*.bin`` (64-byte V3
+    records), plus the old
     NNUE weights and the pinned Claustrophobia checkpoint.
 
 Output:
