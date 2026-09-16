@@ -24,3 +24,21 @@ def test_empty_handed_teacher_returns_solver_target(tmp_path):
     assert row["root_value_prob"] in (0, .5, 1)
     assert row["edges"] == [[row["best_action"], 1, row["root_value_prob"]]]
     assert 0 <= row["best_action"] < 81
+
+
+def test_teacher_accepts_v3_canonical_state_snapshot(tmp_path):
+    compiler = shutil.which("g++") or "C:/mingw64/bin/g++.exe"
+    if not Path(compiler).is_file():
+        pytest.skip("g++ is required")
+    exe = tmp_path / "teacher.exe"
+    subprocess.run([compiler, "-O2", "-std=c++17", "-I"+str(ROOT/"src"),
+                    str(ROOT/"tools/teacher/zq_deep_relabel.cpp"), "-o", str(exe)], check=True)
+    output = subprocess.check_output(
+        [str(exe), "--nnue", str(ROOT/"data/nnue/nnue_weights_int8.bin"), "--nodes", "32"],
+        input="snapshot\t@state 4 76 0 0 10 10\n", text=True,
+    )
+    row = json.loads(output)
+    assert row["id"] == "snapshot"
+    assert row["side_to_move"] == 0
+    assert 0 <= row["best_action"] < 209
+    assert row["edges"]
