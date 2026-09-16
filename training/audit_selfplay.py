@@ -2,7 +2,7 @@
 """
 Audit local self-play shards before a NNUE training cycle.
 
-The current 32-byte format stores the board and policy target in the canonical
+The current 64-byte V3 format stores the board and policy target in the canonical
 mover perspective. The legacy 27-byte format does not. train_nnue.py cannot
 repair that perspective after the legacy record is loaded because the old
 record does not store the mover identity.
@@ -23,7 +23,7 @@ import numpy as np
 
 ROOT = Path(__file__).resolve().parents[1]
 TRAINING_DIR = ROOT / "training"
-DATA_ROOT = ROOT / "data" / "selfplay"
+DATA_ROOT = ROOT / "data" / "selfplay_canonical_v3"
 
 sys.path.insert(0, str(TRAINING_DIR))
 from read_selfplay import (  # noqa: E402
