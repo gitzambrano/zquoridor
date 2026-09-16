@@ -2,10 +2,12 @@
 import json
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "training" / "teachers"))
 
 
 def test_empty_handed_teacher_returns_solver_target(tmp_path):
@@ -42,3 +44,9 @@ def test_teacher_accepts_v3_canonical_state_snapshot(tmp_path):
     assert row["side_to_move"] == 0
     assert 0 <= row["best_action"] < 209
     assert row["edges"]
+
+
+def test_bulk_search_default_has_a_per_position_time_limit():
+    """Snapshot batches must not run an endgame alpha-beta leaf forever."""
+    import zq_deep_relabel
+    assert zq_deep_relabel.CONFIG["time_ms"] > 0

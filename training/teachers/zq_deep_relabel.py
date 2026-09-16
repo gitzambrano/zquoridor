@@ -23,7 +23,8 @@ CONFIG = {
     "bridge": "",
     "nnue": "",
     "node_budgets": "100000,500000",
-    "time_ms": 0,
+    # Prevent a zero-wall endgame leaf from making a snapshot batch unbounded.
+    "time_ms": 1000,
     "leaf_depth": 0,
     "out": "",
     "teacher_name": "zquoridor-deep",
