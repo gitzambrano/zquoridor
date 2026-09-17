@@ -272,9 +272,11 @@ de confiança favorável e repetição em conjunto independente.
 
 - Fine-tuning antigo de `race:384` com 10% do peso de teaching por search
   usava a fonte 50% ZQuoridor e 50% Claustrophobia; ele é legado experimental.
-  O novo fine-tuning de `race:512` usa a mistura conservadora 25%/75%, QAT,
-  warmup e cosine annealing. A loss desse corpus não é comparável à loss do
-  treino direct; a arena será o gate.
+  Os novos fine-tunings `race:512` e `base:512` usam a mistura conservadora
+  25%/75%, QAT, warmup e cosine annealing. Em 40 épocas, `race:512` reduziu a
+  loss do novo corpus de 0,91628 para 0,88574; `base:512`, de 0,92031 para
+  0,89128. Essas losses não são comparáveis à loss do treino direct; a arena
+  será o gate.
 
 - Matrizes concluídas com 20 pares completos e 200 ms por jogada:
 
@@ -302,8 +304,11 @@ de confiança favorável e repetição em conjunto independente.
   medido de cada resposta.
 - A matriz direct de `race:512` executa a 200 ms por jogada, com o mesmo livro
   histórico e seed usados na referência da `base:512`.
-- O fine-tuning `race:512` executa na GPU com a mistura direct + search
-  conservadora. Não há selfplay, relabel ou teaching antigo em execução.
+- Os fine-tunings de `race:512` e `base:512` terminaram e seus binários QAT
+  foram exportados e verificados incrementalmente. Suas matrizes de arena
+  aguardam a matriz direct `race:512`, para não contaminar relógios externos
+  com processos concorrentes. Não há selfplay, relabel ou teaching antigo em
+  execução.
 
 ### Próximos gates
 
@@ -315,7 +320,7 @@ de confiança favorável e repetição em conjunto independente.
 3. Repetir as duas melhores redes em um livro independente com ao menos 100
    pares. Exigir intervalo de confiança favorável contra main antes da
    promoção.
-4. Concluir o fine-tuning `race:512`, executar o mesmo em `base:512` e medir
-   novamente toda a matriz.
+4. Medir as duas redes com fine-tuning em toda a matriz, usando o mesmo livro
+   e relógio; promover apenas a vencedora para a confirmação independente.
 5. Só então testar `phase`, `topology-lite` e `race-phase`. Não criar features
    de corredor antes de medir o valor do teaching e das arquiteturas atuais.
