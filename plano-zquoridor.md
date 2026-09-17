@@ -130,8 +130,8 @@ binário C++. Cada uma pode ser selecionada por `--architecture` e `--hidden`.
 
 | Família | Features | Larguras | Estado |
 |---|---:|---|---|
-| `base` | 354: peões, muros, buckets BFS e reservas | 128, 256, 384, 512 | 384 treinada; 128/256/512 pendentes |
-| `race` | 456: `base` + margem de distância, margem de reservas e interação corrida/reservas | 128, 256, 384, 512 | 384 treinada e candidata atual; 128/256/512 pendentes |
+| `base` | 354: peões, muros, buckets BFS e reservas | 128, 256, 384, 512 | 256, 384 e 512 concluídas; 128 não priorizada |
+| `race` | 456: `base` + margem de distância, margem de reservas e interação corrida/reservas | 128, 256, 384, 512 | 256 e 384 concluídas; 512 em treino |
 
 `race` é incremental: três slots ativos derivados das distâncias BFS e das
 reservas são removidos e recolocados em cada lance. Não reconstrói o
@@ -192,25 +192,34 @@ Todo candidato tem três comparações obrigatórias, registradas no mesmo gate:
 | Comparação | Objetivo | Critério |
 |---|---|---|
 | Candidato × rede anterior | medir ganho real da NNUE | arena pareada, mesmas aberturas e cores invertidas |
-| Candidato × Titanium | medir força externa | pares completos e orçamento de tempo registrado |
-| Candidato × Claustrophobia | medir força externa forte | pares completos, tempo por jogada e dispositivo registrados |
+| Candidato × Titanium | medir força externa | pares completos e relógio idêntico registrado |
+| Candidato × Claustrophobia | medir força externa forte | pares completos, relógio idêntico e dispositivo registrados |
+| Main × Titanium | criar a referência externa | mesmo livro, seed, cores e relógio do candidato |
+| Main × Claustrophobia | criar a referência externa forte | mesmo livro, seed, cores e relógio do candidato |
 
-`training/run_campaign.py` já executa a comparação direta e as duas externas
-para os candidatos selecionados. Experimentos avulsos devem usar a mesma
-matriz antes de qualquer promoção. Loss, nós por segundo e partidas parciais
-não substituem esse gate.
+`tools/benchmark_candidate.py` executa a matriz avulsa. O script mede o
+candidato contra main, Titanium e Claustrophobia. O script também mede main
+contra os dois bots externos no mesmo livro, seed e relógio. As duas linhas de
+main são a referência para o delta externo de cada candidato.
+
+Todos os lados usam o mesmo `move_time_ms`. O runner rejeita relógios
+diferentes. Claustrophobia recebe um relógio de parede. A ponte limita as
+simulações a um valor calibrado e registra as simulações e o tempo medido. Um
+resultado com apenas número de simulações não é válido para promoção.
+
+Loss, nós por segundo e partidas parciais não substituem esse gate.
 
 Screening curto:
 
 ```powershell
-python tools/run_benchmark.py --opponents titanium,claustrophobia --pairs 40 --zq-executable results/experiments/race384/zquoridor.exe --nnue results/experiments/race384/student_int8.bin --zq-move-time-ms 200 --titanium-move-time-ms 200 --claustrophobia-move-time-ms 200 --claustrophobia-device gpu --output benchmark_results/race384-screen
+python tools/benchmark_candidate.py --candidate-executable results/experiments/race384/zquoridor.exe --candidate-nnue results/experiments/race384/student_int8.bin --pairs 40 --move-time-ms 200 --claustrophobia-device cpu --output benchmark_results/race384-screen
 ```
 
 Depois rodar confirmação com outro livro de aberturas, mais pares e orçamento
 maior. Loss não promove rede. Promover somente com pares completos, intervalo
 de confiança favorável e repetição em conjunto independente.
 
-## Estado atual em 2026-09-16
+## Estado atual em 2026-09-17
 
 ### Concluído
 
@@ -227,16 +236,36 @@ de confiança favorável e repetição em conjunto independente.
   relabeladas por ZQuoridor MCAB (512 e 2.048 nós) e Claustrophobia MCTS (256
   e 1.024 simulações). O dataset ponderado está em
   `data/teaching/search-priority-gen1/dataset.npz`.
-- Redes QAT treinadas no corpus direct de 2M:
+- Redes QAT treinadas no corpus direct de 2M. Todas usaram 80 épocas, quatro
+  épocas de warmup e cosine annealing até `5e-6`:
 
 | Rede | Melhor loss de validação | Situação |
 |---|---:|---|
-| `base:384` | 0,74457 | controle concluído |
-| `race:384` | 0,74254 | melhor loss; paridade incremental aprovada |
+| `base:256` | 0,74569 | concluída; não priorizada |
+| `race:256` | 0,74319 | concluída; arena completa |
+| `base:384` | 0,73939 | concluída; arena completa |
+| `race:384` | 0,73686 | melhor rede direta; arena completa |
+| `base:512` | 0,73600 | concluída; arena em execução |
+| `race:512` | — | treino em execução |
 
-- Fine-tuning `race:384` com 10% do peso de teaching por search concluído.
+- Fine-tuning antigo de `race:384` com 10% do peso de teaching por search
+  concluído. A fonte de search ainda era 50% ZQuoridor e 50% Claustrophobia.
+  Ela é legado experimental. O próximo fine-tuning deve reconstruir o dataset
+  com 25% ZQuoridor e 75% Claustrophobia.
   A loss 0,87903 é medida contra alvos ponderados diferentes e não pode ser
   comparada às perdas acima.
+
+- Matrizes concluídas com 20 pares completos e 200 ms por jogada:
+
+| Rede | Main | Titanium | Claustrophobia | Decisão |
+|---|---:|---:|---:|---|
+| `race:256` | 65,0% | 42,5% | 25,0% | sem promoção; IC contra main inclui 50% |
+| `base:384` | 67,5% | 37,5% | 28,75% | sem promoção; IC contra main inclui 50% |
+| `race:384` | 60,0% | 35,0% | 31,25% | sem promoção; IC contra main inclui 50% |
+
+  Esses primeiros relatórios não incluem ainda a linha de main contra os bots
+  externos. Portanto eles não permitem um delta externo contra main. O script
+  atual executa essa linha obrigatória para todos os lotes futuros.
 
 ### Em execução
 
@@ -247,19 +276,20 @@ de confiança favorável e repetição em conjunto independente.
   Claustrophobia calibra uma busca curta, limita as simulações e completa o
   orçamento de parede. O registro inclui o relógio, as simulações e o tempo
   medido de cada resposta.
-- O teaching mixed de 1.024 trajetórias mantém as posições e os caches direct
-  e Claustrophobia-search. Ele ainda depende do target ZQuoridor para gerar
-  seu dataset final.
+- `base:512` ainda executa a matriz de benchmark a 200 ms.
+- `race:512` treina na GPU com o corpus direct de 2M. Não há selfplay,
+  relabel, teaching antigo ou benchmark órfão em execução.
 
 ### Próximos gates
 
-1. Reexecutar a triagem externa do `race:384` direct de 2M sob o mesmo relógio
-   por jogada para todos os motores.
-2. Rodar arena pareada `race:384` direct de 2M contra a rede anterior.
-3. Rodar a mesma matriz para o `race:384` fine-tuned. Somente a arena pode
-   decidir se o teaching por search ajuda.
-4. Se algum candidato passar a triagem, repetir com livro independente e mais
-   pares antes de promoção.
-5. Só então ampliar a matriz para `base/race` 256 e 512 ou introduzir uma
-   hipótese de corredor incremental. Não criar features de corredor antes de
-   medir o valor das features race e do teaching por search.
+1. Concluir `base:512` e `race:512`. Rodar a matriz completa de cada uma.
+2. Rodar main contra Titanium e Claustrophobia para cada seed e livro já usado.
+   Guardar a linha como referência histórica, sem misturar livros.
+3. Repetir as duas melhores redes em um livro independente com ao menos 100
+   pares. Exigir intervalo de confiança favorável contra main antes da
+   promoção.
+4. Reconstruir o teaching por search na mistura 25% ZQuoridor e 75%
+   Claustrophobia. Fazer fine-tuning das duas melhores redes. Medir novamente
+   toda a matriz.
+5. Só então testar `phase`, `topology-lite` e `race-phase`. Não criar features
+   de corredor antes de medir o valor do teaching e das arquiteturas atuais.
