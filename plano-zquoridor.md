@@ -252,8 +252,12 @@ de confiança favorável e repetição em conjunto independente.
   validação.
 - Teaching por search: 2.000 posições gen1 selecionadas por divergência,
   relabeladas por ZQuoridor MCAB (512 e 2.048 nós) e Claustrophobia MCTS (256
-  e 1.024 simulações). O dataset ponderado está em
-  `data/teaching/search-priority-gen1/dataset.npz`.
+  e 1.024 simulações). O dataset conservador usa 25% ZQuoridor e 75%
+  Claustrophobia em política e valor, e está em
+  `data/teaching/search-priority-gen1-conservative/dataset.npz`.
+- A mistura de fine-tuning já foi materializada em
+  `data/teaching/historical2m-search10-conservative/dataset.npz`: 2.001.868
+  posições, 10% do peso de teaching por search e 90% de replay direct.
 - Redes QAT treinadas no corpus direct de 2M. Todas usaram 80 épocas, quatro
   épocas de warmup e cosine annealing até `5e-6`:
 
@@ -263,15 +267,14 @@ de confiança favorável e repetição em conjunto independente.
 | `race:256` | 0,74319 | concluída; arena completa |
 | `base:384` | 0,73939 | concluída; arena completa |
 | `race:384` | 0,73686 | melhor rede direta; arena completa |
-| `base:512` | 0,73600 | concluída; arena em execução |
-| `race:512` | — | treino em execução |
+| `base:512` | 0,73600 | concluída; matriz de referência completa |
+| `race:512` | 0,73405 | concluída; matriz em execução |
 
 - Fine-tuning antigo de `race:384` com 10% do peso de teaching por search
-  concluído. A fonte de search ainda era 50% ZQuoridor e 50% Claustrophobia.
-  Ela é legado experimental. O próximo fine-tuning deve reconstruir o dataset
-  com 25% ZQuoridor e 75% Claustrophobia.
-  A loss 0,87903 é medida contra alvos ponderados diferentes e não pode ser
-  comparada às perdas acima.
+  usava a fonte 50% ZQuoridor e 50% Claustrophobia; ele é legado experimental.
+  O novo fine-tuning de `race:512` usa a mistura conservadora 25%/75%, QAT,
+  warmup e cosine annealing. A loss desse corpus não é comparável à loss do
+  treino direct; a arena será o gate.
 
 - Matrizes concluídas com 20 pares completos e 200 ms por jogada:
 
@@ -280,10 +283,13 @@ de confiança favorável e repetição em conjunto independente.
 | `race:256` | 65,0% | 42,5% | 25,0% | sem promoção; IC contra main inclui 50% |
 | `base:384` | 67,5% | 37,5% | 28,75% | sem promoção; IC contra main inclui 50% |
 | `race:384` | 60,0% | 35,0% | 31,25% | sem promoção; IC contra main inclui 50% |
+| `base:512` | 65,0% | 45,0% | 26,25% | triagem promissora; aguarda confirmação independente |
 
-  Esses primeiros relatórios não incluem ainda a linha de main contra os bots
-  externos. Portanto eles não permitem um delta externo contra main. O script
-  atual executa essa linha obrigatória para todos os lotes futuros.
+  Os três primeiros relatórios não incluem ainda a linha de main contra os
+  bots externos. A matriz `base:512` já inclui essa referência: main obteve
+  35,0% contra Titanium e 15,0% contra Claustrophobia, no mesmo livro, seed e
+  relógio. Assim, `base:512` tem delta de +10,0 e +11,25 pontos, respectivamente.
+  São apenas 20 pares e não autorizam promoção.
 
 ### Em execução
 
@@ -294,20 +300,22 @@ de confiança favorável e repetição em conjunto independente.
   Claustrophobia calibra uma busca curta, limita as simulações e completa o
   orçamento de parede. O registro inclui o relógio, as simulações e o tempo
   medido de cada resposta.
-- `base:512` ainda executa a matriz de benchmark a 200 ms.
-- `race:512` treina na GPU com o corpus direct de 2M. Não há selfplay,
-  relabel, teaching antigo ou benchmark órfão em execução.
+- A matriz direct de `race:512` executa a 200 ms por jogada, com o mesmo livro
+  histórico e seed usados na referência da `base:512`.
+- O fine-tuning `race:512` executa na GPU com a mistura direct + search
+  conservadora. Não há selfplay, relabel ou teaching antigo em execução.
 
 ### Próximos gates
 
-1. Concluir `base:512` e `race:512`. Rodar a matriz completa de cada uma.
-2. Rodar main contra Titanium e Claustrophobia para cada seed e livro já usado.
+1. Concluir a matriz direct de `race:512` e comparar seu delta externo com
+   `base:512`.
+2. Rodar main contra Titanium e Claustrophobia para cada seed e livro já usado
+   pelos três relatórios antigos.
    Guardar a linha como referência histórica, sem misturar livros.
 3. Repetir as duas melhores redes em um livro independente com ao menos 100
    pares. Exigir intervalo de confiança favorável contra main antes da
    promoção.
-4. Reconstruir o teaching por search na mistura 25% ZQuoridor e 75%
-   Claustrophobia. Fazer fine-tuning das duas melhores redes. Medir novamente
-   toda a matriz.
+4. Concluir o fine-tuning `race:512`, executar o mesmo em `base:512` e medir
+   novamente toda a matriz.
 5. Só então testar `phase`, `topology-lite` e `race-phase`. Não criar features
    de corredor antes de medir o valor do teaching e das arquiteturas atuais.
