@@ -333,8 +333,9 @@ def main(argv=None):
     if config["benchmark"]:
         if exe is None:
             raise ValueError("benchmark requires build")
-        subprocess.run([sys.executable, str(ROOT / "tools/run_benchmark.py"),
-                        "--zq-executable", str(exe), "--nnue", str(_path(config["out_dir"]) / "student_int8.bin"),
+        subprocess.run([sys.executable, str(ROOT / "tools/benchmark_candidate.py"),
+                        "--candidate-executable", str(exe),
+                        "--candidate-nnue", str(_path(config["out_dir"]) / "student_int8.bin"),
                         *config["benchmark_args"]], check=True, cwd=ROOT)
     print(json.dumps({k: v for k, v in report.items() if k != "history"}, indent=2))
     return 0
