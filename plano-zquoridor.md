@@ -286,12 +286,14 @@ de confiança favorável e repetição em conjunto independente.
 | `base:384` | 67,5% | 37,5% | 28,75% | sem promoção; IC contra main inclui 50% |
 | `race:384` | 60,0% | 35,0% | 31,25% | sem promoção; IC contra main inclui 50% |
 | `base:512` | 65,0% | 45,0% | 26,25% | triagem promissora; aguarda confirmação independente |
+| `race:512` | 57,5% | 30,0% | 22,5% | abaixo de `base:512`; sem promoção |
 
   Os três primeiros relatórios não incluem ainda a linha de main contra os
-  bots externos. A matriz `base:512` já inclui essa referência: main obteve
-  35,0% contra Titanium e 15,0% contra Claustrophobia, no mesmo livro, seed e
-  relógio. Assim, `base:512` tem delta de +10,0 e +11,25 pontos, respectivamente.
-  São apenas 20 pares e não autorizam promoção.
+  bots externos. As matrizes `base:512` e `race:512` já incluem essa referência.
+  A repetição da referência no mesmo livro, seed e relógio variou: 35,0%/15,0%
+  para `base:512` e 23,75%/20,0% para `race:512`, contra Titanium/Claustrophobia.
+  Isso confirma que 20 pares só servem para triagem; a promoção exige a
+  confirmação independente de 400 aberturas.
 
 ### Em execução
 
@@ -302,8 +304,9 @@ de confiança favorável e repetição em conjunto independente.
   Claustrophobia calibra uma busca curta, limita as simulações e completa o
   orçamento de parede. O registro inclui o relógio, as simulações e o tempo
   medido de cada resposta.
-- A matriz direct de `race:512` executa a 200 ms por jogada, com o mesmo livro
-  histórico e seed usados na referência da `base:512`.
+- A matriz direct de `race:512` terminou a 200 ms por jogada, com o mesmo livro
+  histórico e seed usados na referência da `base:512`. Ela não superou
+  `base:512` na triagem.
 - Os fine-tunings de `race:512` e `base:512` terminaram e seus binários QAT
   foram exportados e verificados incrementalmente. Suas matrizes de arena
   aguardam a matriz direct `race:512`, para não contaminar relógios externos
@@ -312,8 +315,8 @@ de confiança favorável e repetição em conjunto independente.
 
 ### Próximos gates
 
-1. Concluir a matriz direct de `race:512` e comparar seu delta externo com
-   `base:512`.
+1. Concluir as matrizes das redes com fine-tuning e compará-las com `base:512`
+   direct no mesmo protocolo.
 2. Rodar main contra Titanium e Claustrophobia para cada seed e livro já usado
    pelos três relatórios antigos.
    Guardar a linha como referência histórica, sem misturar livros.
