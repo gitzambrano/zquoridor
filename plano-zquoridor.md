@@ -209,6 +209,15 @@ resultado com apenas número de simulações não é válido para promoção.
 
 Loss, nós por segundo e partidas parciais não substituem esse gate.
 
+`training/run_architecture_matrix.py` encadeia a matriz inteira. Ele grava
+`matrix_status.json`, pula treino e benchmark já concluídos, e só inicia a
+próxima arquitetura depois da matriz completa da anterior. Assim um processo
+interrompido continua no próximo estágio pendente sem repetir jogos válidos.
+
+```powershell
+python training/run_architecture_matrix.py --architectures '["base:256","race:256","base:384","race:384","base:512","race:512"]' --epochs 80 --benchmark-pairs 100 --move-time-ms 200
+```
+
 Screening curto:
 
 ```powershell
