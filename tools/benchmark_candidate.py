@@ -29,6 +29,7 @@ CONFIG = {
     "output": str(ROOT / "benchmark_results" / "candidate"),
     "claustrophobia_device": "cpu",
     "claustrophobia_max_sims": 4096,
+    "benchmark_main_external": True,
     "resume": True,
     "auto_setup": True,
     "bootstrap": 20000,
@@ -129,8 +130,17 @@ def run(config: dict) -> dict:
         claustrophobia_device=str(config["claustrophobia_device"]), bootstrap=int(config["bootstrap"]),
     )
     external_report = run_benchmark.run(external_config)
+    main_external = None
+    if config["benchmark_main_external"]:
+        main_external_config = dict(external_config,
+            zq_executable=str(_baseline_executable(config)),
+            nnue=str(Path(config["baseline_nnue"]).resolve()),
+            output=str(output / "main-vs-external"),
+        )
+        main_external = run_benchmark.run(main_external_config)
     report = {"schema": "zquoridor.candidate_matrix.v1", "move_time_ms": config["move_time_ms"],
-              "main": main_report, "external": external_report["summaries"]}
+              "main": main_report, "external": external_report["summaries"],
+              "main_external": None if main_external is None else main_external["summaries"]}
     output.mkdir(parents=True, exist_ok=True)
     (output / "summary.json").write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
     print(json.dumps(report, indent=2))
