@@ -21,6 +21,15 @@ Todo selfplay novo, treino NNUE e replay teaching usam
 
 Todos os scripts têm bloco `CONFIG` no topo e argumentos CLI equivalentes.
 
+## Livros de aberturas para benchmark
+
+Os livros são artefatos versionados no repositório, nunca resultados locais.
+`tools/external/openings_screen_v1.jsonl` contém 100 aberturas legais de seis
+plies para triagem. `tools/external/openings_confirmation_v1.jsonl` contém 400
+aberturas legais, sem sobreposição com o livro de triagem nem com o livro
+histórico `tools/external/openings_titanium.jsonl`. A confirmação de finalistas
+usa o livro de 400, cores invertidas e o mesmo tempo fixo por jogada.
+
 | Etapa | Script | Entrada | Saída |
 |---|---|---|---|
 | Migrar | `training/migrate_selfplay_v3.py` | legado/V2/V3 | corpus V3 + manifestos |
