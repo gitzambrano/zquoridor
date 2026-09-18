@@ -308,10 +308,11 @@ de confiança favorável e repetição em conjunto independente.
   histórico e seed usados na referência da `base:512`. Ela não superou
   `base:512` na triagem.
 - Os fine-tunings de `race:512` e `base:512` terminaram e seus binários QAT
-  foram exportados e verificados incrementalmente. Suas matrizes de arena
-  aguardam a matriz direct `race:512`, para não contaminar relógios externos
-  com processos concorrentes. Não há selfplay, relabel ou teaching antigo em
-  execução.
+  foram exportados e verificados incrementalmente. A matriz completa de
+  `race512-search10-ft` terminou: 63,75% contra main, 35,0% contra Titanium
+  e 21,25% contra Claustrophobia (20 pares por confronto, 200 ms/jogada).
+  Os intervalos ainda não autorizam promoção. A matriz de
+  `base512-search10-ft` foi iniciada automaticamente em seguida.
 
 ### Próximos gates
 
