@@ -55,8 +55,11 @@ Prioridade: terminar `base`/`race`, depois `phase`, `topology-lite` e
 
 ## 4. Redes já treinadas: settings, dados e TODO
 
-Treino direto: corpus de 2M, 80 épocas, QAT, 4 épocas de warmup e cosine
-annealing até `min_lr=5e-6`.
+Há dois tipos de treino, executados separadamente. O treino **direct** usa
+somente o dataset direct de 2M e produz um checkpoint novo. O **fine-tune**
+parte do checkpoint direct escolhido e executa uma segunda campanha com o
+dataset misto de search. Em ambos: QAT, 4 épocas de warmup, cosine annealing
+até `min_lr=5e-6`, export float/int8 e verificação incremental antes da arena.
 
 | Rede | Melhor val loss | Treino | Fine-tune | Status/TODO |
 |---|---:|---|---|---|
@@ -73,6 +76,18 @@ Fine-tune atual usa `data/teaching/historical2m-search10-conservative/dataset.np
 Claustrophobia). `race:512` caiu de 0,91628 para 0,88574; `base:512`, de
 0,92031 para 0,89128. Essas losses não são comparáveis ao treino direto.
 
+### Registro de campanhas de treino
+
+| Campanha | Script | Entrada | Configuração | Saída |
+|---|---|---|---|---|
+| Direct architecture matrix | `training/run_experiment.py` + `training/run_architecture_matrix.py` | dataset direct de 2M | `base/race`, hidden 256/384/512, 80 épocas, QAT, CUDA | um modelo por arquitetura |
+| Fine-tune `race512-search10-ft` | `training/run_experiment.py` | checkpoint `race:512` + dataset misto | 40 épocas, LR reduzido, warmup 2, cosine, QAT, CUDA | diretório `race512-search10-ft-s20260917` |
+| Fine-tune `base512-search10-ft` | `training/run_experiment.py` | checkpoint `base:512` + dataset misto | 40 épocas, LR reduzido, warmup 2, cosine, QAT, CUDA | diretório `base512-search10-ft-s20260917` |
+
+O dataset misto contém direct e search juntos com pesos por amostra, mas cada
+arquitetura direct foi treinada antes em sua própria campanha. Depois, apenas
+`base:512` e `race:512` receberam a segunda campanha de fine-tuning.
+
 ## 5. Dados e teaching já realizados
 
 | Artefato | Conteúdo/configuração | Status |
@@ -87,6 +102,21 @@ Claustrophobia). `race:512` caiu de 0,91628 para 0,88574; `base:512`, de
 
 WDL histórico não é alvo principal. O teacher do próprio ZQuoridor permanece
 auxiliar enquanto wandering não estiver resolvido.
+
+### Como cada dado foi gerado
+
+| Dado | Script(s) | Settings principais | Composição |
+|---|---|---|---|
+| Shards V3 | `training/migrate_selfplay_v3.py`, `training/audit_selfplay.py` | conversão para mover-mirrored V3 e auditoria de schema | corpus separado; contrato comum |
+| Selfplay rico | `tools/selfplay/run_selfplay.py` | 4.713 jogos, 14 threads, temperatura/ruído de abertura, seed registrada | corpus separado |
+| Replay direct | `training/prepare_replay.py` | rede antiga + Claustrophobia em forward, até 1M/2M posições, CUDA | lotes separados |
+| Search selecionado | `training/select_replay_disagreement.py`, `training/build_search_priority_dataset.py`, `training/teachers/zq_deep_relabel.py` | 2.000 posições; ZQ 512/2048 nós; Claustro 256/1024 simulações | primeiro separado |
+| Dataset fine-tune | `training/mix_teaching_datasets.py` | 90% replay direct + 10% search; dentro do search 25% ZQ/75% Claustro | única mistura usada no fine-tune |
+
+`prepare_replay.py` não faz search profundo: gera alvos direct rápidos.
+`run_teaching.py` e os teachers geram alvos mixed/search. Os grupos foram
+produzidos separadamente e somente depois unidos pelo script de mistura; não
+houve um processo único gerando todos os dados ao mesmo tempo.
 
 ## 6. Benchmarks já feitos
 
@@ -120,20 +150,33 @@ Diretório: `benchmark_results/base512-search10-ft-confirm-200ms-s20260918`.
 
 O relatório final deve conter jogos válidos, pares completos, score, Elo,
 bootstrap pareado e intervalo de decisão. Nenhum parcial decide promoção.
+Esta seção é TODO em andamento, não resultado concluído.
 
 ## 8. Big picture e roadmap restante
 
-1. Concluir os 200 jogos candidato × main.
-2. Concluir 100 pares contra Titanium e 100 contra Claustrophobia.
-3. Gerar main × externos no mesmo livro, seed e relógio.
-4. Promover somente com intervalo favorável contra main e evidência de ganho
-   contra Titanium; caso contrário, manter fora de produção.
-5. Se nenhuma rede passar, repetir fine-tune somente na melhor hipótese.
-6. Implementar e ablar `phase`, `topology-lite` e `race-phase`.
-7. Só depois testar `corridor-touch`, `multi-path` e `wall-threat`, sempre com
-   custo incremental e paridade Python/C++.
-8. Exigir export float/int8 e `incremental_check.exe` sem divergência antes da
-   promoção.
+### Gate A — confirmação da finalista atual
+
+1. Concluir `base512-search10-ft` × main: 100 pares, 200 ms, livro de 400.
+2. Rodar `base512-search10-ft` × Titanium: 100 pares, mesmo livro/seed/relógio.
+3. Rodar `base512-search10-ft` × Claustrophobia: 100 pares, mesmo protocolo.
+4. Gerar main × Titanium e main × Claustrophobia no mesmo run como referência.
+
+### Gate B — segunda finalista
+
+5. Repetir os quatro confrontos para `race512-search10-ft` se a primeira não
+   demonstrar ganho ou se os intervalos se sobrepuserem.
+6. Comparar as duas finalistas contra a rede do main sem misturar livros,
+   seeds ou relógios.
+
+### Gate C — novas arquiteturas
+
+7. Só se A/B não resolverem wandering: implementar `phase`, `topology-lite` e
+   `race-phase`, treinar cada uma em campanha própria e ablar contra
+   `base512-search10-ft`.
+8. Depois testar `corridor-touch`, `multi-path` e `wall-threat`, sempre com
+   custo incremental, paridade Python/C++ e benchmark próprio.
+9. Exigir export float/int8 e `incremental_check.exe` sem divergência antes da
+   promoção de qualquer rede.
 
 ## 9. Aprendizados históricos
 
