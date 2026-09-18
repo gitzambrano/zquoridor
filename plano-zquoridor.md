@@ -295,10 +295,13 @@ Conclusão: `base512-search10-ft` é a rede mais promissora medida até agora e
 supera Titanium no screening amplo (58,0%); ela ainda não substitui o binário
 de produção automaticamente.
 
-### Gate B — segunda finalista (**TODO**)
+### Gate B — segunda finalista (**em execução**)
 
 5. Repetir os quatro confrontos para `race512-search10-ft` para comparação
-   final, mesmo que a primeira finalista já tenha passado o gate.
+   final, mesmo que a primeira finalista já tenha passado o gate. **Disparado
+   em 2026-09-18** em `benchmark_results/race512-search10-ft-confirm-200ms-s20260918`,
+   com 100 pares, `openings_confirmation_v1.jsonl`, seed `20260920`, 200 ms
+   por lance, workers 1 e Claustrophobia em CPU.
 6. Comparar as duas finalistas contra a rede do main sem misturar livros,
    seeds ou relógios.
 
@@ -389,5 +392,5 @@ O comando de benchmark executa automaticamente `vs-main`, `vs-external` e
 
 **Nenhuma rede está promovida.** A confirmação ampla de
 `base512-search10-ft` já terminou e ela é a melhor candidata medida até agora;
-o próximo passo é comparar `race512-search10-ft` no mesmo protocolo antes de
-alterar o binário de produção.
+o benchmark de confirmação de `race512-search10-ft` está rodando no mesmo
+protocolo antes de alterar o binário de produção.
