@@ -85,7 +85,7 @@ passam pela verificação incremental antes da arena.
 | `base:384` | 0,73939 | concluído | não | benchmark feito |
 | `race:384` | 0,73686 | concluído | legado 50/50 | benchmark feito |
 | `base:512` | 0,73600 | concluído | 40 épocas | confirmação independente |
-| `race:512` | 0,73405 | concluído | 40 épocas | comparação já triada |
+| `race:512` | 0,73405 | concluído | 40 épocas | confirmação em fase final (jogos da candidata 600/600 concluídos) |
 
 Fine-tune atual usa `data/teaching/historical2m-search10-conservative/dataset.npz`:
 2.001.868 posições, 90% replay direto e 10% search (25% ZQuoridor, 75%
@@ -277,26 +277,36 @@ No mesmo run de `base512-search10-ft`, o main marcou 40,0% contra Titanium e
 22,5% contra Claustrophobia. A variação da referência mostra por que 20 pares
 são apenas triagem.
 
-## 7. Benchmark em execução e resultado final
+## 7. Benchmarks de confirmação (100 pares, 200 ms)
+
+### 7.1 Primeira finalista: `base512-search10-ft` (Gate A — concluído)
 
 Diretório: `benchmark_results/base512-search10-ft-confirm-200ms-s20260918`.
+Relatório final em `summary.json`. Todos os 400 jogos da candidata e 400 da referência do main foram válidos.
 
-| Etapa | Configuração | Último estado salvo | Status |
-|---|---|---:|---|
-| candidato × main | 100 pares, livro de 400, 200 ms | 200/200, 0 falhas, 58,25% | concluído |
-| candidato × Titanium | 100 pares, mesmo livro/seed/relógio | 200/200, 0 falhas, 58,0% | concluído |
-| candidato × Claustrophobia | 100 pares, mesmo protocolo, CPU | 200/200, 0 falhas, 43,0% | concluído |
-| main × externos | referência no mesmo run | 200 jogos por bot, 0 falhas; 52,25% Titanium / 37,5% Claustro | concluído |
+- vs main: 58,25% (IC 95% bootstrap: 52,0–64,5%, `strength_claim_ready=true`)
+- vs Titanium: 58,00% (IC 95% bootstrap: 51,5–64,5%, `strength_claim_ready=true`)
+- vs Claustrophobia: 43,00% (IC 95% bootstrap: 36,5–49,25%, `strength_claim_ready=true`)
+- Referência do main no mesmo run: 52,25% vs Titanium / 37,50% vs Claustrophobia
 
-O relatório final está em
-`benchmark_results/base512-search10-ft-confirm-200ms-s20260918/summary.json`.
-Todos os 400 jogos da candidata e 400 da referência do main foram válidos.
-O processo que gerou esses arquivos terminou; não há benchmark dessa campanha
-rodando em background agora.
+### 7.2 Segunda finalista: `race512-search10-ft` (Gate B — fase final)
 
-Intervalos bootstrap pareados da candidata: 52,0–64,5% contra main,
-51,5–64,5% contra Titanium e 36,5–49,25% contra Claustrophobia. Os três
-confrontos estão marcados pelo runner como `strength_claim_ready=true`.
+Diretório: `benchmark_results/race512-search10-ft-confirm-200ms-s20260918`.
+Processo em background (PID 12844). Todos os 600 jogos da candidata concluídos (0 falhas); fase de referência `main-vs-external` em andamento.
+
+- vs main: 200/200, 0 falhas, 58,50% (117,0 pts)
+- vs Titanium: 200/200, 0 falhas, 57,50% (115,0 pts)
+- vs Claustrophobia: 200/200, 0 falhas, 49,00% (98,0 pts)
+- Referência do main (`main-vs-external`): ~107/400 jogos concluídos. Aguardando encerramento para cálculo dos intervalos bootstrap pareados.
+
+### 7.3 Comparativo das finalistas na confirmação (100 pares)
+
+| Candidata | vs main | vs Titanium | vs Claustrophobia | Status |
+|---|---:|---:|---:|---|
+| `base512-search10-ft` | 58,25% | 58,00% | 43,00% | Gate A concluído (`summary.json`) |
+| `race512-search10-ft` | 58,50% | 57,50% | 49,00% | Candidata 600/600 jogos; ref em andamento |
+
+Destaque: `race512-search10-ft` apresenta desempenho equivalente contra `main` e Titanium, mas obtém vantagem expressiva (+6,0 p.p.) contra Claustrophobia (49,0% vs 43,0%).
 
 ## 8. Big picture e roadmap restante
 
@@ -307,24 +317,22 @@ confrontos estão marcados pelo runner como `strength_claim_ready=true`.
 3. ~~Rodar `base512-search10-ft` × Claustrophobia no mesmo protocolo.~~
 4. ~~Gerar main × Titanium e main × Claustrophobia no mesmo run.~~
 
-Conclusão: `base512-search10-ft` é a rede mais promissora medida até agora e
-supera Titanium no screening amplo (58,0%); ela ainda não substitui o binário
-de produção automaticamente.
+Conclusão: `base512-search10-ft` superou Titanium com significância estatística (58,0%, limite inferior > 50%).
 
-### Gate B — segunda finalista (**em execução**)
+### Gate B — segunda finalista (**em fase final**)
 
 5. Repetir os quatro confrontos para `race512-search10-ft` para comparação
-   final, mesmo que a primeira finalista já tenha passado o gate. **Disparado
-   em 2026-09-18** em `benchmark_results/race512-search10-ft-confirm-200ms-s20260918`,
+   final: **Disparado em 2026-09-18** em `benchmark_results/race512-search10-ft-confirm-200ms-s20260918`,
    com 100 pares, `openings_confirmation_v1.jsonl`, seed `20260920`, 200 ms
-   por lance, workers 1 e Claustrophobia em CPU. Na última auditoria deste
-   documento: `vs-main` concluído com 200/200 jogos válidos; `vs-external` já
-   iniciou com 2 jogos, sem falhas observadas. O processo permanece ativo e
-   esta contagem é apenas um checkpoint até o `summary.json` final.
-   observadas. Essa contagem é apenas um checkpoint; reconsulte o PID antes de
-   declarar a etapa concluída.
-6. Comparar as duas finalistas contra a rede do main sem misturar livros,
-   seeds ou relógios.
+   por lance, workers 1 e Claustrophobia em CPU.
+   - `vs-main`: concluído 200/200 (58,5%).
+   - `vs-external`: concluído 400/400 (Titanium 57,5%, Claustrophobia 49,0%).
+   - `main-vs-external`: em andamento (~107/400 jogos).
+   - PID 12844 ativo até a gravação de `summary.json`.
+
+6. **Próximo passo**: Comparar os relatórios completos e executar match direto
+   de desempate (`base512-search10-ft` × `race512-search10-ft`) no mesmo livro
+   de confirmação (100 pares, 200 ms) para selecionar e promover a rede campeã.
 
 ### Gate C — novas arquiteturas
 
