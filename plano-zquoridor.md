@@ -338,3 +338,22 @@ Em 2026-09-18 foi disparada a confirmação independente da `base512-search10-ft
 com `openings_confirmation_v1.jsonl`, 100 pares por confronto, 200 ms por lance
 e Claustrophobia em CPU. O resultado será aceito somente após os intervalos
 pareados e a comparação direta com Titanium serem favoráveis.
+
+### Diário da confirmação independente (2026-09-18)
+
+- A confirmação está em execução no diretório
+  `benchmark_results/base512-search10-ft-confirm-200ms-s20260918`.
+- A primeira etapa é `vs-main`; no último registro verificado havia 37 jogos
+  válidos concluídos, sem falhas, de 200 previstos (100 pares, duas cores).
+- O processo permanece ativo. Os resultados parciais não são usados para
+  promoção, porque ainda não há amostra completa nem intervalo final.
+- Depois de `vs-main`, o script executará os confrontos contra Titanium e
+  Claustrophobia no mesmo livro, seed e limite de 200 ms por lance. O relatório
+  final deverá registrar partidas válidas, pares completos, score, Elo e
+  bootstrap pareado.
+- Histórico de triagem já concluído: `race512-search10-ft` marcou 63,75%/35,0%/
+  21,25% contra main/Titanium/Claustrophobia; `base512-search10-ft` marcou
+  66,25%/45,0%/20,0%. Esses 20 pares serviram apenas para seleção inicial.
+- Ainda falta: concluir os 200 pares contra main, concluir 100 pares contra
+  cada bot externo, calcular os intervalos, comparar com a referência do main
+  no mesmo livro e decidir se existe evidência suficiente para promoção.
