@@ -88,6 +88,35 @@ O dataset misto contém direct e search juntos com pesos por amostra, mas cada
 arquitetura direct foi treinada antes em sua própria campanha. Depois, apenas
 `base:512` e `race:512` receberam a segunda campanha de fine-tuning.
 
+**“Legado 50/50”** é a campanha antiga
+`results/experiments/historical2m-race384-search10-ft-s20260916/`. Ela partiu
+de `race:384`, usou `data/teaching/historical2m-search10/dataset.npz`, 16
+épocas, QAT, CUDA e `lr=3e-5`, com mistura aproximadamente 50% ZQuoridor search
+e 50% Claustrophobia search. Não é a receita atual nem entra na decisão final;
+fica documentada apenas para reproduzir o histórico. A receita atual usa
+25%/75% dentro do bloco search, que representa 10% do dataset total.
+
+### Glossário dos termos usados nas tabelas
+
+- **Policy/política***: distribuição de probabilidade sobre as 209 ações
+  legais. Diz quais movimentos o teacher prefere.
+- **Value/valor***: estimativa contínua do resultado na perspectiva do jogador
+  a mover. É diferente de uma classe WDL.
+- **WDL***: alvo win/draw/loss ou resultado da partida. O campo `game_result`
+  existe em alguns replays, mas o treino final não o usa como alvo dominante.
+- **Direct/replay direto***: a rede antiga e/ou Claustrophobia produzem
+  `policy` e `value` em forward, sem busca profunda por posição.
+- **Search***: MCAB/MCTS visita posições e produz uma política/valor dependente
+  de busca, com orçamento de nós ou simulações.
+- **Distillation/teaching***: o aluno NNUE aprende as saídas de um ou mais
+  teachers (`policy`, `value` e `weight`); não significa copiar pesos da rede
+  teacher.
+- **Dataset misto***: um único `dataset.npz` construído depois, combinando
+  exemplos direct e search por pesos de amostra; não é o mesmo que gerar ambos
+  no mesmo processo.
+- **Fine-tune***: segunda campanha iniciada a partir do checkpoint de uma rede
+  direct, com learning rate menor e dataset misto.
+
 ## 5. Dados e teaching já realizados
 
 | Artefato | Conteúdo/configuração | Status |
@@ -117,6 +146,25 @@ auxiliar enquanto wandering não estiver resolvido.
 `run_teaching.py` e os teachers geram alvos mixed/search. Os grupos foram
 produzidos separadamente e somente depois unidos pelo script de mistura; não
 houve um processo único gerando todos os dados ao mesmo tempo.
+
+### Inventário literal de pastas e arquivos
+
+| Grupo | Pasta | Arquivos principais |
+|---|---|---|
+| Selfplay V3 rico | `data/selfplay_canonical_v3/gen-rich-v1-montecarlo/` | `selfplay_000.bin`, `selfplay_001.bin`, `manifest.json` |
+| Replay direct amplo | `data/teaching/replay-historical-2m-cuda/` | `dataset.npz`, `replay_manifest.json`, `direct_*.npz`, `direct_*.sha256` |
+| Replay direct antigo | `data/teaching/replay-old-gen1-500k/` | `dataset.npz`, `replay_manifest.json`, `direct_*.npz`, `direct_*.sha256` |
+| Posições selecionadas | `data/teaching/search-priority-gen1/` | `top2000.jsonl`, `zq-search.npz`, `claustro-search.npz` |
+| Teaching search conservador | `data/teaching/search-priority-gen1-conservative/` | `dataset.npz`, `dataset.npz.manifest.json` |
+| Dataset usado no fine-tune | `data/teaching/historical2m-search10-conservative/` | `dataset.npz`, `dataset.manifest.json` |
+| Replay menor V3 | `data/teaching/replay-million-canonical-v3/` | `dataset.npz` e manifesto local |
+| Selfplay histórico V3 | `data/selfplay_canonical_v3/gen1/` até `gen7-montecarlo/` e `gen12-standard-control-v2/` | `selfplay_*.bin` e manifestos por geração |
+
+Os nomes `direct_*.npz` são shards intermediários; o trainer usa o
+`dataset.npz` consolidado. Os arquivos `*.sha256` verificam integridade. O
+fine-tune não lê diretamente `top2000.jsonl`, `zq-search.npz` ou
+`claustro-search.npz`: esses alvos já foram incorporados ao dataset misto pelo
+`training/mix_teaching_datasets.py`.
 
 ### Inventário físico dos datasets
 
@@ -151,6 +199,30 @@ mesmos alvos e mesmo schedule. As duas redes `*-ft` não são treinos direct
 novos; são continuações separadas a partir dos respectivos checkpoints, com o
 dataset misto e learning rate menor.
 
+### Onde está a configuração de cada rede
+
+Em cada pasta de experimento, `config.json` é a configuração de treino,
+`student.architecture.json` é a arquitetura exportada, `train_report.json`
+registra épocas/loss/schedule, `student.bin` é o peso float, `student_int8.bin`
+é o peso QAT usado pelo engine, e `incremental_check.exe` é a verificação de
+paridade do acumulador. O executável da arena é `zquoridor.exe`.
+
+| Rede/campanha | Pasta real | Arquivo de dados usado |
+|---|---|---|
+| `base:256` direct | `results/experiments/historical2m-base256-anneal-s20260916/` | `data/teaching/replay-historical-2m-cuda/dataset.npz` |
+| `race:256` direct | `results/experiments/historical2m-race256-anneal-s20260916/` | mesmo `replay-historical-2m-cuda/dataset.npz` |
+| `base:384` direct | `results/experiments/historical2m-base384-s20260916/` | mesmo dataset direct de 2M |
+| `race:384` direct | `results/experiments/historical2m-race384-s20260916/` | mesmo dataset direct de 2M |
+| `base:512` direct | `results/experiments/historical2m-base512-anneal-s20260917/` | mesmo dataset direct de 2M |
+| `race:512` direct | `results/experiments/historical2m-race512-anneal-s20260917/` | mesmo dataset direct de 2M |
+| `race512-search10-ft` | `results/experiments/race512-search10-ft-s20260917/` | `data/teaching/historical2m-search10-conservative/dataset.npz` + checkpoint `race:512` |
+| `base512-search10-ft` | `results/experiments/base512-search10-ft-s20260917/` | mesmo dataset misto + checkpoint `base:512` |
+
+Os nomes das pastas `*-anneal-*` identificam as campanhas direct com schedule
+de annealing. Os nomes `*-search10-ft-*` identificam fine-tuning com 10% de
+search. Para reproduzir uma rede, ler primeiro `config.json` e o manifesto do
+dataset; não inferir a receita apenas pelo nome da pasta.
+
 ## 6. Benchmarks já feitos
 
 Todos são screening de 20 pares, 200 ms por lance; nenhum promove rede.
@@ -170,34 +242,44 @@ No mesmo run de `base512-search10-ft`, o main marcou 40,0% contra Titanium e
 22,5% contra Claustrophobia. A variação da referência mostra por que 20 pares
 são apenas triagem.
 
-## 7. Benchmark em execução
+## 7. Benchmark em execução e resultado final
 
 Diretório: `benchmark_results/base512-search10-ft-confirm-200ms-s20260918`.
 
 | Etapa | Configuração | Último estado salvo | Status |
 |---|---|---:|---|
-| candidato × main | 100 pares, livro de 400, 200 ms | 37/200 jogos | ativo |
-| candidato × Titanium | mesmo livro/seed/relógio | não iniciado | pendente |
-| candidato × Claustrophobia | mesmo livro/seed/relógio, CPU | não iniciado | pendente |
-| main × externos | referência no mesmo run | pendente | pendente |
+| candidato × main | 100 pares, livro de 400, 200 ms | 200/200, 0 falhas, 58,25% | concluído |
+| candidato × Titanium | 100 pares, mesmo livro/seed/relógio | 200/200, 0 falhas, 58,0% | concluído |
+| candidato × Claustrophobia | 100 pares, mesmo protocolo, CPU | 200/200, 0 falhas, 43,0% | concluído |
+| main × externos | referência no mesmo run | 200 jogos por bot, 0 falhas; 52,25% Titanium / 37,5% Claustro | concluído |
 
-O relatório final deve conter jogos válidos, pares completos, score, Elo,
-bootstrap pareado e intervalo de decisão. Nenhum parcial decide promoção.
-Esta seção é TODO em andamento, não resultado concluído.
+O relatório final está em
+`benchmark_results/base512-search10-ft-confirm-200ms-s20260918/summary.json`.
+Todos os 400 jogos da candidata e 400 da referência do main foram válidos.
+O processo que gerou esses arquivos terminou; não há benchmark dessa campanha
+rodando em background agora.
+
+Intervalos bootstrap pareados da candidata: 52,0–64,5% contra main,
+51,5–64,5% contra Titanium e 36,5–49,25% contra Claustrophobia. Os três
+confrontos estão marcados pelo runner como `strength_claim_ready=true`.
 
 ## 8. Big picture e roadmap restante
 
-### Gate A — confirmação da finalista atual
+### Gate A — confirmação da finalista atual (**concluído**)
 
-1. Concluir `base512-search10-ft` × main: 100 pares, 200 ms, livro de 400.
-2. Rodar `base512-search10-ft` × Titanium: 100 pares, mesmo livro/seed/relógio.
-3. Rodar `base512-search10-ft` × Claustrophobia: 100 pares, mesmo protocolo.
-4. Gerar main × Titanium e main × Claustrophobia no mesmo run como referência.
+1. ~~Concluir `base512-search10-ft` × main: 100 pares, 200 ms, livro de 400.~~
+2. ~~Rodar `base512-search10-ft` × Titanium no mesmo livro/seed/relógio.~~
+3. ~~Rodar `base512-search10-ft` × Claustrophobia no mesmo protocolo.~~
+4. ~~Gerar main × Titanium e main × Claustrophobia no mesmo run.~~
 
-### Gate B — segunda finalista
+Conclusão: `base512-search10-ft` é a rede mais promissora medida até agora e
+supera Titanium no screening amplo (58,0%); ela ainda não substitui o binário
+de produção automaticamente.
 
-5. Repetir os quatro confrontos para `race512-search10-ft` se a primeira não
-   demonstrar ganho ou se os intervalos se sobrepuserem.
+### Gate B — segunda finalista (**TODO**)
+
+5. Repetir os quatro confrontos para `race512-search10-ft` para comparação
+   final, mesmo que a primeira finalista já tenha passado o gate.
 6. Comparar as duas finalistas contra a rede do main sem misturar livros,
    seeds ou relógios.
 
