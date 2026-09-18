@@ -312,12 +312,17 @@ de confiança favorável e repetição em conjunto independente.
   `race512-search10-ft` terminou: 63,75% contra main, 35,0% contra Titanium
   e 21,25% contra Claustrophobia (20 pares por confronto, 200 ms/jogada).
   Os intervalos ainda não autorizam promoção. A matriz de
-  `base512-search10-ft` foi iniciada automaticamente em seguida.
+  `base512-search10-ft` terminou depois: 66,25% contra main, 45,0% contra
+  Titanium e 20,0% contra Claustrophobia (20 pares por confronto, 200
+  ms/jogada). A referência do main no mesmo run marcou 40,0% e 22,5% contra
+  Titanium/Claustrophobia. Os dois candidatos continuam abaixo do gate de
+  promoção: 20 pares são triagem e não demonstram superioridade estatística.
 
 ### Próximos gates
 
-1. Concluir as matrizes das redes com fine-tuning e compará-las com `base:512`
-   direct no mesmo protocolo.
+1. Concluir a consolidação das matrizes das redes com fine-tuning e compará-las
+   com `base:512` direct no mesmo protocolo; a triagem atual favorece
+   `base512-search10-ft` contra main, mas não contra Titanium.
 2. Rodar main contra Titanium e Claustrophobia para cada seed e livro já usado
    pelos três relatórios antigos.
    Guardar a linha como referência histórica, sem misturar livros.
