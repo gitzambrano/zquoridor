@@ -318,7 +318,7 @@ de produção automaticamente.
    em 2026-09-18** em `benchmark_results/race512-search10-ft-confirm-200ms-s20260918`,
    com 100 pares, `openings_confirmation_v1.jsonl`, seed `20260920`, 200 ms
    por lance, workers 1 e Claustrophobia em CPU. Na última auditoria deste
-   documento: processo ativo, 49/200 jogos válidos em `vs-main`, sem falhas
+   documento: processo ativo, 72/200 jogos válidos em `vs-main`, sem falhas
    observadas. Essa contagem é apenas um checkpoint; reconsulte o PID antes de
    declarar a etapa concluída.
 6. Comparar as duas finalistas contra a rede do main sem misturar livros,
