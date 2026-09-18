@@ -223,6 +223,25 @@ de annealing. Os nomes `*-search10-ft-*` identificam fine-tuning com 10% de
 search. Para reproduzir uma rede, ler primeiro `config.json` e o manifesto do
 dataset; não inferir a receita apenas pelo nome da pasta.
 
+### Comandos e manifestos de geração
+
+- Selfplay rico: o comando completo está no campo `command` de
+  `data/selfplay_canonical_v3/gen-rich-v1-montecarlo/manifest.json` (3.000
+  jogos, 150 ms, profundidade 50, MC mode, temperaturas 1,35→0,35, 14
+  threads, seed `2026091501`).
+- Replay direct de 2M: a configuração completa está no campo `config` de
+  `data/teaching/replay-historical-2m-cuda/replay_manifest.json`: seed
+  `2026091602`, 2.000.000 posições, validação 20%, chunks 8192, batch 4096,
+  CUDA, teacher antigo policy/value 0,5/0,75, Claustrophobia policy/value
+  0,5/0,25 e `outcome_weight=0`.
+- Search priority: os caminhos exatos estão em
+  `data/teaching/search-priority-gen1-conservative/dataset.npz.manifest.json`,
+  incluindo `top2000.jsonl`, `zq-search.npz`, `claustro-search.npz`, pesos
+  0,25/0,75 e fórmula de peso.
+
+Esses manifestos são a fonte de verdade para repetir a geração; o texto deste
+plano resume os valores para leitura humana.
+
 ## 6. Benchmarks já feitos
 
 Todos são screening de 20 pares, 200 ms por lance; nenhum promove rede.
@@ -322,8 +341,53 @@ de produção automaticamente.
 | campanha | `training/run_campaign.py` | corpus/matriz | treino/arena |
 | benchmark | `tools/benchmark_candidate.py` | candidato | relatório pareado |
 
+### Comandos reproduzíveis das campanhas concluídas
+
+Todos os comandos abaixo devem ser executados a partir da raiz do repositório
+(`C:\Projetos\Zquoridor`). Os arquivos `config.json` nas pastas de resultado
+são a fonte de verdade caso algum default do script mude.
+
+```powershell
+# Direct: repetir uma arquitetura (trocar ARCH e HIDDEN)
+python training/run_experiment.py `
+  --no-teaching `
+  --data data/teaching/replay-historical-2m-cuda/dataset.npz `
+  --architecture ARCH --hidden HIDDEN --epochs 80 --batch-size 4096 `
+  --qat --schedule cosine --warmup-epochs 4 --min-lr 5e-6 --device cuda `
+  --out-dir results/experiments/REPRODUCED
+
+# Fine-tune race512
+python training/run_experiment.py `
+  --data data/teaching/historical2m-search10-conservative/dataset.npz `
+  --architecture race --hidden 512 --epochs 40 --batch-size 4096 `
+  --qat --schedule cosine --warmup-epochs 2 --device cuda `
+  --init-from results/experiments/historical2m-race512-anneal-s20260917/student.bin `
+  --out-dir results/experiments/REPRODUCED-race512-ft
+
+# Fine-tune base512
+python training/run_experiment.py `
+  --data data/teaching/historical2m-search10-conservative/dataset.npz `
+  --architecture base --hidden 512 --epochs 40 --batch-size 4096 `
+  --qat --schedule cosine --warmup-epochs 2 --device cuda `
+  --init-from results/experiments/historical2m-base512-anneal-s20260917/student.bin `
+  --out-dir results/experiments/REPRODUCED-base512-ft
+
+# Benchmark de confirmação (já concluído)
+python tools/benchmark_candidate.py `
+  --candidate-executable results/experiments/base512-search10-ft-s20260917/zquoridor.exe `
+  --candidate-nnue results/experiments/base512-search10-ft-s20260917/student_int8.bin `
+  --pairs 100 --move-time-ms 200 --workers 1 --seed 20260920 `
+  --openings tools/external/openings_confirmation_v1.jsonl `
+  --output benchmark_results/base512-search10-ft-confirm-200ms-s20260918 `
+  --claustrophobia-device cpu
+```
+
+O comando de benchmark executa automaticamente `vs-main`, `vs-external` e
+`main-vs-external`; não é necessário disparar três comandos separados.
+
 ## 11. Estado de promoção
 
-**Nenhuma rede está promovida.** `base512-search10-ft` é a melhor candidata
-provisória, mas aguarda confirmação ampla no mesmo relógio contra main,
-Titanium e Claustrophobia.
+**Nenhuma rede está promovida.** A confirmação ampla de
+`base512-search10-ft` já terminou e ela é a melhor candidata medida até agora;
+o próximo passo é comparar `race512-search10-ft` no mesmo protocolo antes de
+alterar o binário de produção.
