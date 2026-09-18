@@ -1,7 +1,21 @@
 # Plano ZQuoridor — painel operacional
 
 Atualizado em 2026-09-18. Este é o índice de decisão do projeto: cada
-experimento aparece em uma tabela antes de ser considerado concluído.
+experimento aparece em uma tabela antes de ser considerado concluído. Para
+reproduzir um resultado, use primeiro o `config.json` da pasta da campanha e
+o manifesto do dataset; os comandos deste documento são atalhos legíveis, não
+substitutos desses dois arquivos.
+
+### Leitura rápida para um agente novo
+
+1. **Dados:** use o caminho completo do dataset indicado na tabela da rede.
+   Não misture `dataset.npz` de pastas diferentes pelo nome.
+2. **Treino:** leia `config.json`, `student.architecture.json` e
+   `train_report.json`. O `student_int8.bin` é o peso carregado pelo engine.
+3. **Teste:** use `200 ms` por lance, o mesmo livro, seed e cores. Consulte
+   `summary.json`; loss não é medida de força.
+4. **Estado:** `concluído` tem artefato e relatório; `em execução` tem processo
+   vivo e arquivos parciais; `TODO` ainda não produziu resultado.
 
 ## 1. Big picture
 
@@ -58,8 +72,10 @@ Prioridade: terminar `base`/`race`, depois `phase`, `topology-lite` e
 Há dois tipos de treino, executados separadamente. O treino **direct** usa
 somente o dataset direct de 2M e produz um checkpoint novo. O **fine-tune**
 parte do checkpoint direct escolhido e executa uma segunda campanha com o
-dataset misto de search. Em ambos: QAT, 4 épocas de warmup, cosine annealing
-até `min_lr=5e-6`, export float/int8 e verificação incremental antes da arena.
+dataset misto de search. No direct: QAT, 4 épocas de warmup, cosine até
+`min_lr=5e-6`. No fine-tune: QAT, 2 épocas de warmup, cosine até
+`min_lr=3e-6`, learning rate inicial `3e-5`. Ambos exportam float/int8 e
+passam pela verificação incremental antes da arena.
 
 | Rede | Melhor val loss | Treino | Fine-tune | Status/TODO |
 |---|---:|---|---|---|
@@ -80,9 +96,9 @@ Claustrophobia). `race:512` caiu de 0,91628 para 0,88574; `base:512`, de
 
 | Campanha | Script | Entrada | Configuração | Saída |
 |---|---|---|---|---|
-| Direct architecture matrix | `training/run_experiment.py` + `training/run_architecture_matrix.py` | dataset direct de 2M | `base/race`, hidden 256/384/512, 80 épocas, QAT, CUDA | um modelo por arquitetura |
-| Fine-tune `race512-search10-ft` | `training/run_experiment.py` | checkpoint `race:512` + dataset misto | 40 épocas, LR reduzido, warmup 2, cosine, QAT, CUDA | diretório `race512-search10-ft-s20260917` |
-| Fine-tune `base512-search10-ft` | `training/run_experiment.py` | checkpoint `base:512` + dataset misto | 40 épocas, LR reduzido, warmup 2, cosine, QAT, CUDA | diretório `base512-search10-ft-s20260917` |
+| Direct architecture matrix | seis execuções de `training/run_experiment.py` (a matriz é apenas auxiliar) | dataset direct de 2M | `base/race`, hidden 256/384/512, 80 épocas, batch 4096, LR `1e-4`, QAT, CUDA, cosine, warmup 4, min LR `5e-6` | um modelo por arquitetura |
+| Fine-tune `race512-search10-ft` | `training/run_experiment.py` | checkpoint `race:512` + dataset misto | 40 épocas, batch 4096, LR `3e-5`, warmup 2, cosine, min LR `3e-6`, QAT, CUDA | diretório `race512-search10-ft-s20260917` |
+| Fine-tune `base512-search10-ft` | `training/run_experiment.py` | checkpoint `base:512` + dataset misto | 40 épocas, batch 4096, LR `3e-5`, warmup 2, cosine, min LR `3e-6`, QAT, CUDA | diretório `base512-search10-ft-s20260917` |
 
 O dataset misto contém direct e search juntos com pesos por amostra, mas cada
 arquitetura direct foi treinada antes em sua própria campanha. Depois, apenas
@@ -301,8 +317,10 @@ de produção automaticamente.
    final, mesmo que a primeira finalista já tenha passado o gate. **Disparado
    em 2026-09-18** em `benchmark_results/race512-search10-ft-confirm-200ms-s20260918`,
    com 100 pares, `openings_confirmation_v1.jsonl`, seed `20260920`, 200 ms
-   por lance, workers 1 e Claustrophobia em CPU. Última verificação: processo
-   ativo, 10/200 jogos válidos na etapa `vs-main`, sem falhas observadas.
+   por lance, workers 1 e Claustrophobia em CPU. Na última auditoria deste
+   documento: processo ativo, 38/200 jogos válidos em `vs-main`, sem falhas
+   observadas. Essa contagem é apenas um checkpoint; reconsulte o PID antes de
+   declarar a etapa concluída.
 6. Comparar as duas finalistas contra a rede do main sem misturar livros,
    seeds ou relógios.
 
@@ -388,6 +406,20 @@ python tools/benchmark_candidate.py `
 
 O comando de benchmark executa automaticamente `vs-main`, `vs-external` e
 `main-vs-external`; não é necessário disparar três comandos separados.
+
+### Como conferir um benchmark em execução
+
+```powershell
+$p = Get-Process -Id 12844 -ErrorAction SilentlyContinue
+Get-ChildItem benchmark_results/race512-search10-ft-confirm-200ms-s20260918 -Recurse -Filter games.jsonl |
+  ForEach-Object { "$($_.Directory.Name): $((Get-Content $_.FullName).Count) jogos" }
+if ($p) { "PID ativo; CPU acumulada: $([math]::Round($p.CPU,1)) s" } else { "PID terminou" }
+```
+
+O PID acima é específico desta execução. Para outra campanha, use o PID
+registrado no disparo e o diretório correspondente. Só marque a etapa como
+concluída quando houver `summary.json`, os três sub-relatórios e processo
+encerrado.
 
 ## 11. Estado de promoção
 
