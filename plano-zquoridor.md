@@ -333,3 +333,8 @@ de confiança favorável e repetição em conjunto independente.
    e relógio; promover apenas a vencedora para a confirmação independente.
 5. Só então testar `phase`, `topology-lite` e `race-phase`. Não criar features
    de corredor antes de medir o valor do teaching e das arquiteturas atuais.
+
+Em 2026-09-18 foi disparada a confirmação independente da `base512-search10-ft`
+com `openings_confirmation_v1.jsonl`, 100 pares por confronto, 200 ms por lance
+e Claustrophobia em CPU. O resultado será aceito somente após os intervalos
+pareados e a comparação direta com Titanium serem favoráveis.
