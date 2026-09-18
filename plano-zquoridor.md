@@ -301,7 +301,8 @@ de produção automaticamente.
    final, mesmo que a primeira finalista já tenha passado o gate. **Disparado
    em 2026-09-18** em `benchmark_results/race512-search10-ft-confirm-200ms-s20260918`,
    com 100 pares, `openings_confirmation_v1.jsonl`, seed `20260920`, 200 ms
-   por lance, workers 1 e Claustrophobia em CPU.
+   por lance, workers 1 e Claustrophobia em CPU. Última verificação: processo
+   ativo, 1/200 jogos válidos na etapa `vs-main`, sem falhas observadas.
 6. Comparar as duas finalistas contra a rede do main sem misturar livros,
    seeds ou relógios.
 
