@@ -118,6 +118,39 @@ auxiliar enquanto wandering não estiver resolvido.
 produzidos separadamente e somente depois unidos pelo script de mistura; não
 houve um processo único gerando todos os dados ao mesmo tempo.
 
+### Inventário físico dos datasets
+
+Os diretórios abaixo são diferentes e não compartilham o mesmo `dataset.npz`.
+O nome do arquivo é igual por convenção, mas o caminho completo é a identidade
+do dataset; o manifesto ao lado registra origem e hashes.
+
+| Dataset físico | Arquivo principal | Conteúdo | WDL? |
+|---|---|---|---|
+| `data/teaching/replay-historical-2m-cuda/` | `dataset.npz` | 2.000.000 posições direct; `policy`, `value`, `weight`, `game_result`, `is_val` | `game_result` existe, mas `outcome_weight=0`; não foi alvo WDL dominante |
+| `data/teaching/search-priority-gen1-conservative/` | `dataset.npz` | 2.000 posições selecionadas; política/valor de search e pesos de divergência | não é WDL histórico; é distillation de política/valor |
+| `data/teaching/historical2m-search10-conservative/` | `dataset.npz` | 2.001.868 posições: 90% replay direct + 10% search | política/valor ponderados; não contém `game_result` |
+| `data/teaching/replay-old-gen1-500k/` | `dataset.npz` | replay direct antigo, 500.000 posições | usado como fonte da seleção, não nos treinos finais |
+| `data/selfplay_canonical_v3/gen-rich-v1-montecarlo/` | `selfplay_*.bin` | shards V3 de selfplay, não dataset de treino pronto | resultado da partida está no registro V3; precisa de replay/teaching |
+
+O `.npz` não contém “tudo” por padrão: cada dataset é uma matriz independente.
+Todos têm features canônicas (`own_pawn`, `opp_pawn`, `walls_h`, `walls_v`,
+reservas, distâncias), `policy` de 209 ações e `value`; somente alguns mantêm
+`game_result`. O trainer usa `policy`/`value` e `weight`; o `game_result` só
+entra se uma campanha configurar peso de outcome diferente de zero.
+
+### Dataset usado por cada rede
+
+| Grupo de redes | Dataset exato | Foi misturado? | Campanha |
+|---|---|---|---|
+| `base:256`, `race:256`, `base:384`, `race:384`, `base:512`, `race:512` direct | `data/teaching/replay-historical-2m-cuda/dataset.npz` | não; mesmo dataset para todas | seis treinos independentes, mesma receita QAT/80 épocas; só arquitetura/largura muda |
+| `race512-search10-ft` | `data/teaching/historical2m-search10-conservative/dataset.npz` + checkpoint `race:512` | sim, 90/10 por amostra | segundo treino independente, fine-tune 40 épocas |
+| `base512-search10-ft` | `data/teaching/historical2m-search10-conservative/dataset.npz` + checkpoint `base:512` | sim, 90/10 por amostra | segundo treino independente, fine-tune 40 épocas |
+
+Assim, as seis redes direct foram comparáveis entre si: mesmas posições,
+mesmos alvos e mesmo schedule. As duas redes `*-ft` não são treinos direct
+novos; são continuações separadas a partir dos respectivos checkpoints, com o
+dataset misto e learning rate menor.
+
 ## 6. Benchmarks já feitos
 
 Todos são screening de 20 pares, 200 ms por lance; nenhum promove rede.
