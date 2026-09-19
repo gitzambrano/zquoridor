@@ -47,6 +47,15 @@ relearn by experiment.
 
 ## 3. History Notes (durable lessons only)
 
+- **Experimental candidate models tracked in version control (2026-09-18)**: The
+  experimental network weights (`student.bin` and `student_int8.bin`) and their
+  matching architecture manifests under `results/experiments/`,
+  `results/campaign-smoke/`, and `results/campaign-verified/` are now tracked in
+  Git. This allows remote continuous integration workflows and cloud runners to
+  build and benchmark candidate engines directly. All training datasets,
+  Claustrophobia caches, PyTorch checkpoints, and third-party bots
+  (`external_bots/`) remain untracked.
+
 - **Local teaching and external benchmark lab (2026-09-15)**: The local
   runners provision pinned Titanium and Claustrophobia sources in the ignored
   `external_bots` directory. The benchmark uses paired openings and a complete

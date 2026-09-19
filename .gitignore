@@ -61,7 +61,14 @@ data_wall_qext.*
 data/camping_survey.csv
 
 # Local teaching and benchmark artifacts
-results/
+results/**
+!results/**/
+!results/**/student.bin
+!results/**/student_int8.bin
+!results/**/student.architecture.json
+!results/**/config.json
+!results/**/train_report.json
+!results/**/build_manifest.json
 benchmark_results/
 data/teaching/
 .pytest_cache/

@@ -1,0 +1,30 @@
+{
+  "config": {
+    "data": "data\\teaching\\replay-million-canonical-v3\\dataset.npz",
+    "out_dir": "results\\experiments\\million-race384-s20260915",
+    "architecture": "race",
+    "hidden": 384,
+    "init_from": "data\\nnue\\nnue_weights.bin",
+    "init_architecture": "base",
+    "init_hidden": 256,
+    "from_scratch": false,
+    "qat": true,
+    "epochs": 30,
+    "batch_size": 4096,
+    "lr": 0.0001,
+    "trunk_lr_scale": 0.1,
+    "weight_decay": 1e-05,
+    "policy_weight": 1.0,
+    "value_weight": 1.0,
+    "train_scope": "full",
+    "grad_clip": 1.0,
+    "patience": 4,
+    "seed": 20260914,
+    "device": "cuda",
+    "cpu_threads": 8
+  },
+  "data_sha256": "e06a1940c4aafa98539da488307c934c8fc359088092ea2817421ae6d7c3ccae",
+  "init_sha256": "5252208c7beca4c4cae885a226581ac0bbd9788c1fdae2d381a543b8296e56f8",
+  "trainer_sha256": "7fd052863891c77bc3a3a404d34352aea31c655cd62177346270f248c4cc3297",
+  "model_sha256": "b2759b45af7e6382a6bdf335cb689cb821c084938814c16475269910c74227e4"
+}

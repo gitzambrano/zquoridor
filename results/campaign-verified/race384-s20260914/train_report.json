@@ -1,0 +1,47 @@
+{
+  "fingerprint": "c52d0eeda80a1c531799d96f2a2bd772fd4d9ea954c3c95d494b46e39a486c31",
+  "architecture": {
+    "schema": "zquoridor.student.v1",
+    "architecture": "race",
+    "features": 456,
+    "hidden": 384,
+    "value_hidden": 32,
+    "policy_out": 209,
+    "qa": 255,
+    "qb": 64,
+    "qat": true,
+    "cpp_flags": [
+      "-DZQ_NNUE_RACE_FEATURES=1",
+      "-DZQ_NNUE_HIDDEN=384"
+    ],
+    "float_sha256": "a88cf0c8c569f94809498ba2299748cee45faae5933b574c49afd978a34f0045",
+    "int8_sha256": "76343c7bd6d9b5f0319679f02f4969fa6afb1f15635759cc12478235c4dd36da"
+  },
+  "initial_val": {
+    "loss": 1.0332220792770386,
+    "policy_kl": 0.4385213851928711,
+    "value_mae": 0.14138657251993816
+  },
+  "best_val_loss": 1.0251103639602661,
+  "samples": 80,
+  "train_samples": 64,
+  "val_samples": 16,
+  "epochs": 1,
+  "history": [
+    {
+      "epoch": 1,
+      "train": {
+        "loss": 0.9276558279389708,
+        "policy_kl": 0.44459918258082515,
+        "value_mae": 0.1030894836106085
+      },
+      "val": {
+        "loss": 1.0251103639602661,
+        "policy_kl": 0.4336983680725098,
+        "value_mae": 0.12259737650553386
+      }
+    }
+  ],
+  "improved_validation": true,
+  "promoted": false
+}

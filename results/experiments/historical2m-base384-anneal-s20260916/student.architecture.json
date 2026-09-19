@@ -1,0 +1,17 @@
+{
+  "schema": "zquoridor.student.v1",
+  "architecture": "base",
+  "features": 354,
+  "hidden": 384,
+  "value_hidden": 32,
+  "policy_out": 209,
+  "qa": 255,
+  "qb": 64,
+  "qat": true,
+  "cpp_flags": [
+    "-DZQ_NNUE_RACE_FEATURES=0",
+    "-DZQ_NNUE_HIDDEN=384"
+  ],
+  "float_sha256": "6dc555463ec110c8241da4e424ea3bd75353307f6488ca2a88f43f8087093d6e",
+  "int8_sha256": "19dd0dbb2b454eef0884f97442f06d337ace97d7bfe63b172a421d6356a56736"
+}
