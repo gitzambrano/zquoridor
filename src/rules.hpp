@@ -682,8 +682,6 @@ inline void legalWallMoves(const State& s, int player, MoveList& out,
                             uint64_t* touchOutH1 = nullptr, uint64_t* touchOutV1 = nullptr,
                             PlayerPathCache* cacheOut0 = nullptr, PlayerPathCache* cacheOut1 = nullptr,
                             PlayerPathCacheTable* xtable = nullptr) {
-    // Zero walls means zero legal wall moves. Return before touching either
-    // path cache: otherwise this empty result still pays two path lookups/BFS.
     if (s.wallsLeft[player] <= 0) {
         if (touchOutH0) *touchOutH0 = 0;
         if (touchOutV0) *touchOutV0 = 0;
@@ -692,36 +690,35 @@ inline void legalWallMoves(const State& s, int player, MoveList& out,
         return;
     }
 
-    PlayerPathCache localCache0, localCache1;
-    PlayerPathCache& c0 = cacheOut0 ? *cacheOut0 : localCache0;
-    PlayerPathCache& c1 = cacheOut1 ? *cacheOut1 : localCache1;
-    computeDistCached(s.wallsH, s.wallsV, s.pawn[0], 0, xtable, c0);
-    computeDistCached(s.wallsH, s.wallsV, s.pawn[1], 1, xtable, c1);
+    // The old path always paid two shortest-path BFS traversals before looking
+    // at a single wall. That is useful only when the caller actually consumes
+    // those caches/touch masks (alpha-beta ordering/quiescence). Plain
+    // legalMoves() -- including MCAB expansion and perft -- needs only the
+    // legal set, so let the dual-wall DSU prove the common case first and run
+    // exact path checks only for candidates the DSU marks ambiguous.
+    const bool needPathData =
+        touchOutH0 || touchOutV0 || touchOutH1 || touchOutV1 ||
+        cacheOut0 || cacheOut1;
 
-    // Pré-filtro (Fase 4.2.1 do plano): calculado uma única vez por
-    // chamada (2 BFS, não 2×128, e agora possivelmente ZERO BFS -- ver
-    // c0/c1 acima). Um slot candidato que não toca o caminho mais curto
-    // atual de nenhum dos dois jogadores é garantidamente legal -- ver
-    // prova em cachedTouchSlots/shortestPathTouchSlots. Só roda
-    // hasPathToGoal (BFS completo) para o(s) jogador(es) cujo caminho o
-    // candidato realmente toca.
-    uint64_t touchH0, touchV0, touchH1, touchV1;
-    cachedTouchSlots(c0, touchH0, touchV0);
-    cachedTouchSlots(c1, touchH1, touchV1);
+    uint64_t touchH0 = 0, touchV0 = 0, touchH1 = 0, touchV1 = 0;
+    PlayerPathCache localCache0, localCache1;
+    PlayerPathCache* c0 = nullptr;
+    PlayerPathCache* c1 = nullptr;
+
+    if (needPathData) {
+        c0 = cacheOut0 ? cacheOut0 : &localCache0;
+        c1 = cacheOut1 ? cacheOut1 : &localCache1;
+        computeDistCached(s.wallsH, s.wallsV, s.pawn[0], 0, xtable, *c0);
+        computeDistCached(s.wallsH, s.wallsV, s.pawn[1], 1, xtable, *c1);
+        cachedTouchSlots(*c0, touchH0, touchV0);
+        cachedTouchSlots(*c1, touchH1, touchV1);
+    }
+
     if (touchOutH0) *touchOutH0 = touchH0;
     if (touchOutV0) *touchOutV0 = touchV0;
     if (touchOutH1) *touchOutH1 = touchH1;
     if (touchOutV1) *touchOutV1 = touchV1;
 
-    // DSU (Fase 4.2.1, item 2 do plano) sobre o grafo dual de muros --
-    // ver prova de corretude e geometria em dsu.hpp. Construído uma
-    // única vez por chamada a partir dos muros JÁ colocados em `s`
-    // (barato: no máximo 20 muros no jogo todo). Usado só para os
-    // candidatos que tocam o caminho testemunha de algum jogador (os
-    // que sobram do pré-filtro acima); para esses, evita o BFS caro
-    // sempre que o candidato provadamente não fecha nenhuma barreira
-    // esquerda-direita -- se fecha, cai de volta no hasPathToGoal exato
-    // (mesmo comportamento de antes, sem risco de regressão).
     RollbackDSU dsu;
     buildWallDSU(dsu, s.wallsH, s.wallsV);
 
@@ -736,21 +733,37 @@ inline void legalWallMoves(const State& s, int player, MoveList& out,
             int slot = __builtin_ctzll(candidates);
             candidates &= candidates - 1;
             int r = slot / WS, cc = slot % WS;
-            bool touches0 = (touch0 >> slot) & 1ull;
-            bool touches1 = (touch1 >> slot) & 1ull;
-            if (!touches0 && !touches1) {
+
+            bool touches0 = needPathData && ((touch0 >> slot) & 1ull);
+            bool touches1 = needPathData && ((touch1 >> slot) & 1ull);
+
+            // When the witness paths are available they remain the cheapest
+            // proof: if neither is touched, both paths survive unchanged.
+            if (needPathData && !touches0 && !touches1) {
                 out.push_back(Move::wall(orientation, r, cc));
                 continue;
             }
+
+            // Otherwise ask topology. Most candidates do not close a cycle or
+            // connect dangerous borders, so this avoids all path work.
             if (!wallCandidateAmbiguous(dsu, s.wallsH, s.wallsV, orientation, r, cc)) {
                 out.push_back(Move::wall(orientation, r, cc));
                 continue;
             }
+
             uint64_t nh = s.wallsH, nv = s.wallsV;
             if (orientation == 0) nh |= (1ull << slot);
             else nv |= (1ull << slot);
-            if (touches0 && !hasPathToGoal(nh, nv, s.pawn[0], 0)) continue;
-            if (touches1 && !hasPathToGoal(nh, nv, s.pawn[1], 1)) continue;
+
+            if (needPathData) {
+                if (touches0 && !hasPathToGoal(nh, nv, s.pawn[0], 0)) continue;
+                if (touches1 && !hasPathToGoal(nh, nv, s.pawn[1], 1)) continue;
+            } else {
+                // No witness path was computed. Ambiguous is deliberately
+                // conservative, so fall back to the exact rule for both sides.
+                if (!hasPathToGoal(nh, nv, s.pawn[0], 0)) continue;
+                if (!hasPathToGoal(nh, nv, s.pawn[1], 1)) continue;
+            }
             out.push_back(Move::wall(orientation, r, cc));
         }
     }
