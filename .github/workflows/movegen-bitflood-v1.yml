@@ -61,8 +61,8 @@ jobs:
         run: |
           {
             for i in 1 2 3 4 5 6 7; do
-              echo -n "BASE "; bin/perft-base
-              echo -n "BIT "; bin/perft-bit
+              bin/perft-base | sed 's/^/BASE /'
+              bin/perft-bit | sed 's/^/BIT /'
             done
           } | tee benchmark_results/movegen-bitflood-v1/perft.txt
           python - <<'PY' | tee benchmark_results/movegen-bitflood-v1/perft-summary.txt
