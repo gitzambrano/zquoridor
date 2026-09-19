@@ -159,6 +159,22 @@ inline bool wallSlotAvailable(uint64_t wallsH, uint64_t wallsV, int orientation,
     return true;
 }
 
+constexpr uint64_t WALL_COL0 = 0x0101010101010101ull;
+constexpr uint64_t WALL_COL7 = 0x8080808080808080ull;
+constexpr uint64_t WALL_ROW0 = 0x00000000000000FFull;
+constexpr uint64_t WALL_ROW7 = 0xFF00000000000000ull;
+
+inline uint64_t geometricWallMaskH(uint64_t wallsH, uint64_t wallsV) {
+    return ~(wallsH | wallsV |
+             ((wallsH << 1) & ~WALL_COL0) |
+             ((wallsH >> 1) & ~WALL_COL7));
+}
+inline uint64_t geometricWallMaskV(uint64_t wallsH, uint64_t wallsV) {
+    return ~(wallsV | wallsH |
+             ((wallsV << WS) & ~WALL_ROW0) |
+             ((wallsV >> WS) & ~WALL_ROW7));
+}
+
 // ---------------------------------------------------------------------
 // BFS de distância/caminho -- núcleo compartilhado (plano-additional.md,
 // Prioridade 6: "Cache de BFS por nó"). Antes desta refatoração,
@@ -712,37 +728,30 @@ inline void legalWallMoves(const State& s, int player, MoveList& out,
     for (int orientation = 0; orientation < 2; orientation++) {
         uint64_t touch0 = orientation == 0 ? touchH0 : touchV0;
         uint64_t touch1 = orientation == 0 ? touchH1 : touchV1;
-        for (int r = 0; r < WS; r++) {
-            for (int c = 0; c < WS; c++) {
-                if (!wallSlotAvailable(s.wallsH, s.wallsV, orientation, r, c)) continue;
-                int slot = slotIdx(r, c);
-                bool touches0 = (touch0 >> slot) & 1ull;
-                bool touches1 = (touch1 >> slot) & 1ull;
-                if (!touches0 && !touches1) {
-                    // não toca o caminho testemunha de ninguém -> legal, sem BFS
-                    out.push_back(Move::wall(orientation, r, c));
-                    continue;
-                }
-                if (!wallCandidateAmbiguous(dsu, s.wallsH, s.wallsV, orientation, r, c)) {
-                    // DSU prova que este muro não fecha nenhum ciclo
-                    // (bolso/cercado), nem conecta esquerda-direita
-                    // (barreira completa), nem fecha nenhum bolso de
-                    // canto (superior/inferior × esquerda/direita) ->
-                    // nenhum jogador pode ficar sem caminho até sua
-                    // meta -> legal, sem BFS (prova em dsu.hpp).
-                    out.push_back(Move::wall(orientation, r, c));
-                    continue;
-                }
-                // Ambíguo (fecha ciclo e/ou conecta esquerda-direita):
-                // pode ou não bloquear de fato -- cai no BFS exato como
-                // antes.
-                uint64_t nh = s.wallsH, nv = s.wallsV;
-                if (orientation == 0) nh |= (1ull << slot);
-                else nv |= (1ull << slot);
-                if (touches0 && !hasPathToGoal(nh, nv, s.pawn[0], 0)) continue;
-                if (touches1 && !hasPathToGoal(nh, nv, s.pawn[1], 1)) continue;
-                out.push_back(Move::wall(orientation, r, c));
+        uint64_t candidates = orientation == 0
+            ? geometricWallMaskH(s.wallsH, s.wallsV)
+            : geometricWallMaskV(s.wallsH, s.wallsV);
+
+        while (candidates) {
+            int slot = __builtin_ctzll(candidates);
+            candidates &= candidates - 1;
+            int r = slot / WS, cc = slot % WS;
+            bool touches0 = (touch0 >> slot) & 1ull;
+            bool touches1 = (touch1 >> slot) & 1ull;
+            if (!touches0 && !touches1) {
+                out.push_back(Move::wall(orientation, r, cc));
+                continue;
             }
+            if (!wallCandidateAmbiguous(dsu, s.wallsH, s.wallsV, orientation, r, cc)) {
+                out.push_back(Move::wall(orientation, r, cc));
+                continue;
+            }
+            uint64_t nh = s.wallsH, nv = s.wallsV;
+            if (orientation == 0) nh |= (1ull << slot);
+            else nv |= (1ull << slot);
+            if (touches0 && !hasPathToGoal(nh, nv, s.pawn[0], 0)) continue;
+            if (touches1 && !hasPathToGoal(nh, nv, s.pawn[1], 1)) continue;
+            out.push_back(Move::wall(orientation, r, cc));
         }
     }
 }
