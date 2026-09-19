@@ -178,6 +178,49 @@ constexpr int WALL_DSU_SIZE = 2 * WS * WS + 4;    // 132
 inline int wallDsuNodeH(int r, int c) { return WALL_DSU_H_BASE + r * WS + c; }
 inline int wallDsuNodeV(int r, int c) { return WALL_DSU_V_BASE + r * WS + c; }
 
+// Read-mostly DSU used by move generation. Unlike RollbackDSU, this one
+// never services hypothetical push/pop operations. We build it once from the
+// already-placed walls, flatten every node to its component root, then answer
+// all candidate-wall ambiguity tests with root-table lookups only.
+//
+// uint8_t is sufficient because WALL_DSU_SIZE=132 < 256. Keeping parent/rank
+// compact makes the whole structure 264 bytes instead of >1 KiB and, more
+// importantly, removes rollback-history traffic from the hot candidate loop.
+struct FlatWallDSU {
+    std::array<uint8_t, WALL_DSU_SIZE> parent{};
+    std::array<uint8_t, WALL_DSU_SIZE> rank{};
+
+    void init() {
+        for (int i = 0; i < WALL_DSU_SIZE; ++i) {
+            parent[(size_t)i] = (uint8_t)i;
+            rank[(size_t)i] = 0;
+        }
+    }
+
+    int find(int x) const {
+        int r = x;
+        while ((int)parent[(size_t)r] != r) r = (int)parent[(size_t)r];
+        return r;
+    }
+
+    bool unite(int a, int b) {
+        int ra = find(a), rb = find(b);
+        if (ra == rb) return true;
+        uint8_t rka = rank[(size_t)ra], rkb = rank[(size_t)rb];
+        if (rka < rkb) std::swap(ra, rb);
+        parent[(size_t)rb] = (uint8_t)ra;
+        if (rka == rkb) rank[(size_t)ra]++;
+        return false;
+    }
+
+    void flatten() {
+        for (int i = 0; i < WALL_DSU_SIZE; ++i)
+            parent[(size_t)i] = (uint8_t)find(i);
+    }
+
+    int root(int x) const { return (int)parent[(size_t)x]; }
+};
+
 // Une o nó do muro (orientation,r,c) -- que pode ainda não estar
 // fisicamente colocado em wallsH/wallsV (uso para candidato hipotético)
 // -- com todos os nós de muros VIZINHOS já presentes em wallsH/wallsV
@@ -187,7 +230,8 @@ inline int wallDsuNodeV(int r, int c) { return WALL_DSU_V_BASE + r * WS + c; }
 //
 // Retorna true se ALGUMA das uniões realizadas era redundante (fecha um
 // ciclo -- ver nota de corretude no topo do arquivo).
-inline bool unionWallNeighbors(RollbackDSU& dsu, uint64_t wallsH, uint64_t wallsV,
+template <class DsuT>
+inline bool unionWallNeighbors(DsuT& dsu, uint64_t wallsH, uint64_t wallsV,
                                 int orientation, int r, int c) {
     bool anyRedundant = false;
     auto uniteTrack = [&](int a, int b) { anyRedundant |= dsu.unite(a, b); };
@@ -247,6 +291,103 @@ inline void buildWallDSU(RollbackDSU& dsu, uint64_t wallsH, uint64_t wallsV) {
         v &= v - 1;
         unionWallNeighbors(dsu, wallsH, wallsV, 1, slot / WS, slot % WS);
     }
+}
+
+inline void buildFlatWallDSU(FlatWallDSU& dsu, uint64_t wallsH, uint64_t wallsV) {
+    dsu.init();
+    uint64_t h = wallsH;
+    while (h) {
+        int slot = __builtin_ctzll(h);
+        h &= h - 1;
+        unionWallNeighbors(dsu, wallsH, wallsV, 0, slot / WS, slot % WS);
+    }
+    uint64_t v = wallsV;
+    while (v) {
+        int slot = __builtin_ctzll(v);
+        v &= v - 1;
+        unionWallNeighbors(dsu, wallsH, wallsV, 1, slot / WS, slot % WS);
+    }
+    dsu.flatten();
+}
+
+// Exact read-only equivalent of wallCandidateAmbiguous() for a flattened
+// current-state DSU. A hypothetical wall is a new hub connected to every
+// already-present neighboring wall/border component.
+//
+// * Connecting the hub twice to the same existing component closes a cycle.
+// * Otherwise all touched components become one component, so a border pair
+//   becomes connected iff it was already connected or both border roots are in
+//   the touched-root set.
+//
+// This reproduces the rollback predicate without mutating the DSU once per
+// candidate.
+inline bool wallCandidateAmbiguousFlat(const FlatWallDSU& dsu,
+                                       uint64_t wallsH, uint64_t wallsV,
+                                       int orientation, int r, int c) {
+    int roots[16];
+    int n = 0;
+    bool duplicate = false;
+
+    auto addNode = [&](int node) {
+        int rt = dsu.root(node);
+        for (int i = 0; i < n; ++i) {
+            if (roots[i] == rt) { duplicate = true; return; }
+        }
+        roots[n++] = rt;
+    };
+
+    if (orientation == 0) {
+        if (c == 0) addNode(WALL_DSU_LEFT);
+        if (c == WS - 1) addNode(WALL_DSU_RIGHT);
+        if (c - 2 >= 0 && ((wallsH >> slotIdx(r, c - 2)) & 1ull))
+            addNode(wallDsuNodeH(r, c - 2));
+        if (c + 2 < WS && ((wallsH >> slotIdx(r, c + 2)) & 1ull))
+            addNode(wallDsuNodeH(r, c + 2));
+        for (int dr = -1; dr <= 1; ++dr) {
+            int rr = r + dr;
+            if (rr < 0 || rr >= WS) continue;
+            for (int dc = -1; dc <= 1; ++dc) {
+                int cc = c + dc;
+                if (cc < 0 || cc >= WS) continue;
+                if ((wallsV >> slotIdx(rr, cc)) & 1ull)
+                    addNode(wallDsuNodeV(rr, cc));
+            }
+        }
+    } else {
+        if (r == 0) addNode(WALL_DSU_TOP);
+        if (r == WS - 1) addNode(WALL_DSU_BOTTOM);
+        if (r - 2 >= 0 && ((wallsV >> slotIdx(r - 2, c)) & 1ull))
+            addNode(wallDsuNodeV(r - 2, c));
+        if (r + 2 < WS && ((wallsV >> slotIdx(r + 2, c)) & 1ull))
+            addNode(wallDsuNodeV(r + 2, c));
+        for (int dr = -1; dr <= 1; ++dr) {
+            int rr = r + dr;
+            if (rr < 0 || rr >= WS) continue;
+            for (int dc = -1; dc <= 1; ++dc) {
+                int cc = c + dc;
+                if (cc < 0 || cc >= WS) continue;
+                if ((wallsH >> slotIdx(rr, cc)) & 1ull)
+                    addNode(wallDsuNodeH(rr, cc));
+            }
+        }
+    }
+
+    if (duplicate) return true;
+
+    auto touched = [&](int rt) {
+        for (int i = 0; i < n; ++i) if (roots[i] == rt) return true;
+        return false;
+    };
+    auto connectedAfter = [&](int a, int b) {
+        int ra = dsu.root(a), rb = dsu.root(b);
+        return ra == rb || (touched(ra) && touched(rb));
+    };
+
+    return connectedAfter(WALL_DSU_LEFT, WALL_DSU_RIGHT) ||
+           connectedAfter(WALL_DSU_TOP, WALL_DSU_LEFT) ||
+           connectedAfter(WALL_DSU_TOP, WALL_DSU_RIGHT) ||
+           connectedAfter(WALL_DSU_BOTTOM, WALL_DSU_LEFT) ||
+           connectedAfter(WALL_DSU_BOTTOM, WALL_DSU_RIGHT);
 }
 
 // Testa se o muro candidato (orientation,r,c) é AMBÍGUO quanto a
