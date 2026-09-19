@@ -666,12 +666,8 @@ inline void legalWallMoves(const State& s, int player, MoveList& out,
                             uint64_t* touchOutH1 = nullptr, uint64_t* touchOutV1 = nullptr,
                             PlayerPathCache* cacheOut0 = nullptr, PlayerPathCache* cacheOut1 = nullptr,
                             PlayerPathCacheTable* xtable = nullptr) {
-    PlayerPathCache localCache0, localCache1;
-    PlayerPathCache& c0 = cacheOut0 ? *cacheOut0 : localCache0;
-    PlayerPathCache& c1 = cacheOut1 ? *cacheOut1 : localCache1;
-    computeDistCached(s.wallsH, s.wallsV, s.pawn[0], 0, xtable, c0);
-    computeDistCached(s.wallsH, s.wallsV, s.pawn[1], 1, xtable, c1);
-
+    // Zero walls means zero legal wall moves. Return before touching either
+    // path cache: otherwise this empty result still pays two path lookups/BFS.
     if (s.wallsLeft[player] <= 0) {
         if (touchOutH0) *touchOutH0 = 0;
         if (touchOutV0) *touchOutV0 = 0;
@@ -679,6 +675,12 @@ inline void legalWallMoves(const State& s, int player, MoveList& out,
         if (touchOutV1) *touchOutV1 = 0;
         return;
     }
+
+    PlayerPathCache localCache0, localCache1;
+    PlayerPathCache& c0 = cacheOut0 ? *cacheOut0 : localCache0;
+    PlayerPathCache& c1 = cacheOut1 ? *cacheOut1 : localCache1;
+    computeDistCached(s.wallsH, s.wallsV, s.pawn[0], 0, xtable, c0);
+    computeDistCached(s.wallsH, s.wallsV, s.pawn[1], 1, xtable, c1);
 
     // Pré-filtro (Fase 4.2.1 do plano): calculado uma única vez por
     // chamada (2 BFS, não 2×128, e agora possivelmente ZERO BFS -- ver
