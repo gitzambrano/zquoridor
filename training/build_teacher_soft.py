@@ -115,7 +115,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     except (OSError, ValueError, json.JSONDecodeError, subprocess.CalledProcessError) as exc:
         raise SystemExit(str(exc)) from exc
 
-    if target_confidence is None:
+    if "weight" in target.files:
+        weight = target["weight"][order].astype(np.float32)
+    elif target_confidence is None:
         weight = np.ones(len(positions), dtype=np.float32)
     else:
         # Keep low-consensus examples present, but let high-confidence teacher

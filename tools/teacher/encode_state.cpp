@@ -81,6 +81,51 @@ private:
     std::vector<std::string> current_;
 };
 
+bool parseCanonicalState(const std::string& text, qr::State& state, std::string& error) {
+    std::istringstream input(text);
+    std::string tag, extra;
+    unsigned own = 0, opp = 0, ownWalls = 0, oppWalls = 0;
+    unsigned long long wallsH = 0, wallsV = 0;
+    if (!(input >> tag >> own >> opp >> wallsH >> wallsV >> ownWalls >> oppWalls)
+        || tag != "@state" || (input >> extra)) {
+        error = "state requires @state plus six integer fields";
+        return false;
+    }
+    if (own >= qr::N * qr::N || opp >= qr::N * qr::N || own == opp
+        || ownWalls > qr::WALLS_PER_PLAYER || oppWalls > qr::WALLS_PER_PLAYER
+        || __builtin_popcountll(wallsH) + __builtin_popcountll(wallsV)
+            != 2 * qr::WALLS_PER_PLAYER - ownWalls - oppWalls) {
+        error = "invalid canonical state resources or pawns";
+        return false;
+    }
+
+    state = qr::State{};
+    state.pawn[0] = static_cast<uint8_t>(own);
+    state.pawn[1] = static_cast<uint8_t>(opp);
+    state.wallsLeft[0] = static_cast<int8_t>(ownWalls);
+    state.wallsLeft[1] = static_cast<int8_t>(oppWalls);
+    state.turn = 0;
+    for (int orientation = 0; orientation < 2; ++orientation) {
+        const uint64_t bits = orientation == 0 ? wallsH : wallsV;
+        for (int slot = 0; slot < qr::WS * qr::WS; ++slot) {
+            if (((bits >> slot) & 1ull) == 0) continue;
+            int row = slot / qr::WS, col = slot % qr::WS;
+            if (!qr::wallSlotAvailable(state.wallsH, state.wallsV, orientation, row, col)) {
+                error = "illegal wall topology";
+                return false;
+            }
+            if (orientation == 0) state.wallsH |= 1ull << slot;
+            else state.wallsV |= 1ull << slot;
+        }
+    }
+    if (qr::shortestPathLen(state.wallsH, state.wallsV, state.pawn[0], 0) < 0
+        || qr::shortestPathLen(state.wallsH, state.wallsV, state.pawn[1], 1) < 0) {
+        error = "wall topology blocks a player path";
+        return false;
+    }
+    return true;
+}
+
 void emitError(size_t lineNumber, const std::string& message) {
     std::cout << PROTO << "\terror\tline " << lineNumber << ": " << message << '\n';
 }
@@ -93,18 +138,29 @@ int main() {
     while (std::getline(std::cin, line)) {
         ++lineNumber;
         if (!line.empty() && line.back() == '\r') line.pop_back();
-        std::vector<std::string> history = splitMoves(line);
-        std::string error;
-        if (!cache.setHistory(history, error)) {
-            emitError(lineNumber, error);
-            continue;
+        qr::State state;
+        int mover = 0;
+        if (line.rfind("@state", 0) == 0) {
+            std::string error;
+            if (!parseCanonicalState(line, state, error)) {
+                emitError(lineNumber, error);
+                continue;
+            }
+            mover = 0;
+        } else {
+            std::vector<std::string> history = splitMoves(line);
+            std::string error;
+            if (!cache.setHistory(history, error)) {
+                emitError(lineNumber, error);
+                continue;
+            }
+            state = cache.state();
+            mover = state.turn;
         }
-        const qr::State& state = cache.state();
         if (qr::winner(state) != -1) {
             emitError(lineNumber, "position is terminal");
             continue;
         }
-        int mover = state.turn;
         int opponent = 1 - mover;
         int ownPawn = qr::mirroredPawnCell(state.pawn[mover], mover);
         int oppPawn = qr::mirroredPawnCell(state.pawn[opponent], mover);

@@ -22,6 +22,7 @@ CONFIG = {
     "cpuct": 1.5,
     "out": "",
     "teacher_name": "claustrophobia-v1.3.1",
+    "workers": 1,
 }
 
 
@@ -57,15 +58,37 @@ def map_action(index: int, side: int) -> int:
     return index if side == 0 else mirror_action_lr(index)
 
 
-def run_budget(bridge: Path, checkpoint: Path, tsv: Path, sims: int,
-               cpuct: float, positions: Sequence[dict]) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+def _run_single_chunk(bridge: Path, checkpoint: Path, tsv: Path, sims: int, cpuct: float) -> list[dict]:
     proc = subprocess.run(
         [str(bridge), str(tsv), str(checkpoint), str(sims), str(cpuct)],
         check=True,
         capture_output=True,
         text=True,
     )
-    rows = [json.loads(line) for line in proc.stdout.splitlines() if line.strip().startswith("{")]
+    return [json.loads(line) for line in proc.stdout.splitlines() if line.strip().startswith("{")]
+
+
+def run_budget(bridge: Path, checkpoint: Path, tmp_dir: Path, sims: int,
+               cpuct: float, positions: Sequence[dict], workers: int = 1) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    import concurrent.futures
+    if workers <= 1 or len(positions) <= 1:
+        tsv = tmp_dir / f"pos_{sims}.tsv"
+        write_tsv(positions, tsv)
+        rows = _run_single_chunk(bridge, checkpoint, tsv, sims, cpuct)
+    else:
+        chunk_size = (len(positions) + workers - 1) // workers
+        chunks = [positions[i:i + chunk_size] for i in range(0, len(positions), chunk_size)]
+        def worker_task(item):
+            w_idx, chunk = item
+            tsv = tmp_dir / f"pos_{sims}_w{w_idx}.tsv"
+            write_tsv(chunk, tsv)
+            return _run_single_chunk(bridge, checkpoint, tsv, sims, cpuct)
+
+        rows = []
+        with concurrent.futures.ThreadPoolExecutor(max_workers=len(chunks)) as executor:
+            for chunk_rows in executor.map(worker_task, enumerate(chunks)):
+                rows.extend(chunk_rows)
+
     if len(rows) != len(positions):
         raise ValueError(f"search bridge returned {len(rows)} rows for {len(positions)} positions")
     policy = np.zeros((len(rows), POLICY_DIM), dtype=np.float32)
@@ -102,20 +125,22 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--cpuct", type=float, default=CONFIG["cpuct"])
     parser.add_argument("--out", type=Path, default=Path(CONFIG["out"]) if CONFIG["out"] else None)
     parser.add_argument("--teacher-name", default=CONFIG["teacher_name"])
+    parser.add_argument("--workers", type=int, default=CONFIG["workers"])
     args = parser.parse_args(argv)
 
     if not all((args.positions, args.bridge, args.checkpoint, args.out)):
         raise SystemExit("set positions, bridge, checkpoint, and out in CONFIG or pass their CLI options")
     if args.cpuct <= 0.0:
         raise SystemExit("cpuct must be positive")
+    if args.workers < 1:
+        raise SystemExit("workers must be at least 1")
     try:
         budgets = parse_budgets(args.sims)
         positions = load_positions(args.positions)
         with tempfile.TemporaryDirectory(prefix="zq_claustro_search_") as tmp:
-            tsv = Path(tmp) / "positions.tsv"
-            write_tsv(positions, tsv)
+            tmp_dir = Path(tmp)
             results = {
-                sims: run_budget(args.bridge, args.checkpoint, tsv, sims, args.cpuct, positions)
+                sims: run_budget(args.bridge, args.checkpoint, tmp_dir, sims, args.cpuct, positions, args.workers)
                 for sims in budgets
             }
     except (OSError, ValueError, json.JSONDecodeError, subprocess.CalledProcessError) as exc:
