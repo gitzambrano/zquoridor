@@ -1260,7 +1260,7 @@ A comprehensive review of the web deployment resolved three functional and visua
 - **Tier 3 bilateral search completion.** Part 1 and Part 2 (100,000 positions total) finished
   Claustrophobia MCTS search on CUDA. Blended with ZQuoridor 512-node MCAB search targets
   into `data/teaching/generic-search-100k-zq/dataset.npz` (100k samples, 19,881 validation samples,
-  mean weight 7.15). Tier 3.5 Part 1 (50k) launched immediately on CUDA.
+  mean weight 7.15). Tier 3.5 Part 1 (50k) completed on CUDA, and Part 2 (50k) is running at 99% GPU.
 - **Tier 5 deep search enrichment.** Following Tier 3 bilateral search completion, critical
   branching points and crisis moments from Tier 5 rollouts will receive deep Claustrophobia MCTS
   searches (~500 ms / ~512 simulations) on CUDA before final dataset blending.
