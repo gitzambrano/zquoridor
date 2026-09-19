@@ -119,8 +119,11 @@ template<class Acc> inline void updateRaceFeatures(Acc& acc, const std::array<in
 
 inline int pawnContactFeature(const State& s, int perspective) {
     int me = perspective, opp = 1 - perspective;
-    int ownCell = mirroredPawnCell(s.pawn[me], perspective);
-    int oppCell = mirroredPawnCell(s.pawn[opp], perspective);
+    auto canonicalCell = [perspective](int cell) {
+        return perspective == 0 ? cell : cellIdx(N - 1 - rowOf(cell), colOf(cell));
+    };
+    int ownCell = canonicalCell(s.pawn[me]);
+    int oppCell = canonicalCell(s.pawn[opp]);
     int dr = rowOf(oppCell) - rowOf(ownCell);
     int dc = colOf(oppCell) - colOf(ownCell);
     int bucket = 25;
