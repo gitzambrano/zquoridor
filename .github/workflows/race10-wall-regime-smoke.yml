@@ -89,3 +89,4 @@ jobs:
             --no-teaching --build --no-benchmark
           test -s /tmp/race_regime-pilot/student.bin
           test -s /tmp/race_regime-pilot/student_int8.bin
+          ./bin/check-regime /tmp/race_regime-pilot/student_int8.bin
