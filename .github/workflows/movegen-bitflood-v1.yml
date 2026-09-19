@@ -1,0 +1,134 @@
+name: movegen bit-flood validation
+
+on:
+  push:
+    branches: ["perf/movegen-bitflood-v1"]
+    paths:
+      - "src/rules.hpp"
+      - "tests/test_rules_sanity.cpp"
+      - ".github/workflows/movegen-bitflood-v1.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Native regressions
+        run: |
+          set -euo pipefail
+          bash build/build_tests.sh
+          ./bin/test_rules_sanity
+          ./bin/test_mcab_core
+          ./bin/test_mcab_phase9
+          ./bin/test_endgame_race_fuzz
+      - name: Build baseline and candidate
+        run: |
+          set -euo pipefail
+          BASE=8c7fe7614938f678c689f812a673ac1c22ae96dc
+          git worktree add --detach /tmp/zq-base "$BASE"
+          mkdir -p benchmark_results/movegen-bitflood-v1 bin
+          cat >/tmp/perft.cpp <<'CPP'
+          #include <chrono>
+          #include <iostream>
+          #include "rules.hpp"
+          int main(){
+            auto s=qr::initialState();
+            for(int d: {2,3}) {
+              int reps=d==2?300:20; volatile uint64_t sink=0;
+              auto t0=std::chrono::steady_clock::now();
+              for(int i=0;i<reps;++i) sink += qr::perft(s,d);
+              double sec=std::chrono::duration<double>(std::chrono::steady_clock::now()-t0).count();
+              auto one=qr::perft(s,d);
+              std::cout<<"depth="<<d<<" count="<<one<<" reps="<<reps
+                       <<" sec="<<sec<<" leaves_per_sec="<<(double(one)*reps/sec)
+                       <<" sink="<<sink<<"\n";
+            }
+          }
+          CPP
+          g++ -O3 -DNDEBUG -std=c++17 -march=native -I/tmp/zq-base/src /tmp/perft.cpp -o bin/perft-base
+          g++ -O3 -DNDEBUG -std=c++17 -march=native -Isrc /tmp/perft.cpp -o bin/perft-bit
+          W=results/experiments/race512-search10-ft-s20260917/student_int8.bin
+          echo "b9cb857bb0f8d3a791b27297a61cc5c195fba916481959a43579925685c62d06  $W" | sha256sum -c -
+          g++ -O3 -DNDEBUG -std=c++17 -march=native -pthread             -DZQ_NNUE_RACE_FEATURES=1 -DZQ_NNUE_HIDDEN=512             -I/tmp/zq-base/src /tmp/zq-base/tools/external/zquoridor_uci.cpp -o bin/race10-base
+          g++ -O3 -DNDEBUG -std=c++17 -march=native -pthread             -DZQ_NNUE_RACE_FEATURES=1 -DZQ_NNUE_HIDDEN=512             -Isrc tools/external/zquoridor_uci.cpp -o bin/race10-bit
+      - name: Interleaved perft
+        run: |
+          {
+            for i in 1 2 3 4 5 6 7; do
+              echo -n "BASE "; bin/perft-base
+              echo -n "BIT "; bin/perft-bit
+            done
+          } | tee benchmark_results/movegen-bitflood-v1/perft.txt
+          python - <<'PY' | tee benchmark_results/movegen-bitflood-v1/perft-summary.txt
+          import re,statistics
+          rows=open("benchmark_results/movegen-bitflood-v1/perft.txt").read().splitlines()
+          data={}
+          for x in rows:
+            m=re.search(r'^(BASE|BIT) depth=(\d+) count=(\d+).*leaves_per_sec=([0-9.eE+-]+)',x)
+            if m: data.setdefault((m.group(1),int(m.group(2))),[]).append((int(m.group(3)),float(m.group(4))))
+          for d in (2,3):
+            b=data[("BASE",d)]; e=data[("BIT",d)]
+            counts={x[0] for x in b+e}; assert len(counts)==1,(d,counts)
+            bm=statistics.median(x[1] for x in b); em=statistics.median(x[1] for x in e)
+            print("SUMMARY depth",d,"count",next(iter(counts)),
+                  "base_lps",round(bm),"bit_lps",round(em),"speedup_x",round(em/bm,4))
+          PY
+      - name: Fixed-node equivalence/search speed
+        run: |
+          python - <<'PY' | tee benchmark_results/movegen-bitflood-v1/search.txt
+          import subprocess,time,statistics,json
+          from pathlib import Path
+          W="results/experiments/race512-search10-ft-s20260917/student_int8.bin"
+          positions=[[]]
+          for line in Path("tools/external/openings_confirmation_v1.jsonl").read_text().splitlines():
+              if not line.strip(): continue
+              m=json.loads(line).get("moves",[])
+              for k in sorted({len(m)//3,2*len(m)//3,len(m)}):
+                  p=m[:k]
+                  if p not in positions: positions.append(p)
+              if len(positions)>=80: break
+          positions=positions[:80]
+          def start(exe):
+              p=subprocess.Popen([exe,"--nnue",W,"--nodes","20000","--no-tree-reuse"],
+                stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True,bufsize=1)
+              def send(s): p.stdin.write(s+"\n"); p.stdin.flush()
+              send("uci")
+              while p.stdout.readline().strip()!="uciok": pass
+              send("isready")
+              while p.stdout.readline().strip()!="readyok": pass
+              return p,send
+          def q(ps,pos):
+              p,s=ps; s("position startpos"+((" moves "+" ".join(pos)) if pos else ""))
+              t=time.perf_counter(); s("go movetime 0")
+              while True:
+                x=p.stdout.readline().strip()
+                if x.startswith("bestmove "): return x.split()[1],(time.perf_counter()-t)*1000
+          a=start("bin/race10-base"); b=start("bin/race10-bit"); times=[]; mism=[]
+          for i,pos in enumerate(positions):
+              if i%2==0: ba,ta=q(a,pos); bb,tb=q(b,pos)
+              else: bb,tb=q(b,pos); ba,ta=q(a,pos)
+              times.append((ta,tb))
+              if ba!=bb: mism.append((i,ba,bb,pos))
+              print("POS",i,"same",ba==bb,"base_ms",round(ta,3),"bit_ms",round(tb,3),"best",ba)
+          for p,s in (a,b): s("quit"); p.wait(timeout=5)
+          if mism:
+              print("MISMATCHES",mism)
+              raise SystemExit("bit flood changed fixed-node bestmove")
+          x=[v[0] for v in times]; y=[v[1] for v in times]
+          print("SUMMARY positions",len(times),"mismatches",len(mism),
+                "median_base_ms",round(statistics.median(x),3),
+                "median_bit_ms",round(statistics.median(y),3),
+                "speedup_x",round(statistics.median(x)/statistics.median(y),4),
+                "time_reduction_pct",round((1-statistics.median(y)/statistics.median(x))*100,3))
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: movegen-bitflood-v1-${{ github.run_id }}
+          path: benchmark_results/movegen-bitflood-v1/**
