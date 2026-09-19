@@ -1236,6 +1236,25 @@ A comprehensive review of the web deployment resolved three functional and visua
   human inputs during active animations. The handler now resets the flag after
   the move animation promise resolves.
 
+### 2026-09-19: 5-tier curriculum scaling, GPU inference worker fix, and deep search plan
+
+- **Claustrophobia GPU inference worker fix.** `training/teachers/claustrophobia_inference_worker.py`
+  and the companion binary worker checked `sys.argv[2] == "gpu"`. When callers set
+  `QUORIDOR_DEVICE=cuda`, `sys.argv[2]` received `"cuda"`, silently falling back to CPU
+  execution. The condition now checks `sys.argv[2] in ("gpu", "cuda")`, offloading MCTS batch
+  evaluations to CUDA tensor cores on the RTX 4050 laptop GPU. VRAM consumption remains ~1.2 GB
+  across 8-14 workers with zero risk of OOM.
+- **Hardware allocation enforcement.** Systems with 16 physical cores operate under a strict
+  ceiling of at most 14 worker threads, leaving 2 cores for operating system and disk I/O.
+  Active workloads divide threads symmetrically: 6 CPU threads for Monte Carlo branching rollouts
+  (`generate_rollouts.exe`) and 8 workers for GPU MCTS search (`zq_search_bridge.exe`).
+- **Tier 4 consolidation.** 100,000 dual-crisis positions (loss games, 0-2 sweep openings, and
+  acute wall stock asymmetries) were consolidated into `data/teaching/tier4-dual-crisis-100k/dataset.npz`
+  with strict train/validation isolation (16,763 validation samples).
+- **Tier 5 deep search enrichment.** Following Tier 3 bilateral search completion, critical
+  branching points and crisis moments from Tier 5 rollouts will receive deep Claustrophobia MCTS
+  searches (~500 ms / ~512 simulations) on CUDA before final dataset blending.
+
 ---
 
 ## 7. Evaluation Conventions

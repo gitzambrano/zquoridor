@@ -41,7 +41,7 @@ def main():
         import msvcrt
         msvcrt.setmode(sys.stdin.fileno(), os.O_BINARY)
         msvcrt.setmode(sys.stdout.fileno(), os.O_BINARY)
-    device = "cuda" if sys.argv[2] == "gpu" else "cpu"
+    device = "cuda" if sys.argv[2] in ("gpu", "cuda") else "cpu"
     torch.set_num_threads(1)
     model = torch.jit.load(sys.argv[1], map_location=device).eval()
     # Initialize the selected backend before the parent's search clock starts.
