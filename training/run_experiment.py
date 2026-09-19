@@ -35,6 +35,7 @@ CONFIG = {
     "init_hidden": 256,
     "from_scratch": False,
     "qat": True,
+    "qat_start_epoch": 0,
     "epochs": 80,
     "batch_size": 256,
     "lr": 0.0001,
@@ -178,7 +179,8 @@ def _epoch(model, data, indices, config, device, optimizer=None, rng=None):
                 loss.backward()
                 torch.nn.utils.clip_grad_norm_(model.parameters(), config["grad_clip"])
                 optimizer.step()
-                model.clip_weights()
+                if model.qat:
+                    model.clip_weights()
         mass = w.sum().item()
         totals += [loss.item() * mass, (kl * w).sum().item(),
                    ((2 * logits.sigmoid() - 1 - v).abs() * w).sum().item(), mass]
@@ -198,6 +200,8 @@ def train(config):
             raise ValueError(f"{key} must be finite and nonnegative")
     if config["policy_weight"] + config["value_weight"] == 0:
         raise ValueError("at least one loss weight must be positive")
+    if int(config["qat_start_epoch"]) < 0 or int(config["qat_start_epoch"]) >= int(config["epochs"]):
+        raise ValueError("qat_start_epoch must be in [0, epochs)")
     if config["min_lr"] > config["lr"]:
         raise ValueError("min_lr must not exceed lr")
     if config["schedule"] not in ("constant", "cosine"):
@@ -214,7 +218,8 @@ def train(config):
     device = config["device"]
     if device == "auto":
         device = "cuda" if torch.cuda.is_available() else "cpu"
-    model = Student(config["architecture"], config["hidden"], qat=config["qat"])
+    qat_from_start = bool(config["qat"]) and int(config["qat_start_epoch"]) == 0
+    model = Student(config["architecture"], config["hidden"], qat=qat_from_start)
     if not config["from_scratch"]:
         old = Student(config["init_architecture"], config["init_hidden"])
         old.load_float(_path(config["init_from"]))
@@ -239,7 +244,7 @@ def train(config):
     checkpoint = folder / "resume.pt"
     history, start, bad = [], 0, 0
     initial = _epoch(model, data, val_idx, config, device)
-    best_loss = initial["loss"]
+    best_loss = initial["loss"] if (model.qat or not config["qat"]) else float("inf")
     best = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
     if config["resume"] and checkpoint.exists():
         state = torch.load(checkpoint, map_location="cpu", weights_only=False)
@@ -255,7 +260,16 @@ def train(config):
         history, start, initial = state["history"], state["epoch"], state["initial"]
     (folder / "config.json").write_text(json.dumps(identity, indent=2) + "\n", encoding="utf-8")
     for epoch in range(start, config["epochs"]):
-        if bad >= config["patience"]:
+        should_qat = bool(config["qat"]) and epoch >= int(config["qat_start_epoch"])
+        if should_qat and not model.qat:
+            model.clip_weights()
+            model.qat = True
+            best_loss = float("inf")
+            bad = 0
+            best = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
+        elif not should_qat:
+            model.qat = False
+        if model.qat and bad >= config["patience"]:
             break
         base_lr = learning_rate(config, epoch)
         for group in optimizer.param_groups:
@@ -265,10 +279,11 @@ def train(config):
         row = dict(epoch=epoch + 1, lr=base_lr, train=training, val=validation)
         history.append(row)
         print(json.dumps(row), flush=True)
-        if validation["loss"] < best_loss:
+        eligible_for_best = (not config["qat"]) or model.qat
+        if eligible_for_best and validation["loss"] < best_loss:
             best_loss, bad = validation["loss"], 0
             best = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
-        else:
+        elif eligible_for_best:
             bad += 1
         state = dict(fingerprint=fingerprint, model=model.state_dict(), optimizer=optimizer.state_dict(),
                      best=best, best_loss=best_loss, bad=bad, history=history, epoch=epoch + 1,
@@ -278,6 +293,7 @@ def train(config):
         torch.save(state, temp)
         temp.replace(checkpoint)
     model.load_state_dict(best)
+    model.qat = bool(config["qat"])
     architecture = export(model, folder / "student.bin")
     report = dict(fingerprint=fingerprint, architecture=architecture, initial_val=initial,
                   best_val_loss=best_loss, samples=len(data["value"]), train_samples=len(train_idx),
