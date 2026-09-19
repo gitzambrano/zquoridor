@@ -43,6 +43,14 @@ MAX_DEPTH     = 50      # profundidade máxima do negamax (iterative deepening)
 TIME_MS       = 80     # orçamento de tempo por lance em ms
                         # 200 ms = boa qualidade; reduza para 50-100 ms se quiser
                         # gerar muito volume rapidamente (em detrimento da força)
+
+# --- Playout-cap randomization (KataGo/Claustrophobia-style) ---
+# Default OFF = comportamento histórico. Quando ligado, apenas a fração
+# FULL_SEARCH_PROB de plies que chega à busca real usa TIME_MS e vira amostra;
+# os demais usam CHEAP_TIME_MS só para conduzir a trajetória e não são gravados.
+PLAYOUT_CAP      = False
+FULL_SEARCH_PROB = 0.25
+CHEAP_TIME_MS    = 20
  
 # --- Modo de geração ---
 # "epsilon"    = modo antigo/original: fases de abertura por epsilon-greedy
@@ -307,6 +315,13 @@ def parse_args():
     p.add_argument("--chunk-games", type=int, default=CHUNK_GAMES, help=f"partidas por arquivo .bin (padrao: {CHUNK_GAMES})")
     p.add_argument("--depth", type=int, default=MAX_DEPTH, help=f"profundidade maxima (padrao: {MAX_DEPTH})")
     p.add_argument("--time-ms", type=int, default=TIME_MS, help=f"ms por lance (padrao: {TIME_MS})")
+    p.add_argument("--playout-cap", dest="playout_cap", action="store_true", default=PLAYOUT_CAP,
+                    help=f"liga cheap/full datagen; so full search vira amostra (padrao: {PLAYOUT_CAP})")
+    p.add_argument("--no-playout-cap", dest="playout_cap", action="store_false")
+    p.add_argument("--full-search-prob", type=float, default=FULL_SEARCH_PROB,
+                    help=f"fracao de buscas reais completas/gravadas (padrao: {FULL_SEARCH_PROB})")
+    p.add_argument("--cheap-time-ms", type=int, default=CHEAP_TIME_MS,
+                    help=f"tempo dos plies baratos trajectory-only (padrao: {CHEAP_TIME_MS}ms)")
     p.add_argument("--mode", choices=["epsilon", "montecarlo"], default=MODE,
                     help=f"modo de geracao (padrao: {MODE}). 'epsilon' = fases de abertura "
                          "epsilon-greedy (comportamento original). 'montecarlo' = amostragem "
@@ -438,6 +453,12 @@ def main():
         "--epsilon-midgame", str(args.epsilon_midgame),
         "--max-plies",       str(args.max_plies),
     ]
+    if args.playout_cap:
+        cmd += [
+            "--playout-cap",
+            "--full-search-prob", str(args.full_search_prob),
+            "--cheap-time-ms", str(args.cheap_time_ms),
+        ]
     if args.mode == "montecarlo":
         cmd += [
             "--mc-mode",
@@ -536,6 +557,8 @@ def main():
     print(f"  Executável  : {exe}")
     print(f"  Partidas    : {args.games} total / {args.chunk_games} por chunk")
     print(f"  Busca       : depth<={args.depth}, {args.time_ms} ms/lance")
+    if args.playout_cap:
+        print(f"  Playout-cap : ON | full={args.full_search_prob:.3f} @ {args.time_ms}ms | cheap={args.cheap_time_ms}ms | grava apenas full")
     print(f"  Modo        : {args.mode}")
     if args.mode == "montecarlo":
         print(f"                obvios=[lances 1..{args.mc_obvious_plies}] temp={args.mc_temp_obvious} (fixa, quase argmax)")
