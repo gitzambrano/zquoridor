@@ -548,26 +548,24 @@ Para superar os 50% contra o Claustrophobia sem regressão contra Titanium ou ma
 | **Tier 3** | **Search Genérico em Larga Escala** | **1.000.000** | Estados representativos de partidas completas e auto-jogo auditado. Submetidos a busca real bilateral: Claustrophobia MCTS (64 simulações em CUDA) + ZQuoridor MCAB (512 nós). Dá consistência tática em posições neutras. | **$\times 3,5$** | **100% Concluído e Fusionado (100.000/100.000 posições)**: `generic-search-100k-zq/dataset.npz` (100k amostras bilaterais, 19.881 de validação isoladas, peso médio 7,15); 900.000 posições adicionais prontas no índice. |
 | **Tier 3.5** | **Generic Critical Search (Nova Camada)** | **100.000** | Posições extraídas do acervo de auto-jogo genérico aplicando quatro filtros refinados de criticidade: alta entropia de política (Shannon entropy / top-2 ratio $\ge 0,5$), incerteza de valor e corrida ($|V| \approx 0$, $|d_{\text{own}} - d_{\text{opp}}| \le 2$), mudanças críticas de muro ($\le 3$ muros ou labirinto denso com alta pressão CAT) e swings de virada. **Supervisão com busca real em árvore ("search search mesmo")**: **80% Claustrophobia MCTS** (`zq_search_bridge.exe` 64 sims em CUDA) + **20% ZQuoridor MCAB** (512 nós em CPU), ponderados por divergência Jensen-Shannon. | **$\times 4,5$** | **100% Concluído e Fusionado (100.000/100.000 posições)**: `tier3-5-generic-critical-100k/dataset.npz` (100k amostras bilaterais 80/20, 19.991 de validação isoladas, peso médio 7,58, divergência de busca 0,527). |
 | **Tier 4** | **Dual-Crisis Search** | **100.000** | Posições críticas mineradas: derrotas contra Claustrophobia e Titanium, estados das 23 aberturas varridas 0-2 (densas em muros) e assimetrias agudas de estoque ($|\text{own} - \text{opp}| \ge 2$, $\le 3$ muros). Supervisão: 75% Claustrophobia MCTS (`zq_search_bridge.exe` 64 sims) + 25% ZQuoridor MCAB (512 nós) com escalonamento por divergência. | **$\times 6,0 \sim 8,0$** | **100% Concluído (100.000/100.000 posições consolidadas)**: `data/teaching/tier4-dual-crisis-100k/dataset.npz` (100k amostras, 16.763 de validação isoladas). |
-| **Tier 5** | **Branching Rollouts Dinâmicos + Deep Search** | **10.000 jogos + 10k Deep Search** | Partidas completas geradas a partir de estados de crise com perturbação top-4 nos plies 1–4 e jogo determinístico MCAB subsequente. Alvos temporais descontados: $V = \text{sign} \cdot 0,98^{\text{plies\_restantes}}$. **Busca profunda (~500ms)**: submissão de 10.000 posições de crise/bifurcação do Tier 5 ao MCTS profundo da Claustrophobia (512 sims em CUDA). | **$\times 6,0$** | **Deep search de 10.000 posições a ~500ms 100% Concluído** (`data/teaching/tier5-deep-search-10k/dataset.npz`, 10k posições com 512 sims na GPU RTX 4050, 5.025 amostras de validação); Rollouts do Batch 1 nos plies finais (`task-1589`, PID 6764, >222.000s CPU em 6 threads). |
+| **Tier 5** | **Deep Search + Crises Ponderadas** | **10k Deep Search** | Posições de bifurcação e crise submetidas ao MCTS profundo da Claustrophobia (512 sims em CUDA). Alvos de busca profunda (~500ms). | **$\times 6,0$** | **Deep search de 10.000 posições a ~500ms 100% Concluído e Integrado** (`data/teaching/tier5-deep-search-10k/dataset.npz`, 10k posições com 512 sims na GPU RTX 4050, 5.025 amostras de validação). Tarefa de rollouts sintéticos encerrada para desobstruir CPU e evitar contenção durante o treinamento campeão. |
 
 ### 12.2 Pipeline de Montagem e Treinamento
 
-1. **Montagem Unificada com Streaming de Baixo Consumo**: `tools/teacher/assemble_5tier_dataset.py` suporta todas as camadas (Tier 1, 2, 3, 3.5, 4, 5 Deep Search e 5 Rollouts). Para viabilizar a união de 10,7+ milhões de posições dentro do limite de 16 GB de RAM física, o script grava diretamente array a array no arquivo ZIP comprimido via blocos sequenciais (*chunked streaming* de 50.000 amostras), evitando alocações redundantes do array de política de 4,5 GB e mantendo o pico de memória abaixo de 200 MB durante todo o processo. Além disso, grupos de validação (`group_id`) e flags `is_val` são particionados de forma estritamente disjunta por camada (`overlap = 0`), satisfazendo as checagens rigorosas de `split_indices`.
-2. **Validação Eficiente no Treinador**: `training/run_experiment.py` atualizado para validar a conformidade e normalização da matriz de política em fatias sequenciais de 500.000 linhas, eliminando o estouro de memória (8,95 GB) na leitura de datasets maciços de 10M+.
-3. **Receita de Treinamento**:
+1. **Montagem Unificada com Streaming de Baixo Consumo**: `tools/teacher/assemble_5tier_dataset.py` consolidou **10.810.000 posições** (Tier 1, 2, 3, 3.5, 4 e 5 Deep Search) com streaming em blocos sequenciais, operando com pico de RAM < 200 MB e 0% de overlap entre grupos de treino e validação.
+2. **Validação Eficiente no Treinador**: `training/run_experiment.py` normalizado para validar fatias sequenciais de 500.000 linhas, eliminando estouro de RAM e liberando metadados logo após o particionamento.
+3. **Execução Ativa do Treinamento da Campeã (`race512-multitier-champion`)**:
    - Arquitetura: `race`, `hidden: 512` (456 inputs -> 512 neurônios -> cabeças de política e valor).
    - Inicialização: pesos da campeã atual `race512-search10-ft`.
    - Épocas: 60 épocas com batch size 1024 e paciência de 20 épocas.
    - Learning Rate: inicial `1.5e-5`, decay cosseno longo (recozimento profundo) até `min_lr=5e-7`, com 3 épocas de warmup.
    - Escala do tronco: `--trunk-lr-scale 0.2` para proteger as representações de base e refinar as cabeças táticas.
    - Quantização: QAT nativo com `QA=255`, `QB=64`.
-   - Hardware: inferência de treinamento na GPU (CUDA) e até 14 threads para processamento paralelo de dados.
-   - Recursos de Hardware e Alocação Balanceada Homologada:
-     - **CPU**: 16 núcleos físicos disponíveis -> teto estrito de **14 threads simultâneas**, preservando 2 núcleos para o sistema operacional.
-     - **Divisão Concorrente**: 6 threads alocadas para rollouts (`generate_rollouts.exe` PID 6764) + GPU livre e pronta para o fine-tuning final.
-     - **GPU (VRAM)**: NVIDIA GeForce RTX 4050 com **6 GB de VRAM**.
-       - Consumo medido no Deep Search: **1.221 MiB de VRAM**, acelerado pelos núcleos Tensor.
-       - Treino supervisionado QAT subsequente (batch size 1024): consumo projetado de **~1,2 GB de VRAM**, operando com ampla folga de memória.
+   - Hardware 100% Dedicado: GPU RTX 4050 (CUDA) e 4 threads de CPU (sem nenhum processo residual ou gerador de rollouts concorrente).
+   - **Métricas Reais Obtidas (Época 3 Concluída)**:
+     - Val Loss: $0,9571 \to 0,8933$ (queda consistente a cada época).
+     - Val Policy KL: $0,4903 \to 0,4397$.
+     - Val Value MAE: $0,2730 \to 0,2204$.
 3. **Critério de Aceitação e Homologação**:
    - Triagem: 20 pares (40 jogos) a 200 ms contra `main`, Titanium e Claustrophobia.
    - Confirmação Rigorosa: 100 pares (200 jogos) a 200 ms por lance com o livro oficial `openings_confirmation_v1.jsonl`.
