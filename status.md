@@ -56,6 +56,29 @@ relearn by experiment.
   Claustrophobia caches, PyTorch checkpoints, and third-party bots
   (`external_bots/`) remain untracked.
 
+- **Claustrophobia loss taxonomy and resource preservation (2026-09-18)**: Analysis
+  of 200 confirmation games between `race512-search10-ft` (the crowned finalist,
+  scoring 58.5% vs `main`, 57.5% vs Titanium, and 49.0% vs Claustrophobia) and
+  Claustrophobia identified wall-depletion asymmetry as the primary failure mode:
+  1. ZQuoridor exhausted all 10 walls before Claustrophobia in 50.5% of games
+     (101/200), winning only 32.7% of those games. When Claustrophobia exhausted
+     its walls first, ZQuoridor won 72.3%.
+  2. Over 54% of all losses occurred when ZQuoridor held 0 walls while
+     Claustrophobia preserved 1 to 4 walls (28.8% winrate). When both held walls,
+     ZQuoridor scored 53.8%; in zero-wall endgame races, `endgame_race.hpp` gave
+     ZQuoridor a 55.6% winrate.
+  3. In 21 of the 23 openings swept 0-2 against ZQuoridor, all six opening moves
+     were wall placements, creating early corridor density that caused premature
+     wall expenditure.
+  4. Search throughput measured ~53.4k nodes/s (200ms) and ~65.8k nodes/s (100ms)
+     for ZQuoridor (~10,680 nodes/move to ply 18-28), compared to 10-20 MCTS
+     simulations/move for Claustrophobia on CPU. Claustrophobia compensates for low
+     simulation volume with superior prior intuition on wall conservation.
+  5. The previous search-teaching set had only 2,000 positions (0.1% of the 2M
+     corpus), hitting a plateau at 48.8%-49.0%. Overcoming Claustrophobia (>50%)
+     requires scaling up teaching data to 50,000+ mined positions from loss games
+     and divergence states, using fast 100ms games to double generation throughput.
+
 - **Local teaching and external benchmark lab (2026-09-15)**: The local
   runners provision pinned Titanium and Claustrophobia sources in the ignored
   `external_bots` directory. The benchmark uses paired openings and a complete
