@@ -30,9 +30,11 @@ CONFIG = {
     "out_dir": "results/experiments/race256",
     "architecture": "race",
     "hidden": 256,
+    "value_hidden": 32,
     "init_from": "checkpoints/gen9-teacher-head/nnue_weights.bin",
     "init_architecture": "base",
     "init_hidden": 256,
+    "init_value_hidden": 32,
     "from_scratch": False,
     "qat": True,
     "epochs": 80,
@@ -214,9 +216,9 @@ def train(config):
     device = config["device"]
     if device == "auto":
         device = "cuda" if torch.cuda.is_available() else "cpu"
-    model = Student(config["architecture"], config["hidden"], qat=config["qat"])
+    model = Student(config["architecture"], config["hidden"], config["value_hidden"], qat=config["qat"])
     if not config["from_scratch"]:
-        old = Student(config["init_architecture"], config["init_hidden"])
+        old = Student(config["init_architecture"], config["init_hidden"], config["init_value_hidden"])
         old.load_float(_path(config["init_from"]))
         model.warm_start(old)
     model.to(device)
@@ -299,7 +301,8 @@ def build_candidate(config):
     suffix = ".exe" if os.name == "nt" else ""
     exe = folder / ("zquoridor" + suffix)
     flags = [f"-DZQ_NNUE_RACE_FEATURES={int(config['architecture'] == 'race')}",
-             f"-DZQ_NNUE_HIDDEN={config['hidden']}"]
+             f"-DZQ_NNUE_HIDDEN={config['hidden']}",
+             f"-DZQ_NNUE_VALUE_HIDDEN={config['value_hidden']}"]
     build_inputs = dict(flags=flags, compiler=_hash(Path(compiler)),
         files={str(p.relative_to(ROOT)): _hash(p) for p in [ROOT/"tools/external/zquoridor_uci.cpp",
             ROOT/"tests/nnue_incremental_check.cpp", *sorted((ROOT/"src").glob("*.hpp"))]},
