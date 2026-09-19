@@ -298,7 +298,10 @@ def build_candidate(config):
     folder = _path(config["out_dir"])
     suffix = ".exe" if os.name == "nt" else ""
     exe = folder / ("zquoridor" + suffix)
-    flags = [f"-DZQ_NNUE_RACE_FEATURES={int(config['architecture'] == 'race')}",
+    race_enabled = config["architecture"] in ("race", "race_topology")
+    topology_enabled = config["architecture"] == "race_topology"
+    flags = [f"-DZQ_NNUE_RACE_FEATURES={int(race_enabled)}",
+             f"-DZQ_NNUE_TOPOLOGY_FEATURES={int(topology_enabled)}",
              f"-DZQ_NNUE_HIDDEN={config['hidden']}"]
     build_inputs = dict(flags=flags, compiler=_hash(Path(compiler)),
         files={str(p.relative_to(ROOT)): _hash(p) for p in [ROOT/"tools/external/zquoridor_uci.cpp",
