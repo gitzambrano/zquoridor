@@ -354,55 +354,75 @@ Conclusão: `race512-search10-ft` é a melhor rede geral até o momento (+6 p.p.
 
 ### 8.1 Diagnóstico Tático & Métricas de Busca contra Claustrophobia
 
-#### Métricas de Busca e Velocidade
-- **ZQuoridor (MCAB)**:
-  - A 200 ms: ~10.680 nós expandidos (~53.400 nós/s), tempo médio medido por lance: 209 ms.
-  - A 100 ms: ~6.580 nós expandidos (~65.800 nós/s), tempo médio medido por lance: 105 ms. Permite dobrar o volume de jogos por hora em auto-confronto e screening.
-- **Claustrophobia**:
-  - A 200 ms: ~201 ms por lance, ~400 a 800 simulações MCTS guiadas por rede neural em PyTorch/CPU.
+#### Benchmarks Específicos de Busca & Velocidade
+Medições instrumentadas diretamente nos motores sobre o mesmo hardware e livro:
 
-#### Taxonomia de Derrotas nos 100 Pares de Confirmação (200 Jogos)
+| Métrica | ZQuoridor (MCAB + NNUE `race512`) | Claustrophobia (MCTS + PyTorch) | Implicação Tática |
+|---|---|---|---|
+| **Velocidade (Throughput)** | **~53.400 nós/s** a 200 ms<br>**~65.800 nós/s** a 100 ms | **~50 a 100 simulações/s** (PyTorch IPC) | ZQuoridor avalia **~500x a 1.000x mais estados por segundo**. |
+| **Simulações / lance (200 ms)** | **~10.680 simulações** | **~10 a 20 simulações** | Claustrophobia joga quase em *pure policy*, fazendo pouquíssimas visitas por lance. |
+| **Profundidade máxima da árvore** | Árvore MCTS atinge **ply 18 a 28** | Árvore atinge **ply 4 a 8** | ZQuoridor calcula linhas muito mais longas, mas com avaliação mais rasa por nó. |
+| **Tempo médio por lance** | 209,0 ms (P95: 235 ms) | 200,9 ms (P95: 204 ms) | Controle de relógio rigorosamente paritário. |
+| **Qualidade da Prior Policy** | Rápida (354+102 -> 512 int8) | Pesada (Rede Convolucional PyTorch) | Claustrophobia compensa a baixa taxa de nós com intuição posicional de muros muito superior. |
+
+#### Onde Mais Perdemos? (Taxonomia dos 100 Pares / 200 Jogos de Confirmação)
 - **Placar Geral**: 95 vitórias, 105 derrotas (49,0% de aproveitamento).
 - **Por Lado**: Brancas (P1): 49,0% (49/100) | Pretas (P2): 46,0% (46/100).
-- **Consistência por Par**: 18 vitórias duplas (2-0), 59 empates (1-1), 23 derrotas duplas (0-2).
-- **Duração Média**: Vitórias em 62,1 plies; Derrotas em 72,7 plies (indica que perdas se estendem para o final).
+- **Consistência por Par**: 18 vitórias duplas (2-0), 59 empates (1-1) e **23 varreduras sofridas (0-2)**.
+- **Duração Média**: Vitórias em 62,1 plies; Derrotas em **72,7 plies** (as derrotas não ocorrem por erro tático imediato, mas por desgaste no final).
 
-#### O Fator Decisivo: Assimetria no Estoque de Muros
-Análise dos 105 jogos perdidos vs 95 jogos vencidos contra Claustrophobia categorizados pelo estoque de muros no término:
+#### 1. O Fator Decisivo: Desbalanço e Tempo de Gasto de Muros
+Análise temporal do esgotamento do estoque de muros nas 200 partidas:
 
-| Condição no Término | ZQ Vitórias | ZQ Derrotas | Aproveitamento ZQ | % do Total de Derrotas |
-|---|---|---|---|---|
-| Ambos ainda têm muros | 28 | 24 | **53,8%** | 22,9% |
-| Ambos com 0 muros (corrida exata) | 20 | 16 | **55,6%** | 15,2% |
-| Claustro sem muros, ZQ com muros | 24 | 8 | **75,0%** | 7,6% |
-| **ZQ sem muros, Claustro com muros** | **23** | **57** | **28,8%** | **54,3%** |
+- **Gasto do 10º muro primeiro**:
+  - O ZQuoridor gastou todos os 10 muros primeiro em **50,5% das partidas** (101 jogos).
+  - O Claustrophobia gastou todos os 10 muros primeiro em **apenas 23,5% das partidas** (47 jogos).
+  - Em 26,0% das partidas, nenhum jogador gastou todos os 10 muros.
+- **Impacto no Resultado**:
+  - Quando o **ZQuoridor gasta os muros primeiro**: Placar de **33V - 68D (Winrate: 32,7%)**!
+  - Quando o **Claustrophobia gasta os muros primeiro**: Placar de **34V - 13D (Winrate: 72,3%)**!
+- **Timing médio da colocação de cada muro**:
+  - Muro #8: ZQ coloca no ply 31,9 (em 182 jogos) vs Claustro no ply 37,0 (160 jogos).
+  - Muro #9: ZQ coloca no ply 39,6 (em 159 jogos) vs Claustro no ply 46,5 (130 jogos).
+  - Muro #10: ZQ esgota no ply 48,1 (**em 116 jogos / 58% do total**) vs Claustro no ply 55,3 (**em apenas 68 jogos / 34% do total**).
+- **Estoque de muros no término**:
+  - ZQ com 0 muros e Claustrophobia com muros restantes: **23 vitórias e 57 derrotas (28,8% de winrate)** — representa **54,3% de todas as 105 derrotas**!
+  - Ambos com muros restantes: ZQuoridor vence **53,8%** (28V - 24D).
+  - Claustrophobia com 0 muros e ZQ com muros: ZQuoridor vence **75,0%** (24V - 8D).
+  - Ambos com 0 muros (corrida exata): ZQuoridor vence **55,6%** (20V - 16D) via `endgame_race.hpp`.
 
-**Conclusão Tática Central**:
-1. **Mais de 54% de todas as derrotas** contra Claustrophobia acontecem quando o ZQuoridor queima todos os seus 10 muros antes do adversário, permitindo que Claustrophobia guarde de 1 a 4 muros para fechar corredores críticos no final. Nesse cenário, o aproveitamento do ZQuoridor despenca para **28,8%**.
-2. Quando ambos mantêm muros ou quando Claustrophobia esgota muros primeiro, o ZQuoridor é francamente superior (**53,8% a 75,0%**).
-3. Em corridas de peão puras (ambos com 0 muros), o solver exato (`endgame_race.hpp`) garante vantagem (**55,6%**).
-4. O vazamento de força é o **desperdício de muros prematuro** e a **leitura incorreta do desbalanço de reservas no meio-jogo**.
+#### 2. Aberturas Específicas Varridas (0-2)
+As 23 aberturas onde o Claustrophobia venceu de Brancas e de Pretas:
+`#1, #22, #34, #38, #48, #81, #83, #97, #102, #127, #148, #161, #178, #184, #208, #212, #275, #303, #315, #332, #380, #382, #398`.
+- **Padrão unificador**: Em 21 das 23 aberturas varridas, **todos os 6 lances iniciais são muros** (ex.: abertura #38: `g1h, f3h, b3h, h7v, d1v, e1v`; abertura #102: `f3v, a1h, g4h, e7v, f6h, e3v`).
+- O tabuleiro inicia com alta densidade de barreiras. O ZQuoridor reage colocando ainda mais muros cedo, ficando prematuramente sem reservas para a transição para o final.
+
+#### 3. Divergência de Search entre ZQuoridor e Claustrophobia
+Análise das posições mais difíceis mineradas no teaching:
+- **Pawn vs Wall**: Em **10,0% das posições de alta divergência**, o ZQuoridor prefere colocar muro (>50% de probabilidade na busca), enquanto o Claustrophobia prefere mover o peão (>50% de probabilidade).
+- **Inversão de Sinal**: Em **20,8% das posições de divergência**, há inversão completa de sinal na avaliação de valor (um motor avalia a posição como vitoriosa e o outro como perdedora).
 
 ### 8.2 Big Picture: Estratégia de Escala Massiva de Teaching para Romper >50%
 
-Para ultrapassar definitivamente Claustrophobia (>50%), não podemos usar amostragens pontuais (como 2.000 posições selecionadas). Precisamos de escala massiva e mineração dirigida:
+O diagnóstico prova que amostragem reduzida (como as 2.000 posições do `top2000.jsonl`, que representavam apenas 0,1% do dataset de 2M) atinge platô em ~48,8%–49,0%. Para ultrapassar Claustrophobia com folga (>50%), a solução exige **escala massiva direcionada aos pontos de vazamento**:
 
-1. **Geração Massiva de Jogos (100 ms por lance)**:
-   - Utilizar controle rápido de 100 ms para autojogo de alta densidade (duplica a velocidade de geração).
-   - Gerar dezenas de milhares de jogos entre variantes de ZQuoridor e contra o próprio Claustrophobia.
-2. **Mineração Dirigida de Estados de Divergência & Perda**:
-   - Extrair especificamente:
-     a) Posições onde houve divergência de lance entre ZQuoridor e Claustrophobia.
-     b) Estados intermediários das 23 aberturas onde fomos varridos (0-2) na confirmação.
-     c) Posições com assimetria de muros desfavorável (ex.: ZQ com 1-3 muros, Oponente com 3-6 muros).
-     d) Lances onde o ZQuoridor decidiu gastar um muro e a avaliação piorou nos plies seguintes.
-3. **Teaching em Larga Escala com Ambos os Professores**:
-   - Expandir a base de teaching de 2.000 posições para 20.000–50.000 posições críticas mineradas.
-   - Relabeling profundo: avaliar com ZQuoridor em alta profundidade (AB/MCAB) e MCTS profundo de Claustrophobia (1024–2048 simulações).
-   - Ponderar perdas por divergência: maior peso para posições onde Claustrophobia puniu o gasto de muro.
-4. **Calibração de Busca / Conservação de Muro**:
-   - Avaliar heurística de conservação de muros (penalizar colocação de muros que não alteram a diferença líquida de BFS em favor do jogador quando a reserva está baixa).
-   - Ajustar `endgameMoverWallThreshold` e `cPuct` para valorizar a preservação do estoque defensivo.
+1. **Geração Massiva de Partidas Rápidas a 100 ms**:
+   - Executar autojogo com controle de 100 ms/lance (onde o motor opera a ~65.800 nós/s com ~6.580 simulações/lance).
+   - Gerar de **10.000 a 20.000 partidas completas** (tempo médio de ~7s por jogo em paralelo, gerando dezenas de milhares de partidas em poucas horas).
+   - Foco em partidas partindo das 23 aberturas varridas e em confrontos contra o Claustrophobia.
+2. **Mineração Massiva de Estados Críticos (50.000+ posições)**:
+   - Extrair não 2.000, mas **50.000 a 100.000 estados de alta prioridade**:
+     a) Estados intermediários de todas as derrotas contra Claustrophobia.
+     b) Momentos exatos onde o ZQuoridor gasta seus muros #7, #8, #9 e #10 com desbalanço desfavorável.
+     c) Posições das 23 aberturas densas em muros com alta divergência de política (Pawn vs Wall).
+3. **Teaching Duplo Profundo em Larga Escala**:
+   - Relabeling dessas 50.000+ posições com ambos os professores:
+     - ZQuoridor: busca profunda (AB 2048 nós ou MCAB com alto orçamento).
+     - Claustrophobia: MCTS de alta intensidade (512 a 1024 simulações).
+   - Composição de dataset onde 100% das posições adicionais vêm de situações reais de desbalanço e perdas contra o alvo.
+4. **Calibração de Heurística de Conservação de Muros na Busca**:
+   - Ativar penalização de colocação de muro tardio quando a reserva própria é baixa (`wallsLeft <= 2`) e o muro não altera a diferença líquida de BFS em favor do jogador.
+   - Avaliar `endgameMoverWallThreshold = 1` para ativar busca alfa-beta tática já com 1 muro restante.
 
 ### Gate C — novas arquiteturas
 
