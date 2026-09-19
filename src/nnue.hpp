@@ -964,6 +964,10 @@ constexpr int NNUE_EVAL_SCALE = 200;
 struct AccPair {
     AccumulatorQuant acc[2];
     bool pending[2] = {false, false};
+    // Optional deferred-copy source used by MCAB only. When non-null,
+    // resolvePending first copies the stable parent accumulator, then applies
+    // the pending move. Regular alpha-beta makeChildAccPair keeps these null.
+    const AccumulatorQuant* pendingBase[2] = {nullptr, nullptr};
     State pendBefore[2]{};
     Move pendMove[2]{Move::pawn(0), Move::pawn(0)};
     bool pendViewerIsMover[2] = {false, false};
@@ -975,6 +979,10 @@ struct AccPair {
 // como base de outro AccPair.
 inline void resolvePending(AccPair& ap, int persp, PlayerPathCacheTable* xtable = nullptr) {
     if (!ap.pending[persp]) return;
+    if (ap.pendingBase[persp] != nullptr) {
+        ap.acc[persp] = *ap.pendingBase[persp];
+        ap.pendingBase[persp] = nullptr;
+    }
     updateAccumulatorForMoveQuant(ap.acc[persp], ap.pendViewerIsMover[persp],
                                    ap.pendBefore[persp], ap.pendMove[persp], xtable);
     ap.pending[persp] = false;
@@ -993,12 +1001,40 @@ inline void makeChildAccPair(AccPair& parent, AccPair& child, const State& befor
     resolvePending(parent, opp, xtable);
     child.acc[opp] = parent.acc[opp];
     child.pending[opp] = false;
+    child.pendingBase[opp] = nullptr;
     updateAccumulatorForMoveQuant(child.acc[opp], /*viewerIsMover=*/false, before, m, xtable);
     // Perspectiva de quem jogou -- adia. parent.acc[mover] já está
     // garantidamente resolvida (invariante da struct: é a perspectiva de
     // s.turn no nó de `parent`, sempre eager).
     child.acc[mover] = parent.acc[mover];
     child.pending[mover] = true;
+    child.pendingBase[mover] = nullptr;
+    child.pendBefore[mover] = before;
+    child.pendMove[mover] = m;
+    child.pendViewerIsMover[mover] = true;
+}
+
+// MCAB-only variant: avoid copying the mover accumulator on every descent.
+// The MCAB accumulator stack is resized before a simulation starts and remains
+// stable throughout the descent, so a pointer to the parent slot is safe until
+// this pending perspective is resolved. This removes one HIDDEN*int32 copy per
+// traversed edge while preserving exactly the same eventual accumulator bits.
+inline void makeChildAccPairDeferredCopy(AccPair& parent, AccPair& child,
+                                          const State& before, const Move& m,
+                                          PlayerPathCacheTable* xtable = nullptr) {
+    int mover = before.turn, opp = 1 - mover;
+    resolvePending(parent, opp, xtable);
+
+    child.acc[opp] = parent.acc[opp];
+    child.pending[opp] = false;
+    child.pendingBase[opp] = nullptr;
+    updateAccumulatorForMoveQuant(child.acc[opp], /*viewerIsMover=*/false, before, m, xtable);
+
+    // parent.acc[mover] is eager by the AccPair invariant. Defer both the copy
+    // and the mover-perspective incremental update until/if this perspective is
+    // actually needed by the next ply.
+    child.pending[mover] = true;
+    child.pendingBase[mover] = &parent.acc[mover];
     child.pendBefore[mover] = before;
     child.pendMove[mover] = m;
     child.pendViewerIsMover[mover] = true;
@@ -1018,6 +1054,8 @@ inline AccPair buildAccPairRoot(const State& s, PlayerPathCacheTable* xtable = n
     ap.acc[1] = buildAccumulatorQuant(s, 1, xtable);
     ap.pending[0] = false;
     ap.pending[1] = false;
+    ap.pendingBase[0] = nullptr;
+    ap.pendingBase[1] = nullptr;
     return ap;
 }
 
