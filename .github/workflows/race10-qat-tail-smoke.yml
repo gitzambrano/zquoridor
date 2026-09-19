@@ -1,0 +1,21 @@
+name: race10 QAT-tail smoke
+on:
+  push:
+    branches: ["train/race10-qat-tail-v1"]
+permissions:
+  contents: read
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate trainer and QAT-tail commands
+        run: |
+          python -m py_compile training/run_experiment.py training/run_race10_qat_tail_matrix.py
+          python training/run_race10_qat_tail_matrix.py --dry-run > /tmp/qat.json
+          python - <<'PY'
+          import json
+          x=json.load(open("/tmp/qat.json"))
+          assert [r["qat_start_epoch"] for r in x]==[20,30]
+          print("QAT-tail matrix OK")
+          PY
