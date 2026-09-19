@@ -8,7 +8,7 @@ from torch import nn
 from torch.nn import functional as F
 from quantize_nnue import quantize, write_quantized
 
-FEATURES = {"base": 354, "race": 456}
+FEATURES = {"base": 354, "race": 456, "race_phase": 489}
 LAYOUT = ("w1", "b1", "wv1_wl", "bv1_wl", "wv2_wl", "bv2_wl", "wp", "bp")
 
 
@@ -17,7 +17,7 @@ def encode_features(data, indices, architecture="base"):
     x = dense_features(data, indices)
     if architecture == "base":
         return x
-    if architecture != "race":
+    if architecture not in ("race", "race_phase"):
         raise ValueError(f"unknown architecture: {architecture}")
     n = len(indices)
     extra = np.zeros((n, 102), dtype=np.float32)
@@ -30,7 +30,15 @@ def encode_features(data, indices, architecture="base"):
     extra[rows, 33 + ow - pw + 10] = 1
     race = np.sign(own - opp) + 1
     extra[rows, 54 + race * 16 + np.minimum(ow, 3) * 4 + np.minimum(pw, 3)] = 1
-    return np.concatenate((x, extra), axis=1)
+    xr = np.concatenate((x, extra), axis=1)
+    if architecture == "race":
+        return xr
+    total = ow + pw
+    phase = np.minimum(total // 5, 3)
+    phase_extra = np.zeros((n, 33), dtype=np.float32)
+    phase_extra[rows, total] = 1
+    phase_extra[rows, 21 + race * 4 + phase] = 1
+    return np.concatenate((xr, phase_extra), axis=1)
 
 
 def _round_ste(x, scale):
@@ -42,7 +50,7 @@ class Student(nn.Module):
     def __init__(self, architecture="base", hidden=256, qat=False):
         super().__init__()
         if architecture not in FEATURES or hidden not in (128, 256, 384, 512):
-            raise ValueError("architecture must be base/race; hidden must be 128/256/384/512")
+            raise ValueError("architecture must be base/race/race_phase; hidden must be 128/256/384/512")
         self.architecture, self.hidden, self.qat = architecture, hidden, qat
         self.fc1 = nn.Linear(FEATURES[architecture], hidden)
         self.value1_wl = nn.Linear(hidden, 32)
@@ -136,7 +144,8 @@ def export(model, path):
     manifest = dict(schema="zquoridor.student.v1", architecture=model.architecture,
                     features=FEATURES[model.architecture], hidden=model.hidden, value_hidden=32,
                     policy_out=209, qa=255, qb=64, qat=model.qat,
-                    cpp_flags=[f"-DZQ_NNUE_RACE_FEATURES={int(model.architecture == 'race')}",
+                    cpp_flags=[f"-DZQ_NNUE_RACE_FEATURES={int(model.architecture in ('race', 'race_phase'))}",
+                               f"-DZQ_NNUE_PHASE_FEATURES={int(model.architecture == 'race_phase')}",
                                f"-DZQ_NNUE_HIDDEN={model.hidden}"],
                     float_sha256=hashlib.sha256(path.read_bytes()).hexdigest(),
                     int8_sha256=hashlib.sha256(quant_path.read_bytes()).hexdigest())
