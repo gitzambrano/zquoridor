@@ -370,9 +370,10 @@ void testProgressiveWidening() {
     const auto* rootNode = mcab.rootNodeForInspection();
     assert(rootNode != nullptr);
     assert(rootNode->activeMoves >= 4);
-    assert(rootNode->activeMoves < (int)rootNode->candidateMoves.size());
+    assert(rootNode->candidateMoves != nullptr);
+    assert(rootNode->activeMoves < (int)rootNode->candidateMoves->size());
     printf("[testProgressiveWidening] active=%d candidates=%zu simulations=%lld OK\n",
-           rootNode->activeMoves, rootNode->candidateMoves.size(), mstats.simulations);
+           rootNode->activeMoves, rootNode->candidateMoves->size(), mstats.simulations);
 }
 
 int main() {
