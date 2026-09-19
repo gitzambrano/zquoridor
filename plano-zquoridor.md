@@ -557,8 +557,8 @@ Para superar os 50% contra o Claustrophobia sem regressão contra Titanium ou ma
 3. **Receita de Treinamento**:
    - Arquitetura: `race`, `hidden: 512` (456 inputs -> 512 neurônios -> cabeças de política e valor).
    - Inicialização: pesos da campeã atual `race512-search10-ft`.
-   - Épocas: 25 épocas com batch size 1024.
-   - Learning Rate: inicial `1.5e-5`, decay cosseno até `min_lr=1e-6`, com 2 épocas de warmup.
+   - Épocas: 60 épocas com batch size 1024 e paciência de 20 épocas.
+   - Learning Rate: inicial `1.5e-5`, decay cosseno longo (recozimento profundo) até `min_lr=5e-7`, com 3 épocas de warmup.
    - Escala do tronco: `--trunk-lr-scale 0.2` para proteger as representações de base e refinar as cabeças táticas.
    - Quantização: QAT nativo com `QA=255`, `QB=64`.
    - Hardware: inferência de treinamento na GPU (CUDA) e até 14 threads para processamento paralelo de dados.
