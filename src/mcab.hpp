@@ -237,6 +237,10 @@ struct McabParams {
     double wideningCoefficient = 2.0;   // added coefficient in c*N^alpha
     double wideningExponent = 0.5;      // exponent alpha in c*N^alpha
     bool treeReuse = true;               // reuso de subárvore entre lances (Seção 8)
+    // Experimental MCAB-only accumulator optimization. Default off for a
+    // clean A/B gate; when enabled, defer the otherwise unconditional copy of
+    // the mover-perspective accumulator until the next ply actually needs it.
+    bool deferredAccCopy = false;
     bool clearTTPerMove = false;
     // Separate bounded policy/value inference caches; experimental opt-in.
     bool evalCache = true;
@@ -370,6 +374,23 @@ inline auto mcabPathCache(E& engine, int) -> decltype(engine.pathCache()) {
 template <typename E>
 inline decltype(nullptr) mcabPathCache(E&, ...) {
     return nullptr;
+}
+
+// Prefer the deferred-copy accumulator constructor when the concrete NNUE
+// implementation provides it; old refs and toy engines fall back to the
+// historical makeChildAccPair path via SFINAE.
+template <typename Acc, typename S, typename M, typename Cache>
+inline auto mcabMakeChildAccPairDeferred(Acc& parent, Acc& child,
+                                          const S& before, const M& move,
+                                          Cache cache, int)
+    -> decltype(makeChildAccPairDeferredCopy(parent, child, before, move, cache), void()) {
+    makeChildAccPairDeferredCopy(parent, child, before, move, cache);
+}
+template <typename Acc, typename S, typename M, typename Cache>
+inline void mcabMakeChildAccPairDeferred(Acc& parent, Acc& child,
+                                          const S& before, const M& move,
+                                          Cache cache, ...) {
+    makeChildAccPair(parent, child, before, move, cache);
 }
 
 // nnueEvalInt vive em qr:: e é encontrado por ADL a partir de AccPair.
@@ -1374,8 +1395,13 @@ private:
                 pool[curIdx].child[e] = childIdx;  // reindexado -- `node` pode ter sido invalidada
             }
 
-            makeChildAccPair(mcabAccStack[depth], mcabAccStack[depth + 1], beforeState, mv,
-                             mcabPathCache(engine, 0));
+            if (params.deferredAccCopy) {
+                mcabMakeChildAccPairDeferred(mcabAccStack[depth], mcabAccStack[depth + 1],
+                                              beforeState, mv, mcabPathCache(engine, 0), 0);
+            } else {
+                makeChildAccPair(mcabAccStack[depth], mcabAccStack[depth + 1], beforeState, mv,
+                                 mcabPathCache(engine, 0));
+            }
             (void)parentSide;
 
             curIdx = childIdx;
