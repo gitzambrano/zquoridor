@@ -1251,6 +1251,10 @@ A comprehensive review of the web deployment resolved three functional and visua
 - **Tier 4 consolidation.** 100,000 dual-crisis positions (loss games, 0-2 sweep openings, and
   acute wall stock asymmetries) were consolidated into `data/teaching/tier4-dual-crisis-100k/dataset.npz`
   with strict train/validation isolation (16,763 validation samples).
+- **Tier 3.5 Generic Critical Search mining.** Added `tools/teacher/mine_generic_critical.py`
+  to extract 100,000 high-uncertainty positions from canonical self-play shards using vectorized
+  filtering on policy entropy, race distance margins (|d_own - d_opp| <= 2), wall stock depletion
+  (<= 3), and game-swing turning points (`tier3-5-generic-critical-100k/positions.jsonl`).
 - **Tier 5 deep search enrichment.** Following Tier 3 bilateral search completion, critical
   branching points and crisis moments from Tier 5 rollouts will receive deep Claustrophobia MCTS
   searches (~500 ms / ~512 simulations) on CUDA before final dataset blending.
