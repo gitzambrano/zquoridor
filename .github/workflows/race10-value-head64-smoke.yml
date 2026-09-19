@@ -1,0 +1,59 @@
+name: race10 value-head64 smoke
+
+on:
+  push:
+    branches: ["train/race10-value-head64-v1"]
+    paths:
+      - "training/student_model.py"
+      - "training/run_experiment.py"
+      - "src/nnue.hpp"
+      - "experiments/race10-value-head64-v1/**"
+      - ".github/workflows/race10-value-head64-smoke.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install Python smoke dependencies
+        run: |
+          python -m pip install --quiet numpy
+          python -m pip install --quiet torch --index-url https://download.pytorch.org/whl/cpu
+      - name: Python warm-start and export smoke
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import sys, torch
+          sys.path.insert(0,"training")
+          from student_model import Student
+          old=Student("race",512,qat=True,value_hidden=32)
+          new=Student("race",512,qat=True,value_hidden=64)
+          with torch.no_grad():
+              old.fc1.weight.normal_(0,0.01)
+              old.value1_wl.weight.normal_(0,0.01)
+              old.value2_wl.weight.normal_(0,0.01)
+              old.policy.weight.normal_(0,0.01)
+              new.warm_start(old)
+          x=torch.zeros(2,456)
+          x[:,0]=1
+          vo,po=old(x)
+          vn,pn=new(x)
+          assert torch.allclose(vo,vn,atol=1e-5,rtol=1e-5)
+          assert torch.allclose(po,pn,atol=1e-5,rtol=1e-5)
+          assert new.value1_wl.out_features==64
+          print("value64 warm-start preserves function")
+          PY
+      - name: C++ compile with value hidden 64
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p bin
+          g++ -O2 -std=c++17             -DZQ_NNUE_RACE_FEATURES=1 -DZQ_NNUE_HIDDEN=512 -DZQ_NNUE_VALUE_HIDDEN=64             tests/nnue_incremental_check.cpp -o bin/check-v64
+          g++ -O2 -std=c++17 -pthread             -DZQ_NNUE_RACE_FEATURES=1 -DZQ_NNUE_HIDDEN=512 -DZQ_NNUE_VALUE_HIDDEN=64             -Isrc tools/external/zquoridor_uci.cpp -o bin/zq-v64
