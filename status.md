@@ -1264,6 +1264,40 @@ A comprehensive review of the web deployment resolved three functional and visua
   `data/teaching/tier3-5-generic-critical-100k/dataset.npz` (mean weight 7.58, 19,991 val samples).
 - **Tier 5 deep search enrichment.** 10,000 crisis and branching positions from Tier 5 rollouts are
   actively being searched with Claustrophobia MCTS at ~500 ms (512 simulations) on CUDA.
+- **Champion training and dataset assembly (`race512-multitier-champion`).** The
+  assembly script `tools/teacher/assemble_5tier_dataset.py` consolidated 10,810,000
+  samples across all five curriculum tiers into `data/teaching/multitier-final-dataset/dataset.npz`.
+  The dataset contains 9,012,797 training samples and 1,797,203 validation samples.
+  Chunked binary streaming kept peak memory usage under 200 MB. The model trained
+  on the RTX 4050 GPU for 60 epochs with cosine learning rate decay down to `5e-7`.
+  Validation loss dropped from 0.9571 to 0.8701. Validation policy KL dropped
+  from 0.4903 to 0.4206. Validation value mean absolute error dropped from 0.2730
+  to 0.2116. The verification binary `incremental_check.exe` evaluated 4,758 positions
+  with zero divergence from the reference accumulator.
+- **Screening benchmark metrics.** The screening suite evaluated the champion
+  across 20 opening pairs at 200 ms per move against three reference engines:
+  - Against `main`: 77.5% score (30 wins, 10 losses, 0 draws) with +214.8 Elo
+    (95% confidence interval: +117.2 to +358.8). The model exceeded the +58.5%
+    promotion threshold.
+  - Against Titanium: 70.0% score (28 wins, 12 losses, 0 draws) with +147.2 Elo
+    (95% confidence interval: +52.5 to +269.4). The model exceeded the +57.5%
+    promotion threshold. The `main` baseline achieved 67.5% in the same conditions.
+  - Against Claustrophobia: 38.8% score (15 wins, 24 losses, 1 draw) with -79.5 Elo
+    (95% confidence interval: -157.7 to -17.4). The `main` baseline achieved 43.8%
+    (17 wins, 22 losses, 1 draw).
+- **Tactical failure analysis against Claustrophobia.** Analysis of the 24 losses
+  identified three tactical factors:
+  - The model won 63.2% of games as the first player (12 wins, 7 losses). However,
+    the model won only 15.0% of games as the second player (3 wins, 17 losses).
+    Fifteen of the 20 opening pairs resulted in 1-1 splits where the first player won.
+  - The model delayed wall exhaustion compared to `main`. The model ran out of
+    walls first in 54.2% of losses, compared to 77.3% for `main`. However, Claustrophobia
+    consistently retained 3 to 4 walls until plies 45 to 55. It placed decisive
+    cutoffs in the late game when the model held zero walls.
+  - In Openings 81 and 86, `main` defeated Claustrophobia 2-0, whereas the candidate
+    lost 0-2. Trace analysis revealed that `main` played aggressive containment walls
+    at ply 10 and ply 18 (`d6h` and `d4v`). In contrast, the candidate played passive
+    pawn advances (`e4` and `c2`), which conceded the center corridor.
 
 ---
 

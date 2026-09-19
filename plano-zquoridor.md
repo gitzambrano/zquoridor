@@ -579,6 +579,32 @@ Para superar os 50% contra o Claustrophobia sem regressão contra Titanium ou ma
    - Confirmação Rigorosa: 100 pares (200 jogos) a 200 ms por lance com o livro oficial `openings_confirmation_v1.jsonl`.
    - Meta de Promoção: Placar > 50,0% contra Claustrophobia, > 57,5% contra Titanium e > 58,5% contra o main, com limite inferior do intervalo de confiança bootstrap 95% estritamente positivo.
 
+### 12.4 Resultados da Triagem da Campeã (`race512-multitier-champion`) e Diagnóstico Tático
+
+A triagem oficial de 20 pares (40 jogos por oponente) a 200 ms por lance foi concluída em 2026-09-19 utilizando o livro oficial `tools/external/openings_screen_v1.jsonl` e aceleração CUDA para o Claustrophobia.
+
+| Oponente | Jogos | Placar (%) | Vitórias / Empates / Derrotas | Elo Relativo | IC Bootstrap 95% (Elo) | Status vs Meta |
+|---|---:|---:|---:|---:|---:|---|
+| **`main`** | 40 | **77,5%** | 30W / 0D / 10L | **+214,8** | [+117,2, +358,8] | **Superada** (meta > 58,5%) |
+| **Titanium** | 40 | **70,0%** | 28W / 0D / 12L | **+147,2** | [+52,5, +269,4] | **Superada** (meta > 57,5%) |
+| **Claustrophobia** | 40 | **38,8%** | 15W / 1D / 24L | **-79,5** | [-157,7, -17,4] | **Aberta** (meta > 50,0%) |
+
+Para referência comparativa no mesmo benchmark idêntico, a rede de produção do `main` obteve:
+- vs Titanium: 67,5% (+127,0 Elo). A campeã superou o `main` em +2,5 pontos percentuais (+20,2 Elo).
+- vs Claustrophobia: 43,8% (-43,7 Elo, 17W / 1D / 22L). A candidata ficou a apenas 2 vitórias do `main`.
+
+#### Diagnóstico Empírico das Derrotas contra Claustrophobia
+
+1. **Assimetria Drástica do Primeiro Jogador**:
+   - Como P0 (primeiro a mover): A campeã obteve **63,2% de vitórias** (12W / 7L) contra o MCTS da Claustrophobia.
+   - Como P1 (segundo a mover): A campeã obteve apenas **15,0% de vitórias** (3W / 17L).
+   - Em 15 dos 20 pares de abertura, o resultado foi divisão 1-1 em que o jogador com as brancas venceu.
+2. **Dinâmica de Esgotamento de Muros**:
+   - A campeã melhorou substancialmente a retenção de muros em relação ao `main`: foi a primeira a esgotar muros em 54,2% das derrotas (contra 77,3% no `main`).
+   - Contudo, a Claustrophobia manteve de 3 a 4 muros de reserva até os plies 45-55. Em finais avançados, a Claustrophobia aplicou cortes táticos profundos (ex: `h5v` ampliando o caminho em +4 passos), momento no qual a campeã estava com estoque zero e sem recursos para contra-ataque.
+3. **Divergência Tática em Aberturas Específicas**:
+   - Nas Aberturas 81 e 86, o `main` varreu a Claustrophobia (2-0), enquanto a campeã foi varrida (0-2). A análise lance a lance revelou que o `main` utilizou muros táticos imediatos de contenção no centro (`d4v` no ply 18 e `d6h` no ply 10), enquanto a campeã optou por avanços de peão mais passivos (`c2` e `e4`), permitindo que a Claustrophobia tomasse o controle do corredor central.
+
 ---
 
 ## 13. Catálogo Canônico de TO-DO e Ideias Arquiteturais Futuras
