@@ -72,11 +72,20 @@ inline int wallsLeftBucket(int n) {
 #ifndef ZQ_NNUE_RACE_FEATURES
 #define ZQ_NNUE_RACE_FEATURES 0
 #endif
+#ifndef ZQ_NNUE_RACE_REGIME_FEATURES
+#define ZQ_NNUE_RACE_REGIME_FEATURES 0
+#endif
 #ifndef ZQ_NNUE_HIDDEN
 #define ZQ_NNUE_HIDDEN 256
 #endif
 constexpr int BASE_FEATURES = N * N + N * N + WS * WS * 2 + 2 * DIST_BUCKETS + 2 * WALLS_LEFT_BUCKETS;
-constexpr int NUM_FEATURES = BASE_FEATURES + (ZQ_NNUE_RACE_FEATURES ? 102 : 0);
+constexpr int RACE_FEATURE_COUNT = 102;
+constexpr int RACE_REGIME_FEATURE_COUNT = 132;
+static_assert(!ZQ_NNUE_RACE_REGIME_FEATURES || ZQ_NNUE_RACE_FEATURES,
+              "race-regime features require the base race feature block");
+constexpr int NUM_FEATURES = BASE_FEATURES
+    + (ZQ_NNUE_RACE_FEATURES ? RACE_FEATURE_COUNT : 0)
+    + (ZQ_NNUE_RACE_REGIME_FEATURES ? RACE_REGIME_FEATURE_COUNT : 0);
 constexpr int HIDDEN = ZQ_NNUE_HIDDEN;
 static_assert(HIDDEN == 128 || HIDDEN == 256 || HIDDEN == 384 || HIDDEN == 512,
               "unsupported NNUE width");
@@ -105,6 +114,25 @@ template<class Acc> inline void updateRaceFeatures(Acc& acc, const std::array<in
             acc.removeFeature(previous[i]);
             acc.addFeature(current[i]);
         }
+    }
+}
+
+template<class Acc> inline int raceRegimeFeature(const Acc& acc) {
+    int delta = acc.ownDistBucket - acc.oppDistBucket;
+    int margin = delta < -16 ? -16 : (delta > 16 ? 16 : delta);
+    int ownZero = acc.ownWallsLeftBucket == 0;
+    int oppZero = acc.oppWallsLeftBucket == 0;
+    int regime = (!ownZero && !oppZero) ? 0
+               : ( ownZero && !oppZero) ? 1
+               : (!ownZero &&  oppZero) ? 2 : 3;
+    return BASE_FEATURES + RACE_FEATURE_COUNT + (margin + 16) * 4 + regime;
+}
+
+template<class Acc> inline void updateRaceRegimeFeature(Acc& acc, int previous) {
+    int current = raceRegimeFeature(acc);
+    if (current != previous) {
+        acc.removeFeature(previous);
+        acc.addFeature(current);
     }
 }
 constexpr int POLICY_OUT = N * N + WS * WS * 2;             // 81 destino peão + 128 muro = 209
@@ -357,6 +385,9 @@ inline Accumulator buildAccumulator(const State& s, int perspective, PlayerPathC
 #if ZQ_NNUE_RACE_FEATURES
     for (int feature : raceFeatures(acc)) acc.addFeature(feature);
 #endif
+#if ZQ_NNUE_RACE_REGIME_FEATURES
+    acc.addFeature(raceRegimeFeature(acc));
+#endif
     return acc;
 }
 
@@ -445,6 +476,9 @@ inline void updateAccumulatorForMove(Accumulator& acc, bool viewerIsMover, const
 #if ZQ_NNUE_RACE_FEATURES
     const auto previousRaceFeatures = raceFeatures(acc);
 #endif
+#if ZQ_NNUE_RACE_REGIME_FEATURES
+    const int previousRaceRegimeFeature = raceRegimeFeature(acc);
+#endif
     State after = applyMove(before, m);
     int mover = before.turn, opp = 1 - mover;
     if (!m.isWall) {
@@ -510,6 +544,9 @@ inline void updateAccumulatorForMove(Accumulator& acc, bool viewerIsMover, const
     }
 #if ZQ_NNUE_RACE_FEATURES
     updateRaceFeatures(acc, previousRaceFeatures);
+#endif
+#if ZQ_NNUE_RACE_REGIME_FEATURES
+    updateRaceRegimeFeature(acc, previousRaceRegimeFeature);
 #endif
 }
 
