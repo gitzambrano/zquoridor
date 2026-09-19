@@ -72,11 +72,20 @@ inline int wallsLeftBucket(int n) {
 #ifndef ZQ_NNUE_RACE_FEATURES
 #define ZQ_NNUE_RACE_FEATURES 0
 #endif
+#ifndef ZQ_NNUE_CONTACT_FEATURES
+#define ZQ_NNUE_CONTACT_FEATURES 0
+#endif
 #ifndef ZQ_NNUE_HIDDEN
 #define ZQ_NNUE_HIDDEN 256
 #endif
 constexpr int BASE_FEATURES = N * N + N * N + WS * WS * 2 + 2 * DIST_BUCKETS + 2 * WALLS_LEFT_BUCKETS;
-constexpr int NUM_FEATURES = BASE_FEATURES + (ZQ_NNUE_RACE_FEATURES ? 102 : 0);
+constexpr int RACE_FEATURE_COUNT = 102;
+constexpr int CONTACT_FEATURE_COUNT = 26;
+static_assert(!ZQ_NNUE_CONTACT_FEATURES || ZQ_NNUE_RACE_FEATURES,
+              "contact features require the race feature block");
+constexpr int NUM_FEATURES = BASE_FEATURES
+    + (ZQ_NNUE_RACE_FEATURES ? RACE_FEATURE_COUNT : 0)
+    + (ZQ_NNUE_CONTACT_FEATURES ? CONTACT_FEATURE_COUNT : 0);
 constexpr int HIDDEN = ZQ_NNUE_HIDDEN;
 static_assert(HIDDEN == 128 || HIDDEN == 256 || HIDDEN == 384 || HIDDEN == 512,
               "unsupported NNUE width");
@@ -106,6 +115,18 @@ template<class Acc> inline void updateRaceFeatures(Acc& acc, const std::array<in
             acc.addFeature(current[i]);
         }
     }
+}
+
+inline int pawnContactFeature(const State& s, int perspective) {
+    int me = perspective, opp = 1 - perspective;
+    int ownCell = mirroredPawnCell(s.pawn[me], perspective);
+    int oppCell = mirroredPawnCell(s.pawn[opp], perspective);
+    int dr = rowOf(oppCell) - rowOf(ownCell);
+    int dc = colOf(oppCell) - colOf(ownCell);
+    int bucket = 25;
+    if (dr >= -2 && dr <= 2 && dc >= -2 && dc <= 2)
+        bucket = (dr + 2) * 5 + (dc + 2);
+    return BASE_FEATURES + RACE_FEATURE_COUNT + bucket;
 }
 constexpr int POLICY_OUT = N * N + WS * WS * 2;             // 81 destino peão + 128 muro = 209
 
@@ -357,6 +378,9 @@ inline Accumulator buildAccumulator(const State& s, int perspective, PlayerPathC
 #if ZQ_NNUE_RACE_FEATURES
     for (int feature : raceFeatures(acc)) acc.addFeature(feature);
 #endif
+#if ZQ_NNUE_CONTACT_FEATURES
+    acc.addFeature(pawnContactFeature(s, perspective));
+#endif
     return acc;
 }
 
@@ -442,8 +466,12 @@ inline void forwardPolicy(const Accumulator& acc, std::array<float, POLICY_OUT>&
 // nasce de buildAccumulator e só é mutado por esta função).
 inline void updateAccumulatorForMove(Accumulator& acc, bool viewerIsMover, const State& before, const Move& m,
                                       PlayerPathCacheTable* xtable = nullptr) {
+    const int viewerPerspective = viewerIsMover ? before.turn : 1 - before.turn;
 #if ZQ_NNUE_RACE_FEATURES
     const auto previousRaceFeatures = raceFeatures(acc);
+#endif
+#if ZQ_NNUE_CONTACT_FEATURES
+    const int previousContactFeature = pawnContactFeature(before, viewerPerspective);
 #endif
     State after = applyMove(before, m);
     int mover = before.turn, opp = 1 - mover;
@@ -510,6 +538,13 @@ inline void updateAccumulatorForMove(Accumulator& acc, bool viewerIsMover, const
     }
 #if ZQ_NNUE_RACE_FEATURES
     updateRaceFeatures(acc, previousRaceFeatures);
+#endif
+#if ZQ_NNUE_CONTACT_FEATURES
+    const int currentContactFeature = pawnContactFeature(after, viewerPerspective);
+    if (currentContactFeature != previousContactFeature) {
+        acc.removeFeature(previousContactFeature);
+        acc.addFeature(currentContactFeature);
+    }
 #endif
 }
 
@@ -736,6 +771,9 @@ inline AccumulatorQuant buildAccumulatorQuant(const State& s, int perspective, P
 #if ZQ_NNUE_RACE_FEATURES
     for (int feature : raceFeatures(acc)) acc.addFeature(feature);
 #endif
+#if ZQ_NNUE_CONTACT_FEATURES
+    acc.addFeature(pawnContactFeature(s, perspective));
+#endif
     return acc;
 }
 
@@ -747,8 +785,12 @@ inline AccumulatorQuant buildAccumulatorQuant(const State& s, int perspective, P
 // nos pontos de chamada da busca.
 inline void updateAccumulatorForMoveQuant(AccumulatorQuant& acc, bool viewerIsMover, const State& before, const Move& m,
                                            PlayerPathCacheTable* xtable = nullptr) {
+    const int viewerPerspective = viewerIsMover ? before.turn : 1 - before.turn;
 #if ZQ_NNUE_RACE_FEATURES
     const auto previousRaceFeatures = raceFeatures(acc);
+#endif
+#if ZQ_NNUE_CONTACT_FEATURES
+    const int previousContactFeature = pawnContactFeature(before, viewerPerspective);
 #endif
     State after = applyMove(before, m);
     int mover = before.turn, opp = 1 - mover;
@@ -813,6 +855,13 @@ inline void updateAccumulatorForMoveQuant(AccumulatorQuant& acc, bool viewerIsMo
     }
 #if ZQ_NNUE_RACE_FEATURES
     updateRaceFeatures(acc, previousRaceFeatures);
+#endif
+#if ZQ_NNUE_CONTACT_FEATURES
+    const int currentContactFeature = pawnContactFeature(after, viewerPerspective);
+    if (currentContactFeature != previousContactFeature) {
+        acc.removeFeature(previousContactFeature);
+        acc.addFeature(currentContactFeature);
+    }
 #endif
 }
 
