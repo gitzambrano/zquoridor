@@ -76,6 +76,7 @@ struct Options {
     bool progressiveWidening = false;
     bool clearTTPerMove = false;
     bool disableTreeReuse = false;
+    bool deferredAccCopy = false;
     int wideningInitialMoves = -1;
     double wideningCoefficient = -1.0;
     double wideningExponent = -1.0;
@@ -114,6 +115,7 @@ static Options parseArgs(int argc, char** argv) {
         else if (a == "--progressive-widening") o.progressiveWidening = true;
         else if (a == "--clear-tt-per-move") o.clearTTPerMove = true;
         else if (a == "--no-tree-reuse") o.disableTreeReuse = true;
+        else if (a == "--deferred-acc-copy") o.deferredAccCopy = true;
         else if (a == "--widening-initial") o.wideningInitialMoves = std::atoi(need("--widening-initial"));
         else if (a == "--widening-coeff") o.wideningCoefficient = std::atof(need("--widening-coeff"));
         else if (a == "--widening-exp") o.wideningExponent = std::atof(need("--widening-exp"));
@@ -162,6 +164,7 @@ int main(int argc, char** argv) {
     if (opt.progressiveWidening) params.progressiveWidening = true;
     if (opt.clearTTPerMove) params.clearTTPerMove = true;
     if (opt.disableTreeReuse) params.treeReuse = false;
+    if (opt.deferredAccCopy) params.deferredAccCopy = true;
     if (opt.wideningInitialMoves >= 0) params.wideningInitialMoves = opt.wideningInitialMoves;
     if (opt.wideningCoefficient > 0.0) params.wideningCoefficient = opt.wideningCoefficient;
     if (opt.wideningExponent > 0.0) params.wideningExponent = opt.wideningExponent;
@@ -276,7 +279,8 @@ int main(int argc, char** argv) {
                       << " lmrDiv=" << engine.getLmrDivisor()
                       << " pw=" << (params.progressiveWidening ? 1 : 0)
                       << " clearTT=" << (params.clearTTPerMove ? 1 : 0)
-                      << " reuse=" << (params.treeReuse ? 1 : 0) << "\n";
+                      << " reuse=" << (params.treeReuse ? 1 : 0)
+                      << " deferredAccCopy=" << (params.deferredAccCopy ? 1 : 0) << "\n";
             std::cout << "bestmove " << moveToText(best) << "\n" << std::flush;
         } else if (cmd == "quit") {
             break;
