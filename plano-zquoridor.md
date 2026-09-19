@@ -554,19 +554,27 @@ Para superar os 50% contra o Claustrophobia sem regressão contra Titanium ou ma
 
 1. **Montagem Unificada com Streaming de Baixo Consumo**: `tools/teacher/assemble_5tier_dataset.py` consolidou **10.810.000 posições** (Tier 1, 2, 3, 3.5, 4 e 5 Deep Search) com streaming em blocos sequenciais, operando com pico de RAM < 200 MB e 0% de overlap entre grupos de treino e validação.
 2. **Validação Eficiente no Treinador**: `training/run_experiment.py` normalizado para validar fatias sequenciais de 500.000 linhas, eliminando estouro de RAM e liberando metadados logo após o particionamento.
-3. **Execução Ativa do Treinamento da Campeã (`race512-multitier-champion`)**:
+3. **Treinamento da Campeã Concluído (`race512-multitier-champion`)**:
    - Arquitetura: `race`, `hidden: 512` (456 inputs -> 512 neurônios -> cabeças de política e valor).
    - Inicialização: pesos da campeã atual `race512-search10-ft`.
-   - Épocas: 60 épocas com batch size 1024 e paciência de 20 épocas.
+   - Épocas: 60 épocas completadas com batch size 1024.
    - Learning Rate: inicial `1.5e-5`, decay cosseno longo (recozimento profundo) até `min_lr=5e-7`, com 3 épocas de warmup.
    - Escala do tronco: `--trunk-lr-scale 0.2` para proteger as representações de base e refinar as cabeças táticas.
    - Quantização: QAT nativo com `QA=255`, `QB=64`.
-   - Hardware 100% Dedicado: GPU RTX 4050 (CUDA) e 4 threads de CPU (sem nenhum processo residual ou gerador de rollouts concorrente).
-   - **Métricas Reais Obtidas (Época 3 Concluída)**:
-     - Val Loss: $0,9571 \to 0,8933$ (queda consistente a cada época).
-     - Val Policy KL: $0,4903 \to 0,4397$.
-     - Val Value MAE: $0,2730 \to 0,2204$.
-3. **Critério de Aceitação e Homologação**:
+   - Hardware: 100% acelerado nos núcleos Tensor da GPU RTX 4050 via CUDA.
+   - **Métricas Finais Consolidadas (Época 60)**:
+     - Val Loss: $0,9571 \to 0,8701$ (-9,1% relativo, melhor perda registrada na história do projeto).
+     - Val Policy KL: $0,4903 \to 0,4206$ (-14,2% relativo).
+     - Val Value MAE: $0,2730 \to 0,2116$ (-22,5% relativo).
+     - Train Loss: $0,8718 \to 0,8183$.
+     - Train Policy KL: $0,4169 \to 0,3721$.
+     - Train Value MAE: $0,2227 \to 0,2009$.
+   - **Verificação de Paridade Numérica**: `incremental_check.exe` executado sobre 4.758 posições (jogo $\times$ ply $\times$ perspectiva). 0 divergências, erro máximo = 0 (100% de paridade).
+   - **Artefatos Gerados**:
+     - `results/experiments/race512-multitier-champion/student.bin` (pesos float32)
+     - `results/experiments/race512-multitier-champion/student_int8.bin` (pesos quantizados int8)
+     - `results/experiments/race512-multitier-champion/zquoridor.exe` (executável nativo com flags `-DZQ_NNUE_RACE_FEATURES=1 -DZQ_NNUE_HIDDEN=512`)
+4. **Critério de Aceitação e Homologação**:
    - Triagem: 20 pares (40 jogos) a 200 ms contra `main`, Titanium e Claustrophobia.
    - Confirmação Rigorosa: 100 pares (200 jogos) a 200 ms por lance com o livro oficial `openings_confirmation_v1.jsonl`.
    - Meta de Promoção: Placar > 50,0% contra Claustrophobia, > 57,5% contra Titanium e > 58,5% contra o main, com limite inferior do intervalo de confiança bootstrap 95% estritamente positivo.
