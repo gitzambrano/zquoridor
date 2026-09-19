@@ -42,6 +42,57 @@ relearn by experiment.
 5. **GUI worker offload** (`gui_web/`) -- completed for standalone bundle (Blob URL worker); see GUI section.
 6. **MCTS visit-share %** in analysis PV rows needs a
    `rootNodeForInspection` export channel.
+7. **Per-action Q information in training (Experimental Network Candidate)**:
+   The search relabeling pipeline already computes per-action values: `zq_deep_relabel.py`
+   records `action_q` for visited root actions, but `build_search_priority_dataset.py`
+   currently discards `action_q` and trains the policy head solely on visit shares ($N_a$).
+   Visits reflect tree traversal frequency, but discard the evaluated quality of alternative
+   actions. In Quoridor, multiple wall placements share similar visit priors, yet only
+   a few produce true strategic consequence.
+   Two experimental phases are planned:
+   - **Phase A (Architecture-neutral policy sharpening)**: Generate enriched policy
+     targets combining visit volume and action quality without changing network shape:
+     $$\pi'_a \propto N_a^\alpha \cdot \exp(\beta Q_a)$$
+     This preserves the 209-action policy head while teaching the network how much
+     better or worse each action evaluated.
+   - **Phase B (Dedicated Q-head)**: Add an auxiliary per-action Q-value head
+     to the student trunk to predict action values directly, improving move ordering
+     and root pruning before PUCT expansion.
+8. **Distance margin across wall regimes (Experimental Feature Candidate)**:
+   The existing network contains `distance_delta` and a coarse interaction
+   (`ahead/equal/behind` $\times$ wall classes). This loses the exact numerical
+   magnitude of the distance advantage inside that interaction. For example,
+   $(ownDist=2, oppDist=3, ownWalls=0, oppWalls=8)$ and
+   $(ownDist=2, oppDist=12, ownWalls=0, oppWalls=8)$ both map to `ahead × 0 × 3+`.
+   An interaction feature resolves this ambiguity:
+   - 33 distance margins $[-16 \dots +16]$ cross 4 wall regimes:
+     1. Both players retain walls.
+     2. Mover has zero walls; opponent retains walls.
+     3. Opponent has zero walls; mover retains walls.
+     4. Both players have zero walls.
+   - Total features: $33 \times 4 = 132$ one-hot inputs. Exactly one feature is
+     active per position. This is computationally cheap for NNUE accumulator updates.
+9. **Shortest path structure and corridor bottleneck masks (Experimental Feature Candidate)**:
+   Current features record total distance to goal (for example, distance = 7), but
+   do not distinguish whether a player has a single bottleneck corridor or multiple
+   independent optimal paths. Two states with identical distance have completely
+   different strategic stability. The path cache already computes cell distances.
+   Extracting initial step choices costs negligible CPU time:
+   - First-step branching count per player: 1, 2, 3, or 4 optimal initial moves.
+   - Directional mask (forward, left, right, backward) indicating which directions
+     preserve a shortest path.
+   This provides the network with a structural distinction between narrow corridors
+   and redundant open routes, offering stronger inductive bias than expanding hidden
+   layer width.
+10. **Local pawn interaction and contact geometry (Experimental Feature Candidate)**:
+    Currently, pawn positions are encoded as separate one-hot vectors (81 for own pawn,
+    81 for opponent pawn). The network must learn spatial proximity, jump legality,
+    and diagonal detours without inductive bias. A compact block of 10 to 30 features
+    provides local contact geometry:
+    - Relative coordinate delta $(\Delta x, \Delta y)$ between pawns.
+    - Orthogonal adjacency indicator.
+    - Jump contact state (direct jump available, wall-blocked straight jump with diagonal options).
+    This directly improves policy head accuracy for tactical close-contact plies.
 
 ---
 
@@ -94,6 +145,39 @@ relearn by experiment.
      corpus), hitting a plateau at 48.8%-49.0%. Overcoming Claustrophobia (>50%)
      requires scaling up teaching data to 50,000+ mined positions from loss games
      and divergence states, using fast 100ms games to double generation throughput.
+
+- **Hierarchical 5-Tier curriculum and data scaling architecture (2026-09-19)**:
+  To break through the 49.0% ceiling against Claustrophobia without regressing
+  against Titanium (57.5%+) or baseline `main` (58.5%+), the training pipeline
+  expands from flat replay distillation into a structured 5-tier curriculum:
+  1. **Tier 1 (Massive Background Replay, 10M positions)**: 10,000,000 distinct
+     positions sampled across all 499 historical canonical V3 shards, with oversampling
+     on wall asymmetry ($|\text{own} - \text{opp}| \ge 2$ or $\le 3$ walls) and dense boards
+     ($\ge 8$ walls placed). Soft policy targets and win-probability values come from
+     the champion network (`race512-search10-ft`) evaluated on CUDA. Empirical game
+     results from weak early self-play generations are excluded to prevent regression.
+     Base sample weight: 1.0.
+  2. **Tier 2 (Reused Past Search Cases, 500k positions)**: Proven search-labeled
+     positions from previous generations (`mixed-gen1-500k-search20` and `search-priority-gen1`).
+     Sample weight: 2.0.
+  3. **Tier 3 (Generic Search Positions, 500k positions)**: 500,000 standard game positions
+     labeled with real search (Claustrophobia MCTS 64-simulation search on CUDA and
+     ZQuoridor MCAB search), providing search supervision across balanced board topologies.
+     Sample weight: 3.5.
+  4. **Tier 4 (Dual-Crisis Search, 100k positions)**: 100,000 critical positions
+     focusing on wall-depletion crises, opponent sweeps, and tactical branching.
+     Supervision blends 75% Claustrophobia MCTS visit distribution with 25% ZQuoridor
+     512-node MCAB search, scaled dynamically by teacher disagreement.
+     Sample weight: 6.0 to 8.0.
+  5. **Tier 5 (Dynamic Branching Rollouts, 10k games)**: 10,000 self-play rollout
+     games initialized from crisis seeds, exploring top-4 actions in plies 1 to 4,
+     followed by deterministic MCAB play. Step values receive exponential temporal
+     discounting ($V_t = \text{sign} \cdot \gamma^{\text{remaining\_plies}}$, $\gamma = 0.98$),
+     directly penalizing wasteful wandering and rewarding decisive wall conservation.
+     Sample weight: 6.0.
+  Fine-tuning proceeds from `race512-search10-ft` weights with reduced learning rate
+  ($\eta = 1.5 \times 10^{-5}$, cosine decay to $1.0 \times 10^{-6}$) and 14 parallel CPU
+  worker threads, preserving existing strengths while correcting tactical blind spots.
 
 - **Local teaching and external benchmark lab (2026-09-15)**: The local
   runners provision pinned Titanium and Claustrophobia sources in the ignored

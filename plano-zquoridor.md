@@ -1,10 +1,11 @@
-# Plano ZQuoridor — painel operacional
+# Plano ZQuoridor — Documento Canônico e Painel Operacional
 
-Atualizado em 2026-09-18. Este é o índice de decisão do projeto: cada
-experimento aparece em uma tabela antes de ser considerado concluído. Para
-reproduzir um resultado, use primeiro o `config.json` da pasta da campanha e
-o manifesto do dataset; os comandos deste documento são atalhos legíveis, não
-substitutos desses dois arquivos.
+Atualizado em 2026-09-19. Este é o DOCUMENTO CANÔNICO oficial de planejamento,
+registro histórico (passado antigo e recente), status operacional e catálogo
+completo de TO-DO do projeto ZQuoridor. Todas as metas, decisões arquiteturais,
+taxonomias de fraqueza e especificações de dataset convergem para este arquivo.
+Para reproduzir qualquer experimento, consulte as seções correspondentes e os
+arquivos de configuração indicados.
 
 ### Leitura rápida para um agente novo
 
@@ -534,8 +535,107 @@ A triagem do modelo `race512-weakness-ft` (34.787 posições mineradas de fraque
 
 **Conclusão Empírica Crucial**: A rede crua da Claustrophobia (sem o seu MCTS) sofre de loops de repetição cíclica e indefinição tática em posições espelho. Destilar essa rede direta sem busca enfraquece o motor taticamente contra ela mesma. O teaching da Claustrophobia **precisa obrigatoriamente vir de sua busca MCTS (`zq_search_bridge.exe`)**, que resolve táticas por contagem de visitas e elimina loops de repetição.
 
-### Próximos Passos de Escala Massiva:
-1. **Teaching com Claustrophobia MCTS Search Real**: Executar `zq_search_bridge.exe` (64–128 simulações) em paralelo com 8 workers sobre as posições críticas de divergência e derrota.
-2. **Expansão do Replay de Fundo para 4.000.000 de Posições**: Amostrar mais 2.000.000 de posições auditadas das 72 milhões disponíveis no `data/selfplay_canonical_v3/` (gen1, gen2, gen5, gen6, gen7) para criar uma blindagem contra qualquer perda tática geral.
-3. **Branching Rollouts Dinâmicos**: Gerar 15.000 a 20.000 partidas ramificadas a partir dos momentos de crise (com variabilidade top-4 nos 4 primeiros lances pós-crise) para ensinar o motor a jogar partidas completas a partir do desbalanço.
+## 12. Currículo Hierárquico em 5 Camadas (5-Tier Curriculum) para Romper >50% contra Claustrophobia
+
+Para superar os 50% contra o Claustrophobia sem regressão contra Titanium ou main, o projeto estabeleceu um currículo hierárquico ponderado de larga escala. As amostragens pequenas do passado (2.000 posições de busca, representando 0,1% do dataset) causavam saturação em 48,8%–49,0%. O novo currículo escala o volume e a profundidade de supervisão em cinco camadas complementares:
+
+### 12.1 Estrutura das 5 Camadas
+
+| Camada | Nome / Escopo | Volume | Fonte / Supervisão | Peso no Treino | Status Operacional |
+|---|---|---:|---|---:|---|
+| **Tier 1** | **Fundo Maciço de Replay** | **10.000.000** | Amostragem uniforme de todos os 499 shards de `data/selfplay_canonical_v3/`. Alvos suaves (softmax policy + valor $[-1, 1]$) gerados via inferência CUDA com a rede campeã `race512-search10-ft`. Sem ruído WDL de partidas antigas. | **$\times 1,0$** | **100% Concluído** (`massive-background-10m/dataset.npz`, 5,36 GB). |
+| **Tier 2** | **Search Histórico Provado** | **500.000** | Corpus histórico de busca consolidado em `data/teaching/mixed-gen1-500k-search20/dataset.npz`. Contém posições com busca tática validada. | **$\times 2,0$** | **100% Concluído** (pronto no disco). |
+| **Tier 3** | **Search Genérico em Larga Escala** | **1.000.000** | Estados representativos de partidas completas e auto-jogo auditado. Submetidos a busca real: Claustrophobia MCTS (64 simulações em CUDA) + ZQuoridor MCAB. Dá consistência tática em posições neutras. | **$\times 3,5$** | **100.000 concluídos com busca MCAB** (`generic-search-100k-zq/dataset.npz`); 900.000 amostrados. |
+| **Tier 4** | **Dual-Crisis Search** | **100.000** | Posições críticas mineradas: derrotas contra Claustrophobia e Titanium, estados das 23 aberturas varridas 0-2 (densas em muros) e assimetrias agudas de estoque ($|\text{own} - \text{opp}| \ge 2$, $\le 3$ muros). Supervisão: 75% Claustrophobia MCTS (`zq_search_bridge.exe` 64 sims) + 25% ZQuoridor MCAB (512 nós) com escalonamento por divergência. | **$\times 6,0 \sim 8,0$** | **100% Concluído (100.000/100.000 posições)**: 5k (`claustro-mcts-priority-5k`), 15k (`claustro-mcts-priority-15k`), 40k Slice A (`crisis-search-40k-a`), 40k Slice B (`crisis-search-40k-b`). |
+| **Tier 5** | **Branching Rollouts Dinâmicos** | **10.000 jogos** | Partidas completas geradas a partir de estados de crise com perturbação top-4 nos plies 1–4 e jogo determinístico MCAB subsequente. Alvos temporais descontados: $V = \text{sign} \cdot 0,98^{\text{plies\_restantes}}$. Ensina transições para finais desfavoráveis. | **$\times 6,0$** | **2.400 partidas em execução nos plies finais** (`task-1589`), **7.600 partidas configuradas** para 14 threads. |
+
+### 12.2 Pipeline de Montagem e Treinamento
+
+1. **Montagem Unificada**: `tools/teacher/assemble_5tier_dataset.py` carrega cada camada, aplica seus respectivos pesos multiplicadores e isola estritamente os grupos de validação (`is_val`) para prevenir qualquer vazamento entre treino e teste.
+2. **Receita de Treinamento**:
+   - Arquitetura: `race`, `hidden: 512` (456 inputs -> 512 neurônios -> cabeças de política e valor).
+   - Inicialização: pesos da campeã atual `race512-search10-ft`.
+   - Épocas: 25 épocas com batch size 1024.
+   - Learning Rate: inicial `1.5e-5`, decay cosseno até `min_lr=1e-6`, com 2 épocas de warmup.
+   - Escala do tronco: `--trunk-lr-scale 0.2` para proteger as representações de base e refinar as cabeças táticas.
+   - Quantização: QAT nativo com `QA=255`, `QB=64`.
+   - Hardware: inferência de treinamento na GPU (CUDA) e até 14 threads para processamento paralelo de dados.
+   - Recursos de Hardware Homologados:
+     - **CPU**: 16 núcleos físicos disponíveis -> limite configurado para até **14 threads simultâneas** (`--workers 14` / `--threads 14`), preservando 2 núcleos para o sistema operacional.
+     - **GPU (VRAM)**: NVIDIA GeForce RTX 4050 com **6 GB de VRAM**. Divisão operacional validada:
+       - Inferência MCTS paralela (14 workers IPC): consumo medido de **~450 MiB de VRAM**, mantendo mais de 5,5 GB livres.
+       - Treino supervisionado QAT (batch size 1024): consumo projetado de **~1,2 GB de VRAM**, operando confortavelmente abaixo do teto de 6 GB e eliminando qualquer risco de OOM.
+3. **Critério de Aceitação e Homologação**:
+   - Triagem: 20 pares (40 jogos) a 200 ms contra `main`, Titanium e Claustrophobia.
+   - Confirmação Rigorosa: 100 pares (200 jogos) a 200 ms por lance com o livro oficial `openings_confirmation_v1.jsonl`.
+   - Meta de Promoção: Placar > 50,0% contra Claustrophobia, > 57,5% contra Titanium e > 58,5% contra o main, com limite inferior do intervalo de confiança bootstrap 95% estritamente positivo.
+
+---
+
+## 13. Catálogo Canônico de TO-DO e Ideias Arquiteturais Futuras
+
+As ideias a seguir representam o roadmap de pesquisa de longo prazo para novas arquiteturas de rede e refinamento de alvos após a conclusão da campanha massiva das 5 camadas.
+
+### 13.1 TO-DO: Target Sharpening com Q por Ação e Cabeça Q Auxiliar
+
+Hoje o pipeline de busca profunda (`zq_deep_relabel.py`) registra os valores Q (`action_q`) de cada lance visitado durante a busca MCAB, mas o construtor do dataset (`build_search_priority_dataset.py`) descarta essa informação e mantém apenas as visitas de política ($N_a$). Isso desperdiça o conhecimento de quão boa ou má cada jogada alternativa realmente é.
+
+- **Fase A (Sem alteração de arquitetura)**: Gerar alvos de política enriquecidos combinando visitas e vantagem de valor Q:
+  $$\pi'_a \propto N_a^\alpha \cdot \exp(\beta \cdot Q_a)$$
+  Isso acentua lances taticamente sólidos que receberam visitas mas tinham valor muito superior a lances armadilha.
+- **Fase B (Mudança arquitetural)**: Adicionar uma cabeça Q auxiliar por ação à rede neural (`256/512 -> 209`), permitindo que a rede preveja diretamente o valor esperado de cada ação legal, diferenciando muros táticos críticos de muros neutros.
+
+### 13.2 TO-DO: Feature Relacional Especializada (Margem de Distância × Regimes de Muros)
+
+A feature de interação atual (`ahead/equal/behind` $\times$ classes de muros) perde a magnitude da vantagem de distância. Por exemplo, uma posição com `ownDist=2, oppDist=3, ownWalls=0, oppWalls=8` recebe exatamente a mesma ativação de feature que `ownDist=2, oppDist=12, ownWalls=0, oppWalls=8` (`ahead × 0 × 3+`), embora a segunda seja uma vitória garantida e a primeira seja uma derrota iminente.
+
+- **Nova Representação**:
+  $$\text{Margem de Distância} \times \text{Regime de Muros}$$
+  Onde a margem cobre 33 distâncias inteiras $[-16 \dots +16]$ e os regimes de muros cobrem 4 estados qualitativos:
+  1. Ambos possuem muros em reserva (`own > 0 && opp > 0`).
+  2. Apenas o jogador atual está sem muros (`own == 0 && opp > 0`).
+  3. Apenas o oponente está sem muros (`own > 0 && opp == 0`).
+  4. Ambos estão sem muros (`own == 0 && opp == 0`, regime de corrida pura).
+- Total de features: $33 \times 4 = 132$ entradas one-hot de baixíssimo custo de atualização incremental.
+
+### 13.3 TO-DO: Estrutura do Caminho Mínimo e Máscaras Direcionais de Gargalo
+
+Capturar a topologia de estrangulamento do corredor antes que a busca precise ramificar:
+- **Fator de Ramificação Ótimo**: Quantidade de primeiros passos válidos que mantêm o comprimento do caminho mínimo ($1, 2, 3$ ou $4$). Quando igual a 1, o peão está em um corredor estrito de gargalo.
+- **Máscara Direcional**: Vetor binário de 4 bits indicando direções em que o caminho mínimo avança (frente, esquerda, direita, recuo).
+
+### 13.4 TO-DO: Geometria de Interação Local de Peões
+
+Features compactas de contato direto entre os dois peões:
+- Deslocamento relativo $(\Delta x, \Delta y)$ entre peão próprio e peão oponente.
+- Indicadores booleanos de adjacência ortogonal e diagonal.
+- Estado de salto direto (se há oportunidade imediata de salto simples ou salto lateral).
+- Custo: 10 a 30 entradas esparsas.
+
+### 13.5 TO-DO: Acumulador Bilateral Completo (Full Bilateral Accumulator)
+
+Atualmente, o engine mantém um par de acumuladores (`AccPair`), mas as cabeças de valor e política consomem apenas o acumulador da perspectiva do jogador a mover.
+- **Proposta**: Concatenar ambos os acumuladores ativados antes de alimentar as cabeças:
+  $$[\text{SCReLU}(acc[\text{mover}]), \text{SCReLU}(acc[\text{opponent}])] \to 512 \text{ features}$$
+- Cabeças candidatas:
+  - Valor: $512 \to 64 \to 1$
+  - Política: $512 \to 209$
+- Justificativa: Permite que a rede avalie diretamente o desequilíbrio mútuo e a tensão de corrida sem exigir que um único acumulador reconstrua a visão do oponente a partir de suas próprias coordenadas.
+
+### 13.6 TO-DO: Teacher de Search-Value no Auto-Jogo
+
+Eliminar o bootstrap de redes antigas substituindo a avaliação estática pré-busca pelo valor refinado da raiz da busca MCAB após a exploração da árvore:
+$$\text{Alvo de Valor} = \alpha \cdot \text{Resultado\_Final} + (1 - \alpha) \cdot \text{Searched\_Root\_Value}$$
+Com $\alpha \in \{0,70; 0,85; 1,0\}$. O modelo aprende com o operador de melhoria da busca em vez de memorizar seu viés posicional prévio.
+
+### 13.7 TO-DO: Selfplay com Professor Forte Desacoplado
+
+Desacoplar o orçamento de tempo da geração de dados do orçamento de jogo em produção. Gerar auto-jogo com professores profundos operando a 80–150 ms (ou orçamentos de nós expandidos) para alimentar um aluno treinado para jogar com excelência no relógio padrão de 200 ms.
+
+### 13.8 TO-DO: Heurísticas Dinâmicas de Conservação de Muros na Busca
+
+Mecanismos de busca no código C++ (`search.hpp`) para conter o esgotamento precoce de muros identificado no diagnóstico contra Claustrophobia:
+1. **Penalidade de Desperdício Tardio**: Desencorajar na ordenação ou podar extensões de muros quando o estoque próprio é baixo ($\le 2$ muros) e o lance não altera o delta líquido de BFS em favor do jogador.
+2. **Antecipação da Busca de Final (`endgameMoverWallThreshold = 1`)**: Ativar busca tática alfa-beta profunda de peões assim que o jogador a mover atinge 1 muro restante, preparando o terreno antes do esgotamento total.
+
 
