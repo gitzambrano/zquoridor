@@ -1,0 +1,75 @@
+name: race10 posthoc feature ablation
+
+on:
+  push:
+    branches: ["features/race10-posthoc-ablation-v1"]
+    paths:
+      - ".github/workflows/race10-posthoc-ablation-v1.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  ablate:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: distance-margin
+            ranges: "354:387"
+          - label: wall-margin
+            ranges: "387:408"
+          - label: race-wall-interaction
+            ranges: "408:456"
+          - label: all-race
+            ranges: "354:456"
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify original and derive ablated weights
+        shell: bash
+        run: |
+          set -euo pipefail
+          W=results/experiments/race512-search10-ft-s20260917/student_int8.bin
+          echo "b9cb857bb0f8d3a791b27297a61cc5c195fba916481959a43579925685c62d06  $W" | sha256sum -c -
+          mkdir -p derived bin
+          python training/ablate_quantized_features.py             --input "$W"             --output "derived/${{ matrix.label }}.bin"             --features 456 --hidden 512             --range "${{ matrix.ranges }}"
+          g++ -O3 -std=c++17 -march=native -pthread             -DZQ_NNUE_RACE_FEATURES=1 -DZQ_NNUE_HIDDEN=512             -Isrc tools/external/zquoridor_uci.cpp -o bin/race10
+      - name: 60-pair posthoc ablation screen
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          from tools import benchmark_candidate, run_benchmark
+          label="${{ matrix.label }}"
+          out=Path("benchmark_results/race10-ablation-"+label)
+          cfg=dict(benchmark_candidate.CONFIG,
+              candidate_executable="bin/race10",
+              candidate_nnue="derived/"+label+".bin",
+              baseline_executable="bin/race10",
+              baseline_nnue="results/experiments/race512-search10-ft-s20260917/student_int8.bin",
+              pairs=60, move_time_ms=200, workers=1, seed=2026091905,
+              openings="tools/external/openings_confirmation_v1.jsonl",
+              output=str(out), bootstrap=30000, resume=True)
+          openings=run_benchmark._read_openings(Path(cfg["openings"]),cfg["pairs"],cfg["seed"])
+          report=benchmark_candidate._baseline_matrix(cfg,openings,out)
+          payload={"schema":"zquoridor.nnue_posthoc_ablation.v1",
+                   "candidate":"race512-search10-ft with "+label+" rows zeroed",
+                   "baseline":"race512-search10-ft original",
+                   "warning":"Posthoc reliance test; not equivalent to retraining without the feature group.",
+                   "pairs":60,"move_time_ms":200,"summary":report}
+          out.mkdir(parents=True,exist_ok=True)
+          (out/"summary.json").write_text(json.dumps(payload,indent=2)+"\n",encoding="utf-8")
+          print(json.dumps(payload,indent=2))
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: race10-ablation-${{ matrix.label }}-${{ github.run_id }}
+          retention-days: 30
+          path: |
+            derived/**
+            benchmark_results/race10-ablation-${{ matrix.label }}/**
