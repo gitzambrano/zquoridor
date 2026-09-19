@@ -60,8 +60,8 @@ jobs:
         run: |
           {
             for i in 1 2 3 4 5 6 7; do
-              echo -n "BASE "; bin/perft-base
-              echo -n "EDGE "; bin/perft-edge
+              bin/perft-base | sed 's/^/BASE /'
+              bin/perft-edge | sed 's/^/EDGE /'
             done
           } | tee benchmark_results/movegen-edge-table-v1/perft.txt
           python - <<'PY' | tee benchmark_results/movegen-edge-table-v1/perft-summary.txt
