@@ -8,7 +8,7 @@ from torch import nn
 from torch.nn import functional as F
 from quantize_nnue import quantize, write_quantized
 
-FEATURES = {"base": 354, "race": 456}
+FEATURES = {"base": 354, "race": 456, "race_topology": 488}
 LAYOUT = ("w1", "b1", "wv1_wl", "bv1_wl", "wv2_wl", "bv2_wl", "wp", "bp")
 
 
@@ -17,7 +17,7 @@ def encode_features(data, indices, architecture="base"):
     x = dense_features(data, indices)
     if architecture == "base":
         return x
-    if architecture != "race":
+    if architecture not in ("race", "race_topology"):
         raise ValueError(f"unknown architecture: {architecture}")
     n = len(indices)
     extra = np.zeros((n, 102), dtype=np.float32)
@@ -30,7 +30,59 @@ def encode_features(data, indices, architecture="base"):
     extra[rows, 33 + ow - pw + 10] = 1
     race = np.sign(own - opp) + 1
     extra[rows, 54 + race * 16 + np.minimum(ow, 3) * 4 + np.minimum(pw, 3)] = 1
-    return np.concatenate((x, extra), axis=1)
+    xr = np.concatenate((x, extra), axis=1)
+    if architecture == "race":
+        return xr
+
+    walls_h = data["walls_h"][indices].astype(np.uint64)
+    walls_v = data["walls_v"][indices].astype(np.uint64)
+    own_pawn = data["own_pawn"][indices].astype(np.int64)
+    opp_pawn = data["opp_pawn"][indices].astype(np.int64)
+
+    def bits_at(bits, slots, valid):
+        out = np.zeros(n, dtype=np.bool_)
+        take = np.flatnonzero(valid)
+        if len(take):
+            shift = slots[take].astype(np.uint64)
+            out[take] = ((bits[take] >> shift) & np.uint64(1)) != 0
+        return out
+
+    def vertical_blocked(pawn, dr):
+        r, col = pawn // 9, pawn % 9
+        boundary = (r >= 8) if dr > 0 else (r <= 0)
+        wr = r if dr > 0 else r - 1
+        valid_row = ~boundary
+        s0_valid = valid_row & (col < 8)
+        s1_valid = valid_row & (col > 0)
+        s0 = wr * 8 + col
+        s1 = wr * 8 + (col - 1)
+        return boundary | bits_at(walls_h, s0, s0_valid) | bits_at(walls_h, s1, s1_valid)
+
+    def horizontal_blocked(pawn, dc):
+        r, col = pawn // 9, pawn % 9
+        boundary = (col >= 8) if dc > 0 else (col <= 0)
+        wc = col if dc > 0 else col - 1
+        valid_col = ~boundary
+        s0_valid = valid_col & (r < 8)
+        s1_valid = valid_col & (r > 0)
+        s0 = r * 8 + wc
+        s1 = (r - 1) * 8 + wc
+        return boundary | bits_at(walls_v, s0, s0_valid) | bits_at(walls_v, s1, s1_valid)
+
+    def topology_mask(pawn, forward_dr):
+        forward = vertical_blocked(pawn, forward_dr)
+        left = horizontal_blocked(pawn, -1)
+        right = horizontal_blocked(pawn, 1)
+        back = vertical_blocked(pawn, -forward_dr)
+        return (forward.astype(np.int64)
+                | (left.astype(np.int64) << 1)
+                | (right.astype(np.int64) << 2)
+                | (back.astype(np.int64) << 3))
+
+    topo = np.zeros((n, 32), dtype=np.float32)
+    topo[rows, topology_mask(own_pawn, 1)] = 1
+    topo[rows, 16 + topology_mask(opp_pawn, -1)] = 1
+    return np.concatenate((xr, topo), axis=1)
 
 
 def _round_ste(x, scale):
@@ -42,7 +94,7 @@ class Student(nn.Module):
     def __init__(self, architecture="base", hidden=256, qat=False):
         super().__init__()
         if architecture not in FEATURES or hidden not in (128, 256, 384, 512):
-            raise ValueError("architecture must be base/race; hidden must be 128/256/384/512")
+            raise ValueError("architecture must be base/race/race_topology; hidden must be 128/256/384/512")
         self.architecture, self.hidden, self.qat = architecture, hidden, qat
         self.fc1 = nn.Linear(FEATURES[architecture], hidden)
         self.value1_wl = nn.Linear(hidden, 32)
@@ -136,7 +188,8 @@ def export(model, path):
     manifest = dict(schema="zquoridor.student.v1", architecture=model.architecture,
                     features=FEATURES[model.architecture], hidden=model.hidden, value_hidden=32,
                     policy_out=209, qa=255, qb=64, qat=model.qat,
-                    cpp_flags=[f"-DZQ_NNUE_RACE_FEATURES={int(model.architecture == 'race')}",
+                    cpp_flags=[f"-DZQ_NNUE_RACE_FEATURES={int(model.architecture in ('race', 'race_topology'))}",
+                               f"-DZQ_NNUE_TOPOLOGY_FEATURES={int(model.architecture == 'race_topology')}",
                                f"-DZQ_NNUE_HIDDEN={model.hidden}"],
                     float_sha256=hashlib.sha256(path.read_bytes()).hexdigest(),
                     int8_sha256=hashlib.sha256(quant_path.read_bytes()).hexdigest())
