@@ -194,9 +194,56 @@ static bool testDsuCornerUnitCases() {
     return true;
 }
 
+
+static bool testFlatDsuPredicateEquivalence() {
+    std::mt19937 rng(20260919);
+    long candidatesChecked = 0;
+    for (int game = 0; game < 120; ++game) {
+        State s = initialState();
+        for (int ply = 0; ply < 90 && winner(s) == -1; ++ply) {
+            RollbackDSU rollback;
+            FlatWallDSU flat;
+            buildWallDSU(rollback, s.wallsH, s.wallsV);
+            buildFlatWallDSU(flat, s.wallsH, s.wallsV);
+
+            for (int orientation = 0; orientation < 2; ++orientation) {
+                uint64_t cand = orientation == 0
+                    ? geometricWallMaskH(s.wallsH, s.wallsV)
+                    : geometricWallMaskV(s.wallsH, s.wallsV);
+                while (cand) {
+                    int slot = __builtin_ctzll(cand);
+                    cand &= cand - 1;
+                    int r = slot / WS, c = slot % WS;
+                    bool a = wallCandidateAmbiguous(
+                        rollback, s.wallsH, s.wallsV, orientation, r, c);
+                    bool b = wallCandidateAmbiguousFlat(
+                        flat, s.wallsH, s.wallsV, orientation, r, c);
+                    ++candidatesChecked;
+                    if (a != b) {
+                        printf("FALHOU: flat DSU divergiu (game=%d ply=%d o=%d r=%d c=%d old=%d flat=%d wallsH=%016llx wallsV=%016llx)\n",
+                               game, ply, orientation, r, c, a, b,
+                               (unsigned long long)s.wallsH,
+                               (unsigned long long)s.wallsV);
+                        return false;
+                    }
+                }
+            }
+
+            auto moves = legalMoves(s);
+            if (moves.empty()) break;
+            std::uniform_int_distribution<size_t> pick(0, moves.size() - 1);
+            s = applyMove(s, moves[pick(rng)]);
+        }
+    }
+    printf("flat DSU predicate: %ld candidatos, 0 divergencias vs rollback oracle\n",
+           candidatesChecked);
+    return true;
+}
+
 int main() {
     if (!testDsuUnitCore()) return 1;
     if (!testDsuCornerUnitCases()) return 1;
+    if (!testFlatDsuPredicateEquivalence()) return 1;
     if (!testWallPrefilterRegression()) return 1;
     if (!testWallDsuCornerPocketRegression()) return 1;
 
