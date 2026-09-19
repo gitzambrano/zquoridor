@@ -258,6 +258,10 @@ def train(config):
             torch.cuda.set_rng_state_all(state["cuda_rng"])
         best, best_loss, bad = state["best"], state["best_loss"], state["bad"]
         history, start, initial = state["history"], state["epoch"], state["initial"]
+        model.qat = bool(state.get(
+            "qat_active",
+            bool(config["qat"]) and int(start) >= int(config["qat_start_epoch"]),
+        ))
     (folder / "config.json").write_text(json.dumps(identity, indent=2) + "\n", encoding="utf-8")
     for epoch in range(start, config["epochs"]):
         should_qat = bool(config["qat"]) and epoch >= int(config["qat_start_epoch"])
@@ -287,6 +291,7 @@ def train(config):
             bad += 1
         state = dict(fingerprint=fingerprint, model=model.state_dict(), optimizer=optimizer.state_dict(),
                      best=best, best_loss=best_loss, bad=bad, history=history, epoch=epoch + 1,
+                     qat_active=bool(model.qat),
                      initial=initial, rng=rng.bit_generator.state, torch_rng=torch.get_rng_state(),
                      cuda_rng=torch.cuda.get_rng_state_all() if device.startswith("cuda") else None)
         temp = checkpoint.with_suffix(".tmp")
