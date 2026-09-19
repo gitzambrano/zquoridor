@@ -284,7 +284,7 @@ namespace detail {
 // para topologias de muro DIFERENTES a cada vez (candidato ambíguo em
 // legalWallMoves/isWallMoveLegal, um por candidato) -- não há BFS
 // duplicada aqui pra fundir, cada chamada já é sobre uma topologia única.
-inline bool hasPathToGoal(uint64_t wallsH, uint64_t wallsV, int startCell, int player) {
+inline bool hasPathToGoalBFS(uint64_t wallsH, uint64_t wallsV, int startCell, int player) {
     int goalRow = GOAL_ROW[player];
     if (rowOf(startCell) == goalRow) return true;
     static thread_local uint64_t visitGen[N * N] = {};
@@ -311,6 +311,85 @@ inline bool hasPathToGoal(uint64_t wallsH, uint64_t wallsV, int startCell, int p
         }
     }
     return false;
+}
+
+using CellBits = unsigned __int128;
+constexpr CellBits CELL_BOARD = (((CellBits)1 << (N * N)) - 1);
+constexpr CellBits makeCol8Mask() {
+    CellBits m = 0;
+    for (int r = 0; r < N; ++r) m |= (CellBits)1 << (r * N + (N - 1));
+    return m;
+}
+constexpr CellBits CELL_COL8 = makeCol8Mask();
+constexpr CellBits CELL_GOAL0 = ((CellBits)0x1FF) << ((N - 1) * N);
+constexpr CellBits CELL_GOAL1 = (CellBits)0x1FF;
+
+constexpr std::array<CellBits, WS * WS> makeHBlockMasks() {
+    std::array<CellBits, WS * WS> a{};
+    for (int r = 0; r < WS; ++r)
+        for (int col = 0; col < WS; ++col) {
+            int s = slotIdx(r, col);
+            a[(size_t)s] = ((CellBits)1 << cellIdx(r, col)) |
+                           ((CellBits)1 << cellIdx(r, col + 1));
+        }
+    return a;
+}
+constexpr std::array<CellBits, WS * WS> makeVBlockMasks() {
+    std::array<CellBits, WS * WS> a{};
+    for (int r = 0; r < WS; ++r)
+        for (int col = 0; col < WS; ++col) {
+            int s = slotIdx(r, col);
+            a[(size_t)s] = ((CellBits)1 << cellIdx(r, col)) |
+                           ((CellBits)1 << cellIdx(r + 1, col));
+        }
+    return a;
+}
+constexpr auto H_BLOCK_MASK128 = makeHBlockMasks();
+constexpr auto V_BLOCK_MASK128 = makeVBlockMasks();
+
+inline void buildEdgeBlockBits(uint64_t wallsH, uint64_t wallsV,
+                               CellBits& hblock, CellBits& vblock) {
+    hblock = 0;
+    vblock = 0;
+    while (wallsH) {
+        int slot = __builtin_ctzll(wallsH);
+        wallsH &= wallsH - 1;
+        hblock |= H_BLOCK_MASK128[(size_t)slot];
+    }
+    while (wallsV) {
+        int slot = __builtin_ctzll(wallsV);
+        wallsV &= wallsV - 1;
+        vblock |= V_BLOCK_MASK128[(size_t)slot];
+    }
+}
+
+inline CellBits floodStepBits(CellBits r, CellBits hblock, CellBits vblock) {
+    CellBits south = ((r & ~hblock) << N) & CELL_BOARD;
+    CellBits north = (r >> N) & ~hblock;
+    CellBits east  = ((r & ~vblock & ~CELL_COL8) << 1) & CELL_BOARD;
+    CellBits west  = (r >> 1) & ~vblock & ~CELL_COL8;
+    return r | south | north | east | west;
+}
+
+inline bool hasPathToGoalBlocked(CellBits hblock, CellBits vblock,
+                                 int startCell, int player) {
+    CellBits f = (CellBits)1 << startCell;
+    const CellBits goal = player == 0 ? CELL_GOAL0 : CELL_GOAL1;
+    for (;;) {
+        if (f & goal) return true;
+        CellBits nf = floodStepBits(f, hblock, vblock);
+        if (nf == f) return false;
+        f = nf;
+    }
+}
+
+// Production path-existence query: bit-parallel closure over all 81 cells.
+// The queue BFS above remains available as hasPathToGoalBFS for differential
+// tests and shortest-path/distance code remains unchanged.
+inline bool hasPathToGoal(uint64_t wallsH, uint64_t wallsV, int startCell, int player) {
+    CellBits hb, vb;
+    buildEdgeBlockBits(wallsH, wallsV, hb, vb);
+    return hasPathToGoalBlocked(hb, vb, startCell, player);
 }
 
 // Distância mais curta até a meta -- wrapper fino sobre detail::runBFS
@@ -724,6 +803,8 @@ inline void legalWallMoves(const State& s, int player, MoveList& out,
     // (mesmo comportamento de antes, sem risco de regressão).
     RollbackDSU dsu;
     buildWallDSU(dsu, s.wallsH, s.wallsV);
+    CellBits baseHBlock, baseVBlock;
+    buildEdgeBlockBits(s.wallsH, s.wallsV, baseHBlock, baseVBlock);
 
     for (int orientation = 0; orientation < 2; orientation++) {
         uint64_t touch0 = orientation == 0 ? touchH0 : touchV0;
@@ -746,11 +827,11 @@ inline void legalWallMoves(const State& s, int player, MoveList& out,
                 out.push_back(Move::wall(orientation, r, cc));
                 continue;
             }
-            uint64_t nh = s.wallsH, nv = s.wallsV;
-            if (orientation == 0) nh |= (1ull << slot);
-            else nv |= (1ull << slot);
-            if (touches0 && !hasPathToGoal(nh, nv, s.pawn[0], 0)) continue;
-            if (touches1 && !hasPathToGoal(nh, nv, s.pawn[1], 1)) continue;
+            CellBits hb = baseHBlock, vb = baseVBlock;
+            if (orientation == 0) hb |= H_BLOCK_MASK128[(size_t)slot];
+            else vb |= V_BLOCK_MASK128[(size_t)slot];
+            if (touches0 && !hasPathToGoalBlocked(hb, vb, s.pawn[0], 0)) continue;
+            if (touches1 && !hasPathToGoalBlocked(hb, vb, s.pawn[1], 1)) continue;
             out.push_back(Move::wall(orientation, r, cc));
         }
     }
