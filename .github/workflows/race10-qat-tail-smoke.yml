@@ -4,6 +4,7 @@ on:
     branches: ["train/race10-qat-tail-v1"]
 permissions:
   contents: read
+  actions: read
 jobs:
   smoke:
     runs-on: ubuntu-latest
@@ -19,3 +20,32 @@ jobs:
           assert [r["qat_start_epoch"] for r in x]==[20,30]
           print("QAT-tail matrix OK")
           PY
+
+      - name: Download small Gen10 replay artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: gen10-search-replay-128-34892170047
+          path: /tmp/gen10-replay
+          github-token: ${{ github.token }}
+          repository: gitzambrano/zquoridor
+          run-id: 34892170047
+      - name: End-to-end QAT-tail mini-train
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --quiet numpy
+          python -m pip install --quiet torch --index-url https://download.pytorch.org/whl/cpu
+          python training/run_experiment.py \
+            --data /tmp/gen10-replay/replay-source.npz \
+            --out-dir /tmp/qat-tail-pilot \
+            --architecture race --hidden 512 \
+            --init-from results/experiments/race512-search10-ft-s20260917/student.bin \
+            --init-architecture race --init-hidden 512 \
+            --no-from-scratch --qat --qat-start-epoch 1 \
+            --epochs 2 --batch-size 512 --lr 1e-5 \
+            --schedule constant --warmup-epochs 0 --min-lr 1e-5 \
+            --trunk-lr-scale 0.1 --weight-decay 1e-5 \
+            --policy-weight 1.0 --value-weight 1.0 --train-scope full \
+            --grad-clip 1.0 --patience 2 --seed 20260946 \
+            --device cpu --cpu-threads 2 --no-teaching --build --no-benchmark
+          test -s /tmp/qat-tail-pilot/student_int8.bin
