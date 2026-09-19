@@ -297,7 +297,7 @@ Processo em background (PID 12844). Todos os 600 jogos da candidata concluídos 
 - vs main: 200/200, 0 falhas, 58,50% (117,0 pts)
 - vs Titanium: 200/200, 0 falhas, 57,50% (115,0 pts)
 - vs Claustrophobia: 200/200, 0 falhas, 49,00% (98,0 pts)
-- Referência do main (`main-vs-external`): ~107/400 jogos concluídos. Aguardando encerramento para cálculo dos intervalos bootstrap pareados.
+- Referência do main (`main-vs-external`): Titanium concluído em 200/200 (56,50%); Claustrophobia em andamento (203/400 jogos totais). Aguardando encerramento para cálculo dos intervalos bootstrap pareados.
 
 ### 7.3 Comparativo das finalistas na confirmação (100 pares)
 
@@ -327,7 +327,7 @@ Conclusão: `base512-search10-ft` superou Titanium com significância estatísti
    por lance, workers 1 e Claustrophobia em CPU.
    - `vs-main`: concluído 200/200 (58,5%).
    - `vs-external`: concluído 400/400 (Titanium 57,5%, Claustrophobia 49,0%).
-   - `main-vs-external`: em andamento (~107/400 jogos).
+   - `main-vs-external`: Titanium concluído 200/200 (56,5%); Claustrophobia em andamento (203/400 jogos totais).
    - PID 12844 ativo até a gravação de `summary.json`.
 
 6. **Próximo passo**: Comparar os relatórios completos e executar match direto
