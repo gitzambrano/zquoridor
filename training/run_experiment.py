@@ -99,12 +99,17 @@ def load_dataset(path):
     n = len(data["value"])
     if n < 2 or any(len(data[key]) != n for key in required):
         raise ValueError("dataset has insufficient samples or inconsistent lengths")
-    policy = data["policy"].astype(np.float32)
+    policy_arr = data["policy"]
+    if policy_arr.shape != (n, 209):
+        raise ValueError("policy must contain 209-action rows")
+    chunk_size = 500_000
+    for start_idx in range(0, n, chunk_size):
+        chunk = policy_arr[start_idx:start_idx + chunk_size].astype(np.float32)
+        if not np.isfinite(chunk).all() or (chunk < 0).any():
+            raise ValueError("policy must contain finite nonnegative 209-action rows")
+        if not np.allclose(chunk.sum(1), 1, atol=0.005):
+            raise ValueError("policy rows are not normalized")
     value, weight = data["value"], data["weight"]
-    if policy.shape != (n, 209) or not np.isfinite(policy).all() or (policy < 0).any():
-        raise ValueError("policy must contain finite nonnegative 209-action rows")
-    if not np.allclose(policy.sum(1), 1, atol=0.005):
-        raise ValueError("policy rows are not normalized")
     if not np.isfinite(value).all() or (np.abs(value) > 1.001).any():
         raise ValueError("value must contain finite signed mover targets in [-1,1]")
     if not np.isfinite(weight).all() or (weight <= 0).any():
