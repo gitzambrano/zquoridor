@@ -39,14 +39,16 @@ def _round_ste(x, scale):
 
 
 class Student(nn.Module):
-    def __init__(self, architecture="base", hidden=256, qat=False):
+    def __init__(self, architecture="base", hidden=256, value_hidden=32, qat=False):
         super().__init__()
         if architecture not in FEATURES or hidden not in (128, 256, 384, 512):
             raise ValueError("architecture must be base/race; hidden must be 128/256/384/512")
-        self.architecture, self.hidden, self.qat = architecture, hidden, qat
+        if value_hidden not in (32, 64):
+            raise ValueError("value_hidden must be 32 or 64")
+        self.architecture, self.hidden, self.value_hidden, self.qat = architecture, hidden, value_hidden, qat
         self.fc1 = nn.Linear(FEATURES[architecture], hidden)
-        self.value1_wl = nn.Linear(hidden, 32)
-        self.value2_wl = nn.Linear(32, 1)
+        self.value1_wl = nn.Linear(hidden, value_hidden)
+        self.value2_wl = nn.Linear(value_hidden, 1)
         self.policy = nn.Linear(hidden, 209)
 
     def forward(self, x):
@@ -69,15 +71,17 @@ class Student(nn.Module):
 
     @torch.no_grad()
     def warm_start(self, old):
-        if self.hidden < old.hidden or self.fc1.in_features < old.fc1.in_features:
+        if (self.hidden < old.hidden or self.fc1.in_features < old.fc1.in_features
+                or self.value_hidden < old.value_hidden):
             raise ValueError("warm start cannot shrink a network; use output distillation from scratch")
         for param in self.parameters():
             param.zero_()
         self.fc1.weight[:old.hidden, :old.fc1.in_features].copy_(old.fc1.weight)
         self.fc1.bias[:old.hidden].copy_(old.fc1.bias)
-        self.value1_wl.weight[:, :old.hidden].copy_(old.value1_wl.weight)
-        self.value1_wl.bias.copy_(old.value1_wl.bias)
-        self.value2_wl.load_state_dict(old.value2_wl.state_dict())
+        self.value1_wl.weight[:old.value_hidden, :old.hidden].copy_(old.value1_wl.weight)
+        self.value1_wl.bias[:old.value_hidden].copy_(old.value1_wl.bias)
+        self.value2_wl.weight[:, :old.value_hidden].copy_(old.value2_wl.weight)
+        self.value2_wl.bias.copy_(old.value2_wl.bias)
         self.policy.weight[:, :old.hidden].copy_(old.policy.weight)
         self.policy.bias.copy_(old.policy.bias)
         # New units need nonzero inputs to receive gradients; zero output
@@ -85,13 +89,16 @@ class Student(nn.Module):
         if self.hidden > old.hidden:
             nn.init.normal_(self.fc1.weight[old.hidden:], std=0.01)
             self.fc1.bias[old.hidden:].fill_(0.1)
+        if self.value_hidden > old.value_hidden:
+            nn.init.normal_(self.value1_wl.weight[old.value_hidden:, :old.hidden], std=0.01)
+            self.value1_wl.bias[old.value_hidden:].fill_(0.1)
 
     def arrays(self):
         def a(t):
             return t.detach().cpu().numpy().astype("<f4")
         return dict(w1=a(self.fc1.weight.T), b1=a(self.fc1.bias),
                     wv1_wl=a(self.value1_wl.weight.T), bv1_wl=a(self.value1_wl.bias),
-                    wv2_wl=a(self.value2_wl.weight).reshape(32), bv2_wl=a(self.value2_wl.bias),
+                    wv2_wl=a(self.value2_wl.weight).reshape(self.value_hidden), bv2_wl=a(self.value2_wl.bias),
                     wp=a(self.policy.weight), bp=a(self.policy.bias))
 
     @torch.no_grad()
@@ -108,7 +115,7 @@ class Student(nn.Module):
         for param, value in zip((self.fc1.weight, self.fc1.bias, self.value1_wl.weight,
                                  self.value1_wl.bias, self.value2_wl.weight, self.value2_wl.bias,
                                  self.policy.weight, self.policy.bias),
-                                (parts[0].T, parts[1], parts[2].T, parts[3], parts[4].reshape(1, 32),
+                                (parts[0].T, parts[1], parts[2].T, parts[3], parts[4].reshape(1, self.value_hidden),
                                  parts[5], parts[6], parts[7])):
             param.copy_(value)
 
@@ -134,10 +141,11 @@ def export(model, path):
     write_quantized(quantize(arrays), temp)
     temp.replace(quant_path)
     manifest = dict(schema="zquoridor.student.v1", architecture=model.architecture,
-                    features=FEATURES[model.architecture], hidden=model.hidden, value_hidden=32,
+                    features=FEATURES[model.architecture], hidden=model.hidden, value_hidden=model.value_hidden,
                     policy_out=209, qa=255, qb=64, qat=model.qat,
                     cpp_flags=[f"-DZQ_NNUE_RACE_FEATURES={int(model.architecture == 'race')}",
-                               f"-DZQ_NNUE_HIDDEN={model.hidden}"],
+                               f"-DZQ_NNUE_HIDDEN={model.hidden}",
+                               f"-DZQ_NNUE_VALUE_HIDDEN={model.value_hidden}"],
                     float_sha256=hashlib.sha256(path.read_bytes()).hexdigest(),
                     int8_sha256=hashlib.sha256(quant_path.read_bytes()).hexdigest())
     path.with_suffix(".architecture.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
