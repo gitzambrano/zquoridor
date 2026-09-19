@@ -82,7 +82,7 @@ jobs:
             --init-architecture race --init-hidden 512 \
             --no-from-scratch --qat \
             --epochs 2 --batch-size 512 --lr 1e-5 \
-            --schedule constant --warmup-epochs 0 --min-lr 1e-5 \
+            --schedule constant --warmup-epochs 1 --min-lr 1e-5 \
             --trunk-lr-scale 0.1 --weight-decay 1e-5 \
             --policy-weight 1.0 --value-weight 1.0 --train-scope full \
             --grad-clip 1.0 --patience 2 --seed 20260942 \
