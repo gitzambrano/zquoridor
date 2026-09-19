@@ -1,0 +1,25 @@
+name: race10 wallpoor-value smoke
+on:
+  push:
+    branches: ["data/race10-wallpoor-value-v1"]
+permissions:
+  contents: read
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.12"}
+      - name: Install numpy
+        run: python -m pip install --quiet numpy
+      - name: Validate value mixer syntax
+        run: |
+          python -m py_compile training/build_wallpoor_outcome_dataset.py
+          python - <<'PY'
+          import ast
+          p="training/build_wallpoor_outcome_dataset.py"
+          t=ast.parse(open(p,encoding="utf-8").read())
+          assert t
+          print("wallpoor outcome mixer syntax OK")
+          PY
