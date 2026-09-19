@@ -1257,6 +1257,10 @@ A comprehensive review of the web deployment resolved three functional and visua
   (<= 3), and game-swing turning points (`tier3-5-generic-critical-100k/positions.jsonl`). Supervision
   is calibrated to 80% Claustrophobia MCTS search (64 sims on CUDA) and 20% ZQuoridor MCAB tree search
   (512 nodes on CPU) with Jensen-Shannon divergence scaling.
+- **Tier 3 bilateral search completion.** Part 1 and Part 2 (100,000 positions total) finished
+  Claustrophobia MCTS search on CUDA. Blended with ZQuoridor 512-node MCAB search targets
+  into `data/teaching/generic-search-100k-zq/dataset.npz` (100k samples, 19,881 validation samples,
+  mean weight 7.15). Tier 3.5 Part 1 (50k) launched immediately on CUDA.
 - **Tier 5 deep search enrichment.** Following Tier 3 bilateral search completion, critical
   branching points and crisis moments from Tier 5 rollouts will receive deep Claustrophobia MCTS
   searches (~500 ms / ~512 simulations) on CUDA before final dataset blending.
