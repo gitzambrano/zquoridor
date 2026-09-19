@@ -120,6 +120,8 @@ def load_dataset(path):
         if (data[key] < 0).any() or (data[key] > maximum).any():
             raise ValueError(f"invalid state field {key}")
     split_indices(data)
+    if "group_id" in data:
+        del data["group_id"]
     return data
 
 
