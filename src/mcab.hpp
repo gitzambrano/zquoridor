@@ -66,6 +66,7 @@
 #include <type_traits>
 #include <utility>
 #include <memory>
+#include <queue>
 
 namespace mcab {
 
@@ -231,12 +232,18 @@ struct McabParams {
     double fpuReduction = 0.0;
     double scoreScale = 160.0;           // = NNUE_EVAL_SCALE
     RootSelectMode rootSelectMode = RootSelectMode::MaxVisits;
+    // Experimental robust root choice: if >=0, choose max-Q only among
+    // edges with N >= fraction*maxN. Default off preserves MaxVisits.
+    double rootQVisitFrac = -1.0;
     BackupMode backupMode = BackupMode::AvgBlend;
     bool progressiveWidening = false;   // production default: off until an Elo gate
     int wideningInitialMoves = 16;      // top policy moves available at N=0
     double wideningCoefficient = 2.0;   // added coefficient in c*N^alpha
     double wideningExponent = 0.5;      // exponent alpha in c*N^alpha
     bool treeReuse = true;               // reuso de subárvore entre lances (Seção 8)
+    // Experimental bounded hot-subtree compaction. Default false preserves
+    // the historical all-or-nothing reuse semantics exactly.
+    bool boundedReuse = false;
     bool clearTTPerMove = false;
     // Separate bounded policy/value inference caches; experimental opt-in.
     bool evalCache = true;
@@ -899,27 +906,82 @@ private:
     // limita o pool a no máximo ~2x nodeBudget mesmo após muitos lances
     // seguidos com reuso (Seção 12, risco de memória).
     bool compactTo(int rootIdx, int budget) {
-        std::vector<int32_t> remap(pool.size(), -1);
-        std::vector<int32_t> order;
-        order.reserve((size_t)budget + 1);
-        remap[rootIdx] = 0;
-        order.push_back(rootIdx);
-        for (size_t i = 0; i < order.size(); i++) {
-            if ((int)order.size() > budget) return false;
-            const NodeT& n = pool[order[i]];
-            for (int32_t c : n.child) {
-                if (c >= 0 && remap[c] < 0) {
-                    remap[c] = (int32_t)order.size();
-                    order.push_back(c);
+        if (!params.boundedReuse) {
+            std::vector<int32_t> remap(pool.size(), -1);
+            std::vector<int32_t> order;
+            order.reserve((size_t)budget + 1);
+            remap[rootIdx] = 0;
+            order.push_back(rootIdx);
+            for (size_t i = 0; i < order.size(); i++) {
+                if ((int)order.size() > budget) return false;
+                const NodeT& n = pool[order[i]];
+                for (int32_t c : n.child) {
+                    if (c >= 0 && remap[c] < 0) {
+                        remap[c] = (int32_t)order.size();
+                        order.push_back(c);
+                    }
                 }
             }
+            std::vector<NodeT> compacted;
+            compacted.reserve(order.size());
+            for (int32_t oldIdx : order) compacted.push_back(std::move(pool[oldIdx]));
+            for (NodeT& n : compacted) {
+                for (int32_t& c : n.child) {
+                    if (c >= 0) c = remap[c];
+                }
+            }
+            pool.swap(compacted);
+            return true;
         }
+
+        if (rootIdx < 0 || rootIdx >= (int)pool.size() || budget < 1) return false;
+        struct Frontier {
+            float visits;
+            int32_t node;
+            uint64_t seq;
+        };
+        struct Less {
+            bool operator()(const Frontier& a, const Frontier& b) const {
+                if (a.visits != b.visits) return a.visits < b.visits;
+                return a.seq > b.seq;
+            }
+        };
+
+        std::vector<int32_t> remap(pool.size(), -1);
+        std::vector<int32_t> order;
+        order.reserve((size_t)budget);
+        remap[(size_t)rootIdx] = 0;
+        order.push_back(rootIdx);
+
+        std::priority_queue<Frontier, std::vector<Frontier>, Less> frontier;
+        uint64_t seq = 0;
+        auto pushChildren = [&](int32_t oldIdx) {
+            const NodeT& n = pool[(size_t)oldIdx];
+            for (size_t e = 0; e < n.child.size(); ++e) {
+                int32_t child = n.child[e];
+                if (child < 0 || remap[(size_t)child] >= 0) continue;
+                float visits = e < n.N.size() ? n.N[e] : 0.f;
+                frontier.push(Frontier{visits, child, seq++});
+            }
+        };
+        pushChildren(rootIdx);
+
+        while ((int)order.size() < budget && !frontier.empty()) {
+            Frontier f = frontier.top();
+            frontier.pop();
+            if (f.node < 0 || f.node >= (int32_t)pool.size()) continue;
+            if (remap[(size_t)f.node] >= 0) continue;
+            remap[(size_t)f.node] = (int32_t)order.size();
+            order.push_back(f.node);
+            pushChildren(f.node);
+        }
+
         std::vector<NodeT> compacted;
         compacted.reserve(order.size());
-        for (int32_t oldIdx : order) compacted.push_back(std::move(pool[oldIdx]));
+        for (int32_t oldIdx : order) compacted.push_back(std::move(pool[(size_t)oldIdx]));
         for (NodeT& n : compacted) {
-            for (int32_t& c : n.child) {
-                if (c >= 0) c = remap[c];
+            for (int32_t& child : n.child) {
+                if (child >= 0) child = remap[(size_t)child];
             }
         }
         pool.swap(compacted);
@@ -1513,6 +1575,24 @@ private:
         auto qOf = [&](size_t i) { return r.N[i] > 0.f ? edgeQ(r, i) : -1.0; };
 
         size_t best = 0;
+        if (params.rootQVisitFrac >= 0.0) {
+            float maxN = 0.f;
+            for (size_t i = 0; i < nm; ++i) maxN = std::max(maxN, r.N[i]);
+            const double minN = std::max(1.0, params.rootQVisitFrac * (double)maxN);
+            bool found = false;
+            double bestQ = -std::numeric_limits<double>::infinity();
+            for (size_t i = 0; i < nm; ++i) {
+                if ((double)r.N[i] < minN) continue;
+                double q = qOf(i);
+                if (!found || q > bestQ || (q == bestQ && r.N[i] > r.N[best])) {
+                    best = i;
+                    bestQ = q;
+                    found = true;
+                }
+            }
+            if (found) return r.moves[best];
+        }
+
         for (size_t i = 1; i < nm; i++) {
             bool better;
             switch (params.rootSelectMode) {
