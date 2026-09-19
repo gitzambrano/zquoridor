@@ -1,0 +1,86 @@
+name: Claustrophobia vs current-main movegen
+
+on:
+  push:
+    branches: ["bench/claustrophobia-movegen-v2"]
+    paths:
+      - ".github/workflows/claustrophobia-movegen-v2.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  bench:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - name: Checkout pinned Claustrophobia
+        run: |
+          set -euo pipefail
+          git clone --filter=blob:none https://github.com/Plaaasma/Claustrophobia.git claustrophobia
+          cd claustrophobia
+          git checkout ae093653e62ad700e201706fa5ed767093d0d68e
+          test "$(git rev-parse HEAD)" = ae093653e62ad700e201706fa5ed767093d0d68e
+      - name: Build benches
+        run: |
+          cat >/tmp/zq_perft.cpp <<'CPP'
+          #include <chrono>
+          #include <cstdint>
+          #include <iostream>
+          #include "rules.hpp"
+          int main() {
+            auto s=qr::initialState();
+            for(int d: {2,3}) {
+              int reps=d==2?200:12; volatile uint64_t sink=0;
+              auto t0=std::chrono::steady_clock::now();
+              for(int i=0;i<reps;i++) sink += qr::perft(s,d);
+              double sec=std::chrono::duration<double>(std::chrono::steady_clock::now()-t0).count();
+              uint64_t one=qr::perft(s,d);
+              std::cout<<"ZQ depth="<<d<<" count="<<one<<" reps="<<reps
+                       <<" sec="<<sec<<" leaves_per_sec="<<(double(one)*reps/sec)
+                       <<" sink="<<sink<<"\n";
+            }
+          }
+          CPP
+          g++ -O3 -DNDEBUG -std=c++17 -march=native -Isrc /tmp/zq_perft.cpp -o /tmp/zq_perft
+          cat > claustrophobia/src/bin/zq_perftbench.rs <<'RS'
+          use std::time::Instant;
+          use quoridor::{perft, GameState};
+          fn main() {
+            for d in [2u32,3u32] {
+              let reps:u64=if d==2 {200} else {12};
+              let mut sink=0u64; let t0=Instant::now();
+              for _ in 0..reps { let mut s=GameState::start(); sink=sink.wrapping_add(perft(&mut s,d)); }
+              let sec=t0.elapsed().as_secs_f64(); let mut s=GameState::start(); let one=perft(&mut s,d);
+              println!("CLAUSTRO depth={} count={} reps={} sec={} leaves_per_sec={} sink={}",
+                       d,one,reps,sec,(one as f64*reps as f64/sec),sink);
+            }
+          }
+          RS
+          (cd claustrophobia && cargo build --release --bin zq_perftbench)
+      - name: Run
+        run: |
+          mkdir -p benchmark_results/claustrophobia-movegen-v2
+          for i in 1 2 3 4 5; do
+            /tmp/zq_perft
+            claustrophobia/target/release/zq_perftbench
+          done | tee benchmark_results/claustrophobia-movegen-v2/results.txt
+          python - <<'PY' | tee benchmark_results/claustrophobia-movegen-v2/summary.txt
+          import re,statistics
+          lines=open("benchmark_results/claustrophobia-movegen-v2/results.txt").read().splitlines()
+          data={}
+          for x in lines:
+            m=re.search(r'^(ZQ|CLAUSTRO) depth=(\d+) count=(\d+).*leaves_per_sec=([0-9.eE+-]+)',x)
+            if m: data.setdefault((m.group(1),int(m.group(2))),[]).append((int(m.group(3)),float(m.group(4))))
+          for d in (2,3):
+            z=data[("ZQ",d)]; c=data[("CLAUSTRO",d)]
+            counts={x[0] for x in z+c}; assert len(counts)==1,(d,counts)
+            zm=statistics.median(x[1] for x in z); cm=statistics.median(x[1] for x in c)
+            print("SUMMARY depth",d,"count",next(iter(counts)),
+                  "zq_lps",round(zm),"claustro_lps",round(cm),"claustro_over_zq_x",round(cm/zm,3))
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: claustrophobia-movegen-v2-${{ github.run_id }}
+          path: benchmark_results/claustrophobia-movegen-v2/**
