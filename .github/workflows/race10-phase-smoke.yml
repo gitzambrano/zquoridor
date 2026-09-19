@@ -5,6 +5,7 @@ on:
     paths: ["training/student_model.py","training/run_experiment.py","src/nnue.hpp","experiments/race10-phase-v1/**",".github/workflows/race10-phase-smoke.yml"]
 permissions:
   contents: read
+  actions: read
 jobs:
   smoke:
     runs-on: ubuntu-latest
@@ -38,3 +39,33 @@ jobs:
           mkdir -p bin
           g++ -O2 -std=c++17 -DZQ_NNUE_RACE_FEATURES=1 -DZQ_NNUE_PHASE_FEATURES=1 -DZQ_NNUE_HIDDEN=512 tests/nnue_incremental_check.cpp -o bin/check
           g++ -O2 -std=c++17 -pthread -DZQ_NNUE_RACE_FEATURES=1 -DZQ_NNUE_PHASE_FEATURES=1 -DZQ_NNUE_HIDDEN=512 -Isrc tools/external/zquoridor_uci.cpp -o bin/zq
+
+      - name: Download small Gen10 replay artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: gen10-search-replay-128-34892170047
+          path: /tmp/gen10-replay
+          github-token: ${{ github.token }}
+          repository: gitzambrano/zquoridor
+          run-id: 34892170047
+      - name: End-to-end mini-train smoke
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -s /tmp/gen10-replay/replay-source.npz
+          python training/run_experiment.py \
+            --data /tmp/gen10-replay/replay-source.npz \
+            --out-dir /tmp/race_phase-pilot \
+            --architecture race_phase --hidden 512 \
+            --init-from results/experiments/race512-search10-ft-s20260917/student.bin \
+            --init-architecture race --init-hidden 512 \
+            --no-from-scratch --qat \
+            --epochs 2 --batch-size 512 --lr 1e-5 \
+            --schedule constant --warmup-epochs 0 --min-lr 1e-5 \
+            --trunk-lr-scale 0.1 --weight-decay 1e-5 \
+            --policy-weight 1.0 --value-weight 1.0 --train-scope full \
+            --grad-clip 1.0 --patience 2 --seed 20260944 \
+            --device cpu --cpu-threads 2 \
+            --no-teaching --build --no-benchmark
+          test -s /tmp/race_phase-pilot/student.bin
+          test -s /tmp/race_phase-pilot/student_int8.bin
