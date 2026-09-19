@@ -1,0 +1,53 @@
+name: race wall-regime feature smoke
+
+on:
+  push:
+    branches: ["features/race10-wall-regime-v1"]
+    paths:
+      - "training/student_model.py"
+      - "training/run_experiment.py"
+      - "src/nnue.hpp"
+      - "experiments/race10-wall-regime-v1/**"
+      - ".github/workflows/race10-wall-regime-smoke.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Python syntax and feature-layout checks
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m py_compile training/student_model.py training/run_experiment.py
+          python - <<'PY'
+          import sys, numpy as np
+          sys.path.insert(0, "training")
+          from student_model import encode_features, FEATURES
+          data={
+              "own_pawn":np.array([4,13],dtype=np.uint8),
+              "opp_pawn":np.array([76,67],dtype=np.uint8),
+              "walls_h":np.array([0,1],dtype=np.uint64),
+              "walls_v":np.array([0,0],dtype=np.uint64),
+              "own_dist":np.array([8,2],dtype=np.uint8),
+              "opp_dist":np.array([8,12],dtype=np.uint8),
+              "walls_left_own":np.array([10,0],dtype=np.uint8),
+              "walls_left_opp":np.array([10,8],dtype=np.uint8),
+          }
+          x=encode_features(data,np.array([0,1]),"race_regime")
+          assert FEATURES["race_regime"]==588 and x.shape==(2,588)
+          assert x[0,456:].sum()==1 and x[1,456:].sum()==1
+          # second row: margin -10 -> bucket 6; own-zero/opponent-positive -> regime 1
+          assert x[1,456 + 6*4 + 1] == 1.0
+          print("race_regime Python layout OK")
+          PY
+      - name: C++ compile with race-regime flags
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p bin
+          g++ -O2 -std=c++17             -DZQ_NNUE_RACE_FEATURES=1             -DZQ_NNUE_RACE_REGIME_FEATURES=1             -DZQ_NNUE_HIDDEN=512             tests/nnue_incremental_check.cpp -o bin/check-regime
+          g++ -O2 -std=c++17 -pthread             -DZQ_NNUE_RACE_FEATURES=1             -DZQ_NNUE_RACE_REGIME_FEATURES=1             -DZQ_NNUE_HIDDEN=512             -Isrc tools/external/zquoridor_uci.cpp -o bin/zq-regime
