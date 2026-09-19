@@ -65,6 +65,7 @@
 #include <random>
 #include <type_traits>
 #include <utility>
+#include <memory>
 
 namespace mcab {
 
@@ -493,7 +494,10 @@ struct MCABNode {
     std::vector<float> W;         // soma (AvgBlend) or backed value (MinimaxHard)
     std::vector<int32_t> child;   // índice no pool, -1 = não expandido
     int activeMoves = 0;          // progressive-widening prefix currently unpruned
-    MoveListT candidateMoves;      // lazy mode: legal-slot candidates, not all legalized
+    // Progressive-widening-only storage. Production has PW disabled, so an
+    // inline MoveList here made every node pay for a second 256-move buffer
+    // that was never touched. Allocate it only on the PW path.
+    std::unique_ptr<MoveListT> candidateMoves;
     std::vector<float> candidateP;
     std::vector<size_t> activeCandidateIndices;
     size_t nextCandidate = 0;
@@ -541,6 +545,7 @@ public:
             bytes += n.W.capacity() * sizeof(float);
             bytes += n.child.capacity() * sizeof(int32_t);
             bytes += n.candidateP.capacity() * sizeof(float);
+            if (n.candidateMoves) bytes += sizeof(MoveListT);
         }
         return bytes;
     }
@@ -1092,9 +1097,10 @@ private:
     void activateWidening(NodeT& node, int desired) {
         size_t oldSize = node.moves.size();
         while ((int)node.moves.size() < desired &&
-               node.nextCandidate < node.candidateMoves.size()) {
+               node.candidateMoves &&
+               node.nextCandidate < node.candidateMoves->size()) {
             size_t i = node.nextCandidate++;
-            const MoveT& candidate = node.candidateMoves[i];
+            const MoveT& candidate = (*node.candidateMoves)[i];
             bool legal = !mcabIsWall(candidate, 0) ||
                          mcabSingleWallLegal(node.state, node.side, candidate, 0);
             if (!legal) continue;
@@ -1128,7 +1134,8 @@ private:
             node.activeMoves = (int)node.moves.size();
             return;
         }
-        int desired = wideningLimit((int)node.candidateMoves.size(), node.totalN);
+        int desired = wideningLimit(node.candidateMoves ? (int)node.candidateMoves->size() : 0,
+                                  node.totalN);
         activateWidening(node, desired);
     }
 
@@ -1190,25 +1197,26 @@ private:
             // wall candidates only pay the local slot-overlap check here.
             // The path-preserving legality test is deferred until a
             // candidate enters the active prefix in activateWidening().
-            mcabEnumerateCandidates<MoveT>(node.state, node.side, node.candidateMoves, 0);
+            node.candidateMoves = std::make_unique<MoveListT>();
+            mcabEnumerateCandidates<MoveT>(node.state, node.side, *node.candidateMoves, 0);
 
-            size_t nc = node.candidateMoves.size();
+            size_t nc = node.candidateMoves->size();
             node.candidateP.assign(nc, 0.f);
             if (nc > 0) {
                 std::array<float, PolicyDim> policyOut{};
                 policyOutputForNode(node, depthInTree, policyOut, mstats);
                 std::vector<float> logits(nc);
                 for (size_t i = 0; i < nc; i++)
-                    logits[i] = policyLogitForMove(policyOut, node.candidateMoves[i], node.side);
+                    logits[i] = policyLogitForMove(policyOut, (*node.candidateMoves)[i], node.side);
 
                 std::vector<size_t> order(nc);
                 std::iota(order.begin(), order.end(), (size_t)0);
                 std::stable_sort(order.begin(), order.end(),
                                  [&](size_t a, size_t b) { return logits[a] > logits[b]; });
-                MoveListT orderedCandidates;
+                auto orderedCandidates = std::make_unique<MoveListT>();
                 std::vector<float> orderedLogits;
                 for (size_t i : order) {
-                    orderedCandidates.push_back(node.candidateMoves[i]);
+                    orderedCandidates->push_back((*node.candidateMoves)[i]);
                     orderedLogits.push_back(logits[i]);
                 }
                 node.candidateMoves = std::move(orderedCandidates);
@@ -1295,8 +1303,12 @@ private:
     // avaliação, backup).
     // ---------------------------------------------------------------
     void runSimulation(Eng& engine, SearchStatsT& stats, McabStats& mstats) {
-        std::vector<PathEdge> path;
-        path.reserve((size_t)params.maxTreeDepth + 2);
+        // Search is sequential within one MCABSearch. Reuse the descent buffer
+        // across simulations instead of paying allocator traffic every visit.
+        static thread_local std::vector<PathEdge> path;
+        path.clear();
+        const size_t need = (size_t)params.maxTreeDepth + 2;
+        if (path.capacity() < need) path.reserve(need);
 
         int curIdx = 0;
         int depth = 0;  // ply desde a raiz; indexa mcabAccStack
