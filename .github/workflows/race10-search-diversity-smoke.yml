@@ -15,6 +15,14 @@ jobs:
         run: python -m pip install --quiet numpy
       - name: Validate selector
         run: |
+          python -m py_compile training/select_replay_diverse_disagreement.py training/run_diverse_search_teaching.py
+          python training/run_diverse_search_teaching.py --zq-bridge /bin/true --claustro-bridge /bin/true --claustro-checkpoint /bin/true --dry-run > /tmp/diverse-pipeline.json
+          python - <<'PY'
+          import json
+          p=json.load(open("/tmp/diverse-pipeline.json"))
+          assert len(p["commands"])==5 and "diverse50k" in p["final_dataset"]
+          print("diverse pipeline dry-run OK")
+          PY
           python -m py_compile training/select_replay_diverse_disagreement.py
           python - <<'PY'
           import sys, numpy as np
