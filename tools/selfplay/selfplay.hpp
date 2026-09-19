@@ -265,6 +265,20 @@ struct SelfPlayConfig {
     // exatamente como estão (ver instruções da Fase 6).
     mcab::McabParams mcabParams;
 
+    // KataGo/Claustrophobia-style playout-cap randomization for datagen.
+    // Default OFF preserves the historical generator exactly: every ply is
+    // recorded and every real search uses timeBudgetMs.
+    //
+    // When enabled, only a Bernoulli fraction fullSearchProb of plies that
+    // reach the real search path use the full time budget and become training
+    // samples. The remaining searched plies use cheapTimeBudgetMs only to steer
+    // the trajectory and are NOT written. Temperature/random/shallow plies are
+    // likewise trajectory-only while this mode is enabled. This spends teacher
+    // compute on high-quality targets instead of paying full price everywhere.
+    bool playoutCapEnabled = false;
+    double fullSearchProb = 1.0;
+    int cheapTimeBudgetMs = 20;
+
     // Overrides dos parâmetros de busca de search.hpp (contempt, LMR, CAT,
     // quiescência, escala da política na ordenação...). Todo campo vazio por
     // default => applySearchTuning é um no-op e cada engine fica no valor de
@@ -278,6 +292,9 @@ struct SelfPlayStats {
     std::atomic<uint64_t> gamesDrawn{0};      // empates por repetição
     std::atomic<uint64_t> positionsWritten{0};
     std::atomic<uint64_t> totalNodes{0};
+    std::atomic<uint64_t> fullSearchPlies{0};
+    std::atomic<uint64_t> cheapSearchPlies{0};
+    std::atomic<uint64_t> samplesSkipped{0};
 };
 
 // Alias de instanciação do McabRunner (Fase 6 do plano) para a engine única
@@ -453,6 +470,24 @@ inline std::vector<TrainingSample> playOneGame(Negamax& engine0, Negamax& engine
             }
         }
 
+        // Playout-cap bookkeeping. In legacy mode every ply is still
+        // recorded exactly as before. In playout-cap mode only a full real
+        // search may set recordSample=true.
+        bool recordSample = !cfg.playoutCapEnabled;
+
+        auto searchedMove = [&](bool fullSearch) {
+            SearchStats st;
+            int budgetMs = fullSearch ? cfg.timeBudgetMs : cfg.cheapTimeBudgetMs;
+            if (budgetMs <= 0) budgetMs = cfg.timeBudgetMs;
+            Move m = mcabRunner.choose(engine, s, cfg.maxDepth, budgetMs, st, reptbl);
+            nodesOut += st.nodes;
+            if (cfg.playoutCapEnabled) {
+                if (fullSearch) stats.fullSearchPlies++;
+                else stats.cheapSearchPlies++;
+            }
+            return m;
+        };
+
         if (cfg.mcMode) {
             // --- Modo Monte Carlo / temperatura --------------------------
             if (mcTemperaturePly) {
@@ -480,9 +515,9 @@ inline std::vector<TrainingSample> playOneGame(Negamax& engine0, Negamax& engine
                 // decaiu (quebra loops simétricos no meio/fim de jogo).
                 chosen = chooseShallowRunnerUp(engine, s, moves, reptbl, rng);
             } else {
-                SearchStats st;
-                chosen = mcabRunner.choose(engine, s, cfg.maxDepth, cfg.timeBudgetMs, st, reptbl);
-                nodesOut += st.nodes;
+                bool fullSearch = !cfg.playoutCapEnabled || (unif(rng) < cfg.fullSearchProb);
+                chosen = searchedMove(fullSearch);
+                recordSample = !cfg.playoutCapEnabled || fullSearch;
             }
         } else {
             // --- Modo antigo (epsilon-greedy, inalterado) -----------------
@@ -509,12 +544,15 @@ inline std::vector<TrainingSample> playOneGame(Negamax& engine0, Negamax& engine
                     chosen = chooseShallowRunnerUp(engine, s, moves, reptbl, rng);
                 }
             } else {
-                SearchStats st;
-                chosen = mcabRunner.choose(engine, s, cfg.maxDepth, cfg.timeBudgetMs, st, reptbl);
-                nodesOut += st.nodes;
+                bool fullSearch = !cfg.playoutCapEnabled || (unif(rng) < cfg.fullSearchProb);
+                chosen = searchedMove(fullSearch);
+                recordSample = !cfg.playoutCapEnabled || fullSearch;
             }
         }
 
+        if (!recordSample && cfg.playoutCapEnabled) stats.samplesSkipped++;
+
+        if (recordSample) {
         TrainingSample rec{};
         int mover = s.turn, opp = 1 - s.turn;
         // Gravar já espelhado (ver nota em TrainingSample acima e em
@@ -575,6 +613,7 @@ inline std::vector<TrainingSample> playOneGame(Negamax& engine0, Negamax& engine
             rec.oppCatTotal = (int16_t)oppSum;
         }
         samples.push_back(rec);
+        }
 
         reptbl.push(s.hash, chosen.isWall);
         s = applyMove(s, chosen);
@@ -592,10 +631,11 @@ inline std::vector<TrainingSample> playOneGame(Negamax& engine0, Negamax& engine
     int w = winner(s);
     if (w == -1) { samples.clear(); return samples; }  // não terminou -> descarta
 
-    // s.turn alterna estritamente a cada lance e a partida sempre começa com
-    // turn=0 (initialState), então o mover da amostra i é simplesmente i%2.
+    // Samples may be sparse when playout-cap randomization is active, so
+    // sample_index parity is NOT the game ply. The record already stores the
+    // absolute mover; use it directly (also equivalent to i%2 in legacy mode).
     for (size_t i = 0; i < samples.size(); i++) {
-        int moverOfSample = (int)(i % 2);
+        int moverOfSample = (int)samples[i].mover;
         samples[i].gameResult = (w == moverOfSample) ? 1 : -1;
     }
     return samples;
