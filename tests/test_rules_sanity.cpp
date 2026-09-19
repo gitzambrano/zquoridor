@@ -19,8 +19,8 @@ static void legalWallMovesReference(const State& s, int player, std::vector<Move
                 uint64_t nh = s.wallsH, nv = s.wallsV;
                 if (orientation == 0) nh |= (1ull << slotIdx(r, c));
                 else nv |= (1ull << slotIdx(r, c));
-                if (!hasPathToGoal(nh, nv, s.pawn[0], 0)) continue;
-                if (!hasPathToGoal(nh, nv, s.pawn[1], 1)) continue;
+                if (!hasPathToGoalBFS(nh, nv, s.pawn[0], 0)) continue;
+                if (!hasPathToGoalBFS(nh, nv, s.pawn[1], 1)) continue;
                 out.push_back(Move::wall(orientation, r, c));
             }
         }
