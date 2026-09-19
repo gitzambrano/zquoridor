@@ -63,6 +63,7 @@
 #include <limits>
 #include <chrono>
 #include <random>
+#include <queue>
 #include <type_traits>
 #include <utility>
 #include <memory>
@@ -891,35 +892,67 @@ private:
         return -1;
     }
 
-    // Move a subárvore enraizada em `rootIdx` para os índices [0, k) do
-    // pool, remapeando os índices de `child`, e descarta todo o resto
-    // (Seção 8.1: compactação obrigatória para não vazar memória do que
-    // ficou fora do caminho jogado). Aborta (devolve false -> árvore nova)
-    // se a subárvore herdada sozinha já passar do orçamento de nós: isso
-    // limita o pool a no máximo ~2x nodeBudget mesmo após muitos lances
-    // seguidos com reuso (Seção 12, risco de memória).
+    // Move a reusable subtree to [0,k), retaining at most nodeBudget
+    // nodes. The historical implementation was all-or-nothing: if the
+    // inherited subtree exceeded the budget by even one node, it discarded the
+    // entire tree and restarted cold. Keep the root unconditionally, then
+    // retain descendants in descending parent-edge visit count.
+    //
+    // Edges whose child falls beyond the cap retain inherited P/N/W but have
+    // child=-1, so a later descent can materialize that child again. Search
+    // semantics are unchanged except for retaining the hottest bounded prefix
+    // instead of throwing all inherited work away.
     bool compactTo(int rootIdx, int budget) {
+        if (rootIdx < 0 || rootIdx >= (int)pool.size() || budget < 1) return false;
+
+        struct Frontier {
+            float visits;
+            int32_t node;
+            uint64_t seq;
+        };
+        struct Less {
+            bool operator()(const Frontier& a, const Frontier& b) const {
+                if (a.visits != b.visits) return a.visits < b.visits;
+                return a.seq > b.seq;
+            }
+        };
+
         std::vector<int32_t> remap(pool.size(), -1);
         std::vector<int32_t> order;
-        order.reserve((size_t)budget + 1);
-        remap[rootIdx] = 0;
+        order.reserve((size_t)budget);
+        remap[(size_t)rootIdx] = 0;
         order.push_back(rootIdx);
-        for (size_t i = 0; i < order.size(); i++) {
-            if ((int)order.size() > budget) return false;
-            const NodeT& n = pool[order[i]];
-            for (int32_t c : n.child) {
-                if (c >= 0 && remap[c] < 0) {
-                    remap[c] = (int32_t)order.size();
-                    order.push_back(c);
-                }
+
+        std::priority_queue<Frontier, std::vector<Frontier>, Less> frontier;
+        uint64_t seq = 0;
+        auto pushChildren = [&](int32_t oldIdx) {
+            const NodeT& n = pool[(size_t)oldIdx];
+            for (size_t e = 0; e < n.child.size(); ++e) {
+                int32_t child = n.child[e];
+                if (child < 0 || remap[(size_t)child] >= 0) continue;
+                float visits = e < n.N.size() ? n.N[e] : 0.f;
+                frontier.push(Frontier{visits, child, seq++});
             }
+        };
+        pushChildren(rootIdx);
+
+        while ((int)order.size() < budget && !frontier.empty()) {
+            Frontier f = frontier.top();
+            frontier.pop();
+            if (f.node < 0 || f.node >= (int32_t)pool.size()) continue;
+            if (remap[(size_t)f.node] >= 0) continue;
+            remap[(size_t)f.node] = (int32_t)order.size();
+            order.push_back(f.node);
+            pushChildren(f.node);
         }
+
         std::vector<NodeT> compacted;
         compacted.reserve(order.size());
-        for (int32_t oldIdx : order) compacted.push_back(std::move(pool[oldIdx]));
+        for (int32_t oldIdx : order)
+            compacted.push_back(std::move(pool[(size_t)oldIdx]));
         for (NodeT& n : compacted) {
-            for (int32_t& c : n.child) {
-                if (c >= 0) c = remap[c];
+            for (int32_t& child : n.child) {
+                if (child >= 0) child = remap[(size_t)child];
             }
         }
         pool.swap(compacted);
