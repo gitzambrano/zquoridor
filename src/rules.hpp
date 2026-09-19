@@ -127,6 +127,71 @@ inline State initialState() {
 }
 
 // --- bloqueio de arestas -------------------------------------------------
+// Precomputed board-neighbour and wall-slot masks for the four orthogonal
+// directions used by every BFS/pawn-move expansion. Direction order matches the
+// historical dr/dc arrays: 0=N, 1=S, 2=W, 3=E.
+//
+// This moves fixed 9x9 geometry out of the hot loop. A blocked-edge test becomes
+// two mask ANDs instead of row/column arithmetic plus conditional slot probes.
+constexpr std::array<std::array<int8_t, 4>, N * N> makeNeighborTable() {
+    std::array<std::array<int8_t, 4>, N * N> a{};
+    for (int cell = 0; cell < N * N; ++cell) {
+        int r = cell / N, col = cell % N;
+        a[(size_t)cell][0] = (int8_t)(r > 0 ? cell - N : -1);
+        a[(size_t)cell][1] = (int8_t)(r + 1 < N ? cell + N : -1);
+        a[(size_t)cell][2] = (int8_t)(col > 0 ? cell - 1 : -1);
+        a[(size_t)cell][3] = (int8_t)(col + 1 < N ? cell + 1 : -1);
+    }
+    return a;
+}
+constexpr std::array<std::array<uint64_t, 4>, N * N> makeEdgeHMaskTable() {
+    std::array<std::array<uint64_t, 4>, N * N> a{};
+    for (int cell = 0; cell < N * N; ++cell) {
+        int r = cell / N, col = cell % N;
+        // N/S movement is blocked by horizontal walls.
+        if (r > 0) {
+            int wr = r - 1;
+            if (col > 0) a[(size_t)cell][0] |= 1ull << slotIdx(wr, col - 1);
+            if (col < WS) a[(size_t)cell][0] |= 1ull << slotIdx(wr, col);
+        }
+        if (r < WS) {
+            int wr = r;
+            if (col > 0) a[(size_t)cell][1] |= 1ull << slotIdx(wr, col - 1);
+            if (col < WS) a[(size_t)cell][1] |= 1ull << slotIdx(wr, col);
+        }
+    }
+    return a;
+}
+constexpr std::array<std::array<uint64_t, 4>, N * N> makeEdgeVMaskTable() {
+    std::array<std::array<uint64_t, 4>, N * N> a{};
+    for (int cell = 0; cell < N * N; ++cell) {
+        int r = cell / N, col = cell % N;
+        // W/E movement is blocked by vertical walls.
+        if (col > 0) {
+            int wc = col - 1;
+            if (r > 0) a[(size_t)cell][2] |= 1ull << slotIdx(r - 1, wc);
+            if (r < WS) a[(size_t)cell][2] |= 1ull << slotIdx(r, wc);
+        }
+        if (col < WS) {
+            int wc = col;
+            if (r > 0) a[(size_t)cell][3] |= 1ull << slotIdx(r - 1, wc);
+            if (r < WS) a[(size_t)cell][3] |= 1ull << slotIdx(r, wc);
+        }
+    }
+    return a;
+}
+constexpr auto ORTH_NEIGHBOR = makeNeighborTable();
+constexpr auto EDGE_H_MASK = makeEdgeHMaskTable();
+constexpr auto EDGE_V_MASK = makeEdgeVMaskTable();
+
+inline bool edgeBlockedDir(uint64_t wallsH, uint64_t wallsV, int cell, int dir) {
+    return ((wallsH & EDGE_H_MASK[(size_t)cell][(size_t)dir]) |
+            (wallsV & EDGE_V_MASK[(size_t)cell][(size_t)dir])) != 0;
+}
+inline bool isGoalCell(int cell, int player) {
+    return player == 0 ? cell >= (N - 1) * N : cell < N;
+}
+
 inline bool edgeBlocked(uint64_t wallsH, uint64_t wallsV, int ra, int ca, int rb, int cb) {
     if (ra == rb) {
         int r = ra, c = ca < cb ? ca : cb;
@@ -256,22 +321,20 @@ namespace detail {
         if (rowOf(startCell) == goalRow) { e.goalCell = startCell; e.distToGoal = 0; return; }
         while (head < tail) {
             int cell = e.queue[head++];
-            int r = rowOf(cell), c = colOf(cell);
             int d0 = e.dist[cell];
             for (int d = 0; d < 4; d++) {
-                int nr = r + dr[d], nc = c + dc[d];
-                if (!inBounds(nr, nc)) continue;
-                int ncell = cellIdx(nr, nc);
+                int ncell = (int)ORTH_NEIGHBOR[(size_t)cell][(size_t)d];
+                if (ncell < 0) continue;
                 if (e.visitGen[ncell] == e.gen) continue;
-                if (edgeBlocked(wallsH, wallsV, r, c, nr, nc)) continue;
+                if (edgeBlockedDir(wallsH, wallsV, cell, d)) continue;
                 e.visitGen[ncell] = e.gen;
                 e.parent[ncell] = cell;
                 e.dist[ncell] = d0 + 1;
                 e.touched[e.touchedCount++] = ncell;
-                if (nr == goalRow) {
+                if (isGoalCell(ncell, player)) {
                     e.goalCell = ncell;
                     e.distToGoal = d0 + 1;
-                    return;  // early exit total -- idêntico às 3 funções antigas
+                    return;  // same early-exit semantics, less geometry work
                 }
                 e.queue[tail++] = ncell;
             }
@@ -298,14 +361,12 @@ inline bool hasPathToGoal(uint64_t wallsH, uint64_t wallsV, int startCell, int p
     static const int dc[4] = {0, 0, -1, 1};
     while (head < tail) {
         int cell = queue[head++];
-        int r = rowOf(cell), c = colOf(cell);
         for (int d = 0; d < 4; d++) {
-            int nr = r + dr[d], nc = c + dc[d];
-            if (!inBounds(nr, nc)) continue;
-            int ncell = cellIdx(nr, nc);
+            int ncell = (int)ORTH_NEIGHBOR[(size_t)cell][(size_t)d];
+            if (ncell < 0) continue;
             if (visitGen[ncell] == gen) continue;
-            if (edgeBlocked(wallsH, wallsV, r, c, nr, nc)) continue;
-            if (nr == goalRow) return true;
+            if (edgeBlockedDir(wallsH, wallsV, cell, d)) continue;
+            if (isGoalCell(ncell, player)) return true;
             visitGen[ncell] = gen;
             queue[tail++] = ncell;
         }
@@ -631,27 +692,22 @@ inline void computeDistCached(uint64_t wallsH, uint64_t wallsV, int startCell, i
 // como Move::pawn(destCell) em out (Fase 4.2.2: sem std::vector<int>
 // intermediário, out é o MoveList final de legalMoves).
 inline void pawnStepMoves(const State& s, int player, MoveList& out) {
-    static const int dr[4] = {-1, 1, 0, 0};
-    static const int dc[4] = {0, 0, -1, 1};
     int me = s.pawn[player], opp = s.pawn[1 - player];
-    int mr = rowOf(me), mc = colOf(me);
     for (int d = 0; d < 4; d++) {
-        int r1 = mr + dr[d], c1 = mc + dc[d];
-        if (!inBounds(r1, c1) || edgeBlocked(s.wallsH, s.wallsV, mr, mc, r1, c1)) continue;
-        int step1 = cellIdx(r1, c1);
+        int step1 = (int)ORTH_NEIGHBOR[(size_t)me][(size_t)d];
+        if (step1 < 0 || edgeBlockedDir(s.wallsH, s.wallsV, me, d)) continue;
         if (step1 != opp) { out.push_back(Move::pawn(step1)); continue; }
-        int r2 = r1 + dr[d], c2 = c1 + dc[d];
-        if (inBounds(r2, c2) && !edgeBlocked(s.wallsH, s.wallsV, r1, c1, r2, c2)) {
-            out.push_back(Move::pawn(cellIdx(r2, c2)));
+        int straight = (int)ORTH_NEIGHBOR[(size_t)opp][(size_t)d];
+        if (straight >= 0 && !edgeBlockedDir(s.wallsH, s.wallsV, opp, d)) {
+            out.push_back(Move::pawn(straight));
             continue;
         }
-        // diagonais
         int pd0, pd1;
         if (d < 2) { pd0 = 2; pd1 = 3; } else { pd0 = 0; pd1 = 1; }
         for (int pd : {pd0, pd1}) {
-            int rdi = r1 + dr[pd], cdi = c1 + dc[pd];
-            if (inBounds(rdi, cdi) && !edgeBlocked(s.wallsH, s.wallsV, r1, c1, rdi, cdi))
-                out.push_back(Move::pawn(cellIdx(rdi, cdi)));
+            int diag = (int)ORTH_NEIGHBOR[(size_t)opp][(size_t)pd];
+            if (diag >= 0 && !edgeBlockedDir(s.wallsH, s.wallsV, opp, pd))
+                out.push_back(Move::pawn(diag));
         }
     }
 }
@@ -843,26 +899,22 @@ inline EvalWeights& evalWeights() { static EvalWeights w; return w; }
 // em orderMoves (Seção 5.6 do plano) -- mesma lógica de geração de lance
 // de pawnStepMoves acima, sem o vector.
 inline int pawnMobilityCount(const State& s, int player) {
-    static const int dr[4] = {-1, 1, 0, 0};
-    static const int dc[4] = {0, 0, -1, 1};
     int me = s.pawn[player], opp = s.pawn[1 - player];
-    int mr = rowOf(me), mc = colOf(me);
     int count = 0;
     for (int d = 0; d < 4; d++) {
-        int r1 = mr + dr[d], c1 = mc + dc[d];
-        if (!inBounds(r1, c1) || edgeBlocked(s.wallsH, s.wallsV, mr, mc, r1, c1)) continue;
-        int step1 = cellIdx(r1, c1);
+        int step1 = (int)ORTH_NEIGHBOR[(size_t)me][(size_t)d];
+        if (step1 < 0 || edgeBlockedDir(s.wallsH, s.wallsV, me, d)) continue;
         if (step1 != opp) { count++; continue; }
-        int r2 = r1 + dr[d], c2 = c1 + dc[d];
-        if (inBounds(r2, c2) && !edgeBlocked(s.wallsH, s.wallsV, r1, c1, r2, c2)) {
+        int straight = (int)ORTH_NEIGHBOR[(size_t)opp][(size_t)d];
+        if (straight >= 0 && !edgeBlockedDir(s.wallsH, s.wallsV, opp, d)) {
             count++;
             continue;
         }
         int pd0, pd1;
         if (d < 2) { pd0 = 2; pd1 = 3; } else { pd0 = 0; pd1 = 1; }
         for (int pd : {pd0, pd1}) {
-            int rdi = r1 + dr[pd], cdi = c1 + dc[pd];
-            if (inBounds(rdi, cdi) && !edgeBlocked(s.wallsH, s.wallsV, r1, c1, rdi, cdi))
+            int diag = (int)ORTH_NEIGHBOR[(size_t)opp][(size_t)pd];
+            if (diag >= 0 && !edgeBlockedDir(s.wallsH, s.wallsV, opp, pd))
                 count++;
         }
     }
