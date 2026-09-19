@@ -347,7 +347,62 @@ Conclusão: `race512-search10-ft` é a melhor rede geral até o momento (+6 p.p.
    - Concluído: 200/200 jogos válidos.
    - Placar: 49,50% (99-101), empate técnico exato.
    - Decisão: `race512-search10-ft` confirmada como a melhor rede geral.
-7. **Superar Claustrophobia (>50%)**: Testar `race512-search20-ft` (treinado com 20% de teaching search ponderado) contra Claustrophobia.
+7. ~~**Superar Claustrophobia (>50%) com busca a 20%**: Testar `race512-search20-ft` (treinado com 20% de teaching search) contra Claustrophobia.~~
+   - Concluído: 40/40 jogos (20 pares, 200 ms, `openings_confirmation_v1.jsonl`).
+   - Placar: 48,75% (Elo -8,7).
+   - Diagnóstico: Aumentar o peso de teaching de 10% para 20% no mesmo conjunto reduzido de 2.000 posições mantém o teto em ~48,8%–49,0%. Mais do mesmo não quebra os 50%.
+
+### 8.1 Diagnóstico Tático & Métricas de Busca contra Claustrophobia
+
+#### Métricas de Busca e Velocidade
+- **ZQuoridor (MCAB)**:
+  - A 200 ms: ~10.680 nós expandidos (~53.400 nós/s), tempo médio medido por lance: 209 ms.
+  - A 100 ms: ~6.580 nós expandidos (~65.800 nós/s), tempo médio medido por lance: 105 ms. Permite dobrar o volume de jogos por hora em auto-confronto e screening.
+- **Claustrophobia**:
+  - A 200 ms: ~201 ms por lance, ~400 a 800 simulações MCTS guiadas por rede neural em PyTorch/CPU.
+
+#### Taxonomia de Derrotas nos 100 Pares de Confirmação (200 Jogos)
+- **Placar Geral**: 95 vitórias, 105 derrotas (49,0% de aproveitamento).
+- **Por Lado**: Brancas (P1): 49,0% (49/100) | Pretas (P2): 46,0% (46/100).
+- **Consistência por Par**: 18 vitórias duplas (2-0), 59 empates (1-1), 23 derrotas duplas (0-2).
+- **Duração Média**: Vitórias em 62,1 plies; Derrotas em 72,7 plies (indica que perdas se estendem para o final).
+
+#### O Fator Decisivo: Assimetria no Estoque de Muros
+Análise dos 105 jogos perdidos vs 95 jogos vencidos contra Claustrophobia categorizados pelo estoque de muros no término:
+
+| Condição no Término | ZQ Vitórias | ZQ Derrotas | Aproveitamento ZQ | % do Total de Derrotas |
+|---|---|---|---|---|
+| Ambos ainda têm muros | 28 | 24 | **53,8%** | 22,9% |
+| Ambos com 0 muros (corrida exata) | 20 | 16 | **55,6%** | 15,2% |
+| Claustro sem muros, ZQ com muros | 24 | 8 | **75,0%** | 7,6% |
+| **ZQ sem muros, Claustro com muros** | **23** | **57** | **28,8%** | **54,3%** |
+
+**Conclusão Tática Central**:
+1. **Mais de 54% de todas as derrotas** contra Claustrophobia acontecem quando o ZQuoridor queima todos os seus 10 muros antes do adversário, permitindo que Claustrophobia guarde de 1 a 4 muros para fechar corredores críticos no final. Nesse cenário, o aproveitamento do ZQuoridor despenca para **28,8%**.
+2. Quando ambos mantêm muros ou quando Claustrophobia esgota muros primeiro, o ZQuoridor é francamente superior (**53,8% a 75,0%**).
+3. Em corridas de peão puras (ambos com 0 muros), o solver exato (`endgame_race.hpp`) garante vantagem (**55,6%**).
+4. O vazamento de força é o **desperdício de muros prematuro** e a **leitura incorreta do desbalanço de reservas no meio-jogo**.
+
+### 8.2 Big Picture: Estratégia de Escala Massiva de Teaching para Romper >50%
+
+Para ultrapassar definitivamente Claustrophobia (>50%), não podemos usar amostragens pontuais (como 2.000 posições selecionadas). Precisamos de escala massiva e mineração dirigida:
+
+1. **Geração Massiva de Jogos (100 ms por lance)**:
+   - Utilizar controle rápido de 100 ms para autojogo de alta densidade (duplica a velocidade de geração).
+   - Gerar dezenas de milhares de jogos entre variantes de ZQuoridor e contra o próprio Claustrophobia.
+2. **Mineração Dirigida de Estados de Divergência & Perda**:
+   - Extrair especificamente:
+     a) Posições onde houve divergência de lance entre ZQuoridor e Claustrophobia.
+     b) Estados intermediários das 23 aberturas onde fomos varridos (0-2) na confirmação.
+     c) Posições com assimetria de muros desfavorável (ex.: ZQ com 1-3 muros, Oponente com 3-6 muros).
+     d) Lances onde o ZQuoridor decidiu gastar um muro e a avaliação piorou nos plies seguintes.
+3. **Teaching em Larga Escala com Ambos os Professores**:
+   - Expandir a base de teaching de 2.000 posições para 20.000–50.000 posições críticas mineradas.
+   - Relabeling profundo: avaliar com ZQuoridor em alta profundidade (AB/MCAB) e MCTS profundo de Claustrophobia (1024–2048 simulações).
+   - Ponderar perdas por divergência: maior peso para posições onde Claustrophobia puniu o gasto de muro.
+4. **Calibração de Busca / Conservação de Muro**:
+   - Avaliar heurística de conservação de muros (penalizar colocação de muros que não alteram a diferença líquida de BFS em favor do jogador quando a reserva está baixa).
+   - Ajustar `endgameMoverWallThreshold` e `cPuct` para valorizar a preservação do estoque defensivo.
 
 ### Gate C — novas arquiteturas
 
