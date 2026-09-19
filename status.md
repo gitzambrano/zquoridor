@@ -1254,7 +1254,9 @@ A comprehensive review of the web deployment resolved three functional and visua
 - **Tier 3.5 Generic Critical Search mining.** Added `tools/teacher/mine_generic_critical.py`
   to extract 100,000 high-uncertainty positions from canonical self-play shards using vectorized
   filtering on policy entropy, race distance margins (|d_own - d_opp| <= 2), wall stock depletion
-  (<= 3), and game-swing turning points (`tier3-5-generic-critical-100k/positions.jsonl`).
+  (<= 3), and game-swing turning points (`tier3-5-generic-critical-100k/positions.jsonl`). Supervision
+  is calibrated to 80% Claustrophobia MCTS search (64 sims on CUDA) and 20% ZQuoridor MCAB tree search
+  (512 nodes on CPU) with Jensen-Shannon divergence scaling.
 - **Tier 5 deep search enrichment.** Following Tier 3 bilateral search completion, critical
   branching points and crisis moments from Tier 5 rollouts will receive deep Claustrophobia MCTS
   searches (~500 ms / ~512 simulations) on CUDA before final dataset blending.
