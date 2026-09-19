@@ -1,0 +1,26 @@
+name: race384 clean recipe smoke
+on:
+  push:
+    branches: ["train/race384-clean-search10-v1"]
+permissions:
+  contents: read
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate pinned recipe and init weights
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          p="experiments/race384-clean-search10-v1/config.json"
+          c=json.load(open(p))
+          assert c["architecture"]=="race" and c["hidden"]==384
+          assert c["epochs"]==40 and c["batch_size"]==4096
+          assert c["lr"]==3e-5 and c["trunk_lr_scale"]==0.1
+          assert c["data"].endswith("historical2m-search10-conservative/dataset.npz")
+          print("clean 384 recipe OK")
+          PY
+          test -s results/experiments/historical2m-race384-anneal-s20260916/student.bin
