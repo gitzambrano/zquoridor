@@ -216,9 +216,9 @@ def train(config):
     device = config["device"]
     if device == "auto":
         device = "cuda" if torch.cuda.is_available() else "cpu"
-    model = Student(config["architecture"], config["hidden"], config["value_hidden"], qat=config["qat"])
+    model = Student(config["architecture"], config["hidden"], qat=config["qat"], value_hidden=config["value_hidden"])
     if not config["from_scratch"]:
-        old = Student(config["init_architecture"], config["init_hidden"], config["init_value_hidden"])
+        old = Student(config["init_architecture"], config["init_hidden"], value_hidden=config["init_value_hidden"])
         old.load_float(_path(config["init_from"]))
         model.warm_start(old)
     model.to(device)
