@@ -72,11 +72,20 @@ inline int wallsLeftBucket(int n) {
 #ifndef ZQ_NNUE_RACE_FEATURES
 #define ZQ_NNUE_RACE_FEATURES 0
 #endif
+#ifndef ZQ_NNUE_PHASE_FEATURES
+#define ZQ_NNUE_PHASE_FEATURES 0
+#endif
 #ifndef ZQ_NNUE_HIDDEN
 #define ZQ_NNUE_HIDDEN 256
 #endif
 constexpr int BASE_FEATURES = N * N + N * N + WS * WS * 2 + 2 * DIST_BUCKETS + 2 * WALLS_LEFT_BUCKETS;
-constexpr int NUM_FEATURES = BASE_FEATURES + (ZQ_NNUE_RACE_FEATURES ? 102 : 0);
+constexpr int RACE_FEATURE_COUNT = 102;
+constexpr int PHASE_FEATURE_COUNT = 33;
+static_assert(!ZQ_NNUE_PHASE_FEATURES || ZQ_NNUE_RACE_FEATURES,
+              "phase features require the race feature block");
+constexpr int NUM_FEATURES = BASE_FEATURES
+    + (ZQ_NNUE_RACE_FEATURES ? RACE_FEATURE_COUNT : 0)
+    + (ZQ_NNUE_PHASE_FEATURES ? PHASE_FEATURE_COUNT : 0);
 constexpr int HIDDEN = ZQ_NNUE_HIDDEN;
 static_assert(HIDDEN == 128 || HIDDEN == 256 || HIDDEN == 384 || HIDDEN == 512,
               "unsupported NNUE width");
@@ -105,6 +114,26 @@ template<class Acc> inline void updateRaceFeatures(Acc& acc, const std::array<in
             acc.removeFeature(previous[i]);
             acc.addFeature(current[i]);
         }
+    }
+}
+
+template<class Acc> inline std::array<int, 2> phaseFeatures(const Acc& acc) {
+    int total = acc.ownWallsLeftBucket + acc.oppWallsLeftBucket;
+    if (total < 0) total = 0;
+    if (total > 20) total = 20;
+    int delta = acc.ownDistBucket - acc.oppDistBucket;
+    int race = (delta > 0) - (delta < 0) + 1;
+    int phase = total / 5;
+    if (phase > 3) phase = 3;
+    constexpr int base = BASE_FEATURES + RACE_FEATURE_COUNT;
+    return {{base + total, base + 21 + race * 4 + phase}};
+}
+
+template<class Acc> inline void updatePhaseFeatures(Acc& acc, const std::array<int,2>& previous) {
+    auto current = phaseFeatures(acc);
+    for (int i=0;i<2;++i) if (current[i] != previous[i]) {
+        acc.removeFeature(previous[i]);
+        acc.addFeature(current[i]);
     }
 }
 constexpr int POLICY_OUT = N * N + WS * WS * 2;             // 81 destino peão + 128 muro = 209
@@ -357,6 +386,9 @@ inline Accumulator buildAccumulator(const State& s, int perspective, PlayerPathC
 #if ZQ_NNUE_RACE_FEATURES
     for (int feature : raceFeatures(acc)) acc.addFeature(feature);
 #endif
+#if ZQ_NNUE_PHASE_FEATURES
+    for (int feature : phaseFeatures(acc)) acc.addFeature(feature);
+#endif
     return acc;
 }
 
@@ -445,6 +477,9 @@ inline void updateAccumulatorForMove(Accumulator& acc, bool viewerIsMover, const
 #if ZQ_NNUE_RACE_FEATURES
     const auto previousRaceFeatures = raceFeatures(acc);
 #endif
+#if ZQ_NNUE_PHASE_FEATURES
+    const auto previousPhaseFeatures = phaseFeatures(acc);
+#endif
     State after = applyMove(before, m);
     int mover = before.turn, opp = 1 - mover;
     if (!m.isWall) {
@@ -510,6 +545,9 @@ inline void updateAccumulatorForMove(Accumulator& acc, bool viewerIsMover, const
     }
 #if ZQ_NNUE_RACE_FEATURES
     updateRaceFeatures(acc, previousRaceFeatures);
+#endif
+#if ZQ_NNUE_PHASE_FEATURES
+    updatePhaseFeatures(acc, previousPhaseFeatures);
 #endif
 }
 
@@ -736,6 +774,9 @@ inline AccumulatorQuant buildAccumulatorQuant(const State& s, int perspective, P
 #if ZQ_NNUE_RACE_FEATURES
     for (int feature : raceFeatures(acc)) acc.addFeature(feature);
 #endif
+#if ZQ_NNUE_PHASE_FEATURES
+    for (int feature : phaseFeatures(acc)) acc.addFeature(feature);
+#endif
     return acc;
 }
 
@@ -749,6 +790,9 @@ inline void updateAccumulatorForMoveQuant(AccumulatorQuant& acc, bool viewerIsMo
                                            PlayerPathCacheTable* xtable = nullptr) {
 #if ZQ_NNUE_RACE_FEATURES
     const auto previousRaceFeatures = raceFeatures(acc);
+#endif
+#if ZQ_NNUE_PHASE_FEATURES
+    const auto previousPhaseFeatures = phaseFeatures(acc);
 #endif
     State after = applyMove(before, m);
     int mover = before.turn, opp = 1 - mover;
@@ -813,6 +857,9 @@ inline void updateAccumulatorForMoveQuant(AccumulatorQuant& acc, bool viewerIsMo
     }
 #if ZQ_NNUE_RACE_FEATURES
     updateRaceFeatures(acc, previousRaceFeatures);
+#endif
+#if ZQ_NNUE_PHASE_FEATURES
+    updatePhaseFeatures(acc, previousPhaseFeatures);
 #endif
 }
 
