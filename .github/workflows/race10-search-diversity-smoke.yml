@@ -1,0 +1,32 @@
+name: race10 search-diversity smoke
+on:
+  push:
+    branches: ["data/race10-search-diversity-v1"]
+permissions:
+  contents: read
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.12"}
+      - name: Install numpy
+        run: python -m pip install --quiet numpy
+      - name: Validate selector
+        run: |
+          python -m py_compile training/select_replay_diverse_disagreement.py
+          python - <<'PY'
+          import sys, numpy as np
+          sys.path.insert(0,".")
+          from training.select_replay_diverse_disagreement import select_diverse
+          n=1200
+          rng=np.random.default_rng(7)
+          p=rng.random(n).astype(np.float32); v=rng.random(n).astype(np.float32)
+          data={"own_dist":rng.integers(1,15,n),"opp_dist":rng.integers(1,15,n),
+                "walls_left_own":rng.integers(0,11,n),"walls_left_opp":rng.integers(0,11,n)}
+          chosen,score,sid=select_diverse(p,v,data,{"max_positions":500,"policy_weight":1.0,"value_weight":1.0,"stratified_fraction":0.70})
+          assert len(chosen)==500 and len(set(chosen.tolist()))==500
+          assert len(set(sid[chosen].tolist()))>=8
+          print("diverse selector OK")
+          PY
