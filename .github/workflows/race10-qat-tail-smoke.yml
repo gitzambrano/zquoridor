@@ -49,3 +49,42 @@ jobs:
             --grad-clip 1.0 --patience 2 --seed 20260946 \
             --device cpu --cpu-threads 2 --no-teaching --build --no-benchmark
           test -s /tmp/qat-tail-pilot/student_int8.bin
+      - name: QAT resume regression
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf /tmp/qat-resume-regression
+          CMD=(python training/run_experiment.py
+            --data /tmp/gen10-replay/replay-source.npz
+            --out-dir /tmp/qat-resume-regression
+            --architecture race --hidden 512
+            --init-from results/experiments/race512-search10-ft-s20260917/student.bin
+            --init-architecture race --init-hidden 512
+            --no-from-scratch --qat --qat-start-epoch 1
+            --epochs 3 --batch-size 512 --lr 1e-5
+            --schedule constant --warmup-epochs 1 --min-lr 1e-5
+            --trunk-lr-scale 0.1 --weight-decay 1e-5
+            --policy-weight 1.0 --value-weight 1.0 --train-scope full
+            --grad-clip 1.0 --patience 3 --seed 20260948
+            --device cpu --cpu-threads 2 --no-teaching --build --no-benchmark)
+          "${CMD[@]}"
+          python - <<'PY'
+          import torch
+          p="/tmp/qat-resume-regression/resume.pt"
+          s=torch.load(p,map_location="cpu",weights_only=False)
+          assert s["qat_active"] is True
+          s["epoch"]=2
+          s["best_loss"]=-123.0
+          s["bad"]=0
+          s["history"]=s["history"][:2]
+          torch.save(s,p)
+          PY
+          "${CMD[@]}"
+          python - <<'PY'
+          import torch
+          s=torch.load("/tmp/qat-resume-regression/resume.pt",map_location="cpu",weights_only=False)
+          assert s["qat_active"] is True
+          assert s["best_loss"] == -123.0, s["best_loss"]
+          assert s["epoch"] == 3
+          print("QAT resume preserves post-transition phase and best checkpoint")
+          PY
