@@ -72,11 +72,20 @@ inline int wallsLeftBucket(int n) {
 #ifndef ZQ_NNUE_RACE_FEATURES
 #define ZQ_NNUE_RACE_FEATURES 0
 #endif
+#ifndef ZQ_NNUE_TOPOLOGY_FEATURES
+#define ZQ_NNUE_TOPOLOGY_FEATURES 0
+#endif
 #ifndef ZQ_NNUE_HIDDEN
 #define ZQ_NNUE_HIDDEN 256
 #endif
 constexpr int BASE_FEATURES = N * N + N * N + WS * WS * 2 + 2 * DIST_BUCKETS + 2 * WALLS_LEFT_BUCKETS;
-constexpr int NUM_FEATURES = BASE_FEATURES + (ZQ_NNUE_RACE_FEATURES ? 102 : 0);
+constexpr int RACE_FEATURE_COUNT = 102;
+constexpr int TOPOLOGY_FEATURE_COUNT = 32;
+static_assert(!ZQ_NNUE_TOPOLOGY_FEATURES || ZQ_NNUE_RACE_FEATURES,
+              "topology-lite features require the race feature block");
+constexpr int NUM_FEATURES = BASE_FEATURES
+    + (ZQ_NNUE_RACE_FEATURES ? RACE_FEATURE_COUNT : 0)
+    + (ZQ_NNUE_TOPOLOGY_FEATURES ? TOPOLOGY_FEATURE_COUNT : 0);
 constexpr int HIDDEN = ZQ_NNUE_HIDDEN;
 static_assert(HIDDEN == 128 || HIDDEN == 256 || HIDDEN == 384 || HIDDEN == 512,
               "unsupported NNUE width");
@@ -106,6 +115,42 @@ template<class Acc> inline void updateRaceFeatures(Acc& acc, const std::array<in
             acc.addFeature(current[i]);
         }
     }
+}
+
+inline bool nnueWallBit(uint64_t bits, int r, int col) {
+    if (r < 0 || r >= WS || col < 0 || col >= WS) return false;
+    return ((bits >> slotIdx(r, col)) & 1ull) != 0;
+}
+
+inline bool nnueVerticalStepBlocked(const State& s, int r, int col, int dr) {
+    if ((dr > 0 && r >= N - 1) || (dr < 0 && r <= 0)) return true;
+    int wr = dr > 0 ? r : r - 1;
+    return nnueWallBit(s.wallsH, wr, col) || nnueWallBit(s.wallsH, wr, col - 1);
+}
+
+inline bool nnueHorizontalStepBlocked(const State& s, int r, int col, int dc) {
+    if ((dc > 0 && col >= N - 1) || (dc < 0 && col <= 0)) return true;
+    int wc = dc > 0 ? col : col - 1;
+    return nnueWallBit(s.wallsV, r, wc) || nnueWallBit(s.wallsV, r - 1, wc);
+}
+
+inline int nnueLocalTopologyMask(const State& s, int player) {
+    int cell = s.pawn[player];
+    int r = rowOf(cell), col = colOf(cell);
+    int forwardDr = player == 0 ? 1 : -1;
+    int mask = 0;
+    if (nnueVerticalStepBlocked(s, r, col, forwardDr)) mask |= 1;
+    if (nnueHorizontalStepBlocked(s, r, col, -1))       mask |= 2;
+    if (nnueHorizontalStepBlocked(s, r, col, 1))        mask |= 4;
+    if (nnueVerticalStepBlocked(s, r, col, -forwardDr)) mask |= 8;
+    return mask;
+}
+
+inline std::array<int, 2> topologyFeatureIndices(const State& s, int perspective) {
+    constexpr int base = BASE_FEATURES + RACE_FEATURE_COUNT;
+    int me = perspective, opp = 1 - perspective;
+    return {{base + nnueLocalTopologyMask(s, me),
+             base + 16 + nnueLocalTopologyMask(s, opp)}};
 }
 constexpr int POLICY_OUT = N * N + WS * WS * 2;             // 81 destino peão + 128 muro = 209
 
@@ -357,6 +402,9 @@ inline Accumulator buildAccumulator(const State& s, int perspective, PlayerPathC
 #if ZQ_NNUE_RACE_FEATURES
     for (int feature : raceFeatures(acc)) acc.addFeature(feature);
 #endif
+#if ZQ_NNUE_TOPOLOGY_FEATURES
+    for (int feature : topologyFeatureIndices(s, perspective)) acc.addFeature(feature);
+#endif
     return acc;
 }
 
@@ -442,8 +490,12 @@ inline void forwardPolicy(const Accumulator& acc, std::array<float, POLICY_OUT>&
 // nasce de buildAccumulator e só é mutado por esta função).
 inline void updateAccumulatorForMove(Accumulator& acc, bool viewerIsMover, const State& before, const Move& m,
                                       PlayerPathCacheTable* xtable = nullptr) {
+    const int viewerPerspective = viewerIsMover ? before.turn : 1 - before.turn;
 #if ZQ_NNUE_RACE_FEATURES
     const auto previousRaceFeatures = raceFeatures(acc);
+#endif
+#if ZQ_NNUE_TOPOLOGY_FEATURES
+    const auto previousTopologyFeatures = topologyFeatureIndices(before, viewerPerspective);
 #endif
     State after = applyMove(before, m);
     int mover = before.turn, opp = 1 - mover;
@@ -510,6 +562,15 @@ inline void updateAccumulatorForMove(Accumulator& acc, bool viewerIsMover, const
     }
 #if ZQ_NNUE_RACE_FEATURES
     updateRaceFeatures(acc, previousRaceFeatures);
+#endif
+#if ZQ_NNUE_TOPOLOGY_FEATURES
+    const auto currentTopologyFeatures = topologyFeatureIndices(after, viewerPerspective);
+    for (int i = 0; i < 2; ++i) {
+        if (currentTopologyFeatures[i] != previousTopologyFeatures[i]) {
+            acc.removeFeature(previousTopologyFeatures[i]);
+            acc.addFeature(currentTopologyFeatures[i]);
+        }
+    }
 #endif
 }
 
@@ -736,6 +797,9 @@ inline AccumulatorQuant buildAccumulatorQuant(const State& s, int perspective, P
 #if ZQ_NNUE_RACE_FEATURES
     for (int feature : raceFeatures(acc)) acc.addFeature(feature);
 #endif
+#if ZQ_NNUE_TOPOLOGY_FEATURES
+    for (int feature : topologyFeatureIndices(s, perspective)) acc.addFeature(feature);
+#endif
     return acc;
 }
 
@@ -747,8 +811,12 @@ inline AccumulatorQuant buildAccumulatorQuant(const State& s, int perspective, P
 // nos pontos de chamada da busca.
 inline void updateAccumulatorForMoveQuant(AccumulatorQuant& acc, bool viewerIsMover, const State& before, const Move& m,
                                            PlayerPathCacheTable* xtable = nullptr) {
+    const int viewerPerspective = viewerIsMover ? before.turn : 1 - before.turn;
 #if ZQ_NNUE_RACE_FEATURES
     const auto previousRaceFeatures = raceFeatures(acc);
+#endif
+#if ZQ_NNUE_TOPOLOGY_FEATURES
+    const auto previousTopologyFeatures = topologyFeatureIndices(before, viewerPerspective);
 #endif
     State after = applyMove(before, m);
     int mover = before.turn, opp = 1 - mover;
@@ -813,6 +881,15 @@ inline void updateAccumulatorForMoveQuant(AccumulatorQuant& acc, bool viewerIsMo
     }
 #if ZQ_NNUE_RACE_FEATURES
     updateRaceFeatures(acc, previousRaceFeatures);
+#endif
+#if ZQ_NNUE_TOPOLOGY_FEATURES
+    const auto currentTopologyFeatures = topologyFeatureIndices(after, viewerPerspective);
+    for (int i = 0; i < 2; ++i) {
+        if (currentTopologyFeatures[i] != previousTopologyFeatures[i]) {
+            acc.removeFeature(previousTopologyFeatures[i]);
+            acc.addFeature(currentTopologyFeatures[i]);
+        }
+    }
 #endif
 }
 
