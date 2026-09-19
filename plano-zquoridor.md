@@ -308,6 +308,18 @@ Relatório final em `summary.json`. Todos os 400 jogos da candidata e 400 da ref
 
 Destaque: `race512-search10-ft` empata tecnicamente contra `main` e Titanium, mas obtém vantagem expressiva (+6,0 p.p.) contra Claustrophobia (49,0% vs 43,0%).
 
+### 7.4 Match direto entre as finalistas (Gate B.1 Passo 6 — concluído)
+
+Diretório: `benchmark_results/finalists-h2h-race512-vs-base512-200ms`.
+Script: `tools/match_finalists.py`.
+Configuração: 100 pares (200 jogos), 200 ms por lance, `openings_confirmation_v1.jsonl`, seed `20260920`.
+
+- Placar: `race512-search10-ft` 99,0 vs 101,0 `base512-search10-ft` (49,50% vs 50,50%)
+- Elo: -3,5 (IC 95% bootstrap: 44,00% a 54,75%, Elo [-41,9, +33,1])
+- Jogos válidos: 200/200 (0 falhas, média de 79,1 plies, `strength_claim_ready=true`)
+
+Conclusão: O confronto direto entre as duas finalistas é um empate estatístico exato (49,5% vs 50,5%). Como a `race512-search10-ft` superou a `base512-search10-ft` por ampla margem contra adversários externos (49,0% vs 43,0% contra Claustrophobia, +6,0 p.p.), a **`race512-search10-ft` é declarada a finalista e campeã definitiva entre as arquiteturas candidatas**.
+
 ## 8. Big picture e roadmap restante
 
 ### Gate A — confirmação da primeira finalista (**concluído**)
@@ -331,7 +343,10 @@ Conclusão: `race512-search10-ft` é a melhor rede geral até o momento (+6 p.p.
 
 ### Gate B.1 — Match direto e busca pelo >50% contra Claustrophobia
 
-6. **Desempate direto entre as finalistas**: Match direto `race512-search10-ft` × `base512-search10-ft` (100 pares, 200 ms, `openings_confirmation_v1.jsonl`).
+6. ~~**Desempate direto entre as finalistas**: Match direto `race512-search10-ft` × `base512-search10-ft` (100 pares, 200 ms, `openings_confirmation_v1.jsonl`).~~
+   - Concluído: 200/200 jogos válidos.
+   - Placar: 49,50% (99-101), empate técnico exato.
+   - Decisão: `race512-search10-ft` confirmada como a melhor rede geral.
 7. **Superar Claustrophobia (>50%)**: Testar `race512-search20-ft` (treinado com 20% de teaching search ponderado) contra Claustrophobia.
 
 ### Gate C — novas arquiteturas
@@ -433,7 +448,6 @@ encerrado.
 
 ## 11. Estado de promoção
 
-**Nenhuma rede está promovida.** A confirmação ampla de
-`base512-search10-ft` já terminou e ela é a melhor candidata medida até agora;
-o benchmark de confirmação de `race512-search10-ft` está rodando no mesmo
-protocolo antes de alterar o binário de produção.
+**A candidata campeã definitiva foi escolhida**: `race512-search10-ft` venceu a seleção geral após confirmação completa de 100 pares (58,5% vs main, 57,5% vs Titanium, 49,0% vs Claustrophobia) e empate técnico no confronto direto com `base512-search10-ft` (49,5% vs 50,5%).
+
+O passo seguinte é a triagem de `race512-search20-ft` para ultrapassar 50% contra Claustrophobia antes do congelamento e promoção oficial dos pesos para `data/nnue/nnue_weights_int8.bin`.
