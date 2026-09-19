@@ -32,7 +32,7 @@ jobs:
           python - <<'PY'
           import sys, torch
           sys.path.insert(0,"training")
-          from student_model import Student
+          from student_model import Student, export
           old=Student("race",512,qat=True,value_hidden=32)
           new=Student("race",512,qat=True,value_hidden=64)
           with torch.no_grad():
@@ -48,7 +48,8 @@ jobs:
           assert torch.allclose(vo,vn,atol=1e-5,rtol=1e-5)
           assert torch.allclose(po,pn,atol=1e-5,rtol=1e-5)
           assert new.value1_wl.out_features==64
-          print("value64 warm-start preserves function")
+          export(new,"/tmp/value64.bin")
+          print("value64 warm-start preserves function and export completed")
           PY
       - name: C++ compile with value hidden 64
         shell: bash
