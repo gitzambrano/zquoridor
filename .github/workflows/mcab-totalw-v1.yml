@@ -1,0 +1,110 @@
+name: MCAB cached totalW performance gate
+
+on:
+  push:
+    branches: ["perf/mcab-totalw-v1"]
+    paths:
+      - "src/mcab.hpp"
+      - ".github/workflows/mcab-totalw-v1.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  validate-bench:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Regressions
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash build/build_tests.sh
+          ./bin/test_mcab_core
+          ./bin/test_mcab_dispatch
+          ./bin/test_mcab_phase9
+          ./bin/test_mcab_endgame_leaf
+      - name: Build baseline and candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+          BASE=8c7fe7614938f678c689f812a673ac1c22ae96dc
+          git worktree add --detach /tmp/zq-base "$BASE"
+          mkdir -p bin benchmark_results/mcab-totalw-v1
+          g++ -O3 -DNDEBUG -std=c++17 -march=native -pthread -I/tmp/zq-base/src /tmp/zq-base/benchmarks/bench_mcab.cpp -o bin/bench-base
+          g++ -O3 -DNDEBUG -std=c++17 -march=native -pthread -Isrc benchmarks/bench_mcab.cpp -o bin/bench-totalw
+          W=results/experiments/race512-search10-ft-s20260917/student_int8.bin
+          echo "b9cb857bb0f8d3a791b27297a61cc5c195fba916481959a43579925685c62d06  $W" | sha256sum -c -
+          g++ -O3 -DNDEBUG -std=c++17 -march=native -pthread -DZQ_NNUE_RACE_FEATURES=1 -DZQ_NNUE_HIDDEN=512 -I/tmp/zq-base/src /tmp/zq-base/tools/external/zquoridor_uci.cpp -o bin/uci-base
+          g++ -O3 -DNDEBUG -std=c++17 -march=native -pthread -DZQ_NNUE_RACE_FEATURES=1 -DZQ_NNUE_HIDDEN=512 -Isrc tools/external/zquoridor_uci.cpp -o bin/uci-totalw
+      - name: Deterministic bestmove equivalence
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY' | tee benchmark_results/mcab-totalw-v1/equivalence.txt
+          import json,subprocess
+          from pathlib import Path
+          W=str(Path("results/experiments/race512-search10-ft-s20260917/student_int8.bin").resolve())
+          rows=[json.loads(x) for x in Path("tools/external/openings_confirmation_v1.jsonl").read_text().splitlines() if x.strip()]
+          pos=[]
+          for r in rows[:50]:
+              m=list(r.get("moves",[]))
+              for k in {0,len(m)//2,len(m)}:
+                  p=m[:k]
+                  if p not in pos: pos.append(p)
+          pos=pos[:80]
+          def start(exe):
+              p=subprocess.Popen([exe,"--nnue",W,"--nodes","35000"],stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True,bufsize=1)
+              def send(x): p.stdin.write(x+"\n"); p.stdin.flush()
+              send("uci")
+              while p.stdout.readline().strip()!="uciok": pass
+              send("isready")
+              while p.stdout.readline().strip()!="readyok": pass
+              return p,send
+          def q(p,send,moves):
+              send("ucinewgame"); send("position startpos"+((" moves "+" ".join(moves)) if moves else "")); send("go movetime 0")
+              while True:
+                  line=p.stdout.readline().strip()
+                  if line.startswith("bestmove "): return line.split()[1]
+          a,sa=start("bin/uci-base"); b,sb=start("bin/uci-totalw")
+          bad=[]
+          for i,m in enumerate(pos):
+              x=q(a,sa,m); y=q(b,sb,m); print("POS",i,x,y,x==y)
+              if x!=y: bad.append((i,x,y,m))
+          sa("quit"); sb("quit"); a.wait(timeout=5); b.wait(timeout=5)
+          print("SUMMARY positions",len(pos),"mismatches",len(bad))
+          if bad: raise SystemExit("cached totalW changed deterministic bestmove")
+          PY
+      - name: Throughput A/B
+        shell: bash
+        run: |
+          set -euo pipefail
+          for i in 1 2 3 4 5; do
+            ./bin/bench-base 35000 0 > "benchmark_results/mcab-totalw-v1/base-$i.txt"
+            ./bin/bench-totalw 35000 0 > "benchmark_results/mcab-totalw-v1/cand-$i.txt"
+          done
+          python - <<'PY' | tee benchmark_results/mcab-totalw-v1/summary.txt
+          import re,statistics,glob
+          def read(pat):
+              vals=[]
+              for p in glob.glob(pat):
+                  s=open(p).read(); m=re.search(r"nos MCTS expandidos\s*:\s*\d+\s*\(([0-9.]+)/s\)",s)
+                  if not m: raise SystemExit("missing throughput "+p)
+                  vals.append(float(m.group(1)))
+              return vals
+          b=read("benchmark_results/mcab-totalw-v1/base-*.txt")
+          c=read("benchmark_results/mcab-totalw-v1/cand-*.txt")
+          mb=statistics.median(b); mc=statistics.median(c)
+          print("BASE",b,"median",mb)
+          print("CAND",c,"median",mc)
+          print("SPEEDUP",mc/mb,"PCT",(mc/mb-1)*100)
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: mcab-totalw-v1-${{ github.run_id }}
+          retention-days: 30
+          path: benchmark_results/mcab-totalw-v1/**
