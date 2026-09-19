@@ -131,6 +131,9 @@ static void printUsage(const char* prog) {
         "  --chunk-games N    partidas por arquivo .bin (default 2000)\n"
         "  --depth N           profundidade maxima da busca (default 40)\n"
         "  --time-ms N         orcamento de tempo por lance em ms (default 100)\n"
+        "  --playout-cap       liga datagen cheap/full: so buscas completas viram amostras\n"
+        "  --full-search-prob F fracao de buscas reais completas/gravadas (default 1.0)\n"
+        "  --cheap-time-ms N   tempo dos plies baratos, trajectory-only (default 20ms)\n"
         "  --nnue-weights PATH caminho para pesos NNUE quantizados (default:\n"
         "                      data/nnue/nnue_weights_int8.bin). NNUE e o\n"
         "                      default de avaliacao de folha deste binario; se\n"
@@ -251,6 +254,9 @@ int main(int argc, char** argv) {
         else if (a == "--chunk-games")     chunkGames                = std::atoi(next("--chunk-games").c_str());
         else if (a == "--depth")           cfg.maxDepth              = std::atoi(next("--depth").c_str());
         else if (a == "--time-ms")         cfg.timeBudgetMs          = std::atoi(next("--time-ms").c_str());
+        else if (a == "--playout-cap")      cfg.playoutCapEnabled     = true;
+        else if (a == "--full-search-prob") cfg.fullSearchProb        = std::atof(next("--full-search-prob").c_str());
+        else if (a == "--cheap-time-ms")    cfg.cheapTimeBudgetMs     = std::atoi(next("--cheap-time-ms").c_str());
         else if (a == "--nnue-weights")  { cfg.nnueWeightsPath       = next("--nnue-weights");
                                             cfg.nnueWeightsExplicit   = true; }
         else if (a == "--heuristic")       cfg.forceHeuristic        = true;
@@ -320,6 +326,17 @@ int main(int argc, char** argv) {
         std::fprintf(stderr, "erro: --chunk-games deve ser > 0\n");
         return 1;
     }
+    if (cfg.playoutCapEnabled) {
+        if (!(cfg.fullSearchProb > 0.0 && cfg.fullSearchProb <= 1.0)) {
+            std::fprintf(stderr, "erro: --full-search-prob deve estar em (0,1]\n");
+            return 1;
+        }
+        if (cfg.cheapTimeBudgetMs <= 0 || cfg.cheapTimeBudgetMs > cfg.timeBudgetMs) {
+            std::fprintf(stderr,
+                "erro: --cheap-time-ms deve ser >0 e <= --time-ms quando --playout-cap esta ativo\n");
+            return 1;
+        }
+    }
     // MCab requer NNUE ativa (Secao 2 do plano) -- checagem estatica aqui
     // cobre o caso explicito (--mcab junto de --heuristic na propria linha
     // de comando); o caso dinamico (pesos NNUE nao carregam mesmo sem
@@ -373,6 +390,10 @@ int main(int argc, char** argv) {
                 totalGames, chunkGames, nChunks);
     std::printf("busca: profundidade<=%d, %dms/lance\n",
                 cfg.maxDepth, cfg.timeBudgetMs);
+    if (cfg.playoutCapEnabled) {
+        std::printf("playout-cap: ON | full-search prob=%.3f @ %dms | cheap=%dms | samples=full-search only\n",
+                    cfg.fullSearchProb, cfg.timeBudgetMs, cfg.cheapTimeBudgetMs);
+    }
     std::printf("avaliacao de folha: %s\n",
                 cfg.forceHeuristic ? "heuristica (evalSimple) -- forcada via --heuristic"
                                    : ("NNUE quantizada (" + cfg.nnueWeightsPath +
@@ -460,7 +481,8 @@ int main(int argc, char** argv) {
             : 0.0;
 
         std::printf("  ok: %.1f s | %llu partidas (%llu empates, %llu desc.) | %llu pos (%.1f/partida)"
-                    " | %.0f nos/s | %.1f pos/s\n\n",
+                    " | %.0f nos/s | %.1f pos/s"
+                    " | full=%llu cheap=%llu skipped=%llu\n\n",
                     chunkS,
                     (unsigned long long)stats.gamesPlayed.load(),
                     (unsigned long long)stats.gamesDrawn.load(),
@@ -468,7 +490,10 @@ int main(int argc, char** argv) {
                     (unsigned long long)stats.positionsWritten.load(),
                     posPerGame,
                     stats.totalNodes.load() / chunkS,
-                    stats.positionsWritten.load() / chunkS);
+                    stats.positionsWritten.load() / chunkS,
+                    (unsigned long long)stats.fullSearchPlies.load(),
+                    (unsigned long long)stats.cheapSearchPlies.load(),
+                    (unsigned long long)stats.samplesSkipped.load());
     }
 
     double totalS = std::chrono::duration<double>(
