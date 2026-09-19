@@ -75,11 +75,17 @@ inline int wallsLeftBucket(int n) {
 #ifndef ZQ_NNUE_HIDDEN
 #define ZQ_NNUE_HIDDEN 256
 #endif
+#ifndef ZQ_NNUE_VALUE_HIDDEN
+#define ZQ_NNUE_VALUE_HIDDEN 32
+#endif
 constexpr int BASE_FEATURES = N * N + N * N + WS * WS * 2 + 2 * DIST_BUCKETS + 2 * WALLS_LEFT_BUCKETS;
 constexpr int NUM_FEATURES = BASE_FEATURES + (ZQ_NNUE_RACE_FEATURES ? 102 : 0);
 constexpr int HIDDEN = ZQ_NNUE_HIDDEN;
+constexpr int VALUE_HIDDEN = ZQ_NNUE_VALUE_HIDDEN;
 static_assert(HIDDEN == 128 || HIDDEN == 256 || HIDDEN == 384 || HIDDEN == 512,
               "unsupported NNUE width");
+static_assert(VALUE_HIDDEN == 32 || VALUE_HIDDEN == 64,
+              "unsupported NNUE value-head width");
 
 // These relations use the cached distance buckets, without additional BFS.
 inline std::array<int, 3> raceFeatureIndices(int ownDist, int oppDist, int ownWalls, int oppWalls) {
@@ -204,9 +210,9 @@ struct NNUEWeights {
     std::vector<std::array<float, HIDDEN>> w1;   // [NUM_FEATURES][HIDDEN]
     std::array<float, HIDDEN> b1{};
     // cabeça de RESULTADO (WL): HIDDEN -> 32 -> 1 (logit único, sem empate)
-    std::array<std::array<float, 32>, HIDDEN> wv1_wl;
-    std::array<float, 32> bv1_wl{};
-    std::array<float, 32> wv2_wl{};
+    std::array<std::array<float, VALUE_HIDDEN>, HIDDEN> wv1_wl;
+    std::array<float, VALUE_HIDDEN> bv1_wl{};
+    std::array<float, VALUE_HIDDEN> wv2_wl{};
     float bv2_wl = 0.f;
     // cabeça de política: HIDDEN -> POLICY_OUT
     std::vector<std::array<float, HIDDEN>> wp;   // [POLICY_OUT][HIDDEN] (transposto p/ dot direto)
@@ -245,9 +251,9 @@ struct NNUEWeights {
         w1.assign(NUM_FEATURES, {});
         for (auto& row : w1) ok = ok && std::fread(row.data(), sizeof(float), HIDDEN, f) == (size_t)HIDDEN;
         ok = ok && std::fread(b1.data(), sizeof(float), HIDDEN, f) == (size_t)HIDDEN;
-        for (auto& row : wv1_wl) ok = ok && std::fread(row.data(), sizeof(float), 32, f) == 32;
-        ok = ok && std::fread(bv1_wl.data(), sizeof(float), 32, f) == 32;
-        ok = ok && std::fread(wv2_wl.data(), sizeof(float), 32, f) == 32;
+        for (auto& row : wv1_wl) ok = ok && std::fread(row.data(), sizeof(float), VALUE_HIDDEN, f) == (size_t)VALUE_HIDDEN;
+        ok = ok && std::fread(bv1_wl.data(), sizeof(float), VALUE_HIDDEN, f) == (size_t)VALUE_HIDDEN;
+        ok = ok && std::fread(wv2_wl.data(), sizeof(float), VALUE_HIDDEN, f) == (size_t)VALUE_HIDDEN;
         ok = ok && std::fread(&bv2_wl, sizeof(float), 1, f) == 1;
         wp.assign(POLICY_OUT, {});
         for (auto& row : wp) ok = ok && std::fread(row.data(), sizeof(float), HIDDEN, f) == (size_t)HIDDEN;
@@ -265,9 +271,9 @@ struct NNUEWeights {
         if (!f) return false;
         for (auto& row : w1) std::fwrite(row.data(), sizeof(float), HIDDEN, f);
         std::fwrite(b1.data(), sizeof(float), HIDDEN, f);
-        for (auto& row : wv1_wl) std::fwrite(row.data(), sizeof(float), 32, f);
-        std::fwrite(bv1_wl.data(), sizeof(float), 32, f);
-        std::fwrite(wv2_wl.data(), sizeof(float), 32, f);
+        for (auto& row : wv1_wl) std::fwrite(row.data(), sizeof(float), VALUE_HIDDEN, f);
+        std::fwrite(bv1_wl.data(), sizeof(float), VALUE_HIDDEN, f);
+        std::fwrite(wv2_wl.data(), sizeof(float), VALUE_HIDDEN, f);
         std::fwrite(&bv2_wl, sizeof(float), 1, f);
         for (auto& row : wp) std::fwrite(row.data(), sizeof(float), HIDDEN, f);
         std::fwrite(bp.data(), sizeof(float), POLICY_OUT, f);
@@ -388,14 +394,14 @@ inline float clippedRelu(float x) {
 // acima); é o logit de resultado (WL, sem empate) que a busca consome via
 // nnueEvalInt.
 inline float forwardValueWL(const Accumulator& acc) {
-    std::array<float, 32> h{};
+    std::array<float, VALUE_HIDDEN> h{};
     auto& W = weights();
     for (int i = 0; i < HIDDEN; i++) {
         float a = screlu(acc.v[i]);
-        for (int j = 0; j < 32; j++) h[j] += a * W.wv1_wl[i][j];
+        for (int j = 0; j < VALUE_HIDDEN; j++) h[j] += a * W.wv1_wl[i][j];
     }
     float out = W.bv2_wl;
-    for (int j = 0; j < 32; j++) {
+    for (int j = 0; j < VALUE_HIDDEN; j++) {
         float hj = clippedRelu(h[j] + W.bv1_wl[j]);
         out += hj * W.wv2_wl[j];
     }
@@ -577,9 +583,9 @@ struct NNUEWeightsQuant {
 
     // cabeça de RESULTADO (WL) -- única cabeça de valor (cabeça auxiliar
     // de imitação de evalSimple removida 2026-08, ver nota em NNUEWeights)
-    std::array<std::array<int8_t, 32>, HIDDEN> wv1_wl{}; // escala QB
-    std::array<int32_t, 32> bv1_wl{};                      // escala QA*QB
-    std::array<int8_t, 32> wv2_wl{};                       // escala QB
+    std::array<std::array<int8_t, VALUE_HIDDEN>, HIDDEN> wv1_wl{}; // escala QB
+    std::array<int32_t, VALUE_HIDDEN> bv1_wl{};                      // escala QA*QB
+    std::array<int8_t, VALUE_HIDDEN> wv2_wl{};                       // escala QB
     int32_t bv2_wl = 0;                                    // escala QA*QB*QB
 
     std::vector<std::array<int8_t, HIDDEN>> wp;   // [POLICY_OUT][HIDDEN], escala QB
@@ -632,9 +638,9 @@ struct NNUEWeightsQuant {
             (long)sizeof(int32_t) * 2                                  // QA, QB
             + (long)NUM_FEATURES * HIDDEN * sizeof(int16_t)            // w1
             + (long)HIDDEN * sizeof(int16_t)                           // b1
-            + (long)HIDDEN * 32 * sizeof(int8_t)                       // wv1_wl
-            + 32 * sizeof(int32_t)                                     // bv1_wl
-            + 32 * sizeof(int8_t)                                      // wv2_wl
+            + (long)HIDDEN * VALUE_HIDDEN * sizeof(int8_t)             // wv1_wl
+            + (long)VALUE_HIDDEN * sizeof(int32_t)                      // bv1_wl
+            + (long)VALUE_HIDDEN * sizeof(int8_t)                       // wv2_wl
             + sizeof(int32_t)                                          // bv2_wl
             + (long)POLICY_OUT * HIDDEN * sizeof(int8_t)               // wp
             + (long)POLICY_OUT * sizeof(int32_t);                      // bp
@@ -657,9 +663,9 @@ struct NNUEWeightsQuant {
         for (auto& row : w1) ok = ok && std::fread(row.data(), sizeof(int16_t), HIDDEN, f) == (size_t)HIDDEN;
         ok = ok && std::fread(b1.data(), sizeof(int16_t), HIDDEN, f) == (size_t)HIDDEN;
 
-        for (auto& row : wv1_wl) ok = ok && std::fread(row.data(), sizeof(int8_t), 32, f) == 32;
-        ok = ok && std::fread(bv1_wl.data(), sizeof(int32_t), 32, f) == 32;
-        ok = ok && std::fread(wv2_wl.data(), sizeof(int8_t), 32, f) == 32;
+        for (auto& row : wv1_wl) ok = ok && std::fread(row.data(), sizeof(int8_t), VALUE_HIDDEN, f) == (size_t)VALUE_HIDDEN;
+        ok = ok && std::fread(bv1_wl.data(), sizeof(int32_t), VALUE_HIDDEN, f) == (size_t)VALUE_HIDDEN;
+        ok = ok && std::fread(wv2_wl.data(), sizeof(int8_t), VALUE_HIDDEN, f) == (size_t)VALUE_HIDDEN;
         ok = ok && std::fread(&bv2_wl, sizeof(int32_t), 1, f) == 1;
 
         wp.assign(POLICY_OUT, {});
@@ -835,9 +841,9 @@ inline uint8_t screluQuant(int32_t x, int32_t QA) {
 // motivos do par forwardValue*/forwardValue*Quant já discutidos no
 // restante do arquivo -- tipos explícitos nos pontos de chamada.
 inline float forwardValueHeadQuant(const AccumulatorQuant& acc,
-                                    const std::array<std::array<int8_t, 32>, HIDDEN>& wv1,
-                                    const std::array<int32_t, 32>& bv1,
-                                    const std::array<int8_t, 32>& wv2,
+                                    const std::array<std::array<int8_t, VALUE_HIDDEN>, HIDDEN>& wv1,
+                                    const std::array<int32_t, VALUE_HIDDEN>& bv1,
+                                    const std::array<int8_t, VALUE_HIDDEN>& wv2,
                                     int32_t bv2) {
     auto& W = weightsQuant();
     alignas(32) std::array<uint8_t, HIDDEN> a;
@@ -848,17 +854,17 @@ inline float forwardValueHeadQuant(const AccumulatorQuant& acc,
     // ordem de acumulação POR j não muda -> mesmo inteiro exato. Linhas
     // com ai==0 só somam zeros, que o vetorizado absorve mais barato do
     // que o custo de predição errada do branch antigo.
-    std::array<int32_t, 32> h{};
+    std::array<int32_t, VALUE_HIDDEN> h{};
     const int8_t* wv1f = &wv1[0][0];
     for (int i = 0; i < HIDDEN; i++) {
         const int32_t ai = a[i];
-        const int8_t* row = wv1f + (size_t)i * 32;
-        for (int j = 0; j < 32; j++) h[j] += ai * (int32_t)row[j];
+        const int8_t* row = wv1f + (size_t)i * VALUE_HIDDEN;
+        for (int j = 0; j < VALUE_HIDDEN; j++) h[j] += ai * (int32_t)row[j];
     }
     // clippedRelu inteira: clamp(h+bv1, 0, QA*QB) -- mesma escala combinada
     int64_t QAQB = (int64_t)W.QA * (int64_t)W.QB;
-    std::array<int32_t, 32> hj{};
-    for (int j = 0; j < 32; j++) {
+    std::array<int32_t, VALUE_HIDDEN> hj{};
+    for (int j = 0; j < VALUE_HIDDEN; j++) {
         int64_t hv = (int64_t)h[j] + (int64_t)bv1[j];
         if (hv < 0) hv = 0;
         if (hv > QAQB) hv = QAQB;
@@ -866,7 +872,7 @@ inline float forwardValueHeadQuant(const AccumulatorQuant& acc,
     }
     // value2 (32->1): hj (escala QA*QB) x wv2 (escala QB) -> escala QA*QB*QB
     int64_t out = bv2;
-    for (int j = 0; j < 32; j++) out += (int64_t)hj[j] * (int64_t)wv2[j];
+    for (int j = 0; j < VALUE_HIDDEN; j++) out += (int64_t)hj[j] * (int64_t)wv2[j];
     int64_t denom = QAQB * (int64_t)W.QB;
     // Des-escala final: divisão em PONTO FLUTUANTE, não inteira. Só a
     // divisão da SCReLU (não-negativa, acima) precisa ser inteira de
