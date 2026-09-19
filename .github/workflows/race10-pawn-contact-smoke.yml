@@ -1,0 +1,41 @@
+name: race10 pawn-contact smoke
+on:
+  push:
+    branches: ["features/race10-pawn-contact-v1"]
+    paths: ["training/student_model.py","training/run_experiment.py","src/nnue.hpp","experiments/race10-pawn-contact-v1/**",".github/workflows/race10-pawn-contact-smoke.yml"]
+permissions:
+  contents: read
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.12"}
+      - name: Install Python smoke dependencies
+        run: |
+          python -m pip install --quiet numpy
+          python -m pip install --quiet torch --index-url https://download.pytorch.org/whl/cpu
+      - name: Python feature-layout smoke
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import sys, numpy as np
+          sys.path.insert(0,"training")
+          from student_model import encode_features, FEATURES
+          data={"own_pawn":np.array([40,40],dtype=np.uint8),"opp_pawn":np.array([49,80],dtype=np.uint8),
+                "walls_h":np.array([0,0],dtype=np.uint64),"walls_v":np.array([0,0],dtype=np.uint64),
+                "own_dist":np.array([4,4],dtype=np.uint8),"opp_dist":np.array([3,1],dtype=np.uint8),
+                "walls_left_own":np.array([2,2],dtype=np.uint8),"walls_left_opp":np.array([2,2],dtype=np.uint8)}
+          x=encode_features(data,np.array([0,1]),"race_contact")
+          assert FEATURES["race_contact"]==482 and x.shape==(2,482)
+          assert x[0,456 + (1+2)*5 + (0+2)] == 1.0
+          assert x[1,456+25] == 1.0
+          print("race_contact Python layout OK")
+          PY
+      - name: C++ compile
+        run: |
+          mkdir -p bin
+          g++ -O2 -std=c++17 -DZQ_NNUE_RACE_FEATURES=1 -DZQ_NNUE_CONTACT_FEATURES=1 -DZQ_NNUE_HIDDEN=512 tests/nnue_incremental_check.cpp -o bin/check
+          g++ -O2 -std=c++17 -pthread -DZQ_NNUE_RACE_FEATURES=1 -DZQ_NNUE_CONTACT_FEATURES=1 -DZQ_NNUE_HIDDEN=512 -Isrc tools/external/zquoridor_uci.cpp -o bin/zq
