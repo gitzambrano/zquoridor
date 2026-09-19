@@ -46,14 +46,18 @@ struct Move {
 // legalMoves/pawnStepMoves/legalWallMoves, que alocava a cada chamada
 // (praticamente todo nó da árvore de busca, ver negamax em search.hpp).
 // Mesmo padrão/motivação do buffer `static thread_local` já usado em
-// orderMoves (search.hpp, Seção 4/5.6 do plano): capacidade 256 dá folga
-// generosa sobre o máximo real de lances legais (3 peão + 128 muro =
-// 131). Interface mínima compatível com o uso existente de
+// orderMoves (search.hpp, Seção 4/5.6 do plano). O limite pelas regras é
+// 133: no máximo 128 ações de muro e no máximo 5 ações de peão. Um peão
+// tem 4 direções ortogonais; se uma está ocupada pelo adversário, essa ação
+// vira no máximo 2 diagonais, logo 3+2=5. Mantemos 144 por folga/alinhamento,
+// em vez de 256. MCAB guarda MoveList inline por nó, então reduzir o slack
+// melhora residência em cache sem alterar a enumeração de lances.
+// Interface mínima compatível com o uso existente de
 // std::vector<Move> nos call sites (size/empty/operator[]/begin/end/
 // push_back) -- troca de tipo por `auto`/assinatura, sem mudar a lógica
 // de quem consome.
 struct MoveList {
-    static constexpr size_t CAP = 256;
+    static constexpr size_t CAP = 144;
     std::array<Move, CAP> data;
     size_t n = 0;
 
