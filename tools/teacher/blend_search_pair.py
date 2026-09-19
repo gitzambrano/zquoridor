@@ -121,9 +121,20 @@ def main():
     parser.add_argument("--encoder", type=Path, default=ROOT / "bin/encode_state.exe")
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--base-weight", type=float, default=2.0)
+    parser.add_argument("--claustro-weight", type=float, default=0.75)
+    parser.add_argument("--zq-weight", type=float, default=0.25)
     args = parser.parse_args()
 
-    manifest = blend(args.positions, args.claustro, args.zq, args.encoder, args.out, base_weight=args.base_weight)
+    manifest = blend(
+        args.positions,
+        args.claustro,
+        args.zq,
+        args.encoder,
+        args.out,
+        claustro_weight=args.claustro_weight,
+        zq_weight=args.zq_weight,
+        base_weight=args.base_weight,
+    )
     print(json.dumps(manifest, indent=2))
 
 
