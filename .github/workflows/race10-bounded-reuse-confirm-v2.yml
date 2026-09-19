@@ -1,0 +1,82 @@
+name: race10 bounded reuse 400-game confirmation
+
+on:
+  push:
+    branches: ["search/race10-bounded-reuse-confirm-v2"]
+    paths:
+      - "src/mcab.hpp"
+      - ".github/workflows/race10-bounded-reuse-confirm-v2.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  confirm:
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Native regression gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash build/build_tests.sh
+          ./bin/test_rules_sanity
+          ./bin/test_mcab_core
+          ./bin/test_mcab_phase9
+          ./bin/test_endgame_race_fuzz
+          ./bin/test_repetition_diff
+      - name: Build exact current-main and candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+          BASE=8c7fe7614938f678c689f812a673ac1c22ae96dc
+          git worktree add --detach /tmp/zq-main "$BASE"
+          W=results/experiments/race512-search10-ft-s20260917/student_int8.bin
+          echo "b9cb857bb0f8d3a791b27297a61cc5c195fba916481959a43579925685c62d06  $W" | sha256sum -c -
+          mkdir -p bin benchmark_results/race10-bounded-reuse-confirm-v2
+          g++ -O3 -DNDEBUG -std=c++17 -march=native -pthread             -DZQ_NNUE_RACE_FEATURES=1 -DZQ_NNUE_HIDDEN=512             -I/tmp/zq-main/src /tmp/zq-main/tools/external/zquoridor_uci.cpp -o bin/race10-main
+          g++ -O3 -DNDEBUG -std=c++17 -march=native -pthread             -DZQ_NNUE_RACE_FEATURES=1 -DZQ_NNUE_HIDDEN=512             -Isrc tools/external/zquoridor_uci.cpp -o bin/race10-bounded
+      - name: Paired 400-game H2H
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY' | tee benchmark_results/race10-bounded-reuse-confirm-v2/h2h.txt
+          import json,sys
+          from pathlib import Path
+          ROOT=Path(".").resolve()
+          sys.path.insert(0,str(ROOT))
+          from tools import run_benchmark
+          from tools.external import local_arena
+
+          W=str((ROOT/"results/experiments/race512-search10-ft-s20260917/student_int8.bin").resolve())
+          cand=[str((ROOT/"bin/race10-bounded").resolve()),"--nnue",W]
+          base=[str((ROOT/"bin/race10-main").resolve()),"--nnue",W]
+          openings=run_benchmark._read_openings(
+              ROOT/"tools/external/openings_confirmation_v1.jsonl",200,2026091963)
+          rows=[]
+          for oi,op in openings:
+              for side in (0,1):
+                  row=local_arena.play_game(
+                      opponent="main",
+                      opening_index=int(oi),opening=op,zq_player=side,
+                      zq_factory=lambda cmd=cand: local_arena.UciPlayer(cmd,"bounded"),
+                      opponent_factory=lambda cmd=base: local_arena.UciPlayer(cmd,"main"),
+                      zq_budget=200,opponent_budget=200,
+                      move_timeout_s=30.0,max_plies=240,
+                      run_id="bounded-reuse-confirm-v2")
+                  rows.append(row)
+                  print(json.dumps(row,separators=(",",":")))
+          summary=local_arena.summarize_pairs(rows,bootstrap=50000,seed=2026091963)
+          print("SUMMARY_JSON",json.dumps(summary,sort_keys=True))
+          (ROOT/"benchmark_results/race10-bounded-reuse-confirm-v2/h2h.json").write_text(
+              json.dumps({"summary":summary,"games":rows},indent=2)+"\n")
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: race10-bounded-reuse-confirm-v2-${{ github.run_id }}
+          retention-days: 30
+          path: benchmark_results/race10-bounded-reuse-confirm-v2/**
