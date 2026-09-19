@@ -93,6 +93,7 @@ self.onmessage = ev => {
   const req = ev.data;
   if (!M) { postMessage({ id: req.id, type: 'error', msg: 'module not ready' }); return; }
   try {
+    if (req.cmd === 'init') return;
     if (req.cmd === 'bestmove') { handleBestMove(req); return; }
     const err = replayIntoScratch(req.qfen, req.moves);
     if (err) { postMessage({ id: req.id, type: 'error', msg: err }); return; }
@@ -114,11 +115,28 @@ self.onmessage = ev => {
   }
 };
 
-ZquoridorModule().then(m => {
-  M = m;
-  let nnue = false;
-  try {
-    nnue = !!withCStr('/data/nnue/nnue_weights_int8.bin', p => m._qr_load_nnue_weights(p));
-  } catch (e) {}
-  postMessage({ type: 'ready', nnue });
-}).catch(e => postMessage({ type: 'fatal', msg: String(e) }));
+function bootModule(opts) {
+  ZquoridorModule(opts || {}).then(m => {
+    M = m;
+    let nnue = false;
+    try {
+      nnue = !!withCStr('/data/nnue/nnue_weights_int8.bin', p => m._qr_load_nnue_weights(p));
+    } catch (e) {}
+    postMessage({ type: 'ready', nnue });
+  }).catch(e => postMessage({ type: 'fatal', msg: String(e) }));
+}
+
+if (typeof __STANDALONE_WORKER__ !== 'undefined' && __STANDALONE_WORKER__) {
+  self.addEventListener('message', function _onInit(ev) {
+    if (ev.data && ev.data.cmd === 'init') {
+      self.removeEventListener('message', _onInit);
+      const args = { wasmBinary: ev.data.wasmBinary };
+      if (ev.data.dataBytes) {
+        args.getPreloadedPackage = () => ev.data.dataBytes;
+      }
+      bootModule(args);
+    }
+  });
+} else {
+  bootModule();
+}

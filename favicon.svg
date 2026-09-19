@@ -1,0 +1,99 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="100%" height="100%">
+  <defs>
+    <!-- Dark slate/board background with vignette -->
+    <radialGradient id="bgD" cx="50%" cy="30%" r="75%">
+      <stop offset="0%" stop-color="#1e2638"/>
+      <stop offset="60%" stop-color="#111622"/>
+      <stop offset="100%" stop-color="#080a10"/>
+    </radialGradient>
+    
+    <!-- Outer rim metallic bevel -->
+    <linearGradient id="rimD" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#e2b856"/>
+      <stop offset="30%" stop-color="#4a5568"/>
+      <stop offset="70%" stop-color="#1e293b"/>
+      <stop offset="100%" stop-color="#ca9a32"/>
+    </linearGradient>
+
+    <!-- Quoridor Wall Material: Warm Golden Oak / Amber Wood -->
+    <linearGradient id="wallWood" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#ffe48a"/>
+      <stop offset="20%" stop-color="#f5ba42"/>
+      <stop offset="70%" stop-color="#c67d18"/>
+      <stop offset="100%" stop-color="#7c4305"/>
+    </linearGradient>
+    <linearGradient id="wallWoodDiag" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#ffea9f"/>
+      <stop offset="25%" stop-color="#f5ba42"/>
+      <stop offset="70%" stop-color="#be7312"/>
+      <stop offset="100%" stop-color="#6e3700"/>
+    </linearGradient>
+    <linearGradient id="wallWoodV" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#ffe48a"/>
+      <stop offset="20%" stop-color="#f5ba42"/>
+      <stop offset="70%" stop-color="#c67d18"/>
+      <stop offset="100%" stop-color="#7c4305"/>
+    </linearGradient>
+
+    <!-- Premium 3D Pawn Material: Ruby Gemstone with Gold Trim -->
+    <radialGradient id="pawnGem" cx="35%" cy="30%" r="70%">
+      <stop offset="0%" stop-color="#ff758c"/>
+      <stop offset="35%" stop-color="#f43f5e"/>
+      <stop offset="70%" stop-color="#be123c"/>
+      <stop offset="100%" stop-color="#4c0519"/>
+    </radialGradient>
+    <radialGradient id="pawnGlow" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#f43f5e" stop-opacity="0.45"/>
+      <stop offset="100%" stop-color="#f43f5e" stop-opacity="0"/>
+    </radialGradient>
+
+    <!-- Rich 3D Drop Shadows -->
+    <filter id="shadow3D" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="10" stdDeviation="12" flood-color="#000000" flood-opacity="0.75"/>
+    </filter>
+  </defs>
+
+  <!-- Board Base (Rounded Squircle App Icon) -->
+  <rect x="24" y="24" width="464" height="464" rx="108" fill="url(#bgD)" stroke="url(#rimD)" stroke-width="4"/>
+
+  <!-- Board Grooves (Quoridor Grid Lines) -->
+  <g stroke="#1a2336" stroke-width="4.5" stroke-linecap="round" opacity="0.65">
+    <line x1="72" y1="172" x2="440" y2="172"/>
+    <line x1="72" y1="268" x2="440" y2="268"/>
+    <line x1="72" y1="364" x2="440" y2="364"/>
+    <line x1="168" y1="72" x2="168" y2="440"/>
+    <line x1="264" y1="72" x2="264" y2="440"/>
+    <line x1="360" y1="72" x2="360" y2="440"/>
+  </g>
+
+  <!-- === The 'Z' (Constructed of Quoridor Walls) === -->
+  <g filter="url(#shadow3D)">
+    <!-- Top Horizontal Wall -->
+    <rect x="68" y="112" width="204" height="38" rx="12" fill="url(#wallWood)" stroke="#fff2b2" stroke-width="1.5"/>
+    <!-- Bottom Horizontal Wall -->
+    <rect x="68" y="346" width="204" height="38" rx="12" fill="url(#wallWood)" stroke="#fff2b2" stroke-width="1.5"/>
+    <!-- Diagonal Wall -->
+    <polygon points="272,138 230,150 72,348 114,348" fill="url(#wallWoodDiag)" stroke="#fff2b2" stroke-width="1.2"/>
+  </g>
+
+  <!-- === The 'q' (Pawn Loop + Vertical Wall Stem) === -->
+  <g filter="url(#shadow3D)">
+    <!-- Vertical Wall Stem of 'q' -->
+    <rect x="368" y="196" width="38" height="206" rx="12" fill="url(#wallWoodV)" stroke="#fff2b2" stroke-width="1.5"/>
+
+    <!-- Subtle pawn floor shadow -->
+    <ellipse cx="316" cy="316" rx="52" ry="18" fill="#000" opacity="0.5"/>
+    <!-- Pawn ambient glow -->
+    <circle cx="316" cy="268" r="80" fill="url(#pawnGlow)"/>
+
+    <!-- 3D Pawn Body (The round bowl of 'q', touching the stem) -->
+    <circle cx="316" cy="268" r="58" fill="url(#pawnGem)" stroke="#fecdd3" stroke-width="2.5"/>
+    
+    <!-- Gold crown ring on pawn -->
+    <circle cx="316" cy="268" r="34" fill="none" stroke="#fef08a" stroke-width="3" opacity="0.75"/>
+    
+    <!-- Specular light reflections -->
+    <ellipse cx="300" cy="248" rx="14" ry="8" fill="#ffffff" opacity="0.65" transform="rotate(-30 300 248)"/>
+    <ellipse cx="336" cy="292" rx="16" ry="6" fill="#ffffff" opacity="0.15" transform="rotate(45 336 292)"/>
+  </g>
+</svg>

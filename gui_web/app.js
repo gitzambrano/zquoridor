@@ -548,12 +548,11 @@ function engineTurn() {
 
   const finish = (packed, score, applied) => {
     if (gen !== engineGen) return;
-    engineThinking = false;
-    if (packed == null) { syncAll(); setStatus('Your move'); return; }
+    if (packed == null) { engineThinking = false; syncAll(); setStatus('Your move'); return; }
     const m = unpackMove(packed);
     if (!applied) {
       const ok = m.isWall ? W.applyWall(m.a, m.b, m.c) : W.applyPawn(m.a);
-      if (!ok) { syncAll(); setStatus('Your move'); return; }
+      if (!ok) { engineThinking = false; syncAll(); setStatus('Your move'); return; }
     }
     let anim = null;
     if (m.isWall) {
@@ -569,6 +568,7 @@ function engineTurn() {
     syncAll();
     const done = (anim && typeof anim.then === 'function') ? anim : Promise.resolve();
     done.then(() => {
+      engineThinking = false;
       checkEnd();
       if (!gameOver) setStatus('Your move');
       refreshHud();
@@ -668,6 +668,7 @@ function newGame() {
   setEval(0);
   setStatus(humanSide === 0 ? 'Your move' : 'Zquoridor starts');
   syncAll();
+  updateMovesChip();
   startClock();
   if (W.turn() !== humanSide) { engineThinking = true; refreshHud(); scheduleEngineTurn(150); }
 }
@@ -1409,7 +1410,7 @@ function modalSettings(tab) {
         <div class="row"><label>Interface</label>${seg('ui', ['dark', 'light', 'auto'], ['Dark', 'Light', 'Auto'])}</div>
         <div class="row"><label>Accent</label><div class="swatches" id="setAccents">
           ${Object.keys(ACCENTS).map(a => `<button class="swatch ${S.accent === a ? 'on' : ''}" data-a="${a}" style="background:${ACCENTS[a][0]}"></button>`).join('')}
-          <input type="color" id="accentPick" value="#c8a84b" style="width:34px;height:26px;background:none;border:none" title="Custom accent">
+          <input type="color" id="accentPick" value="#c8a84b" style="width:34px;height:26px;background:none;border:none" title="Custom accent" aria-label="Custom accent color">
         </div></div>
         <div class="row"><label>Text size</label>${seg('fs', [1, 1.12, 1.25], ['Normal', 'Large', 'Larger'])}</div>
         <details class="advSettings"><summary>Advanced appearance</summary><div class="advBody">
@@ -1454,10 +1455,10 @@ function modalSettings(tab) {
     sound: `
       <div class="card"><h4>SOUND</h4>
         <div class="row"><label>Sound</label>${seg('sound', [true, false], ['On', 'Off'])}</div>
-        <div class="row"><label>Pack</label>
-          <select class="sel" id="packSel">${Object.keys(SOUND_PACKS).map(p => `<option value="${p}" ${S.soundPack === p ? 'selected' : ''}>${p}</option>`).join('')}</select>
+        <div class="row"><label for="packSel">Pack</label>
+          <select class="sel" id="packSel" aria-label="Sound pack">${Object.keys(SOUND_PACKS).map(p => `<option value="${p}" ${S.soundPack === p ? 'selected' : ''}>${p}</option>`).join('')}</select>
           <button class="btn" id="packTest" style="padding:6px 10px">Test</button></div>
-        <div class="row"><label>Volume</label><input type="range" id="volSlider" min="0" max="100" value="${Math.round(S.volume * 100)}" style="flex:1.2"></div>
+        <div class="row"><label for="volSlider">Volume</label><input type="range" id="volSlider" min="0" max="100" value="${Math.round(S.volume * 100)}" style="flex:1.2" aria-label="Volume"></div>
         <div class="row"><label>Events</label><div class="seg" style="flex-wrap:wrap" id="evSeg">
           ${Object.keys(S.soundEvents).map(k => `<button data-ev="${k}" class="${S.soundEvents[k] ? 'on' : ''}" style="font-size:var(--fs-xs);padding:5px 7px">${k}</button>`).join('')}</div></div>
       </div>
@@ -1877,7 +1878,7 @@ function openTextIO(format, presetText, errMsg, allowPartial) {
       <button data-f="qgn" class="${fmt === 'qgn' ? 'on' : ''}">QGN</button>
       <button data-f="qfen" class="${fmt === 'qfen' ? 'on' : ''}">QFEN</button>
     </div></div>
-    <textarea id="ioArea" class="ioArea ${errMsg ? 'err' : ''}" spellcheck="false"></textarea>
+    <textarea id="ioArea" class="ioArea ${errMsg ? 'err' : ''}" spellcheck="false" aria-label="Game notation in QGN or QFEN format"></textarea>
     <div id="ioDiag">${errMsg ? escapeHtml(errMsg) : ''}</div>
     <div class="row" style="gap:6px;flex-wrap:wrap;margin-top:8px">
       <button class="btn" id="ioCopy">Copy</button>
@@ -2030,9 +2031,9 @@ function showRecentGames() {
 // ---- image export modal (plan section 16.5) ----------------------------
 function exportImageModal() {
   openModal(`<h3>EXPORT IMAGE <span class="x" data-close>&#10005;</span></h3>
-    <div class="row"><label>Transparent background</label><input type="checkbox" id="exTrans"></div>
-    <div class="row"><label>Include coordinates</label><input type="checkbox" id="exCoords" checked></div>
-    <div class="row"><label>Footer with names</label><input type="checkbox" id="exFooter" checked></div>
+    <div class="row"><label for="exTrans">Transparent background</label><input type="checkbox" id="exTrans" aria-label="Transparent background"></div>
+    <div class="row"><label for="exCoords">Include coordinates</label><input type="checkbox" id="exCoords" checked aria-label="Include coordinates"></div>
+    <div class="row"><label for="exFooter">Footer with names</label><input type="checkbox" id="exFooter" checked aria-label="Footer with names"></div>
     <div class="row" style="gap:8px;margin-top:10px">
       <button class="btn gold" id="exPng" style="flex:1">PNG</button>
       <button class="btn" id="exSvg" style="flex:1">SVG</button>
@@ -2085,7 +2086,17 @@ const ANW = {
   ensure() {
     if (this.wk || this.failed) return;
     try {
-      this.wk = new Worker('worker.js');
+      if (typeof location !== 'undefined' && location.protocol === 'file:') return;
+      const isStandalone = typeof __QR_WORKER_BLOB_URL__ !== 'undefined' && __QR_WORKER_BLOB_URL__;
+      const workerUrl = isStandalone || 'worker.js';
+      this.wk = new Worker(workerUrl);
+      if (isStandalone && typeof __QR_WASM_BYTES__ !== 'undefined') {
+        this.wk.postMessage({
+          cmd: 'init',
+          wasmBinary: __QR_WASM_BYTES__.buffer.slice(0),
+          dataBytes: (typeof __QR_DATA_BYTES__ !== 'undefined' && __QR_DATA_BYTES__) ? __QR_DATA_BYTES__.slice(0) : null
+        });
+      }
       this.wk.onmessage = ev => {
         const m = ev.data;
         if (m.type === 'ready') { this.ready = true; return; }

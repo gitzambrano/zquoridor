@@ -227,6 +227,9 @@ def main():
 
             # ---------- PHASE B: analysis (mid-game) ----------
             print("--- analysis: engine, PVs, graph, blunder check")
+            if mid["over"]:
+                page.evaluate("navGo(Math.min(12, Math.floor(window.__w.plyCount() / 2)))")
+                page.wait_for_timeout(300)
             page.click("#panelTabs .tab[data-pane='anPane']")
             page.wait_for_timeout(250)
             page.click("#anEngBtn")

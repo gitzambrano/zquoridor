@@ -101,6 +101,22 @@ def main():
     if fonts_inlined:
         print("    fontes embutidas (WOFF2 base64)")
 
+    favicon_path = HERE / "favicon.svg"
+    if favicon_path.exists():
+        svg_b64 = base64.b64encode(favicon_path.read_bytes()).decode("ascii")
+        html = html.replace('href="favicon.svg"', f'href="data:image/svg+xml;base64,{svg_b64}"')
+
+    worker_path = HERE / "worker.js"
+    worker_b64 = ""
+    if worker_path.exists():
+        worker_raw = worker_path.read_text(encoding="utf-8")
+        worker_blob_script = (
+            "const __STANDALONE_WORKER__ = true;\n" +
+            loader_js + "\n" +
+            worker_raw.replace("importScripts('zquoridor.js');", "// inlined loader")
+        )
+        worker_b64 = base64.b64encode(worker_blob_script.encode("utf-8")).decode("ascii")
+
     # standalone precisa passar os bytes do wasm direto pro módulo em vez
     # de deixar o Emscripten buscar zquoridor.wasm via fetch/XHR (que exige
     # servidor HTTP -- não funciona em file://).
@@ -135,6 +151,15 @@ def main():
     )
     if data_b64:
         b2b += f'const __QR_DATA_BYTES__ = __qr_b64ToBytes("{data_b64}").buffer;\n'
+    if worker_b64:
+        b2b += (
+            "let __QR_WORKER_BLOB_URL__ = null;\n"
+            "try {\n"
+            f'    const __qr_w_bin = atob("{worker_b64}");\n'
+            "    const __qr_w_blob = new Blob([__qr_w_bin], { type: 'application/javascript' });\n"
+            "    __QR_WORKER_BLOB_URL__ = URL.createObjectURL(__qr_w_blob);\n"
+            "} catch (e) {}\n"
+        )
     b2b += "\n"
 
     inline = (

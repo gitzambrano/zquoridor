@@ -5,6 +5,9 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
 <title>Zquoridor</title>
+<link rel="icon" type="image/svg+xml" href="favicon.svg">
+<link rel="alternate icon" href="favicon.ico">
+<link rel="apple-touch-icon" href="icon-192.png">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@600;700&family=JetBrains+Mono:wght@300;400;500;600;700&display=swap" rel="stylesheet">
@@ -995,16 +998,16 @@ input[type="number"],input[type="text"],textarea{
             <button class="btn gold" id="anEngBtn" style="flex:1">ENGINE OFF</button>
           </div>
           <div class="row">
-            <label>Depth</label>
-            <select class="sel" id="anDepth">
+            <label for="anDepth">Depth</label>
+            <select class="sel" id="anDepth" aria-label="Analysis depth">
               <option value="6">6</option>
               <option value="10" selected>10</option>
               <option value="14">14</option>
               <option value="20">20</option>
               <option value="0">&#8734;</option>
             </select>
-            <label>Lines</label>
-            <select class="sel" id="anPvCount">
+            <label for="anPvCount">Lines</label>
+            <select class="sel" id="anPvCount" aria-label="Number of principal variation lines">
               <option value="1">1</option>
               <option value="2">2</option>
               <option value="3" selected>3</option>
