@@ -39,7 +39,7 @@ def _round_ste(x, scale):
 
 
 class Student(nn.Module):
-    def __init__(self, architecture="base", hidden=256, value_hidden=32, qat=False):
+    def __init__(self, architecture="base", hidden=256, qat=False, value_hidden=32):
         super().__init__()
         if architecture not in FEATURES or hidden not in (128, 256, 384, 512):
             raise ValueError("architecture must be base/race; hidden must be 128/256/384/512")
