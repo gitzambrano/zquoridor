@@ -30,22 +30,28 @@ def run(config):
         replay={k:z[k] for k in z.files}
     if "game_result" not in replay:
         raise ValueError("replay dataset has no game_result")
+    if "id" not in replay or "id" not in mixed:
+        raise ValueError("exact outcome join requires id in both replay and mixed datasets")
+
     lookup={}
-    for i in range(len(replay["game_result"])):
-        key=state_key(replay,i)
-        lookup[key]=float(replay["game_result"][i])
+    for sample_id, result in zip(replay["id"], replay["game_result"]):
+        key=bytes(sample_id)
+        value=float(result)
+        if key in lookup and lookup[key] != value:
+            raise ValueError(f"inconsistent duplicate replay id: {key!r}")
+        lookup[key]=value
 
     outcome=np.empty(len(mixed["value"]),dtype=np.float32)
     missing=0
-    for i in range(len(outcome)):
-        value=lookup.get(state_key(mixed,i))
+    for i, sample_id in enumerate(mixed["id"]):
+        value=lookup.get(bytes(sample_id))
         if value is None:
             missing+=1
             outcome[i]=mixed["value"][i]
         else:
             outcome[i]=value
     if missing:
-        raise ValueError(f"{missing} mixed states lack a replay outcome; abort instead of silently mixing")
+        raise ValueError(f"{missing} mixed ids lack a replay outcome; abort instead of silently mixing")
 
     own_walls=mixed["walls_left_own"].astype(np.int64)
     wallpoor=own_walls <= int(config["wallpoor_max_own_walls"])
