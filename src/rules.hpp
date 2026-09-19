@@ -722,8 +722,7 @@ inline void legalWallMoves(const State& s, int player, MoveList& out,
     // sempre que o candidato provadamente não fecha nenhuma barreira
     // esquerda-direita -- se fecha, cai de volta no hasPathToGoal exato
     // (mesmo comportamento de antes, sem risco de regressão).
-    RollbackDSU dsu;
-    buildWallDSU(dsu, s.wallsH, s.wallsV);
+    const FlatWallDSU& dsu = cachedFlatWallDSU(s.wallsH, s.wallsV);
 
     for (int orientation = 0; orientation < 2; orientation++) {
         uint64_t touch0 = orientation == 0 ? touchH0 : touchV0;
@@ -742,7 +741,7 @@ inline void legalWallMoves(const State& s, int player, MoveList& out,
                 out.push_back(Move::wall(orientation, r, cc));
                 continue;
             }
-            if (!wallCandidateAmbiguous(dsu, s.wallsH, s.wallsV, orientation, r, cc)) {
+            if (!wallCandidateAmbiguousFlat(dsu, s.wallsH, s.wallsV, orientation, r, cc)) {
                 out.push_back(Move::wall(orientation, r, cc));
                 continue;
             }
