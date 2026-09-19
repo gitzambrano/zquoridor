@@ -8,7 +8,7 @@ from torch import nn
 from torch.nn import functional as F
 from quantize_nnue import quantize, write_quantized
 
-FEATURES = {"base": 354, "race": 456}
+FEATURES = {"base": 354, "race": 456, "race_regime": 588}
 LAYOUT = ("w1", "b1", "wv1_wl", "bv1_wl", "wv2_wl", "bv2_wl", "wp", "bp")
 
 
@@ -17,7 +17,7 @@ def encode_features(data, indices, architecture="base"):
     x = dense_features(data, indices)
     if architecture == "base":
         return x
-    if architecture != "race":
+    if architecture not in ("race", "race_regime"):
         raise ValueError(f"unknown architecture: {architecture}")
     n = len(indices)
     extra = np.zeros((n, 102), dtype=np.float32)
@@ -30,7 +30,21 @@ def encode_features(data, indices, architecture="base"):
     extra[rows, 33 + ow - pw + 10] = 1
     race = np.sign(own - opp) + 1
     extra[rows, 54 + race * 16 + np.minimum(ow, 3) * 4 + np.minimum(pw, 3)] = 1
-    return np.concatenate((x, extra), axis=1)
+    xr = np.concatenate((x, extra), axis=1)
+    if architecture == "race":
+        return xr
+
+    # Exact distance margin crossed with a coarse wall regime. This keeps
+    # one additional active feature while separating "ahead with no walls"
+    # from the same margin when both players still retain wall resources.
+    regime = np.zeros(n, dtype=np.int64)
+    regime[(ow == 0) & (pw > 0)] = 1
+    regime[(ow > 0) & (pw == 0)] = 2
+    regime[(ow == 0) & (pw == 0)] = 3
+    regime_extra = np.zeros((n, 132), dtype=np.float32)
+    margin = np.clip(own - opp, -16, 16) + 16
+    regime_extra[rows, margin * 4 + regime] = 1
+    return np.concatenate((xr, regime_extra), axis=1)
 
 
 def _round_ste(x, scale):
@@ -42,7 +56,7 @@ class Student(nn.Module):
     def __init__(self, architecture="base", hidden=256, qat=False):
         super().__init__()
         if architecture not in FEATURES or hidden not in (128, 256, 384, 512):
-            raise ValueError("architecture must be base/race; hidden must be 128/256/384/512")
+            raise ValueError("architecture must be base/race/race_regime; hidden must be 128/256/384/512")
         self.architecture, self.hidden, self.qat = architecture, hidden, qat
         self.fc1 = nn.Linear(FEATURES[architecture], hidden)
         self.value1_wl = nn.Linear(hidden, 32)
@@ -136,7 +150,8 @@ def export(model, path):
     manifest = dict(schema="zquoridor.student.v1", architecture=model.architecture,
                     features=FEATURES[model.architecture], hidden=model.hidden, value_hidden=32,
                     policy_out=209, qa=255, qb=64, qat=model.qat,
-                    cpp_flags=[f"-DZQ_NNUE_RACE_FEATURES={int(model.architecture == 'race')}",
+                    cpp_flags=[f"-DZQ_NNUE_RACE_FEATURES={int(model.architecture in ('race', 'race_regime'))}",
+                               f"-DZQ_NNUE_RACE_REGIME_FEATURES={int(model.architecture == 'race_regime')}",
                                f"-DZQ_NNUE_HIDDEN={model.hidden}"],
                     float_sha256=hashlib.sha256(path.read_bytes()).hexdigest(),
                     int8_sha256=hashlib.sha256(quant_path.read_bytes()).hexdigest())
