@@ -60,8 +60,8 @@ jobs:
         run: |
           {
             for i in 1 2 3 4 5 6 7; do
-              echo -n "BASE "; bin/perft-base
-              echo -n "DSU "; bin/perft-dsu
+              bin/perft-base | sed 's/^/BASE /'
+              bin/perft-dsu | sed 's/^/DSU /'
             done
           } | tee benchmark_results/movegen-dsu-first-v1/perft.txt
           python - <<'PY' | tee benchmark_results/movegen-dsu-first-v1/perft-summary.txt
