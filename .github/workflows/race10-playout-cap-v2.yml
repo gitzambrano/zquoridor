@@ -1,0 +1,82 @@
+name: race10 playout-cap datagen smoke
+
+on:
+  push:
+    branches: ["training/race10-playout-cap-v2"]
+    paths:
+      - "tools/selfplay/**"
+      - ".github/workflows/race10-playout-cap-v2.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Syntax and native build
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --disable-pip-version-check numpy
+          python -m py_compile tools/selfplay/run_selfplay.py training/read_selfplay.py
+          bash build/build_tests.sh
+          ./bin/test_rules_sanity
+          W=results/experiments/race512-search10-ft-s20260917/student_int8.bin
+          echo "b9cb857bb0f8d3a791b27297a61cc5c195fba916481959a43579925685c62d06  $W" | sha256sum -c -
+          g++ -O3 -DNDEBUG -std=c++17 -pthread -march=native -mavx2 -mfma             -DZQ_NNUE_RACE_FEATURES=1 -DZQ_NNUE_HIDDEN=512             -Isrc -Itools/selfplay -o bin/selfplay-race10 tools/selfplay/selfplay_main.cpp
+      - name: Baseline full-search datagen
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p benchmark_results/race10-playout-cap-v2
+          /usr/bin/time -f 'WALL_SECONDS=%e' -o benchmark_results/race10-playout-cap-v2/base-time.txt             bin/selfplay-race10               --games 10 --chunk-games 10 --threads 2 --depth 40 --time-ms 80               --opening-plies 0 --opening-plies2 0 --epsilon-midgame 0               --seed 2026091951               --nnue-weights results/experiments/race512-search10-ft-s20260917/student_int8.bin               --out benchmark_results/race10-playout-cap-v2/base.bin             | tee benchmark_results/race10-playout-cap-v2/base.log
+      - name: Cheap/full playout-cap datagen
+        shell: bash
+        run: |
+          set -euo pipefail
+          /usr/bin/time -f 'WALL_SECONDS=%e' -o benchmark_results/race10-playout-cap-v2/cap-time.txt             bin/selfplay-race10               --games 10 --chunk-games 10 --threads 2 --depth 40 --time-ms 80               --opening-plies 0 --opening-plies2 0 --epsilon-midgame 0               --playout-cap --full-search-prob 0.25 --cheap-time-ms 20               --seed 2026091951               --nnue-weights results/experiments/race512-search10-ft-s20260917/student_int8.bin               --out benchmark_results/race10-playout-cap-v2/cap.bin             | tee benchmark_results/race10-playout-cap-v2/cap.log
+      - name: Validate corpus and summarize throughput
+        shell: bash
+        run: |
+          python - <<'PY' | tee benchmark_results/race10-playout-cap-v2/summary.txt
+          from pathlib import Path
+          import re
+          root=Path("benchmark_results/race10-playout-cap-v2")
+          def wall(name):
+              return float(re.search(r"WALL_SECONDS=([0-9.]+)",(root/name).read_text()).group(1))
+          def records(name):
+              n=(root/name).stat().st_size
+              assert n%64==0,(name,n)
+              return n//64
+          b=wall("base-time.txt"); c=wall("cap-time.txt")
+          rb=records("base.bin"); rc=records("cap.bin")
+          caplog=(root/"cap.log").read_text()
+          assert "playout-cap: ON" in caplog
+          m=re.findall(r"full=(\d+) cheap=(\d+) skipped=(\d+)",caplog)
+          assert m, "missing playout-cap counters"
+          full=sum(int(x[0]) for x in m)
+          cheap=sum(int(x[1]) for x in m)
+          skipped=sum(int(x[2]) for x in m)
+          assert cheap>0 and skipped>0
+          print("base_seconds",b,"cap_seconds",c,
+                "games_speedup_x",round(b/c,3),
+                "base_records",rb,"cap_records",rc,
+                "record_fraction",round(rc/max(1,rb),3),
+                "full_search_plies",full,"cheap_search_plies",cheap,
+                "skipped",skipped)
+          PY
+          python training/read_selfplay.py benchmark_results/race10-playout-cap-v2/base.bin >/tmp/base-read.txt
+          python training/read_selfplay.py benchmark_results/race10-playout-cap-v2/cap.bin >/tmp/cap-read.txt
+          cat /tmp/base-read.txt /tmp/cap-read.txt
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: race10-playout-cap-v2-${{ github.run_id }}
+          retention-days: 30
+          path: benchmark_results/race10-playout-cap-v2/**
