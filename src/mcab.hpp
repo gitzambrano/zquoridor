@@ -502,6 +502,10 @@ struct MCABNode {
     std::vector<size_t> activeCandidateIndices;
     size_t nextCandidate = 0;
     int totalN = 0;
+    // Exact-in-intent cache of sum(W). It is updated from the rounded float
+    // edge values (newW-oldW), so nodeQ no longer scans every edge on every
+    // PUCT descent. Recomputed whenever root filtering changes the edge set.
+    double totalW = 0.0;
     bool noised = false;          // ruído de Dirichlet já aplicado a `P` (Seção 9) -- evita
                                   // recompor o ruído sobre si mesmo quando este nó vira raiz
                                   // reaproveitada de novo (Seção 8).
@@ -962,6 +966,8 @@ private:
             r.child.push_back(oldChild.empty() ? -1 : oldChild[e]);
         }
         r.activeMoves = (int)r.moves.size();
+        r.totalW = 0.0;
+        for (float w : r.W) r.totalW += (double)w;
 
         float sum = 0.f;
         for (float p : r.P) sum += p;
@@ -1167,6 +1173,7 @@ private:
             node.N.assign(nm, 0.f);
             node.W.assign(nm, 0.f);
             node.child.assign(nm, -1);
+            node.totalW = 0.0;
 
             if (nm > 0) {
                 std::array<float, PolicyDim> policyOut{};
@@ -1237,6 +1244,7 @@ private:
             node.N.clear();
             node.W.clear();
             node.child.clear();
+            node.totalW = 0.0;
             node.activeCandidateIndices.clear();
             node.nextCandidate = 0;
             node.activeMoves = 0;
@@ -1262,9 +1270,7 @@ private:
     double nodeQ(const NodeT& node) const {
         if (params.backupMode == BackupMode::AvgBlend) {
             if (node.totalN <= 0) return 0.5;
-            double sumW = 0.0;
-            for (float w : node.W) sumW += w;
-            return sumW / (double)node.totalN;
+            return node.totalW / (double)node.totalN;
         }
         double best = 0.5;
         bool visited = false;
@@ -1490,11 +1496,13 @@ private:
             NodeT& node = pool[path[i].nodeIdx];
             int e = path[i].edgeIdx;
             node.N[e] += 1.f;
+            float oldW = node.W[e];
             if (params.backupMode == BackupMode::AvgBlend) {
                 node.W[e] += (float)v;
             } else {
                 node.W[e] = (float)v;
             }
+            node.totalW += (double)node.W[e] - (double)oldW;
             node.totalN += 1;
             if (params.backupMode == BackupMode::MinimaxHard)
                 v = nodeQ(node);
