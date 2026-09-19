@@ -28,6 +28,7 @@ CONFIG = {
     "leaf_depth": 0,
     "out": "",
     "teacher_name": "zquoridor-deep",
+    "workers": 1,
 }
 
 
@@ -60,20 +61,34 @@ def input_text(positions: Sequence[dict]) -> str:
     )
 
 
-def run_budget(bridge: Path, nnue: Path, positions: Sequence[dict], nodes: int,
-               time_ms: int, leaf_depth: int) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-    cmd = [
-        str(bridge), "--nnue", str(nnue), "--nodes", str(nodes),
-        "--time-ms", str(time_ms), "--leaf-depth", str(leaf_depth),
-    ]
+def _run_single_chunk(cmd: list[str], chunk: Sequence[dict]) -> list[dict]:
     proc = subprocess.run(
         cmd,
-        input=input_text(positions),
+        input=input_text(chunk),
         capture_output=True,
         text=True,
         check=True,
     )
-    rows = [json.loads(line) for line in proc.stdout.splitlines() if line.strip().startswith("{")]
+    return [json.loads(line) for line in proc.stdout.splitlines() if line.strip().startswith("{")]
+
+
+def run_budget(bridge: Path, nnue: Path, positions: Sequence[dict], nodes: int,
+               time_ms: int, leaf_depth: int, workers: int = 1) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    import concurrent.futures
+    cmd = [
+        str(bridge), "--nnue", str(nnue), "--nodes", str(nodes),
+        "--time-ms", str(time_ms), "--leaf-depth", str(leaf_depth),
+    ]
+    if workers <= 1 or len(positions) <= 1:
+        rows = _run_single_chunk(cmd, positions)
+    else:
+        chunk_size = (len(positions) + workers - 1) // workers
+        chunks = [positions[i:i + chunk_size] for i in range(0, len(positions), chunk_size)]
+        rows = []
+        with concurrent.futures.ThreadPoolExecutor(max_workers=len(chunks)) as executor:
+            for chunk_rows in executor.map(lambda c: _run_single_chunk(cmd, c), chunks):
+                rows.extend(chunk_rows)
+
     if len(rows) != len(positions):
         raise ValueError(f"ZQ-deep returned {len(rows)} rows for {len(positions)} positions")
 
@@ -121,18 +136,21 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--leaf-depth", type=int, default=CONFIG["leaf_depth"])
     parser.add_argument("--out", type=Path, default=Path(CONFIG["out"]) if CONFIG["out"] else None)
     parser.add_argument("--teacher-name", default=CONFIG["teacher_name"])
+    parser.add_argument("--workers", type=int, default=CONFIG["workers"])
     args = parser.parse_args(argv)
 
     if not all((args.positions, args.bridge, args.nnue, args.out)):
         raise SystemExit("set positions, bridge, nnue, and out in CONFIG or pass their CLI options")
     if args.time_ms < 0 or args.leaf_depth < 0:
         raise SystemExit("time-ms and leaf-depth must be non-negative")
+    if args.workers < 1:
+        raise SystemExit("workers must be at least 1")
     try:
         budgets = parse_budgets(args.node_budgets)
         positions = load_positions(args.positions)
         results = {
             nodes: run_budget(
-                args.bridge, args.nnue, positions, nodes, args.time_ms, args.leaf_depth
+                args.bridge, args.nnue, positions, nodes, args.time_ms, args.leaf_depth, args.workers
             )
             for nodes in budgets
         }

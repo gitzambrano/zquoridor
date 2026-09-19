@@ -523,6 +523,19 @@ encerrado.
 
 ## 11. Estado de promoção
 
-**A candidata campeã definitiva foi escolhida**: `race512-search10-ft` venceu a seleção geral após confirmação completa de 100 pares (58,5% vs main, 57,5% vs Titanium, 49,0% vs Claustrophobia) e empate técnico no confronto direto com `base512-search10-ft` (49,5% vs 50,5%).
+**A candidata campeã definitiva atual é**: `race512-search10-ft` (58,5% vs main, 57,5% vs Titanium, 49,0% vs Claustrophobia).
 
-O passo seguinte é a triagem de `race512-search20-ft` para ultrapassar 50% contra Claustrophobia antes do congelamento e promoção oficial dos pesos para `data/nnue/nnue_weights_int8.bin`.
+### Triagem de `race512-weakness-ft` e Prova Empírica do MCTS da Claustrophobia (2026-09-19)
+
+A triagem do modelo `race512-weakness-ft` (34.787 posições mineradas de fraqueza, usando 75% Claustrophobia direct forward-pass + 25% ZQ search) produziu um resultado revelador:
+- **vs Titanium**: **62,5%** (Elo +88,7, avanço notável sobre os 57,5% da campeã).
+- **vs Main**: **45,0%** (Elo -34,9).
+- **vs Claustrophobia**: **31,25%** (Elo -137,0) com **153 estados repetidos** em 40 jogos.
+
+**Conclusão Empírica Crucial**: A rede crua da Claustrophobia (sem o seu MCTS) sofre de loops de repetição cíclica e indefinição tática em posições espelho. Destilar essa rede direta sem busca enfraquece o motor taticamente contra ela mesma. O teaching da Claustrophobia **precisa obrigatoriamente vir de sua busca MCTS (`zq_search_bridge.exe`)**, que resolve táticas por contagem de visitas e elimina loops de repetição.
+
+### Próximos Passos de Escala Massiva:
+1. **Teaching com Claustrophobia MCTS Search Real**: Executar `zq_search_bridge.exe` (64–128 simulações) em paralelo com 8 workers sobre as posições críticas de divergência e derrota.
+2. **Expansão do Replay de Fundo para 4.000.000 de Posições**: Amostrar mais 2.000.000 de posições auditadas das 72 milhões disponíveis no `data/selfplay_canonical_v3/` (gen1, gen2, gen5, gen6, gen7) para criar uma blindagem contra qualquer perda tática geral.
+3. **Branching Rollouts Dinâmicos**: Gerar 15.000 a 20.000 partidas ramificadas a partir dos momentos de crise (com variabilidade top-4 nos 4 primeiros lances pós-crise) para ensinar o motor a jogar partidas completas a partir do desbalanço.
+
