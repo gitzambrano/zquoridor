@@ -1,0 +1,22 @@
+name: race10 training hparam smoke
+on:
+  push:
+    branches: ["train/race10-hparam-matrix-v1"]
+permissions:
+  contents: read
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate matrix runner
+        run: |
+          python -m py_compile training/run_race10_hparam_matrix.py
+          python training/run_race10_hparam_matrix.py --dry-run > /tmp/matrix.json
+          python - <<'PY'
+          import json
+          x=json.load(open("/tmp/matrix.json"))
+          assert len(x)==5
+          assert {r["label"] for r in x}=={"value05","value20","value40","trunk03","trunk10"}
+          print("hparam matrix OK")
+          PY
