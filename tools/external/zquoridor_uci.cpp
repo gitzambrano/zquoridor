@@ -286,7 +286,7 @@ int main(int argc, char** argv) {
                       << " nodes " << nodes
                       << " time " << elapsed
                       << " string budget=" << budgetMs
-                      << " nodecap=" << mcabStats.effectiveNodeBudget
+                      << " nodecap=" << mstats.effectiveNodeBudget
                       << " hard=" << timeBudget.maximumMs
                       << " cpuct=" << params.cPuct
                       << " scale=" << params.scoreScale
