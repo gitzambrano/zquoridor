@@ -279,6 +279,10 @@ int main(int argc, char** argv) {
                       << " lmrDiv=" << engine.getLmrDivisor()
                       << " pw=" << (params.progressiveWidening ? 1 : 0)
                       << " persistentEval=" << (params.persistentEvalCache ? 1 : 0)
+                      << " evalPHit=" << mstats.evalCachePolicyHits
+                      << " evalPMiss=" << mstats.evalCachePolicyMisses
+                      << " evalVHit=" << mstats.evalCacheValueHits
+                      << " evalVMiss=" << mstats.evalCacheValueMisses
                       << " clearTT=" << (params.clearTTPerMove ? 1 : 0)
                       << " reuse=" << (params.treeReuse ? 1 : 0) << "\n";
             std::cout << "bestmove " << moveToText(best) << "\n" << std::flush;
