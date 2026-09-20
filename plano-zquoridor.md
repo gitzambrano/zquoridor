@@ -9,14 +9,34 @@ arquivos de configuração indicados.
 
 ### Leitura rápida para um agente novo
 
-1. **Dados:** use o caminho completo do dataset indicado na tabela da rede.
-   Não misture `dataset.npz` de pastas diferentes pelo nome.
-2. **Treino:** leia `config.json`, `student.architecture.json` e
-   `train_report.json`. O `student_int8.bin` é o peso carregado pelo engine.
-3. **Teste:** use `200 ms` por lance, o mesmo livro, seed e cores. Consulte
-   `summary.json`; loss não é medida de força.
-4. **Estado:** `concluído` tem artefato e relatório; `em execução` tem processo
-   vivo e arquivos parciais; `TODO` ainda não produziu resultado.
+1. **Dados:** use o caminho completo do dataset indicado na tabela da rede e em `data/datasets.md`. Não misture `dataset.npz` de pastas diferentes pelo nome.
+2. **Treino:** leia `config.json`, `student.architecture.json` e `train_report.json`. O `student_int8.bin` é o peso carregado pelo engine.
+3. **Teste:** use `200 ms` por lance, o mesmo livro, seed e cores. Consulte `summary.json`; loss não é medida de força.
+4. **Estado:** `concluído` tem artefato e relatório; `em execução` tem processo vivo e arquivos parciais; `TODO` ainda não produziu resultado.
+
+---
+
+## Painel Executivo: Onde Estamos e Para Onde Vamos
+
+### Onde Estamos (Status Atual)
+- **Campeã Atual**: `race512-cr200k-champion` é a melhor rede já desenvolvida no projeto:
+  - **vs Titanium**: **63,0% (+92,5 Elo)** em match oficial de 600 jogos (378W / 0D / 222L) — recorde histórico absoluto.
+  - **vs `main`**: **81,25% (+254,7 Elo)** em triagem direta (32W / 1D / 7L).
+  - **vs Claustrophobia**: **Match de 600 jogos em andamento na GPU** (pontuação parcial em torno de 50,0%, superando a barreira histórica).
+  - **Suite Tático de Center Rush**: Avançou de 32,58% para 37,12% (+35 Elo) contra Claustrophobia, vencendo a família `pawn_jump` com 62,5% e atingindo 47,2% em `front_wall`.
+- **Especialização Center Rush**: 95,37% de sinal concentrado no regime central via Action-Q Policy Sharpening ($\pi'_a \propto N_a^\alpha \exp(\beta Q_a)$) com 50k posições gerais de âncora contra esquecimento.
+
+### Para Onde Vamos (Próximos Passos Prioritários)
+1. **Concluir o Match de 600 Jogos vs Claustrophobia**: Obter o relatório final `summary.json` e validar a superioridade estatística.
+2. **Promover a Campeã para o Baseline do `main`**:
+   - Migrar `student.bin` e `student_int8.bin` da campeã para `data/nnue/nnue_weights.bin` e `data/nnue/nnue_weights_int8.bin`.
+   - Ajustar os defaults canônicos no engine C++ (`src/nnue.hpp` com `ZQ_NNUE_RACE_FEATURES=1` e `ZQ_NNUE_HIDDEN=512`).
+   - Recompilar toda a suíte de benchmarks, testes e o bundle **WASM** (`gui_web/zquoridor.html`).
+   - Atualizar `readme.md` e documentação de release.
+3. **Meta Tática de Longo Prazo**: Bater a Claustrophobia em **todas** as 5 famílias táticas de Center Rush sem regredir a força geral contra Titanium e outros motores.
+4. **Próximo Ciclo de Fine-Tuning**: Minerar todas as derrotas do match de 600 jogos, aplicar relabeling MCTS profundo (512–1024 sims) com Action-Q Sharpening e executar novo ciclo modular.
+
+---
 
 ## 1. Big picture
 
@@ -30,8 +50,7 @@ histórico + selfplay -> contrato V3 -> replay/teaching -> datasets mistos
 -> promoção somente com intervalo favorável
 ```
 
-O estado de produção continua `data/nnue/nnue_weights_int8.bin`. Nenhum
-candidato foi promovido.
+O candidato a novo baseline oficial é `race512-cr200k-champion`, aguardando o encerramento do match de 600 jogos contra Claustrophobia para homologação formal.
 
 ## 2. Contrato de dados e benchmark
 
@@ -745,5 +764,37 @@ Desacoplar o orçamento de tempo da geração de dados do orçamento de jogo em 
 Mecanismos de busca no código C++ (`search.hpp`) para conter o esgotamento precoce de muros identificado no diagnóstico contra Claustrophobia:
 1. **Penalidade de Desperdício Tardio**: Desencorajar na ordenação ou podar extensões de muros quando o estoque próprio é baixo ($\le 2$ muros) e o lance não altera o delta líquido de BFS em favor do jogador.
 2. **Antecipação da Busca de Final (`endgameMoverWallThreshold = 1`)**: Ativar busca tática alfa-beta profunda de peões assim que o jogador a mover atinge 1 muro restante, preparando o terreno antes do esgotamento total.
+
+---
+
+## 14. Seção Stale / Depreciada (Abordagens Descartadas para Não Repetir)
+
+Para economizar tempo e compute de futuros agentes e desenvolvedores, os seguintes caminhos já foram testados empiricamente e comprovadamente **fracassaram ou produziram regressões**:
+
+1. **Destilação da Rede Direta da Claustrophobia sem Busca MCTS**:
+   - *O que foi tentado*: Extrair alvos de política e valor via forward-pass direto da rede neural da Claustrophobia (`historical2m-weakness-35k-claustro75`).
+   - *Por que falhou*: A rede pura da Claustrophobia sofre de forte indefinição posicional em simetrias e gera ciclos de repetição infinitos (**153 estados repetidos em 40 jogos**). A força da Claustrophobia vem do seu MCTS com contagem de visitas, não de sua prior network crua.
+   - *Regra*: **O teaching da Claustrophobia deve obrigatoriamente usar sua busca MCTS (`zq_search_bridge.exe`)**.
+
+2. **Teaching de Busca com Amostragens Reduzidas (ex: 2.000 posições)**:
+   - *O que foi tentado*: Gerar alvos de busca profunda apenas para 2.000 posições de alta divergência (`top2000.jsonl` / `search-priority-gen1-conservative`).
+   - *Por que falhou*: 2.000 posições representam menos de 0,1% de um dataset de 2M. O modelo satura rapidamente em ~48,8%–49,0% contra Claustrophobia por sub-representação estatística.
+   - *Regra*: Datasets de especialização tática exigem no mínimo **100k a 250k amostras** com forte concentração de peso ($\ge 5,0\times$).
+
+3. **Parâmetros de Busca MCTS com Exploração Agressiva ou Poda Precoce**:
+   - *O que foi tentado*: Testar `cPuct = 1.40`, `cPuct = 1.10` e `progressiveWidening` (restrição a top-16 priors) em colisões de Center Rush.
+   - *Por que falhou*: `cPuct = 1.40` degradou o controle de corredores verticais estreitos; `progressiveWidening` eliminou lances táticos de muros vitais antes da exploração, caindo para 27%–33% de score.
+   - *Regra*: Manter `cPuct = 0.80` e confiar na política afinada com Action-Q Sharpening para guiar a busca.
+
+4. **Geração de Rollouts Sintéticos sem Limite Amplo de Plies**:
+   - *O que foi tentado*: Rodar `generate_rollouts.cpp` com `--max-plies 60`.
+   - *Por que falhou*: Jogos que terminam em repetição de 3 dobras ou corte por limite de plies descartam seus passos para evitar rotular lances inconclusivos.
+   - *Regra*: Utilizar sempre `--max-plies 120` ou superior.
+
+5. **Amostragem Aleatória sem Agrupamento Estrito de Validação**:
+   - *O que foi tentado*: Separar treino e validação com `np.random.rand() < 0.1` aleatório por linha.
+   - *Por que falhou*: Estados derivados da mesma abertura ou corrida de peões vazam entre treino e teste, mascarando sobreajuste na validação.
+   - *Regra*: Particionar rigorosamente por `group_id` baseado na combinação única de peões ou no índice da abertura.
+
 
 
