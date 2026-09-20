@@ -1,4 +1,4 @@
-name: CR200k exact smart-pruning confirmation 400+400
+name: CR200k exact smart-pruning mixed confirmation 400+400
 
 on:
   pull_request:
@@ -16,7 +16,7 @@ env:
   OMP_NUM_THREADS: "1"
   MKL_NUM_THREADS: "1"
   BASE_SHA: "ea62cca1bf8dbdf8fed866c4606c4d56752a8a8e"
-  OPENING_SEED: "2026092402"
+  OPENING_SEED: "2026092403"
   SMART_SIMS: "10000"
 
 jobs:
@@ -26,6 +26,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
+          ref: ${{ github.event.pull_request.head.sha }}
           fetch-depth: 0
       - name: Verify frozen baseline and NNUE identity
         shell: bash
@@ -121,6 +122,8 @@ jobs:
     timeout-minutes: 150
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
       - uses: actions/download-artifact@v4
         with:
           name: smart-prune-binaries-${{ github.run_id }}
@@ -145,7 +148,10 @@ jobs:
           cand=[str((ROOT/"gate-bin/candidate").resolve()),"--nnue",W,
                 "--simulations",os.environ["SMART_SIMS"],"--smart-pruning"]
           base=[str((ROOT/"gate-bin/main-base").resolve()),"--nnue",W]
-          openings=run_benchmark._read_openings(ROOT/"tools/external/openings_confirmation_v1.jsonl",total_pairs,seed)[shard*per:(shard+1)*per]
+          general=[op for _,op in run_benchmark._read_openings(ROOT/"tools/external/openings_confirmation_v1.jsonl",100,seed)]
+          center=[op for _,op in run_benchmark._read_openings(ROOT/"tools/external/openings_center_rush_v1.jsonl",100,seed+1)]
+          mixed=list(enumerate(general+center))
+          openings=mixed[shard*per:(shard+1)*per]
           rows=[]
           for oi,op in openings:
               for side in (0,1):
@@ -178,6 +184,8 @@ jobs:
     timeout-minutes: 180
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
@@ -218,7 +226,10 @@ jobs:
           cand=[str((ROOT/"gate-bin/candidate").resolve()),"--nnue",W,
                 "--simulations",os.environ["SMART_SIMS"],"--smart-pruning"]
           info=ensure_bot("claustrophobia",root=ROOT,build=False)
-          openings=run_benchmark._read_openings(ROOT/"tools/external/openings_confirmation_v1.jsonl",total_pairs,seed)[shard*per:(shard+1)*per]
+          general=[op for _,op in run_benchmark._read_openings(ROOT/"tools/external/openings_confirmation_v1.jsonl",100,seed)]
+          center=[op for _,op in run_benchmark._read_openings(ROOT/"tools/external/openings_center_rush_v1.jsonl",100,seed+1)]
+          mixed=list(enumerate(general+center))
+          openings=mixed[shard*per:(shard+1)*per]
           rows=[]
           for oi,op in openings:
               for side in (0,1):
@@ -249,6 +260,8 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
       - uses: actions/download-artifact@v4
         with:
           pattern: smart-prune-h2h-*-${{ github.run_id }}
