@@ -135,7 +135,7 @@ jobs:
             tee /tmp/time-uci.log
           grep -q '^bestmove ' /tmp/time-uci.log
           grep -q 'string budget=' /tmp/time-uci.log
-          ./bin/arena.exe --games 2 --random-plies 4 --report-games 0 \
+          ./bin/arena.exe --games 4 --random-plies 4 --report-games 0 \
             --tc-base-ms 1000 --tc-inc-ms 100 --move-overhead-ms 5 \
             --e1-nnue data/nnue/nnue_weights_int8.bin \
             --e2-nnue data/nnue/nnue_weights_int8.bin
