@@ -916,10 +916,9 @@ private:
     // Move a subárvore enraizada em `rootIdx` para os índices [0, k) do
     // pool, remapeando os índices de `child`, e descarta todo o resto
     // (Seção 8.1: compactação obrigatória para não vazar memória do que
-    // ficou fora do caminho jogado). Aborta (devolve false -> árvore nova)
-    // se a subárvore herdada sozinha já passar do orçamento de nós: isso
-    // limita o pool a no máximo ~2x nodeBudget mesmo após muitos lances
-    // seguidos com reuso (Seção 12, risco de memória).
+    // ficou fora do caminho jogado). Se a subárvore herdada for maior que
+    // o orçamento, preserva até `budget` nós priorizando os filhos mais
+    // visitados, em vez de descartar toda a árvore reutilizável.
     bool compactTo(int rootIdx, int budget) {
         if (rootIdx < 0 || rootIdx >= (int)pool.size()) return false;
         budget = std::max(1, budget);
