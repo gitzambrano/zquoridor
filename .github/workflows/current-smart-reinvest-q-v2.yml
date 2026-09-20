@@ -1,0 +1,244 @@
+name: Current-main smart reinvest-Q confirmation 400+400
+
+on:
+  push:
+    branches:
+      - search/current-smart-reinvest-q-v2
+
+permissions:
+  contents: read
+
+env:
+  PYTHONUNBUFFERED: "1"
+  OMP_NUM_THREADS: "1"
+  MKL_NUM_THREADS: "1"
+  BASE_SHA: "2a5cbf40a6eb8af218b6a1eef0c84111cb49c2d8"
+  OPENING_SEED: "2026092411"
+
+jobs:
+  preflight:
+    runs-on: ubuntu-latest
+    timeout-minutes: 50
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Verify frozen baseline and NNUE identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          git worktree add --detach /tmp/zq-main "$BASE_SHA"
+          cmp data/nnue/nnue_weights_int8.bin /tmp/zq-main/data/nnue/nnue_weights_int8.bin
+          sha256sum data/nnue/nnue_weights_int8.bin /tmp/zq-main/data/nnue/nnue_weights_int8.bin
+      - name: Native correctness gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash build/build_tests.sh
+          ./bin/test_rules_sanity
+          ./bin/test_mcab_core
+          ./bin/test_mcab_phase9
+          ./bin/test_endgame_race_fuzz
+          ./bin/test_policy_ab
+      - name: Build frozen main and smart reinvest-Q candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p gate-bin
+          g++ -O3 -DNDEBUG -std=c++17 -pthread             -I/tmp/zq-main/src /tmp/zq-main/tools/external/zquoridor_uci.cpp             -o gate-bin/main-base
+          g++ -O3 -DNDEBUG -std=c++17 -pthread             -Isrc tools/external/zquoridor_uci.cpp             -o gate-bin/candidate
+          ./gate-bin/candidate --nnue data/nnue/nnue_weights_int8.bin --simulations 7000 --smart-pruning --smart-reinvest-q --smart-refine-topk 3 <<'EOF' >/tmp/smoke.txt
+          uci
+          isready
+          position startpos
+          go movetime 20
+          quit
+          EOF
+          grep -q '^bestmove ' /tmp/smoke.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: smart-reinvest-q-binaries-${{ github.run_id }}
+          retention-days: 7
+          path: gate-bin/*
+
+  h2h:
+    needs: preflight
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0,1,2,3]
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Build shard-local native binaries
+        shell: bash
+        run: |
+          set -euo pipefail
+          git worktree add --detach /tmp/zq-main "$BASE_SHA"
+          mkdir -p gate-bin
+          g++ -O3 -DNDEBUG -std=c++17 -march=native -pthread -I/tmp/zq-main/src /tmp/zq-main/tools/external/zquoridor_uci.cpp -o gate-bin/main-base
+          g++ -O3 -DNDEBUG -std=c++17 -march=native -pthread -Isrc tools/external/zquoridor_uci.cpp -o gate-bin/candidate
+      - name: Play 100 H2H games
+        env:
+          SHARD: ${{ matrix.shard }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          chmod +x gate-bin/main-base gate-bin/candidate
+          mkdir -p benchmark_results/smart-reinvest-q/h2h
+          python - <<'PY'
+          import json,os,sys
+          from pathlib import Path
+          ROOT=Path(".").resolve()
+          sys.path.insert(0,str(ROOT))
+          from tools import run_benchmark
+          from tools.external import local_arena
+          shard=int(os.environ["SHARD"]); seed=int(os.environ["OPENING_SEED"])
+          total_pairs=200; per=50
+          W=str((ROOT/"data/nnue/nnue_weights_int8.bin").resolve())
+          cand=[str((ROOT/"gate-bin/candidate").resolve()),"--nnue",W,"--simulations","7000","--smart-pruning","--smart-reinvest-q","--smart-refine-topk","3"]
+          base=[str((ROOT/"gate-bin/main-base").resolve()),"--nnue",W]
+          openings=run_benchmark._read_openings(ROOT/"tools/external/openings_confirmation_v1.jsonl",total_pairs,seed)[shard*per:(shard+1)*per]
+          rows=[]
+          for oi,op in openings:
+              for side in (0,1):
+                  row=local_arena.play_game(
+                    opponent="baseline",opening_index=int(oi),opening=op,zq_player=side,
+                    zq_factory=lambda cmd=cand: local_arena.UciPlayer(cmd,"smart-reinvest-q"),
+                    opponent_factory=lambda cmd=base: local_arena.UciPlayer(cmd,"main"),
+                    zq_budget=200,opponent_budget=200,move_timeout_s=30.0,max_plies=240,
+                    run_id=f"smart-reinvest-q-h2h-{shard}")
+                  rows.append(row)
+          summary=local_arena.summarize_pairs(rows,bootstrap=20000,seed=seed+shard)
+          p=ROOT/"benchmark_results/smart-reinvest-q/h2h"/f"shard-{shard}.json"
+          p.write_text(json.dumps({"games":rows,"summary":summary},indent=2)+"\n")
+          print("SHARD_SUMMARY",json.dumps(summary,sort_keys=True))
+          if summary["failed_games"]: raise SystemExit(summary["failed_games"])
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: smart-reinvest-q-h2h-${{ matrix.shard }}-${{ github.run_id }}
+          path: benchmark_results/smart-reinvest-q/h2h/shard-${{ matrix.shard }}.json
+
+  claustro:
+    needs: preflight
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0,1,2,3]
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Build shard-local native candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p gate-bin
+          g++ -O3 -DNDEBUG -std=c++17 -march=native -pthread -Isrc tools/external/zquoridor_uci.cpp -o gate-bin/candidate
+      - name: Prepare runtime and pinned Claustrophobia
+        shell: bash
+        run: |
+          set -euo pipefail
+          chmod +x gate-bin/candidate
+          python -m pip install --disable-pip-version-check numpy
+          python -m pip install --disable-pip-version-check torch --index-url https://download.pytorch.org/whl/cpu
+          python - <<'PY'
+          from pathlib import Path
+          from tools.external.bot_setup import ensure_bot,CLAUSTROPHOBIA_SHA,CLAUSTROPHOBIA_CHECKPOINT_SHA256
+          print(ensure_bot("claustrophobia",root=Path("."),build=True))
+          print(CLAUSTROPHOBIA_SHA,CLAUSTROPHOBIA_CHECKPOINT_SHA256)
+          PY
+      - name: Play 100 games vs Claustrophobia
+        env:
+          SHARD: ${{ matrix.shard }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p benchmark_results/smart-reinvest-q/claustro
+          python - <<'PY'
+          import json,os,sys
+          from pathlib import Path
+          ROOT=Path(".").resolve(); sys.path.insert(0,str(ROOT))
+          from tools import run_benchmark
+          from tools.external import local_arena
+          from tools.external.bot_setup import ensure_bot
+          shard=int(os.environ["SHARD"]); seed=int(os.environ["OPENING_SEED"])
+          total_pairs=200; per=50
+          W=str((ROOT/"data/nnue/nnue_weights_int8.bin").resolve())
+          cand=[str((ROOT/"gate-bin/candidate").resolve()),"--nnue",W,"--simulations","7000","--smart-pruning","--smart-reinvest-q","--smart-refine-topk","3"]
+          info=ensure_bot("claustrophobia",root=ROOT,build=False)
+          openings=run_benchmark._read_openings(ROOT/"tools/external/openings_confirmation_v1.jsonl",total_pairs,seed)[shard*per:(shard+1)*per]
+          rows=[]
+          for oi,op in openings:
+              for side in (0,1):
+                  row=local_arena.play_game(
+                    opponent="claustrophobia",opening_index=int(oi),opening=op,zq_player=side,
+                    zq_factory=lambda cmd=cand: local_arena.UciPlayer(cmd,"smart-reinvest-q"),
+                    opponent_factory=lambda: local_arena.ClaustrophobiaPlayer(
+                      Path(info["benchmark_bridge"]),Path(info["checkpoint"]),
+                      move_time_ms=200,max_sims=4096,cpuct=1.5,device="cpu"),
+                    zq_budget=200,opponent_budget=200,move_timeout_s=30.0,max_plies=240,
+                    run_id=f"smart-reinvest-q-claustro-{shard}")
+                  rows.append(row)
+          summary=local_arena.summarize_pairs(rows,bootstrap=20000,seed=seed+100+shard)
+          p=ROOT/"benchmark_results/smart-reinvest-q/claustro"/f"shard-{shard}.json"
+          p.write_text(json.dumps({"games":rows,"summary":summary},indent=2)+"\n")
+          print("SHARD_SUMMARY",json.dumps(summary,sort_keys=True))
+          if summary["failed_games"]: raise SystemExit(summary["failed_games"])
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: smart-reinvest-q-claustro-${{ matrix.shard }}-${{ github.run_id }}
+          path: benchmark_results/smart-reinvest-q/claustro/shard-${{ matrix.shard }}.json
+
+  aggregate:
+    needs: [h2h, claustro]
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: smart-reinvest-q-h2h-*-${{ github.run_id }}
+          path: benchmark_results/smart-reinvest-q/all-h2h
+          merge-multiple: true
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: smart-reinvest-q-claustro-*-${{ github.run_id }}
+          path: benchmark_results/smart-reinvest-q/all-claustro
+          merge-multiple: true
+      - name: Aggregate both 400-game gates
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json,sys
+          from pathlib import Path
+          ROOT=Path(".").resolve(); sys.path.insert(0,str(ROOT))
+          from tools.external import local_arena
+          out={}
+          for key,folder in (("vs_baseline","all-h2h"),("vs_claustrophobia","all-claustro")):
+              rows=[]
+              for p in sorted((ROOT/"benchmark_results/smart-reinvest-q"/folder).glob("shard-*.json")):
+                  rows += json.loads(p.read_text())["games"]
+              assert len(rows)==400,(key,len(rows))
+              out[key]=local_arena.summarize_pairs(rows,bootstrap=100000,seed=int(__import__("os").environ["OPENING_SEED"]))
+          print("FINAL_RESULT",json.dumps(out,sort_keys=True))
+          p=ROOT/"benchmark_results/smart-reinvest-q/final.json"
+          p.write_text(json.dumps(out,indent=2)+"\n")
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: smart-reinvest-q-final-${{ github.run_id }}
+          path: benchmark_results/smart-reinvest-q/final.json
