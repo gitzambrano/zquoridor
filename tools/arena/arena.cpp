@@ -563,6 +563,7 @@ int playArenaGame(int engine1PlayerIdx, int timeMs, int randomPlies, std::mt1993
     std::vector<MoveRecord> gameRecords;
 
     int winnerPlayer = -1;
+    bool clockForfeit = false;
     int maxPlies = 300;
     qr_e1::RepetitionTable hist1;
     qr_e2::RepetitionTable hist2;
@@ -583,6 +584,7 @@ int playArenaGame(int engine1PlayerIdx, int timeMs, int randomPlies, std::mt1993
             moveBudgetMs = timeBudget.optimumMs;
         }
         long long elapsedMoveMs = 0;
+        int chosenSearchScore = 0;
 
         if (currentTurn == engine1PlayerIdx) {
             qr_e1::SearchStats st;
@@ -600,7 +602,7 @@ int playArenaGame(int engine1PlayerIdx, int timeMs, int randomPlies, std::mt1993
             eng1NodesOut += mcabRunner1.activeForThisEngine()
                                 ? (uint64_t)mcabStats.nodesExpanded
                                 : st.nodes;
-            if (samplesOut) gameRecords.push_back({s1, mChosen, currentTurn, st.score});
+            chosenSearchScore = st.score;
         } else {
             qr_e2::SearchStats st;
             mcab::McabStats mcabStats;
@@ -614,17 +616,20 @@ int playArenaGame(int engine1PlayerIdx, int timeMs, int randomPlies, std::mt1993
                                 ? (uint64_t)mcabStats.nodesExpanded
                                 : st.nodes;
             mChosen = qr_e1::Move{m2.isWall, m2.a, m2.b, m2.c};
-            if (samplesOut) gameRecords.push_back({s1, mChosen, currentTurn, st.score});
+            chosenSearchScore = st.score;
         }
 
         if (tcBaseMs > 0) {
             clocksMs[currentTurn] -= elapsedMoveMs;
             if (clocksMs[currentTurn] <= 0) {
                 winnerPlayer = 1 - currentTurn;
+                clockForfeit = true;
                 break;
             }
             clocksMs[currentTurn] += tcIncMs;
         }
+
+        if (samplesOut) gameRecords.push_back({s1, mChosen, currentTurn, chosenSearchScore});
 
         // Compat com refs antigos: push(hash, irreversible) so existe no
         // RepetitionTable novo (perf/speed-elo-100); refs anteriores so
@@ -638,7 +643,7 @@ int playArenaGame(int engine1PlayerIdx, int timeMs, int randomPlies, std::mt1993
 
     if (winnerPlayer == -1 && qr_e1::winner(s1) != -1) winnerPlayer = qr_e1::winner(s1);
 
-    if (samplesOut && winnerPlayer != -1) {
+    if (samplesOut && winnerPlayer != -1 && !clockForfeit) {
         for (const auto& rec : gameRecords) {
             int mover = rec.moverTurn, opp = 1 - rec.moverTurn;
             // Mesmo espelho de perspectiva de selfplay.hpp (nnue.hpp,
