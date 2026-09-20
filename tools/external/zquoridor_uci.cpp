@@ -282,7 +282,7 @@ int main(int argc, char** argv) {
                       << " lmrDiv=" << engine.getLmrDivisor()
                       << " pw=" << (params.progressiveWidening ? 1 : 0)
                       << " clearTT=" << (params.clearTTPerMove ? 1 : 0)
-                      << " reuse=" << (params.treeReuse ? 1 : 0) << "\n";
+                      << " reuse=" << (params.treeReuse ? 1 : 0)\n                      << " sims=" << mstats.simulations\n                      << " smartPruned=" << (mstats.smartPruned ? 1 : 0)\n                      << " smartSaved=" << mstats.smartPruneSaved << "\n";
             std::cout << "bestmove " << moveToText(best) << "\n" << std::flush;
         } else if (cmd == "quit") {
             break;
