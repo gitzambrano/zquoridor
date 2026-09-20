@@ -303,6 +303,19 @@ struct McabParams {
     int endgameLeafDepth = 2;
 };
 
+inline int effectiveNodeBudget(const McabParams& params, int timeBudgetMs) {
+    int budget = std::max(1, params.nodeBudget);
+    if (!params.autoNodeBudget || timeBudgetMs <= 0 || params.nodeBudget <= 1)
+        return budget;
+
+    const long long scaled =
+        (long long)timeBudgetMs * (long long)std::max(1, params.autoNodeBudgetPerMs);
+    const long long ceiling =
+        std::max<long long>(params.nodeBudget, params.autoNodeBudgetCeiling);
+    return (int)std::min<long long>(
+        std::max<long long>(params.nodeBudget, scaled), ceiling);
+}
+
 // Estatísticas agregadas de UMA chamada a chooseMoveMCAB (não confundir
 // com SearchStatsT, que é por-chamada-de-searchLeaf/negamax).
 struct McabStats {
@@ -664,15 +677,7 @@ public:
             mcabAccStack.resize(params.maxTreeDepth + 2);
         }
 
-        int budget = std::max(1, params.nodeBudget);
-        if (params.autoNodeBudget && timeBudgetMs > 0 && params.nodeBudget > 1) {
-            const long long scaled =
-                (long long)timeBudgetMs * (long long)std::max(1, params.autoNodeBudgetPerMs);
-            const long long ceiling =
-                std::max<long long>(params.nodeBudget, params.autoNodeBudgetCeiling);
-            budget = (int)std::min<long long>(
-                std::max<long long>(params.nodeBudget, scaled), ceiling);
-        }
+        int budget = effectiveNodeBudget(params, timeBudgetMs);
         mstats.effectiveNodeBudget = budget;
         bool reused = false;
         // Seção 8.2: não reusar quando clearTTPerMove está ligado -- a
