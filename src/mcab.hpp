@@ -233,6 +233,7 @@ struct McabParams {
     RootSelectMode rootSelectMode = RootSelectMode::MaxVisits;
     BackupMode backupMode = BackupMode::AvgBlend;
     bool progressiveWidening = false;   // production default: off until an Elo gate
+    bool lazyWallGeneration = false;   // defer exact wall path legality until first PUCT selection
     int wideningInitialMoves = 16;      // top policy moves available at N=0
     double wideningCoefficient = 2.0;   // added coefficient in c*N^alpha
     double wideningExponent = 0.5;      // exponent alpha in c*N^alpha
@@ -313,6 +314,9 @@ struct McabStats {
     long long evalCacheValueMisses = 0;
     long long evalCachePolicyEvictions = 0;
     long long evalCacheValueEvictions = 0;
+    long long lazyWallChecks = 0;
+    long long lazyWallAccepted = 0;
+    long long lazyWallRejected = 0;
                                      // (ver evaluateLeaf). Muitas = leafDepth alto demais para o
                                      // controle de tempo em uso; a árvore fica cega nessas folhas.
 };
@@ -456,6 +460,12 @@ inline void mcabRankRootMoves(Eng&, const StateT&, int, int, StatsT&,
 
 template <typename MoveT, typename StateT, typename MoveListT>
 inline auto mcabEnumerateCandidates(const StateT& s, int side, MoveListT& out, int)
+    -> decltype(pseudoLegalMoves(s, side, out), void()) {
+    pseudoLegalMoves(s, side, out);
+}
+
+template <typename MoveT, typename StateT, typename MoveListT>
+inline auto mcabEnumerateCandidates(const StateT& s, int side, MoveListT& out, long)
     -> decltype(pawnStepMoves(s, side, out),
                 out.push_back(MoveT::wall(0, 0, 0)),
                 (bool)s.wallsH,
@@ -493,6 +503,8 @@ struct MCABNode {
     std::vector<float> N;         // visitas por aresta
     std::vector<float> W;         // soma (AvgBlend) or backed value (MinimaxHard)
     std::vector<int32_t> child;   // índice no pool, -1 = não expandido
+    // Lazy-wall mode only: 0=unknown wall, 1=known legal/pawn, 2=known illegal.
+    std::vector<uint8_t> edgeLegal;
     int activeMoves = 0;          // progressive-widening prefix currently unpruned
     // Progressive-widening-only storage. Production has PW disabled, so an
     // inline MoveList here made every node pay for a second 256-move buffer
@@ -544,6 +556,7 @@ public:
             bytes += n.N.capacity() * sizeof(float);
             bytes += n.W.capacity() * sizeof(float);
             bytes += n.child.capacity() * sizeof(int32_t);
+            bytes += n.edgeLegal.capacity() * sizeof(uint8_t);
             bytes += n.candidateP.capacity() * sizeof(float);
             if (n.candidateMoves) bytes += sizeof(MoveListT);
         }
@@ -1161,8 +1174,19 @@ private:
         NodeT& node = pool[idx];
 
         if (!params.progressiveWidening) {
-            node.moves = legalMoves(node.state);
+            if (params.lazyWallGeneration) {
+                node.moves = MoveListT{};
+                mcabEnumerateCandidates<MoveT>(node.state, node.side, node.moves, 0);
+            } else {
+                node.moves = legalMoves(node.state);
+            }
             size_t nm = node.moves.size();
+            node.edgeLegal.clear();
+            if (params.lazyWallGeneration) {
+                node.edgeLegal.assign(nm, 1);
+                for (size_t i = 0; i < nm; i++)
+                    if (mcabIsWall(node.moves[i], 0)) node.edgeLegal[i] = 0;
+            }
             node.P.assign(nm, 0.f);
             node.N.assign(nm, 0.f);
             node.W.assign(nm, 0.f);
@@ -1237,6 +1261,7 @@ private:
             node.N.clear();
             node.W.clear();
             node.child.clear();
+            node.edgeLegal.clear();
             node.activeCandidateIndices.clear();
             node.nextCandidate = 0;
             node.activeMoves = 0;
@@ -1287,6 +1312,7 @@ private:
         int best = -1;
         double bestScore = -std::numeric_limits<double>::infinity();
         for (size_t i = 0; i < nm; i++) {
+            if (!node.edgeLegal.empty() && node.edgeLegal[i] == 2) continue;
             double q = node.N[i] > 0.0 ? edgeQ(node, i) : fpu;
             double u = params.cPuct * (double)node.P[i] * sqrtN / (1.0 + (double)node.N[i]);
             double score = q + u;
@@ -1360,6 +1386,28 @@ private:
                 // neutro.
                 backup(path, 0.5, mstats);
                 return;
+            }
+
+            if (params.lazyWallGeneration && !node.edgeLegal.empty() && node.edgeLegal[e] == 0) {
+                ++mstats.lazyWallChecks;
+                bool legal = mcabSingleWallLegal(node.state, node.side, node.moves[e], 0);
+                if (!legal) {
+                    node.edgeLegal[e] = 2;
+                    node.P[e] = 0.f;
+                    ++mstats.lazyWallRejected;
+                    float liveSum = 0.f;
+                    for (size_t i = 0; i < node.P.size(); i++)
+                        if (node.edgeLegal[i] != 2) liveSum += node.P[i];
+                    if (liveSum > 0.f) {
+                        for (size_t i = 0; i < node.P.size(); i++)
+                            if (node.edgeLegal[i] != 2) node.P[i] /= liveSum;
+                    }
+                    // Re-select in the same node. An illegal pseudo-edge does
+                    // not consume a simulation or alter N/W.
+                    continue;
+                }
+                node.edgeLegal[e] = 1;
+                ++mstats.lazyWallAccepted;
             }
             path.push_back({curIdx, e});
 
@@ -1512,8 +1560,10 @@ private:
 
         auto qOf = [&](size_t i) { return r.N[i] > 0.f ? edgeQ(r, i) : -1.0; };
 
-        size_t best = 0;
-        for (size_t i = 1; i < nm; i++) {
+        size_t best = nm;
+        for (size_t i = 0; i < nm; i++) {
+            if (!r.edgeLegal.empty() && r.edgeLegal[i] == 2) continue;
+            if (best == nm) { best = i; continue; }
             bool better;
             switch (params.rootSelectMode) {
                 case RootSelectMode::MaxQ:
@@ -1529,6 +1579,7 @@ private:
             }
             if (better) best = i;
         }
+        if (best == nm) return MoveT{};
         return r.moves[best];
     }
 };
