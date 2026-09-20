@@ -68,7 +68,7 @@ jobs:
           send("isready")
           while p.stdout.readline().strip()!="readyok": pass
           infos=[]
-          for moves in ([],["e2e3"],["e2e3","e8e7"]):
+          for moves in ([],["e2"],["e2","e8"]):
               send("position startpos"+((" moves "+" ".join(moves)) if moves else ""))
               send("go movetime 0")
               while True:
@@ -121,7 +121,7 @@ jobs:
           cand=[str((ROOT/"gate-bin/candidate").resolve()),"--nnue",W,"--persistent-eval-cache"]
           base=[str((ROOT/"gate-bin/main-base").resolve()),"--nnue",W]
           general=[op for _,op in run_benchmark._read_openings(ROOT/"tools/external/openings_confirmation_v1.jsonl",100,seed)]
-          center=[op for _,op in run_benchmark._read_openings(ROOT/"tools/external/openings_center_rush_v1.jsonl",100,seed+1)]
+          center=[op for _,op in run_benchmark._read_openings(ROOT/"tools/external/openings_center_rush_gate100_v1.jsonl",100,seed+1)]
           mixed=list(enumerate(general+center))
           openings=mixed[shard*per:(shard+1)*per]
           rows=[]
@@ -197,7 +197,7 @@ jobs:
           cand=[str((ROOT/"gate-bin/candidate").resolve()),"--nnue",W,"--persistent-eval-cache"]
           info=ensure_bot("claustrophobia",root=ROOT,build=False)
           general=[op for _,op in run_benchmark._read_openings(ROOT/"tools/external/openings_confirmation_v1.jsonl",100,seed)]
-          center=[op for _,op in run_benchmark._read_openings(ROOT/"tools/external/openings_center_rush_v1.jsonl",100,seed+1)]
+          center=[op for _,op in run_benchmark._read_openings(ROOT/"tools/external/openings_center_rush_gate100_v1.jsonl",100,seed+1)]
           mixed=list(enumerate(general+center))
           openings=mixed[shard*per:(shard+1)*per]
           rows=[]
