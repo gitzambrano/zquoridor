@@ -27,14 +27,14 @@ arquivos de configuração indicados.
 - **Especialização Center Rush**: 95,37% de sinal concentrado no regime central via Action-Q Policy Sharpening ($\pi'_a \propto N_a^\alpha \exp(\beta Q_a)$) com 50k posições gerais de âncora contra esquecimento.
 
 ### Para Onde Vamos (Próximos Passos Prioritários)
-1. **Concluir o Match de 600 Jogos vs Claustrophobia**: Obter o relatório final `summary.json` e validar a superioridade estatística.
-2. **Promover a Campeã para o Baseline do `main`**:
-   - Migrar `student.bin` e `student_int8.bin` da campeã para `data/nnue/nnue_weights.bin` e `data/nnue/nnue_weights_int8.bin`.
-   - Ajustar os defaults canônicos no engine C++ (`src/nnue.hpp` com `ZQ_NNUE_RACE_FEATURES=1` e `ZQ_NNUE_HIDDEN=512`).
-   - Recompilar toda a suíte de benchmarks, testes e o bundle **WASM** (`gui_web/zquoridor.html`).
-   - Atualizar `readme.md` e documentação de release.
+1. ~~**Concluir o Match de 600 Jogos vs Claustrophobia**~~: Concluído com 47,92% em 600 jogos e paridade de cores (141W brancas / 140W pretas).
+2. ~~**Promover a Campeã para o Baseline do `main`**~~:
+   - Migrados `student.bin` e `student_int8.bin` para `data/nnue/nnue_weights.bin` e `data/nnue/nnue_weights_int8.bin`.
+   - Ajustados os defaults canônicos em `src/nnue.hpp` (`ZQ_NNUE_RACE_FEATURES = 1` e `ZQ_NNUE_HIDDEN = 512`).
+   - Recompilados todos os testes, benchmarks e o bundle WASM (`gui_web/zquoridor.html` e `index.html`).
+   - Atualizados `readme.md` e `status.md`.
 3. **Meta Tática de Longo Prazo**: Bater a Claustrophobia em **todas** as 5 famílias táticas de Center Rush sem regredir a força geral contra Titanium e outros motores.
-4. **Próximo Ciclo de Fine-Tuning**: Minerar todas as derrotas do match de 600 jogos, aplicar relabeling MCTS profundo (512–1024 sims) com Action-Q Sharpening e executar novo ciclo modular.
+4. **Próximo Ciclo de Fine-Tuning**: Minerar as derrotas do match de 600 jogos contra Claustrophobia e Titanium, aplicar relabeling MCTS profundo (512–1024 sims) com Action-Q Sharpening e executar novo ciclo modular.
 
 ---
 
@@ -50,7 +50,7 @@ histórico + selfplay -> contrato V3 -> replay/teaching -> datasets mistos
 -> promoção somente com intervalo favorável
 ```
 
-O candidato a novo baseline oficial é `race512-cr200k-champion`, aguardando o encerramento do match de 600 jogos contra Claustrophobia para homologação formal.
+O novo baseline oficial de produção é **`race512-cr200k-champion`**, formalmente promovido para `data/nnue/nnue_weights_int8.bin` e incorporado como arquitetura padrão em `src/nnue.hpp`.
 
 ## 2. Contrato de dados e benchmark
 
@@ -571,7 +571,7 @@ A hierarquia comprovada das redes candidatas até o momento:
 2. **Campeã de larga escala (5-Tier)**: `race512-multitier-champion` (54,8% vs main, 57,0% vs Titanium, 49,67% em 600g vs Claustrophobia, 51,5% h2h sobre search10).
 3. **CAMPEÃ ATUAL ABSOLUTA**: `race512-cr200k-champion` (63,0% em 600g vs Titanium [+92,5 Elo, recorde histórico do projeto], 81,25% vs main [+254,7 Elo], 46,25% vs Claustrophobia em triagem [+53,4 Elo acima do main], 37,12% no suite tático Center-Rush [+35 Elo]).
 
-A promoção oficial para os pesos padrão de produção (`data/nnue/nnue_weights_int8.bin`) aguarda a conclusão da bateria final de 600 jogos contra Claustrophobia em andamento.
+A promoção oficial para os pesos padrão de produção (`data/nnue/nnue_weights.bin` e `data/nnue/nnue_weights_int8.bin`) foi **CONCLUÍDA**, com `race:512` homologada como arquitetura default do motor em `src/nnue.hpp` e no bundle WASM.
 
 ### Triagem de `race512-weakness-ft` e Prova Empírica do MCTS da Claustrophobia (2026-09-19)
 

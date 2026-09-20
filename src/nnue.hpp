@@ -70,10 +70,10 @@ inline int wallsLeftBucket(int n) {
 // compute_fingerprint()/try_load_train_state() já detecta e recusa isso).
 // É preciso retreinar do zero com training/train_nnue.py atualizado.
 #ifndef ZQ_NNUE_RACE_FEATURES
-#define ZQ_NNUE_RACE_FEATURES 0
+#define ZQ_NNUE_RACE_FEATURES 1
 #endif
 #ifndef ZQ_NNUE_HIDDEN
-#define ZQ_NNUE_HIDDEN 256
+#define ZQ_NNUE_HIDDEN 512
 #endif
 constexpr int BASE_FEATURES = N * N + N * N + WS * WS * 2 + 2 * DIST_BUCKETS + 2 * WALLS_LEFT_BUCKETS;
 constexpr int NUM_FEATURES = BASE_FEATURES + (ZQ_NNUE_RACE_FEATURES ? 102 : 0);

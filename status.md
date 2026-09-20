@@ -25,13 +25,13 @@ relearn by experiment.
 
 ## 2. Future Plans (priority order)
 
-1. **Dedicated Policy Head Fine-Tuning Campaign (Active)**:
-   Dedicated policy head training (`--train-scope policy`) on the massive 200k+
-   weakness and center-rush rollout corpus with action-Q policy sharpening
-   ($\pi'_a \propto N_a^\alpha \exp(\beta Q_a)$). Freezes the accumulator trunk
-   and value head completely to prevent catastrophic forgetting while improving
-   tactical move ordering in complex opening regimes (flank sidesteps, rear walls,
-   and vertical channels). Follow with holistic value-head calibration.
+1. **Center-Rush Tactical Dominance Fine-Tuning Cycle (Active)**:
+   Target full superiority over Claustrophobia in all 5 Center-Rush opening
+   families (`front_wall`, `pawn_jump`, `vertical_channel`, `reed_rear_wall`,
+   `sidestep_flank`) while preserving overall strength (>60% vs Titanium,
+   >80% vs previous baseline). Mine losses from the completed 600-game match
+   vs Claustrophobia, execute deep MCTS search relabeling (512-1024 sims) with
+   Action-Q sharpening, and run modular fine-tuning.
 2. **Self-play generation, Gen 6**: regenerate datasets with the current
    engine (~3.3x more MCTS nodes per move than the data the Gen 5 net saw),
    root visit distribution as policy target. Retrain, quantize, arena-test
@@ -1395,8 +1395,13 @@ A comprehensive review of the web deployment resolved three functional and visua
   600 games across 300 unique openings with paired color swap at 200 ms/move on GPU (RTX 4050).
   Result: 281 wins, 13 draws, 306 losses -> **47.92% score (-14.5 Elo)** (bootstrap 95% CI:
   [44.33%, 51.50%], Elo: [-39.55, +10.43]).
-  P0 vs P1 color parity achieved: 141 wins as White (47.0%) and 140 wins as Black (46.7%),
-  completely eliminating the historic Player 2 weakness.
+- **Formal Promotion of `race512-cr200k-champion` to Production Baseline.**
+  Following confirmation of all-time high benchmarks (+92.5 Elo over Titanium in 600 games;
+  47.92% in 600 games vs Claustrophobia with 141W White / 140W Black; +254.7 Elo over previous baseline):
+  - Migrated `student.bin` and `student_int8.bin` to `data/nnue/nnue_weights.bin` and `data/nnue/nnue_weights_int8.bin`.
+  - Updated `src/nnue.hpp` canonical defaults to `ZQ_NNUE_RACE_FEATURES = 1` and `ZQ_NNUE_HIDDEN = 512`.
+  - Recompiled test suite (`build_tests.bat`), benchmarks (`build_bench.bat`), and WebAssembly bundle (`gui_web/zquoridor.html` and `index.html`).
+  - Updated `readme.md` to reflect the new 456-feature NNUE architecture and competitive benchmark records.
 
 
 

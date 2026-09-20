@@ -18,7 +18,7 @@ Local Titanium and Claustrophobia benchmarks, multi-source teaching, and compact
 - **Wall Quiescence Search**: Extends search past nominal depth for critical-looking wall placements.
 - **Hybrid MCTS + Alpha-Beta (default search)**: Best-first PUCT tree whose leaves are evaluated by a real alpha-beta search instead of a random rollout, with minimax-hard backup (`src/mcab.hpp`). **On by default** in arena and self-play since 2026-08-13, worth **+46.9 ±23.5 Elo** over pure alpha-beta at 200 ms/move. Pure alpha-beta is preserved bit-for-bit behind `--no-mcab` and loses nothing when the hybrid is enabled. Requires NNUE (the PUCT priors come from the policy head).
 - **Exact Endgame Solver**: Exact retrograde DP pawn-race solver over 81×81×2 states when both players run out of walls (`wallsLeft==(0,0)`), with a real-time budget.
-- **NNUE Evaluation & Policy**: 354-feature network (pawn cells, wall bitboards, bucketed BFS distances, and remaining walls) with SCReLU activation, outputting win probability and move ordering logits.
+- **NNUE Evaluation & Policy (race:512)**: 456-feature dual-perspective network (pawn cells, wall bitboards, bucketed BFS distances, remaining walls, BFS margins, and race interactions) with a 512-neuron hidden layer and SCReLU activation, outputting win probability, auxiliary heuristic evaluation, and policy move-ordering logits. Quantization-Aware Trained (QAT) to int8.
 - **Fast Monte Carlo Self-Play Generator**: Multi-threaded C++ self-play generator with standard epsilon-greedy and AlphaZero-style Monte Carlo policy-temperature sampling (`--mc-mode`) for rapid opening generation. Stack-allocated to ensure zero heap corruption.
 - **Training & Quantization Pipeline**: PyTorch training script with dataset blending (`train_nnue.py`), automated int8 quantization (`quantize_nnue.py`), and C++/Python numerical parity verification (`nnue_verify`).
 - **Strength Arena**: Automated head-to-head match runner (`tools/arena/run_arena.py`) with Elo estimation and confidence intervals.
@@ -182,14 +182,25 @@ Full flag list: `bin/selfplay --help`.
 
 ## NNUE Architecture
 
-`354 → 256` accumulator (SCReLU activation) → two heads:
-- **Outcome (WL)**: `256→32→1` (game result; used as search leaf evaluation).
-- **Policy**: `256→209` (canonical move probability logits; used for move ordering & Monte Carlo sampling).
+Production default: `race:512` (`456 → 512` accumulator with SCReLU activation) → three heads:
+- **Outcome (WL)**: `512→32→1` (game result; consumed by search leaf evaluation).
+- **Auxiliary Heuristic**: `512→32→1` (calibrated auxiliary positional evaluation).
+- **Policy**: `512→209` (canonical move probability logits; used for policy-assisted move ordering and MCTS search priors).
 
-### Input Features (354)
-- **Pawn positions**: 81 (own) + 81 (opponent) one-hot cells.
-- **Wall slots**: 64 (horizontal) + 64 (vertical) slot bitboards.
-- **BFS distances**: 21 (own) + 21 (opponent) one-hot distance buckets.
-- **Remaining walls**: 11 (own) + 11 (opponent) one-hot wall count buckets.
+### Input Features (456 total)
+- **Base Features (354)**:
+  - **Pawn positions**: 81 (own) + 81 (opponent) one-hot cells.
+  - **Wall slots**: 64 (horizontal) + 64 (vertical) slot bitboards.
+  - **BFS distances**: 21 (own) + 21 (opponent) one-hot distance buckets.
+  - **Remaining walls**: 11 (own) + 11 (opponent) one-hot wall count buckets.
+- **Race Features (102)**:
+  - **BFS Distance Margin**: 33 one-hot buckets covering own vs opponent distance delta $[-16 \dots +16]$.
+  - **Wall Count Difference**: 21 one-hot buckets covering own vs opponent wall inventory difference $[-10 \dots +10]$.
+  - **Race Interaction Regime**: 48 one-hot combinations encoding relative pawn lead (ahead / equal / behind) crossed with active wall stock categories ($0, 1, 2, 3+$).
 
-All features are canonical (perspective-relative with row reflection for side 1). Quantization uses fixed `QA=255`, `QB=64` (QAT).
+All features are perspective-relative with row reflection for side 1. Quantization is Quantization-Aware Trained (QAT) using fixed scales `QA=255`, `QB=64`.
+
+### Competitive Strength Benchmarks (200 ms/move)
+- **vs Titanium**: **63.0% score (+92.5 Elo)** across 600 games (378W / 0D / 222L; 95% CI: [+64.4, +121.7]). All-time project record against Titanium.
+- **vs Claustrophobia**: **47.92% score (-14.5 Elo)** across 600 games (281W / 13D / 306L; 95% CI: [44.3%, 51.5%]), with near-perfect color symmetry (141 wins as White, 140 wins as Black).
+- **vs Previous Baseline**: **81.25% score (+254.7 Elo)** in paired screening (32W / 1D / 7L).
