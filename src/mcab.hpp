@@ -216,6 +216,12 @@ struct McabParams {
     // status.md antes de assumir que vale para o seu controle de tempo.
     bool enabled = true;
     int nodeBudget = 20000;              // 0/1 = modo equivalência, Seção 6
+    // A fixed node budget is useful for deterministic benchmarks and
+    // self-play. Real game front-ends enable autoNodeBudget so wall-clock
+    // time, not a 200 ms-era node cap, becomes the primary limit.
+    bool autoNodeBudget = false;
+    int autoNodeBudgetPerMs = 32;
+    int autoNodeBudgetCeiling = 640000;
     // 0 = folha avaliada só por nnueEvalInt no acumulador incremental, sem
     // searchLeaf e sem quiescência de muro. Era 4 (valor do plano); a Fase 8
     // mediu 4 como catastrófico a 200ms/lance e 0 como o único ponto que
@@ -302,6 +308,7 @@ struct McabParams {
 struct McabStats {
     long long simulations = 0;
     long long nodesExpanded = 0;
+    int effectiveNodeBudget = 0;
     long long leafSearches = 0;      // avaliações de folha (nnueEvalInt ou searchLeaf)
     long long leafDepthSum = 0;      // soma das profundidades usadas (média = /leafSearches)
     bool treeReused = false;         // esta chamada reaproveitou a subárvore do lance anterior (Seção 8)
@@ -658,6 +665,15 @@ public:
         }
 
         int budget = std::max(1, params.nodeBudget);
+        if (params.autoNodeBudget && timeBudgetMs > 0 && params.nodeBudget > 1) {
+            const long long scaled =
+                (long long)timeBudgetMs * (long long)std::max(1, params.autoNodeBudgetPerMs);
+            const long long ceiling =
+                std::max<long long>(params.nodeBudget, params.autoNodeBudgetCeiling);
+            budget = (int)std::min<long long>(
+                std::max<long long>(params.nodeBudget, scaled), ceiling);
+        }
+        mstats.effectiveNodeBudget = budget;
         bool reused = false;
         // Seção 8.2: não reusar quando clearTTPerMove está ligado -- a
         // árvore depende de valores computados com aquela TT.
