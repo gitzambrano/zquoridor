@@ -910,6 +910,24 @@ inline bool isWallMoveLegal(const State& s, int player, int orientation, int r, 
     return true;
 }
 
+// Cheap pseudo-legal list for lazy MCTS expansion. Pawn moves are exact;
+// walls satisfy only local geometry/overlap constraints. Path preservation is
+// intentionally deferred to isWallMoveLegal() when an edge is first selected.
+inline void pseudoLegalMoves(const State& s, int player, MoveList& moves) {
+    pawnStepMoves(s, player, moves);
+    if (s.wallsLeft[player] <= 0) return;
+    uint64_t h = geometricWallMaskH(s.wallsH, s.wallsV);
+    while (h) {
+        int slot = __builtin_ctzll(h); h &= h - 1;
+        moves.push_back(Move::wall(0, slot / WS, slot % WS));
+    }
+    uint64_t v = geometricWallMaskV(s.wallsH, s.wallsV);
+    while (v) {
+        int slot = __builtin_ctzll(v); v &= v - 1;
+        moves.push_back(Move::wall(1, slot / WS, slot % WS));
+    }
+}
+
 inline MoveList legalMoves(const State& s) {
     MoveList moves;
     pawnStepMoves(s, s.turn, moves);
