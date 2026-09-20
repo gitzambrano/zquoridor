@@ -72,11 +72,15 @@ inline int wallsLeftBucket(int n) {
 #ifndef ZQ_NNUE_RACE_FEATURES
 #define ZQ_NNUE_RACE_FEATURES 1
 #endif
+#ifndef ZQ_NNUE_MULTIPATH_FEATURES
+#define ZQ_NNUE_MULTIPATH_FEATURES 0
+#endif
 #ifndef ZQ_NNUE_HIDDEN
 #define ZQ_NNUE_HIDDEN 512
 #endif
 constexpr int BASE_FEATURES = N * N + N * N + WS * WS * 2 + 2 * DIST_BUCKETS + 2 * WALLS_LEFT_BUCKETS;
-constexpr int NUM_FEATURES = BASE_FEATURES + (ZQ_NNUE_RACE_FEATURES ? 102 : 0);
+constexpr int MULTIPATH_FEATURES = 24;
+constexpr int NUM_FEATURES = BASE_FEATURES + (ZQ_NNUE_RACE_FEATURES ? 102 : 0) + (ZQ_NNUE_MULTIPATH_FEATURES ? MULTIPATH_FEATURES : 0);
 constexpr int HIDDEN = ZQ_NNUE_HIDDEN;
 static_assert(HIDDEN == 128 || HIDDEN == 256 || HIDDEN == 384 || HIDDEN == 512,
               "unsupported NNUE width");
@@ -107,6 +111,7 @@ template<class Acc> inline void updateRaceFeatures(Acc& acc, const std::array<in
         }
     }
 }
+
 constexpr int POLICY_OUT = N * N + WS * WS * 2;             // 81 destino peão + 128 muro = 209
 
 // Espelha a coordenada bruta do tabuleiro para a perspectiva do jogador 1
@@ -130,6 +135,103 @@ inline int mirroredWallSlot(int slot, int perspective) {
     if (perspective == 0) return slot;
     int r = slot / WS, c = slot % WS;
     return (WS - 1 - r) * WS + c;
+}
+
+// 24 cheap multi-path and pawn contact features (zero extra BFS):
+// - 8 directional unblocked exits (4 own, 4 opp: Forward, Backward, Left, Right)
+// - 8 exit count / branching factor one-hot (1=bottleneck, 2=corridor, 3=T-split, 4=open)
+// - 8 pawn contact & jump geometry (head-on jump, lateral, imminent 2, prox 3, far, same col, adj col, wide)
+struct MultipathFeatures {
+    std::array<int, 14> features{};
+    int count = 0;
+    void add(int feat) { features[count++] = feat; }
+};
+
+inline MultipathFeatures getMultipathFeatures(const State& s, int perspective) {
+    MultipathFeatures mf;
+    constexpr int BASE = BASE_FEATURES + 102;
+    int me = perspective, opp = 1 - perspective;
+    int ownCell = s.pawn[me], oppCell = s.pawn[opp];
+
+    int ownFwdDir = (me == 0 ? 1 : 0);
+    int ownBwdDir = (me == 0 ? 0 : 1);
+    int oppFwdDir = (opp == 0 ? 1 : 0);
+    int oppBwdDir = (opp == 0 ? 0 : 1);
+
+    auto unblocked = [&](int cell, int dir) -> bool {
+        return ORTH_NEIGHBOR[(size_t)cell][(size_t)dir] >= 0 &&
+               !edgeBlockedDir(s.wallsH, s.wallsV, cell, dir);
+    };
+
+    bool ownFwd = unblocked(ownCell, ownFwdDir);
+    bool ownBwd = unblocked(ownCell, ownBwdDir);
+    bool ownLft = unblocked(ownCell, 2);
+    bool ownRgt = unblocked(ownCell, 3);
+    if (ownFwd) mf.add(BASE + 0);
+    if (ownBwd) mf.add(BASE + 1);
+    if (ownLft) mf.add(BASE + 2);
+    if (ownRgt) mf.add(BASE + 3);
+
+    bool oppFwd = unblocked(oppCell, oppFwdDir);
+    bool oppBwd = unblocked(oppCell, oppBwdDir);
+    bool oppLft = unblocked(oppCell, 2);
+    bool oppRgt = unblocked(oppCell, 3);
+    if (oppFwd) mf.add(BASE + 4);
+    if (oppBwd) mf.add(BASE + 5);
+    if (oppLft) mf.add(BASE + 6);
+    if (oppRgt) mf.add(BASE + 7);
+
+    int ownExits = (ownFwd ? 1 : 0) + (ownBwd ? 1 : 0) + (ownLft ? 1 : 0) + (ownRgt ? 1 : 0);
+    int oppExits = (oppFwd ? 1 : 0) + (oppBwd ? 1 : 0) + (oppLft ? 1 : 0) + (oppRgt ? 1 : 0);
+    ownExits = std::max(1, std::min(4, ownExits));
+    oppExits = std::max(1, std::min(4, oppExits));
+    mf.add(BASE + 8 + (ownExits - 1));
+    mf.add(BASE + 12 + (oppExits - 1));
+
+    int myCanon = mirroredPawnCell(ownCell, perspective);
+    int opCanon = mirroredPawnCell(oppCell, perspective);
+    int dr = rowOf(opCanon) - rowOf(myCanon);
+    int dc = colOf(opCanon) - colOf(myCanon);
+    int absDc = std::abs(dc);
+    int manhattan = std::abs(dr) + absDc;
+
+    bool headOn = (dr == 1 && dc == 0);
+    bool lateral = (dr == 0 && absDc == 1);
+    bool imminent = (manhattan == 2 && !headOn);
+    bool prox3 = (manhattan == 3);
+    bool far = (manhattan >= 4 && !lateral);
+
+    if (headOn) mf.add(BASE + 16);
+    if (lateral) mf.add(BASE + 17);
+    if (imminent) mf.add(BASE + 18);
+    if (prox3) mf.add(BASE + 19);
+    if (far) mf.add(BASE + 20);
+
+    if (dc == 0) mf.add(BASE + 21);
+    else if (absDc == 1) mf.add(BASE + 22);
+    else mf.add(BASE + 23);
+
+    return mf;
+}
+
+template<class Acc>
+inline void updateMultipathFeatures(Acc& acc, const MultipathFeatures& prev, const MultipathFeatures& curr) {
+    for (int i = 0; i < prev.count; ++i) {
+        int f = prev.features[i];
+        bool stillActive = false;
+        for (int j = 0; j < curr.count; ++j) {
+            if (curr.features[j] == f) { stillActive = true; break; }
+        }
+        if (!stillActive) acc.removeFeature(f);
+    }
+    for (int i = 0; i < curr.count; ++i) {
+        int f = curr.features[i];
+        bool wasActive = false;
+        for (int j = 0; j < prev.count; ++j) {
+            if (prev.features[j] == f) { wasActive = true; break; }
+        }
+        if (!wasActive) acc.addFeature(f);
+    }
 }
 
 // Espelha um bitboard de muro inteiro (todos os 64 bits) -- usado por
@@ -357,6 +459,10 @@ inline Accumulator buildAccumulator(const State& s, int perspective, PlayerPathC
 #if ZQ_NNUE_RACE_FEATURES
     for (int feature : raceFeatures(acc)) acc.addFeature(feature);
 #endif
+#if ZQ_NNUE_MULTIPATH_FEATURES
+    auto mp = getMultipathFeatures(s, perspective);
+    for (int i = 0; i < mp.count; ++i) acc.addFeature(mp.features[i]);
+#endif
     return acc;
 }
 
@@ -417,26 +523,38 @@ inline void forwardPolicy(const Accumulator& acc, std::array<float, POLICY_OUT>&
 // atualização incremental do acumulador para um lance -- peão e muro
 // continuam O(HIDDEN) puro (2 ou 1 feature de tabuleiro trocam, nunca
 // recompute completo). As features de distância BFS são a exceção: não
-// dá pra "saber" se o bucket mudou sem recalcular a distância -- mas só a
-// distância DEPOIS do lance precisa ser recalculada, porque a de ANTES já
-// está em cache em acc.ownDistBucket/acc.oppDistBucket desde a última
-// chamada (ou desde buildAccumulator). Isso mantém o custo em 1 BFS por
-// jogador afetado (nunca 2), o que é essencial pro update de muro não
-// ficar mais caro que um recompute completo (ver comentário no struct
-// Accumulator e benchAccumulatorUpdate em main.cpp).
+// dependem só da célula atual mas da conectividade do grafo inteiro,
+// então cada muro colocado exige recalcular a distância DEPOIS do lance
+// (2 BFS: own e opp). Lances de peão pagam 1 BFS só (a do mover; a do
+// oponente não muda porque nenhum muro foi colocado). O cache
+// ownDistBucket/oppDistBucket evita calcular a distância ANTES do lance --
+// ela já está guardada no acumulador desde o nó anterior.
 //
-// Regra usada abaixo (consequência de shortestPathLen não depender da
-// posição do peão adversário, só dos muros): um lance de PEÃO só pode
-// mudar a distância de quem se moveu -- a distância do outro jogador é
-// função só dos muros, que não mudam (1 BFS). Um lance de MURO pode mudar
-// a distância dos DOIS jogadores (o muro pode alongar o caminho de
-// qualquer um), então nesse caso recalculamos as duas depois do lance
-// (2 BFS, contra as 4 que uma versão ingênua sem cache pagaria).
+// Pré-condição: o chamador precisa passar `viewerIsMover = (acc.viewer ==
+// before.turn)`. A busca mantém SEMPRE DOIS acumuladores por nó: um da
+// perspectiva do jogador 0, outro da perspectiva do jogador 1. Ao
+// aplicar o lance do jogador 0, o acumulador 0 tem `viewerIsMover=true` e
+// o acumulador 1 tem `viewerIsMover=false`.
 //
-// `before` é o estado ANTES do lance (mesmo estado passado a
-// legalMoves/applyMove pra gerar `m`); a função computa o estado depois
-// internamente. Precisa ser chamada nas DUAS perspectivas (um Accumulator
-// por lado), com viewerIsMover indicando se o acumulador é o de quem tem
+// Muro colocado: SÓ o jogador que jogou o muro perde 1 muro em
+// `wallsLeft` (ns.wallsLeft[before.turn] -= 1). O acumulador do mover
+// troca ownWallsLeftBucket; o acumulador do outro troca
+// oppWallsLeftBucket.
+//
+// xtable: cache global de BFS (PlayerPathCacheTable, Prioridade 6b). Se
+// não-nulo, distLenCached consulta o hash da topologia antes de rodar a
+// BFS real. Em caso de acerto, o custo de BFS cai de ~3.5µs pra ~15ns.
+// Passar nullptr preserva a semântica antiga (sempre roda BFS).
+//
+// NOTA DE DESEMPENHO (2026-08): updateAccumulatorForMove era ~15% mais
+// rápida que rebuild completo (benchAccumulatorUpdate em main.cpp: 16.9µs
+// vs 19.8µs); com o xtable ligado nos dois lados da busca, a vantagem
+// cresce porque o update incremental bate no cache com a MESMA taxa de
+// acerto do heurístico (~60%).
+//
+// NOTA DE PERSPECTIVA: m é o lance no referencial CRU do tabuleiro (como
+// legalMoves devolve). featOwnPawn/featWallH/etc. recebem perspective
+// internamente e aplicam o espelho quando viewerPlayer == 1.
 // o lance em `before`. Pré-condição: acc.ownDistBucket/oppDistBucket
 // precisam refletir corretamente `before` (garantido se todo Accumulator
 // nasce de buildAccumulator e só é mutado por esta função).
@@ -510,6 +628,12 @@ inline void updateAccumulatorForMove(Accumulator& acc, bool viewerIsMover, const
     }
 #if ZQ_NNUE_RACE_FEATURES
     updateRaceFeatures(acc, previousRaceFeatures);
+#endif
+#if ZQ_NNUE_MULTIPATH_FEATURES
+    int viewerPlayer = viewerIsMover ? mover : opp;
+    auto prevMp = getMultipathFeatures(before, viewerPlayer);
+    auto nextMp = getMultipathFeatures(after, viewerPlayer);
+    updateMultipathFeatures(acc, prevMp, nextMp);
 #endif
 }
 
@@ -736,6 +860,10 @@ inline AccumulatorQuant buildAccumulatorQuant(const State& s, int perspective, P
 #if ZQ_NNUE_RACE_FEATURES
     for (int feature : raceFeatures(acc)) acc.addFeature(feature);
 #endif
+#if ZQ_NNUE_MULTIPATH_FEATURES
+    auto mp = getMultipathFeatures(s, perspective);
+    for (int i = 0; i < mp.count; ++i) acc.addFeature(mp.features[i]);
+#endif
     return acc;
 }
 
@@ -813,6 +941,12 @@ inline void updateAccumulatorForMoveQuant(AccumulatorQuant& acc, bool viewerIsMo
     }
 #if ZQ_NNUE_RACE_FEATURES
     updateRaceFeatures(acc, previousRaceFeatures);
+#endif
+#if ZQ_NNUE_MULTIPATH_FEATURES
+    int viewerPlayer = viewerIsMover ? mover : opp;
+    auto prevMp = getMultipathFeatures(before, viewerPlayer);
+    auto nextMp = getMultipathFeatures(after, viewerPlayer);
+    updateMultipathFeatures(acc, prevMp, nextMp);
 #endif
 }
 

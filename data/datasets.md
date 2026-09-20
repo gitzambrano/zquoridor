@@ -21,6 +21,24 @@ Todos os datasets consolidados no projeto residem em formato `.npz` compactado (
 
 ## 2. Catálogo de Datasets Ativos e de Alta Performance
 
+### 2.0 Dataset Mestre Unificado Multi-Caminho (11,06M) — `data/teaching/multipath-master-11m/`
+- **Arquivo**: `data/teaching/multipath-master-11m/dataset.npz` (5,65 GB).
+- **Volume**: 11.065.000 amostras consolidadas.
+- **Script Gerador**: `tools/teacher/assemble_multipath_master_dataset.py`.
+- **Filtros e Composição**:
+  1. **Multitier Completo (10.810.000 amostras, escala $\times 1,0$)**: Reúne integralmente os Tiers 1 (10M replay suave), 2 (500k search histórico), 3 (100k search bilateral), 3.5 (100k search crítico genérico), 4 (100k dual crisis) e 5 (10k deep search MCTS a 512 sims em CUDA).
+  2. **Prioridade Center Rush (255.000 amostras, escala $\times 2,0$)**: Adiciona reforço intensivo de colisões centrais com Action-Q Sharpening ($\pi'_a \propto N_a^\alpha \exp(\beta Q_a)$).
+- **Arquitetura Alvo**: `multipath:512` (480 entradas: 456 base+corrida + 24 features de grau de saída, estrangulamento de corredores e geometria de salto de peões).
+
+### 2.0.1 Sementes Mineradas de Derrotas e Center Pawn (10k) — `data/teaching/loss-center-seeds/`
+- **Arquivo**: `data/teaching/loss-center-seeds/positions.jsonl` (10.030 estados críticos).
+- **Script Gerador**: `tools/teacher/mine_losses_and_center.py`.
+- **Filtros**:
+  1. **5.952 Estados de Derrotas contra Claustrophobia**: Extraídos lance a lance das 306 partidas perdidas no match de 600 jogos, focando em plies de abertura/meio-jogo onde o ZQuoridor cedeu o centro ou esgotou muros.
+  2. **4.295 Estados de Derrotas contra Titanium**: Extraídos das 222 derrotas do match de 600 jogos.
+  3. **198 Estados do Catálogo Center Rush**: Todas as ramificações das famílias táticas de colisão frontal.
+- **Uso**: Alimentação direta do gerador multithread de rollouts sintéticos (`bin/generate_rollouts.exe`).
+
 ### 2.1 Dataset Prioritário de Center Rush (255k) — `data/teaching/center-rush-200k-priority/`
 - **Arquivo**: `data/teaching/center-rush-200k-priority/dataset.npz` (234,3 MB).
 - **Volume**: 255.000 amostras (225.501 treino, 29.499 validação).

@@ -14,12 +14,18 @@ relearn by experiment.
   once the side to move has no walls left. Backup `AvgBlend`,
   tree reuse on, node budget 20000/move (not time-binding: p99 is ~18.6k
   nodes at 150ms).
-- **Network**: Gen 5 NNUE (`data/nnue/nnue_weights_int8.bin`),
-  `354 -> 256` SCReLU accumulator, WL head `256->32->1`, policy head
-  `256->209`. QAT with fixed `QA=255`, `QB=64`.
-- **Performance baseline (2026-08-22)**: +194.6 ±23.9 Elo over the
-  pre-optimization engine at 150ms/move; production NPS ~29k. See
-  History Notes.
+- **Network**: Production baseline `race512-cr200k-champion` (`data/nnue/nnue_weights_int8.bin`),
+  `456 -> 512` SCReLU accumulator (`ZQ_NNUE_RACE_FEATURES = 1`, `ZQ_NNUE_HIDDEN = 512`),
+  WL head `512->32->1`, policy head `512->209`. QAT with fixed `QA=255`, `QB=64`.
+- **Experimental Architecture**: `multipath:512` (`src/nnue.hpp`, opt-in via `-DZQ_NNUE_MULTIPATH_FEATURES=1`),
+  `480 -> 512` SCReLU accumulator adding 24 cheap multi-path and pawn collision features
+  (0 extra BFS: 8 directional unblocked exits, 8 exit count/branching factor buckets,
+  and 8 pawn jump/contact geometry features).
+- **Performance baseline (2026-09-20)**:
+  - vs Titanium: **63.0% (+92.5 Elo)** in official 600-game match (378W / 0D / 222L) — project record.
+  - vs `main` (Gen 5): **81.25% (+254.7 Elo)** in direct screening (32W / 1D / 7L).
+  - vs Claustrophobia: **47.92% (-14.5 Elo)** in 600-game match on GPU (141W white / 140W black; color parity restored).
+  - Center-Rush Tactical Suite: **37.12% (+35 Elo)** against Claustrophobia (`pawn_jump` at 62.5%, `front_wall` at 47.2%).
 
 ---
 

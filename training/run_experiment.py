@@ -305,7 +305,8 @@ def build_candidate(config):
     folder = _path(config["out_dir"])
     suffix = ".exe" if os.name == "nt" else ""
     exe = folder / ("zquoridor" + suffix)
-    flags = [f"-DZQ_NNUE_RACE_FEATURES={int(config['architecture'] == 'race')}",
+    flags = [f"-DZQ_NNUE_RACE_FEATURES={int(config['architecture'] in ('race', 'multipath'))}",
+             f"-DZQ_NNUE_MULTIPATH_FEATURES={int(config['architecture'] == 'multipath')}",
              f"-DZQ_NNUE_HIDDEN={config['hidden']}"]
     build_inputs = dict(flags=flags, compiler=_hash(Path(compiler)),
         files={str(p.relative_to(ROOT)): _hash(p) for p in [ROOT/"tools/external/zquoridor_uci.cpp",

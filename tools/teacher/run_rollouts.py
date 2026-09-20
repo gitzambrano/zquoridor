@@ -40,28 +40,35 @@ def filter_crisis_seeds(positions_file: Path, max_seeds: int) -> list[dict]:
     with open(positions_file, "r", encoding="utf-8") as fh:
         all_positions = [json.loads(line) for line in fh if line.strip()]
 
-    # Prioritize: claustro losses first, then wall asymmetry
     claustro_loss = []
-    wall_asymmetry = []
+    titanium_loss = []
+    center_rush = []
     other = []
 
     for row in all_positions:
         tags = set(row.get("tags", []))
-        if "loss_vs_claustrophobia" in tags:
+        if "center_rush" in tags:
+            center_rush.append(row)
+        elif "loss_vs_claustrophobia" in tags:
             claustro_loss.append(row)
-        elif "wall_asymmetry" in tags:
-            wall_asymmetry.append(row)
+        elif "loss_vs_titanium" in tags:
+            titanium_loss.append(row)
         else:
             other.append(row)
 
-    rng = np.random.default_rng(20260919)
+    rng = np.random.default_rng(20260920)
+    rng.shuffle(center_rush)
     rng.shuffle(claustro_loss)
-    rng.shuffle(wall_asymmetry)
+    rng.shuffle(titanium_loss)
     rng.shuffle(other)
 
-    selected = claustro_loss[:max_seeds]
+    # Prioritize: center rush collisions first, then claustro losses, then titanium losses
+    selected = []
+    selected.extend(center_rush[:max_seeds])
     if len(selected) < max_seeds:
-        selected.extend(wall_asymmetry[:max_seeds - len(selected)])
+        selected.extend(claustro_loss[:max_seeds - len(selected)])
+    if len(selected) < max_seeds:
+        selected.extend(titanium_loss[:max_seeds - len(selected)])
     if len(selected) < max_seeds:
         selected.extend(other[:max_seeds - len(selected)])
 

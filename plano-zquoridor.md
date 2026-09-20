@@ -19,22 +19,44 @@ arquivos de configuração indicados.
 ## Painel Executivo: Onde Estamos e Para Onde Vamos
 
 ### Onde Estamos (Status Atual)
-- **Campeã Atual**: `race512-cr200k-champion` é a melhor rede já desenvolvida no projeto:
+- **Baseline de Produção Oficial**: `race512-cr200k-champion` promovida e homologada como rede padrão do `main`:
   - **vs Titanium**: **63,0% (+92,5 Elo)** em match oficial de 600 jogos (378W / 0D / 222L) — recorde histórico absoluto.
-  - **vs `main`**: **81,25% (+254,7 Elo)** em triagem direta (32W / 1D / 7L).
-  - **vs Claustrophobia**: **Match de 600 jogos em andamento na GPU** (pontuação parcial em torno de 50,0%, superando a barreira histórica).
-  - **Suite Tático de Center Rush**: Avançou de 32,58% para 37,12% (+35 Elo) contra Claustrophobia, vencendo a família `pawn_jump` com 62,5% e atingindo 47,2% em `front_wall`.
-- **Especialização Center Rush**: 95,37% de sinal concentrado no regime central via Action-Q Policy Sharpening ($\pi'_a \propto N_a^\alpha \exp(\beta Q_a)$) com 50k posições gerais de âncora contra esquecimento.
+  - **vs `main` (anterior)**: **81,25% (+254,7 Elo)** em triagem direta (32W / 1D / 7L).
+  - **vs Claustrophobia**: **47,92% (-14,5 Elo)** em match de 600 jogos a 200 ms na GPU (IC 95%: [44,33%, 51,50%], alcançando +10,4 Elo).
+  - **Paridade de Cores Restaurada**: 141W de Brancas (47,0%) e 140W de Pretas (46,7%), eliminando o colapso histórico do segundo jogador.
+  - **Suite Tático Center Rush (66 jogos vs Claustrophobia GPU MCTS)**:
+    - **Resultado Geral**: **31,8%** (20W / 2D / 44L / 66 jogos).
+    - **De Pretas (Jogador 1)**: **51,5%** (16W / 2D / 15L) — superando a Claustrophobia GPU jogando como segundo jogador!
+    - **De Brancas (Jogador 0)**: 12,1% (4W / 0D / 29L) — indicador de vulnerabilidade quando atacada reativamente em abertura central.
+    - **Por Categoria Tática**:
+      - `pawn_jump`: **50,0%** (4W / 0D / 4L / 8 jogos) — equilíbrio total no combate corpo a corpo.
+      - `front_wall`: **33,3%** (5W / 2D / 11L / 18 jogos).
+      - `sidestep_flank`: **33,3%** (4W / 0D / 8L / 12 jogos).
+      - `vertical_channel`: **33,3%** (4W / 0D / 8L / 12 jogos).
+      - `reed_rear_wall`: **18,8%** (3W / 0D / 13L / 16 jogos) — ponto crítico de melhoria em contenção traseira.
+  - **Pesos e Código Canônicos**: Pesos em `data/nnue/nnue_weights.bin` (f32) e `data/nnue/nnue_weights_int8.bin` (int8), C++ padrão com `ZQ_NNUE_RACE_FEATURES = 1` e `ZQ_NNUE_HIDDEN = 512`, WASM e web GUI 100% atualizados.
+
+- **Frente de Dados e Mineração de Crise**:
+  - **10.030 Estados Críticos Minerados** (`data/teaching/loss-center-seeds/positions.jsonl`): 5.952 estados de derrotas contra Claustrophobia, 4.295 de derrotas contra Titanium e 198 do catálogo Center Rush.
+  - **Geração de Rollouts Sintéticos**: Em execução multithread (`bin/generate_rollouts.exe` sobre 1.000 sementes com profundidade e ramificação top-K, >10.600 CPU segundos).
+  - **Match Focado de Center Rush (66 jogos)**: **CONCLUÍDO** com relatório completo em `benchmark_results/champion-center-rush-gpu/`.
+
+- **Nova Arquitetura Experimental (`multipath:512` — 480 entradas)**:
+  - **Zero BFS Extras**: Adiciona 24 features ultra-baratas baseadas em operações de bits instantâneas e geometria de colisão de peões.
+  - **Features**: 8 saídas direcionais desobstruídas (Forward, Backward, Left, Right), 8 classes de grau de saída (gargalo de 1 saída, corredor de 2, bifurcação de 3, campo aberto de 4) e 8 relações de proximidade/salto direto de peões.
+  - **Paridade Numérica C++**: `bin/test_nnue_multipath.exe` validou 1.563 plies com **0 divergências** entre acumulador incremental e rebuild completo.
+  - **Paridade Python-C++**: `Student("multipath", 512)` com warm-start exato a partir da campeã reproduz 100% dos valores iniciais (erro máx float: 7.4e-9).
+  - **Dataset Mestre Consolidado (`multipath-master-11m`)**: 11.065.000 amostras integrando integralmente os Tiers 1, 2, 3, 3.5, 4, 5 e o corpus Center Rush Priority.
+  - **Treinamento Experimental**: Ativo na GPU RTX 4050 CUDA (`results/experiments/multipath512-master-champion/`). Épocas 1 a 3 concluídas com melhora contínua de loss (0.8651 -> 0.8609).
 
 ### Para Onde Vamos (Próximos Passos Prioritários)
-1. ~~**Concluir o Match de 600 Jogos vs Claustrophobia**~~: Concluído com 47,92% em 600 jogos e paridade de cores (141W brancas / 140W pretas).
-2. ~~**Promover a Campeã para o Baseline do `main`**~~:
-   - Migrados `student.bin` e `student_int8.bin` para `data/nnue/nnue_weights.bin` e `data/nnue/nnue_weights_int8.bin`.
-   - Ajustados os defaults canônicos em `src/nnue.hpp` (`ZQ_NNUE_RACE_FEATURES = 1` e `ZQ_NNUE_HIDDEN = 512`).
-   - Recompilados todos os testes, benchmarks e o bundle WASM (`gui_web/zquoridor.html` e `index.html`).
-   - Atualizados `readme.md` e `status.md`.
-3. **Meta Tática de Longo Prazo**: Bater a Claustrophobia em **todas** as 5 famílias táticas de Center Rush sem regredir a força geral contra Titanium e outros motores.
-4. **Próximo Ciclo de Fine-Tuning**: Minerar as derrotas do match de 600 jogos contra Claustrophobia e Titanium, aplicar relabeling MCTS profundo (512–1024 sims) com Action-Q Sharpening e executar novo ciclo modular.
+1. **Acompanhar Treinamento de `multipath512-master-champion`**: Avaliar curva de loss até o fim das 20 épocas ou convergência antecipada.
+2. **Concluir Geração de Rollouts de Crise**: Transformar os rollouts gerados em dataset compacto ponderado (`data/teaching/loss-center-rollouts/dataset.npz`).
+3. **Triagem e Benchmark da Rede Multipath**:
+   - Rodar benchmark idêntico de 66 jogos de Center Rush vs Claustrophobia GPU para comparar diretamente com os 31,8% do baseline.
+   - Medir nós por segundo em C++ para confirmar ausência de sobrecarga computacional.
+   - Confronto direto (head-to-head) contra a campeã `race512-cr200k-champion`.
+4. **Promoção Condicional**: A rede experimental só será promovida se demonstrar superioridade estatística comprovada sem perda de vazão de nós por segundo.
 
 ---
 

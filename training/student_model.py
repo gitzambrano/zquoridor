@@ -8,8 +8,41 @@ from torch import nn
 from torch.nn import functional as F
 from quantize_nnue import quantize, write_quantized
 
-FEATURES = {"base": 354, "race": 456}
+FEATURES = {"base": 354, "race": 456, "multipath": 480}
 LAYOUT = ("w1", "b1", "wv1_wl", "bv1_wl", "wv2_wl", "bv2_wl", "wp", "bp")
+
+
+def _make_edge_tables():
+    orth = np.full((81, 4), -1, dtype=np.int8)
+    edge_h = np.zeros((81, 4), dtype=np.uint64)
+    edge_v = np.zeros((81, 4), dtype=np.uint64)
+    for cell in range(81):
+        r, col = cell // 9, cell % 9
+        if r > 0: orth[cell, 0] = cell - 9
+        if r + 1 < 9: orth[cell, 1] = cell + 9
+        if col > 0: orth[cell, 2] = cell - 1
+        if col + 1 < 9: orth[cell, 3] = cell + 1
+
+        if r > 0:
+            wr = r - 1
+            if col > 0: edge_h[cell, 0] |= np.uint64(1 << (wr * 8 + col - 1))
+            if col < 8: edge_h[cell, 0] |= np.uint64(1 << (wr * 8 + col))
+        if r < 8:
+            wr = r
+            if col > 0: edge_h[cell, 1] |= np.uint64(1 << (wr * 8 + col - 1))
+            if col < 8: edge_h[cell, 1] |= np.uint64(1 << (wr * 8 + col))
+        if col > 0:
+            wc = col - 1
+            if r > 0: edge_v[cell, 2] |= np.uint64(1 << ((r - 1) * 8 + wc))
+            if r < 8: edge_v[cell, 2] |= np.uint64(1 << (r * 8 + wc))
+        if col < 8:
+            wc = col
+            if r > 0: edge_v[cell, 3] |= np.uint64(1 << ((r - 1) * 8 + wc))
+            if r < 8: edge_v[cell, 3] |= np.uint64(1 << (r * 8 + wc))
+    return orth, edge_h, edge_v
+
+
+_ORTH_NEIGHBORS, _EDGE_H_MASKS, _EDGE_V_MASKS = _make_edge_tables()
 
 
 def encode_features(data, indices, architecture="base"):
@@ -17,7 +50,7 @@ def encode_features(data, indices, architecture="base"):
     x = dense_features(data, indices)
     if architecture == "base":
         return x
-    if architecture != "race":
+    if architecture not in ("race", "multipath"):
         raise ValueError(f"unknown architecture: {architecture}")
     n = len(indices)
     extra = np.zeros((n, 102), dtype=np.float32)
@@ -30,7 +63,70 @@ def encode_features(data, indices, architecture="base"):
     extra[rows, 33 + ow - pw + 10] = 1
     race = np.sign(own - opp) + 1
     extra[rows, 54 + race * 16 + np.minimum(ow, 3) * 4 + np.minimum(pw, 3)] = 1
-    return np.concatenate((x, extra), axis=1)
+    x = np.concatenate((x, extra), axis=1)
+    if architecture == "race":
+        return x
+
+    # multipath: 24 additional cheap features (zero extra BFS)
+    mp = np.zeros((n, 24), dtype=np.float32)
+    own_pawn = data["own_pawn"][indices].astype(np.int64)
+    opp_pawn = data["opp_pawn"][indices].astype(np.int64)
+    walls_h = data["walls_h"][indices].astype(np.uint64)
+    walls_v = data["walls_v"][indices].astype(np.uint64)
+
+    # Directional exits: mover perspective (Forward=1/South, Backward=0/North, Left=2/West, Right=3/East)
+    own_fwd = (_ORTH_NEIGHBORS[own_pawn, 1] >= 0) & (((walls_h & _EDGE_H_MASKS[own_pawn, 1]) | (walls_v & _EDGE_V_MASKS[own_pawn, 1])) == 0)
+    own_bwd = (_ORTH_NEIGHBORS[own_pawn, 0] >= 0) & (((walls_h & _EDGE_H_MASKS[own_pawn, 0]) | (walls_v & _EDGE_V_MASKS[own_pawn, 0])) == 0)
+    own_lft = (_ORTH_NEIGHBORS[own_pawn, 2] >= 0) & (((walls_h & _EDGE_H_MASKS[own_pawn, 2]) | (walls_v & _EDGE_V_MASKS[own_pawn, 2])) == 0)
+    own_rgt = (_ORTH_NEIGHBORS[own_pawn, 3] >= 0) & (((walls_h & _EDGE_H_MASKS[own_pawn, 3]) | (walls_v & _EDGE_V_MASKS[own_pawn, 3])) == 0)
+
+    # Opponent perspective (Forward=0/North, Backward=1/South, Left=2/West, Right=3/East)
+    opp_fwd = (_ORTH_NEIGHBORS[opp_pawn, 0] >= 0) & (((walls_h & _EDGE_H_MASKS[opp_pawn, 0]) | (walls_v & _EDGE_V_MASKS[opp_pawn, 0])) == 0)
+    opp_bwd = (_ORTH_NEIGHBORS[opp_pawn, 1] >= 0) & (((walls_h & _EDGE_H_MASKS[opp_pawn, 1]) | (walls_v & _EDGE_V_MASKS[opp_pawn, 1])) == 0)
+    opp_lft = (_ORTH_NEIGHBORS[opp_pawn, 2] >= 0) & (((walls_h & _EDGE_H_MASKS[opp_pawn, 2]) | (walls_v & _EDGE_V_MASKS[opp_pawn, 2])) == 0)
+    opp_rgt = (_ORTH_NEIGHBORS[opp_pawn, 3] >= 0) & (((walls_h & _EDGE_H_MASKS[opp_pawn, 3]) | (walls_v & _EDGE_V_MASKS[opp_pawn, 3])) == 0)
+
+    mp[rows, 0] = own_fwd.astype(np.float32)
+    mp[rows, 1] = own_bwd.astype(np.float32)
+    mp[rows, 2] = own_lft.astype(np.float32)
+    mp[rows, 3] = own_rgt.astype(np.float32)
+
+    mp[rows, 4] = opp_fwd.astype(np.float32)
+    mp[rows, 5] = opp_bwd.astype(np.float32)
+    mp[rows, 6] = opp_lft.astype(np.float32)
+    mp[rows, 7] = opp_rgt.astype(np.float32)
+
+    # Exit count (branching factor: 1=bottleneck, 2=corridor, 3=T-split, 4=open)
+    own_exits = np.clip(own_fwd.astype(np.int64) + own_bwd.astype(np.int64) + own_lft.astype(np.int64) + own_rgt.astype(np.int64), 1, 4)
+    opp_exits = np.clip(opp_fwd.astype(np.int64) + opp_bwd.astype(np.int64) + opp_lft.astype(np.int64) + opp_rgt.astype(np.int64), 1, 4)
+    mp[rows, 8 + own_exits - 1] = 1.0
+    mp[rows, 12 + opp_exits - 1] = 1.0
+
+    # Pawn contact and jump geometry
+    own_r, own_c = own_pawn // 9, own_pawn % 9
+    opp_r, opp_c = opp_pawn // 9, opp_pawn % 9
+    dr = opp_r - own_r
+    dc = opp_c - own_c
+    abs_dc = np.abs(dc)
+    manhattan = np.abs(dr) + abs_dc
+
+    head_on = (dr == 1) & (dc == 0)
+    lateral = (dr == 0) & (abs_dc == 1)
+    imminent = (manhattan == 2) & ~head_on
+    prox3 = (manhattan == 3)
+    far = (manhattan >= 4) & ~lateral
+
+    mp[rows, 16] = head_on.astype(np.float32)
+    mp[rows, 17] = lateral.astype(np.float32)
+    mp[rows, 18] = imminent.astype(np.float32)
+    mp[rows, 19] = prox3.astype(np.float32)
+    mp[rows, 20] = far.astype(np.float32)
+
+    mp[rows, 21] = (dc == 0).astype(np.float32)
+    mp[rows, 22] = (abs_dc == 1).astype(np.float32)
+    mp[rows, 23] = (abs_dc >= 2).astype(np.float32)
+
+    return np.concatenate((x, mp), axis=1)
 
 
 def _round_ste(x, scale):
@@ -42,7 +138,7 @@ class Student(nn.Module):
     def __init__(self, architecture="base", hidden=256, qat=False):
         super().__init__()
         if architecture not in FEATURES or hidden not in (128, 256, 384, 512):
-            raise ValueError("architecture must be base/race; hidden must be 128/256/384/512")
+            raise ValueError(f"architecture must be one of {list(FEATURES.keys())}; hidden must be 128/256/384/512")
         self.architecture, self.hidden, self.qat = architecture, hidden, qat
         self.fc1 = nn.Linear(FEATURES[architecture], hidden)
         self.value1_wl = nn.Linear(hidden, 32)
