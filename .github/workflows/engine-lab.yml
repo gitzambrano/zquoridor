@@ -83,7 +83,7 @@ jobs:
           python-version: "3.11"
       - name: Syntax and frozen-identity sanity
         run: |
-          python -m py_compile tools/external/titanium_arena.py tools/external/titanium_arena_fixed.py tools/external/analyze_paired_arena.py training/teachers/titanium_collect.py
+          python -m py_compile tools/arena/run_arena.py tools/external/titanium_arena.py tools/external/titanium_arena_fixed.py tools/external/analyze_paired_arena.py training/teachers/titanium_collect.py
           bash -n tools/external/build_pinned_titanium.sh
           test -s checkpoints/gen8/nnue_weights.bin
           test -s checkpoints/gen8/nnue_weights_int8.bin
