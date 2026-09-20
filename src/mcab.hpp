@@ -1303,12 +1303,11 @@ private:
     // avaliação, backup).
     // ---------------------------------------------------------------
     void runSimulation(Eng& engine, SearchStatsT& stats, McabStats& mstats) {
-        // Search is sequential within one MCABSearch. Reuse the descent buffer
-        // across simulations instead of paying allocator traffic every visit.
-        static thread_local std::vector<PathEdge> path;
-        path.clear();
-        const size_t need = (size_t)params.maxTreeDepth + 2;
-        if (path.capacity() < need) path.reserve(need);
+        // Ablation control: allocate the descent path for every simulation.
+        // Production main reuses a thread-local scratch vector; this branch
+        // intentionally restores the pre-optimization allocator traffic.
+        std::vector<PathEdge> path;
+        path.reserve((size_t)params.maxTreeDepth + 2);
 
         int curIdx = 0;
         int depth = 0;  // ply desde a raiz; indexa mcabAccStack
