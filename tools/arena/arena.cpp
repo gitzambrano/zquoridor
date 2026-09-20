@@ -239,6 +239,8 @@ static bool g_e1McabEnabled = mcab::resolve(E1_MCAB_ENABLED_OVERRIDE, MCAB_PROD.
 static bool g_e2McabEnabled = mcab::resolve(E2_MCAB_ENABLED_OVERRIDE, MCAB_PROD.enabled);
 static int g_e1McabNodeBudget = mcab::resolve(E1_MCAB_NODE_BUDGET_OVERRIDE, MCAB_PROD.nodeBudget);
 static int g_e2McabNodeBudget = mcab::resolve(E2_MCAB_NODE_BUDGET_OVERRIDE, MCAB_PROD.nodeBudget);
+static bool g_e1McabAutoNodeBudget = true;
+static bool g_e2McabAutoNodeBudget = true;
 static int g_e1McabLeafDepth = mcab::resolve(E1_MCAB_LEAF_DEPTH_OVERRIDE, MCAB_PROD.leafDepth);
 static int g_e2McabLeafDepth = mcab::resolve(E2_MCAB_LEAF_DEPTH_OVERRIDE, MCAB_PROD.leafDepth);
 static int g_e1McabLeafDepthMax = mcab::resolve(E1_MCAB_LEAF_DEPTH_MAX_OVERRIDE, MCAB_PROD.leafDepthMax);
@@ -460,6 +462,7 @@ int playArenaGame(int engine1PlayerIdx, int timeMs, int randomPlies, std::mt1993
         mcab::McabParams p1;
         p1.enabled = g_e1McabEnabled;
         p1.nodeBudget = g_e1McabEquivMode ? 0 : g_e1McabNodeBudget;
+        p1.autoNodeBudget = g_e1McabAutoNodeBudget && !g_e1McabEquivMode;
         p1.leafDepth = g_e1McabLeafDepth;
         p1.leafDepthMax = g_e1McabLeafDepthMax;
         p1.adaptiveLeafDepth = g_e1McabAdaptiveLeafDepth;
@@ -488,6 +491,7 @@ int playArenaGame(int engine1PlayerIdx, int timeMs, int randomPlies, std::mt1993
         mcab::McabParams p2;
         p2.enabled = g_e2McabEnabled;
         p2.nodeBudget = g_e2McabEquivMode ? 0 : g_e2McabNodeBudget;
+        p2.autoNodeBudget = g_e2McabAutoNodeBudget && !g_e2McabEquivMode;
         p2.leafDepth = g_e2McabLeafDepth;
         p2.leafDepthMax = g_e2McabLeafDepthMax;
         p2.adaptiveLeafDepth = g_e2McabAdaptiveLeafDepth;
@@ -709,6 +713,8 @@ int main(int argc, char* argv[]) {
     bool e2McabEnabled = mcab::resolve(E2_MCAB_ENABLED_OVERRIDE, MCAB_PROD.enabled);
     int e1McabNodeBudget = mcab::resolve(E1_MCAB_NODE_BUDGET_OVERRIDE, MCAB_PROD.nodeBudget);
     int e2McabNodeBudget = mcab::resolve(E2_MCAB_NODE_BUDGET_OVERRIDE, MCAB_PROD.nodeBudget);
+    bool e1McabAutoNodeBudget = true;
+    bool e2McabAutoNodeBudget = true;
     int e1McabLeafDepth = mcab::resolve(E1_MCAB_LEAF_DEPTH_OVERRIDE, MCAB_PROD.leafDepth);
     int e2McabLeafDepth = mcab::resolve(E2_MCAB_LEAF_DEPTH_OVERRIDE, MCAB_PROD.leafDepth);
     int e1McabLeafDepthMax = mcab::resolve(E1_MCAB_LEAF_DEPTH_MAX_OVERRIDE, MCAB_PROD.leafDepthMax);
@@ -796,9 +802,14 @@ int main(int argc, char* argv[]) {
         else if (std::strcmp(argv[i], "--e2-no-mcab") == 0) e2McabEnabled = false;
         else if (std::strcmp(argv[i], "--mcab-nodes") == 0 && i + 1 < argc) {
             int n = std::atoi(argv[++i]); e1McabNodeBudget = n; e2McabNodeBudget = n;
+            e1McabAutoNodeBudget = false; e2McabAutoNodeBudget = false;
         }
-        else if (std::strcmp(argv[i], "--e1-mcab-nodes") == 0 && i + 1 < argc) e1McabNodeBudget = std::atoi(argv[++i]);
-        else if (std::strcmp(argv[i], "--e2-mcab-nodes") == 0 && i + 1 < argc) e2McabNodeBudget = std::atoi(argv[++i]);
+        else if (std::strcmp(argv[i], "--e1-mcab-nodes") == 0 && i + 1 < argc) {
+            e1McabNodeBudget = std::atoi(argv[++i]); e1McabAutoNodeBudget = false;
+        }
+        else if (std::strcmp(argv[i], "--e2-mcab-nodes") == 0 && i + 1 < argc) {
+            e2McabNodeBudget = std::atoi(argv[++i]); e2McabAutoNodeBudget = false;
+        }
         else if (std::strcmp(argv[i], "--mcab-leaf-depth") == 0 && i + 1 < argc) {
             int d = std::atoi(argv[++i]); e1McabLeafDepth = d; e2McabLeafDepth = d;
         }
@@ -908,6 +919,8 @@ int main(int argc, char* argv[]) {
     g_e2McabEnabled = e2McabEnabled;
     g_e1McabNodeBudget = e1McabNodeBudget;
     g_e2McabNodeBudget = e2McabNodeBudget;
+    g_e1McabAutoNodeBudget = e1McabAutoNodeBudget;
+    g_e2McabAutoNodeBudget = e2McabAutoNodeBudget;
     g_e1McabLeafDepth = e1McabLeafDepth;
     g_e2McabLeafDepth = e2McabLeafDepth;
     g_e1McabLeafDepthMax = e1McabLeafDepthMax;
