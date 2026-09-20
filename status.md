@@ -1427,6 +1427,8 @@ A comprehensive review of the web deployment resolved three functional and visua
   - Updated `readme.md` to reflect the new 456-feature NNUE architecture and competitive benchmark records.
 
 
+- **Generic real-clock MCAB budget promotion (2026-09-20).** The old 20k-node production ceiling was retained for fixed-time/fixed-node 200 ms play, but real clocks now scale the MCAB guardrail with the TimeManager move budget so the search is normally time-bound instead of node-bound. Cross-control gate on the promoted implementation: at fixed 200 ms, auto-budget vs explicit 20k was neutral (38W/3D/39L, -4.3 ±74.7 Elo); at 1+0 it was clearly stronger (36W/9D/15L, +127.0 ±85.5 Elo). Independent 3+2 node-budget screens on the same main baseline showed 40k vs 20k +117.2 ±75.9 Elo, 80k +179.5 ±80.7 Elo, and 160k +234.1 ±85.6 Elo, confirming that 20k materially underuses long-clock compute. The current main already includes post-DSU move generation, whose paired 400-game A/B against Claustrophobia moved from 48.875% pre-DSU to 50.25% post-DSU; the paired delta (+1.375 pp, 95% bootstrap [-0.375,+3.25]) is directional rather than statistically conclusive. Smart-pruning/post-AB and reinvest-Q variants were rejected after 400+400 confirmations because they regressed versus both baseline and Claustrophobia.
+
 
 ---
 
