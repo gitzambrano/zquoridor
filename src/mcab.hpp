@@ -143,7 +143,7 @@ inline bool mcabWallSlotAvailable(const StateT& s, int orientation, int r, int c
 // quanto como parâmetro de chooseMoveAuto (Seção 4.4, Fase 2) sem duplicar
 // a lista de campos.
 // =========================================================================
-enum class RootSelectMode { MaxVisits, MaxQ, MaxVisitsThenQ };
+enum class RootSelectMode { MaxVisits, MaxQ, MaxVisitsThenQ, RobustQ75 };
 enum class BackupMode { MinimaxHard, AvgBlend };
 
 // -------------------------------------------------------------------------
@@ -175,6 +175,8 @@ inline RootSelectMode resolveRootSelect(const char* s, RootSelectMode prod) {
     if (std::strcmp(s, "visits") == 0)        return RootSelectMode::MaxVisits;
     if (std::strcmp(s, "q") == 0)             return RootSelectMode::MaxQ;
     if (std::strcmp(s, "visits-then-q") == 0) return RootSelectMode::MaxVisitsThenQ;
+    if (std::strcmp(s, "robust-q75") == 0 || std::strcmp(s, "robust-q") == 0)
+        return RootSelectMode::RobustQ75;
     return prod;
 }
 
@@ -185,6 +187,7 @@ inline const char* rootSelectName(RootSelectMode m) {
     switch (m) {
         case RootSelectMode::MaxQ:            return "q";
         case RootSelectMode::MaxVisitsThenQ:  return "visits-then-q";
+        case RootSelectMode::RobustQ75:        return "robust-q75";
         default:                              return "visits";
     }
 }
@@ -1512,6 +1515,30 @@ private:
 
         auto qOf = [&](size_t i) { return r.N[i] > 0.f ? edgeQ(r, i) : -1.0; };
 
+        // Robust-Q75: retain only statistically well-supported root moves
+        // (at least 75% of the visit count of the most-visited move), then
+        // choose the highest-Q move inside that robust set. This deliberately
+        // differs from MaxQ, which may select a lightly visited outlier.
+        if (params.rootSelectMode == RootSelectMode::RobustQ75) {
+            float maxVisits = 0.f;
+            for (size_t i = 0; i < nm; ++i) maxVisits = std::max(maxVisits, r.N[i]);
+            size_t robustBest = nm;
+            double robustBestQ = -std::numeric_limits<double>::infinity();
+            for (size_t i = 0; i < nm; ++i) {
+                // N is integer-valued although stored as float. Multiplication
+                // avoids a threshold-rounding ambiguity at exactly 75%.
+                if (4.0f * r.N[i] < 3.0f * maxVisits || r.N[i] <= 0.f) continue;
+                double q = qOf(i);
+                if (robustBest == nm || q > robustBestQ ||
+                    (q == robustBestQ && r.N[i] > r.N[robustBest])) {
+                    robustBest = i;
+                    robustBestQ = q;
+                }
+            }
+            if (robustBest != nm) return r.moves[robustBest];
+            // Defensive fallback for a zero-simulation root.
+        }
+
         size_t best = 0;
         for (size_t i = 1; i < nm; i++) {
             bool better;
@@ -1522,6 +1549,7 @@ private:
                 case RootSelectMode::MaxVisitsThenQ:
                     better = (r.N[i] != r.N[best]) ? (r.N[i] > r.N[best]) : (qOf(i) > qOf(best));
                     break;
+                case RootSelectMode::RobustQ75:
                 case RootSelectMode::MaxVisits:
                 default:
                     better = r.N[i] > r.N[best];
