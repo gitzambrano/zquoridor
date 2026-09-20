@@ -220,6 +220,8 @@ struct McabParams {
     // Zero preserves production's historical node/time-bounded behavior.
     int simulationBudget = 0;
     bool smartPruning = false;            // exact MaxVisits early stop; requires simulationBudget > 0
+    bool smartReinvestQ = false;           // after MaxVisits lock, spend remaining sims on top root candidates
+    int smartRefineTopK = 3;               // frozen by visits when the lock occurs
     // 0 = folha avaliada só por nnueEvalInt no acumulador incremental, sem
     // searchLeaf e sem quiescência de muro. Era 4 (valor do plano); a Fase 8
     // mediu 4 como catastrófico a 200ms/lance e 0 como o único ponto que
@@ -319,6 +321,8 @@ struct McabStats {
     long long evalCacheValueEvictions = 0;
     bool smartPruned = false;
     long long smartPruneSaved = 0;
+    bool smartReinvested = false;
+    int smartRefineCandidates = 0;
                                      // (ver evaluateLeaf). Muitas = leafDepth alto demais para o
                                      // controle de tempo em uso; a árvore fica cega nessas folhas.
 };
@@ -569,6 +573,8 @@ public:
         McabStats localStats;
         McabStats& mstats = outStats ? *outStats : localStats;
         mstats = McabStats{};
+        rootRefineActive = false;
+        rootRefineAllowed.clear();
         if (params.evalCache) {
             if (policyEvalCache.empty()) policyEvalCache.resize(kEvalCacheEntries);
             if (valueEvalCache.empty()) valueEvalCache.resize(kEvalCacheEntries);
@@ -748,7 +754,7 @@ public:
             // mathematically fixed and the remaining work is unnecessary.
             if (params.smartPruning && params.simulationBudget > 0 &&
                 params.rootSelectMode == RootSelectMode::MaxVisits &&
-                mstats.simulations > 0) {
+                mstats.simulations > 0 && !rootRefineActive) {
                 long long remaining =
                     (long long)params.simulationBudget - mstats.simulations;
                 if (remaining > 0) {
@@ -763,7 +769,15 @@ public:
                     if ((double)first - (double)second > (double)remaining) {
                         mstats.smartPruned = true;
                         mstats.smartPruneSaved = remaining;
-                        break;
+                        if (params.smartReinvestQ) {
+                            beginRootRefinement();
+                            mstats.smartReinvested = rootRefineActive;
+                            mstats.smartRefineCandidates = 0;
+                            for (uint8_t allowed : rootRefineAllowed)
+                                if (allowed) ++mstats.smartRefineCandidates;
+                        } else {
+                            break;
+                        }
                     }
                 }
             }
@@ -806,6 +820,9 @@ private:
         uint32_t generation = 0;
         int score = 0;
     };
+
+    bool rootRefineActive = false;
+    std::vector<uint8_t> rootRefineAllowed;
 
     std::vector<PolicyEvalCacheEntry> policyEvalCache;
     std::vector<ValueEvalCacheEntry> valueEvalCache;
@@ -1311,6 +1328,23 @@ private:
         return visited ? best : 0.5;
     }
 
+    void beginRootRefinement() {
+        rootRefineActive = false;
+        rootRefineAllowed.clear();
+        if (pool.empty() || pool[0].terminal) return;
+        NodeT& root = pool[0];
+        size_t nm = (size_t)std::min(root.activeMoves, (int)root.moves.size());
+        if (nm == 0) return;
+        std::vector<size_t> order(nm);
+        for (size_t i = 0; i < nm; ++i) order[i] = i;
+        std::stable_sort(order.begin(), order.end(),
+                         [&](size_t a, size_t b) { return root.N[a] > root.N[b]; });
+        int keep = std::max(1, std::min(params.smartRefineTopK, (int)nm));
+        rootRefineAllowed.assign(nm, 0);
+        for (int k = 0; k < keep; ++k) rootRefineAllowed[order[(size_t)k]] = 1;
+        rootRefineActive = true;
+    }
+
     int selectChildPUCT(const NodeT& node) const {
         size_t nm = (size_t)std::min(node.activeMoves, (int)node.moves.size());
         if (nm == 0) return -1;
@@ -1322,6 +1356,9 @@ private:
         int best = -1;
         double bestScore = -std::numeric_limits<double>::infinity();
         for (size_t i = 0; i < nm; i++) {
+            if (rootRefineActive && &node == &pool[0] &&
+                (i >= rootRefineAllowed.size() || !rootRefineAllowed[i]))
+                continue;
             double q = node.N[i] > 0.0 ? edgeQ(node, i) : fpu;
             double u = params.cPuct * (double)node.P[i] * sqrtN / (1.0 + (double)node.N[i]);
             double score = q + u;
@@ -1546,6 +1583,17 @@ private:
         if (nm == 0) return MoveT{};
 
         auto qOf = [&](size_t i) { return r.N[i] > 0.f ? edgeQ(r, i) : -1.0; };
+
+        if (params.smartReinvestQ && rootRefineActive && !rootRefineAllowed.empty()) {
+            size_t bestQ = nm;
+            for (size_t i = 0; i < nm; ++i) {
+                if (i >= rootRefineAllowed.size() || !rootRefineAllowed[i]) continue;
+                if (bestQ == nm || qOf(i) > qOf(bestQ) ||
+                    (qOf(i) == qOf(bestQ) && r.N[i] > r.N[bestQ]))
+                    bestQ = i;
+            }
+            if (bestQ != nm) return r.moves[bestQ];
+        }
 
         size_t best = 0;
         for (size_t i = 1; i < nm; i++) {
