@@ -139,17 +139,17 @@ jobs:
             --tc-base-ms 1000 --tc-inc-ms 100 --move-overhead-ms 5 \
             --e1-nnue data/nnue/nnue_weights_int8.bin \
             --e2-nnue data/nnue/nnue_weights_int8.bin
-      - name: Record time-manager smoke success
-        if: ${{ success() && github.ref_name == 'infra/engine-lab-time-manager-v1' }}
+      - name: Record time-manager smoke result
+        if: ${{ always() && github.ref_name == 'infra/engine-lab-time-manager-v1' }}
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p results/time-manager-v1
-          printf 'status=passed\nsource_sha=%s\n' "$GITHUB_SHA" > results/time-manager-v1/smoke.txt
+          printf 'status=${{ job.status }}\nsource_sha=%s\n' "$GITHUB_SHA" > results/time-manager-v1/smoke.txt
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git add results/time-manager-v1/smoke.txt
-          git commit -m "ci: record time manager smoke"
+          git commit -m "ci: record time manager smoke result"
           git push origin HEAD:"$GITHUB_REF_NAME"
 
   selfplay:
