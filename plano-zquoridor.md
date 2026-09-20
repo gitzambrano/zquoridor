@@ -56,9 +56,11 @@ arquivos de configuração indicados.
   - **vs Titanium (100 jogos Center Rush)**: **45,0% (-34,86 Elo)** (Pretas dominando com 72,0% de vitórias; Brancas em 18,0%).
   - **Zero Custo de BFS**: Validação incremental em C++ com 100% de paridade (0 divergências em 4.758 posições).
 
-- **Rede Experimental em Treinamento (`margin_regime:512` — 588 entradas)**:
+- **Rede Experimental Treinada e em Benchmark (`margin_regime:512` — 588 entradas)**:
   - 132 features de interação direta: $\Delta d \in [-16..16] \times 4$ regimes de esgotamento de muros.
-  - Treinamento ativo no GPU de 60 épocas com warm-start cirúrgico da campeã.
+  - Treinamento de 60 épocas com QAT concluído com sucesso: `best_val_loss = 0.7308`, `policy_kl = 0.1983`, `value_mae = 0.2060`.
+  - Paridade incremental em C++ verificada: 0 divergências em 4.758 posições.
+  - Bateria oficial completa de 800 jogos (600g Claustrophobia GPU + 200g Titanium) em execução ativa.
 
 ### Protocolo Mandatório para os Próximos Treinamentos
 1. **Mínimo de 60 Épocas com Recozimento Térmico (Annealing)**: Treinamentos não podem ser interrompidos prematuramente; devem cumprir $\ge 60$ épocas com decaimento suave de learning rate (cosine schedule até $2\cdot 10^{-7}$) para garantir assentamento profundo dos pesos quantizados (QAT).
