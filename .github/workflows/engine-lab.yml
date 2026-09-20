@@ -10,6 +10,14 @@ on:
       - "tools/external/**"
       - "training/teachers/**"
       - "docs/engine-lab.md"
+  pull_request:
+    paths:
+      - ".github/workflows/engine-lab.yml"
+      - "build/build_tests.*"
+      - "src/time_manager.hpp"
+      - "tests/test_time_manager.cpp"
+      - "tools/arena/**"
+      - "tools/external/**"
   workflow_dispatch:
     inputs:
       mode:
