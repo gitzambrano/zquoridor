@@ -60,7 +60,7 @@ jobs:
           from pathlib import Path
           root=Path(".").resolve()
           w=str((root/"data/nnue/nnue_weights_int8.bin").resolve())
-          p=subprocess.Popen([str(root/"gate-bin/candidate"),"--nnue",w,"--lazy-wall-cache","--nodes","6000"],
+          p=subprocess.Popen([str(root/"gate-bin/candidate"),"--nnue",w,"--lazy-wall-gen","--nodes","6000"],
                              stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True,bufsize=1)
           def send(x): p.stdin.write(x+"\n"); p.stdin.flush()
           send("uci")
@@ -116,7 +116,7 @@ jobs:
           shard=int(os.environ["SHARD"]); seed=int(os.environ["OPENING_SEED"])
           total_pairs=200; per=50
           W=str((ROOT/"data/nnue/nnue_weights_int8.bin").resolve())
-          cand=[str((ROOT/"gate-bin/candidate").resolve()),"--nnue",W,"--lazy-wall-cache"]
+          cand=[str((ROOT/"gate-bin/candidate").resolve()),"--nnue",W,"--lazy-wall-gen"]
           base=[str((ROOT/"gate-bin/main-base").resolve()),"--nnue",W]
           openings=run_benchmark._read_openings(ROOT/"tools/external/openings_confirmation_v1.jsonl",total_pairs,seed)[shard*per:(shard+1)*per]
           rows=[]
@@ -187,7 +187,7 @@ jobs:
           shard=int(os.environ["SHARD"]); seed=int(os.environ["OPENING_SEED"])
           total_pairs=200; per=50
           W=str((ROOT/"data/nnue/nnue_weights_int8.bin").resolve())
-          cand=[str((ROOT/"gate-bin/candidate").resolve()),"--nnue",W,"--lazy-wall-cache"]
+          cand=[str((ROOT/"gate-bin/candidate").resolve()),"--nnue",W,"--lazy-wall-gen"]
           info=ensure_bot("claustrophobia",root=ROOT,build=False)
           openings=run_benchmark._read_openings(ROOT/"tools/external/openings_confirmation_v1.jsonl",total_pairs,seed)[shard*per:(shard+1)*per]
           rows=[]
