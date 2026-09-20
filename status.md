@@ -27,6 +27,12 @@ relearn by experiment.
   the optimum budget as the effective move limit. The external adapter accepts
   `wtime/btime/winc/binc/movestogo`, and the arena accepts
   `--tc-base-ms` plus `--tc-inc-ms` for game-clock tests.
+- **Search promotion checkpoint (2026-09-20)**:
+  - **Promoted / retained:** post-lattice DSU move generation; increment-aware TimeManager; generic real-clock MCAB node guardrail; bounded hot tree reuse.
+  - **Fixed 200 ms:** post-DSU paired Claustrophobia A/B moved from 48.875% to 50.25% (+1.375 pp; bootstrap 95% [-0.375,+3.25]); fixed-200 auto-budget remains at the historical 20k ceiling.
+  - **Real clocks:** automatic node budgeting was neutral at fixed 200 ms but clearly stronger at 1+0 (+127 Elo screen); 3+2 node-cap screens favored 40k/80k/160k over 20k (+117/+180/+234 Elo screens), motivating time-scaled search under increment clocks.
+  - **Rejected for production strength:** Robust-Q75 (53.5% vs baseline but 45.5% vs Claustrophobia), persistent eval cache (50.25% vs baseline, 38.75% vs Claustrophobia), exact/mixed smart pruning (regressed in 400+400 gates), and path-scratch (neutral).
+  - **Full fast-wall generator beyond post-DSU:** remains experimental until its current 400+400 gate completes; do not infer promotion from fixed-node equivalence alone.
 - **Performance baseline (2026-09-20)**:
   - vs Titanium: **63.0% (+92.5 Elo)** in official 600-game match (378W / 0D / 222L) — project record.
   - vs `main` (Gen 5): **81.25% (+254.7 Elo)** in direct screening (32W / 1D / 7L).
