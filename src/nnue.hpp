@@ -72,6 +72,12 @@ inline int wallsLeftBucket(int n) {
 #ifndef ZQ_NNUE_RACE_FEATURES
 #define ZQ_NNUE_RACE_FEATURES 1
 #endif
+#ifndef ZQ_NNUE_MARGIN_REGIME_FEATURES
+#define ZQ_NNUE_MARGIN_REGIME_FEATURES 0
+#endif
+#ifndef ZQ_NNUE_PHASE_FEATURES
+#define ZQ_NNUE_PHASE_FEATURES 0
+#endif
 #ifndef ZQ_NNUE_MULTIPATH_FEATURES
 #define ZQ_NNUE_MULTIPATH_FEATURES 0
 #endif
@@ -79,8 +85,15 @@ inline int wallsLeftBucket(int n) {
 #define ZQ_NNUE_HIDDEN 512
 #endif
 constexpr int BASE_FEATURES = N * N + N * N + WS * WS * 2 + 2 * DIST_BUCKETS + 2 * WALLS_LEFT_BUCKETS;
-constexpr int MULTIPATH_FEATURES = 24;
-constexpr int NUM_FEATURES = BASE_FEATURES + (ZQ_NNUE_RACE_FEATURES ? 102 : 0) + (ZQ_NNUE_MULTIPATH_FEATURES ? MULTIPATH_FEATURES : 0);
+constexpr int RACE_EXTRA_FEATURES = 102;
+constexpr int MARGIN_REGIME_EXTRA_FEATURES = 132;
+constexpr int PHASE_EXTRA_FEATURES = 24;
+constexpr int MULTIPATH_EXTRA_FEATURES = 24;
+constexpr int NUM_FEATURES = BASE_FEATURES
+    + (ZQ_NNUE_RACE_FEATURES ? RACE_EXTRA_FEATURES : 0)
+    + (ZQ_NNUE_MARGIN_REGIME_FEATURES ? MARGIN_REGIME_EXTRA_FEATURES : 0)
+    + (ZQ_NNUE_PHASE_FEATURES ? PHASE_EXTRA_FEATURES : 0)
+    + (ZQ_NNUE_MULTIPATH_FEATURES ? MULTIPATH_EXTRA_FEATURES : 0);
 constexpr int HIDDEN = ZQ_NNUE_HIDDEN;
 static_assert(HIDDEN == 128 || HIDDEN == 256 || HIDDEN == 384 || HIDDEN == 512,
               "unsupported NNUE width");
@@ -105,6 +118,64 @@ template<class Acc> inline std::array<int, 3> raceFeatures(const Acc& acc) {
 template<class Acc> inline void updateRaceFeatures(Acc& acc, const std::array<int, 3>& previous) {
     auto current = raceFeatures(acc);
     for (int i = 0; i < 3; ++i) {
+        if (current[i] != previous[i]) {
+            acc.removeFeature(previous[i]);
+            acc.addFeature(current[i]);
+        }
+    }
+}
+
+// 132 features: margin [-16..16] x 4 wall regimes
+inline int marginRegimeFeatureIndex(int ownDist, int oppDist, int ownWalls, int oppWalls) {
+    constexpr int BASE = BASE_FEATURES + (ZQ_NNUE_RACE_FEATURES ? 102 : 0);
+    int delta = ownDist - oppDist;
+    int margin = delta < -16 ? -16 : (delta > 16 ? 16 : delta);
+    int deltaBucket = margin + 16;
+    int regime = 0;
+    if (ownWalls == 0 && oppWalls > 0) regime = 1;
+    else if (ownWalls > 0 && oppWalls == 0) regime = 2;
+    else if (ownWalls == 0 && oppWalls == 0) regime = 3;
+    return BASE + regime * 33 + deltaBucket;
+}
+
+template<class Acc> inline int marginRegimeFeature(const Acc& acc) {
+    return marginRegimeFeatureIndex(acc.ownDistBucket, acc.oppDistBucket,
+                                    acc.ownWallsLeftBucket, acc.oppWallsLeftBucket);
+}
+
+template<class Acc> inline void updateMarginRegimeFeature(Acc& acc, int previous) {
+    int current = marginRegimeFeature(acc);
+    if (current != previous) {
+        acc.removeFeature(previous);
+        acc.addFeature(current);
+    }
+}
+
+// 24 features: wall stock phase (6 buckets) + race x phase (18 buckets)
+inline std::array<int, 2> phaseFeatureIndices(int ownDist, int oppDist, int ownWalls, int oppWalls) {
+    constexpr int BASE = BASE_FEATURES + (ZQ_NNUE_RACE_FEATURES ? 102 : 0)
+                       + (ZQ_NNUE_MARGIN_REGIME_FEATURES ? 132 : 0);
+    int totalW = ownWalls + oppWalls;
+    int phaseBucket = 0;
+    if (totalW >= 1 && totalW <= 2) phaseBucket = 1;
+    else if (totalW >= 3 && totalW <= 5) phaseBucket = 2;
+    else if (totalW >= 6 && totalW <= 9) phaseBucket = 3;
+    else if (totalW >= 10 && totalW <= 14) phaseBucket = 4;
+    else if (totalW >= 15) phaseBucket = 5;
+
+    int delta = ownDist - oppDist;
+    int race = (delta > 0) - (delta < 0) + 1;
+    return {{BASE + phaseBucket, BASE + 6 + race * 6 + phaseBucket}};
+}
+
+template<class Acc> inline std::array<int, 2> phaseFeatures(const Acc& acc) {
+    return phaseFeatureIndices(acc.ownDistBucket, acc.oppDistBucket,
+                               acc.ownWallsLeftBucket, acc.oppWallsLeftBucket);
+}
+
+template<class Acc> inline void updatePhaseFeatures(Acc& acc, const std::array<int, 2>& previous) {
+    auto current = phaseFeatures(acc);
+    for (int i = 0; i < 2; ++i) {
         if (current[i] != previous[i]) {
             acc.removeFeature(previous[i]);
             acc.addFeature(current[i]);
@@ -149,7 +220,9 @@ struct MultipathFeatures {
 
 inline MultipathFeatures getMultipathFeatures(const State& s, int perspective) {
     MultipathFeatures mf;
-    constexpr int BASE = BASE_FEATURES + 102;
+    constexpr int BASE = BASE_FEATURES + (ZQ_NNUE_RACE_FEATURES ? 102 : 0)
+                       + (ZQ_NNUE_MARGIN_REGIME_FEATURES ? 132 : 0)
+                       + (ZQ_NNUE_PHASE_FEATURES ? 24 : 0);
     int me = perspective, opp = 1 - perspective;
     int ownCell = s.pawn[me], oppCell = s.pawn[opp];
 
@@ -459,6 +532,12 @@ inline Accumulator buildAccumulator(const State& s, int perspective, PlayerPathC
 #if ZQ_NNUE_RACE_FEATURES
     for (int feature : raceFeatures(acc)) acc.addFeature(feature);
 #endif
+#if ZQ_NNUE_MARGIN_REGIME_FEATURES
+    acc.addFeature(marginRegimeFeature(acc));
+#endif
+#if ZQ_NNUE_PHASE_FEATURES
+    for (int feature : phaseFeatures(acc)) acc.addFeature(feature);
+#endif
 #if ZQ_NNUE_MULTIPATH_FEATURES
     auto mp = getMultipathFeatures(s, perspective);
     for (int i = 0; i < mp.count; ++i) acc.addFeature(mp.features[i]);
@@ -563,6 +642,12 @@ inline void updateAccumulatorForMove(Accumulator& acc, bool viewerIsMover, const
 #if ZQ_NNUE_RACE_FEATURES
     const auto previousRaceFeatures = raceFeatures(acc);
 #endif
+#if ZQ_NNUE_MARGIN_REGIME_FEATURES
+    const int previousMarginRegime = marginRegimeFeature(acc);
+#endif
+#if ZQ_NNUE_PHASE_FEATURES
+    const auto previousPhaseFeatures = phaseFeatures(acc);
+#endif
     State after = applyMove(before, m);
     int mover = before.turn, opp = 1 - mover;
     if (!m.isWall) {
@@ -628,6 +713,12 @@ inline void updateAccumulatorForMove(Accumulator& acc, bool viewerIsMover, const
     }
 #if ZQ_NNUE_RACE_FEATURES
     updateRaceFeatures(acc, previousRaceFeatures);
+#endif
+#if ZQ_NNUE_MARGIN_REGIME_FEATURES
+    updateMarginRegimeFeature(acc, previousMarginRegime);
+#endif
+#if ZQ_NNUE_PHASE_FEATURES
+    updatePhaseFeatures(acc, previousPhaseFeatures);
 #endif
 #if ZQ_NNUE_MULTIPATH_FEATURES
     int viewerPlayer = viewerIsMover ? mover : opp;
@@ -860,6 +951,12 @@ inline AccumulatorQuant buildAccumulatorQuant(const State& s, int perspective, P
 #if ZQ_NNUE_RACE_FEATURES
     for (int feature : raceFeatures(acc)) acc.addFeature(feature);
 #endif
+#if ZQ_NNUE_MARGIN_REGIME_FEATURES
+    acc.addFeature(marginRegimeFeature(acc));
+#endif
+#if ZQ_NNUE_PHASE_FEATURES
+    for (int feature : phaseFeatures(acc)) acc.addFeature(feature);
+#endif
 #if ZQ_NNUE_MULTIPATH_FEATURES
     auto mp = getMultipathFeatures(s, perspective);
     for (int i = 0; i < mp.count; ++i) acc.addFeature(mp.features[i]);
@@ -877,6 +974,12 @@ inline void updateAccumulatorForMoveQuant(AccumulatorQuant& acc, bool viewerIsMo
                                            PlayerPathCacheTable* xtable = nullptr) {
 #if ZQ_NNUE_RACE_FEATURES
     const auto previousRaceFeatures = raceFeatures(acc);
+#endif
+#if ZQ_NNUE_MARGIN_REGIME_FEATURES
+    const int previousMarginRegime = marginRegimeFeature(acc);
+#endif
+#if ZQ_NNUE_PHASE_FEATURES
+    const auto previousPhaseFeatures = phaseFeatures(acc);
 #endif
     State after = applyMove(before, m);
     int mover = before.turn, opp = 1 - mover;
@@ -941,6 +1044,12 @@ inline void updateAccumulatorForMoveQuant(AccumulatorQuant& acc, bool viewerIsMo
     }
 #if ZQ_NNUE_RACE_FEATURES
     updateRaceFeatures(acc, previousRaceFeatures);
+#endif
+#if ZQ_NNUE_MARGIN_REGIME_FEATURES
+    updateMarginRegimeFeature(acc, previousMarginRegime);
+#endif
+#if ZQ_NNUE_PHASE_FEATURES
+    updatePhaseFeatures(acc, previousPhaseFeatures);
 #endif
 #if ZQ_NNUE_MULTIPATH_FEATURES
     int viewerPlayer = viewerIsMover ? mover : opp;

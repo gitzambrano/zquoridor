@@ -110,19 +110,17 @@ Benchmark válido exige mesmas aberturas, cores invertidas, seed igual e
 
 ## 3. Redes a treinar e testar
 
-| ID | Features | Larguras | Estado |
-|---|---|---|---|
-| `base` | 354: peões, muros, buckets BFS, reservas | 128/256/384/512 | implementada |
-| `race` | 456: `base` + margens BFS, reservas e interação corrida | 128/256/384/512 | implementada |
-| `phase` | fase por ply, paredes e reservas | futura | a implementar |
-| `topology-lite` | contagem/orientação de muros | futura | a implementar |
-| `race-phase` | corrida × fase × reservas | futura | a implementar |
-| `corridor-touch` | slots tocados por caminhos mínimos | futura | a implementar |
-| `multi-path` | robustez/número de rotas alternativas | futura | a implementar |
-| `wall-threat` | ameaça local perto de caminho/peão | futura | a implementar |
+| ID | Entradas | Descrição e Features Extras | Custo BFS | Estado |
+|---|---:|---|---|---|
+| `base` | 354 | Peões (81+81), muros (64+64), distâncias (21+21), reservas (11+11) | 0 extra | baseline histórico |
+| `race` | 456 | `base` + margem BFS [-16..16] (33) + saldo muros (21) + corrida × reservas (48) | 0 extra | **baseline oficial de produção (`race512-cr200k-champion`)** |
+| `multipath` | 480 | `race` + 8 saídas direcionais unblocked + 8 grau de saída (gargalos) + 8 geometria de contato/pulo | 0 extra | **implementada & validada (0 divergências incremental)** |
+| `margin_regime` | 588 | `race` + 132 interação margem $\Delta d \in [-16..16] \times 4$ regimes de esgotamento de muros | 0 extra | **implementada & validada (0 divergências incremental)** |
+| `phase` | 480 | `race` + 6 buckets estoque total de muros + 18 corrida $\times$ fase | 0 extra | **implementada & validada (0 divergências incremental)** |
+| `margin_phase` | 612 | `race` + 132 `margin_regime` + 24 `phase` (interação completa corrida $\times$ muros $\times$ fase) | 0 extra | **implementada & validada (0 divergências incremental)** |
 
-Prioridade: terminar `base`/`race`, depois `phase`, `topology-lite` e
-`race-phase`; features de corredor só entram após medir o ganho atual.
+### Protocolo de Cirurgia de Rede (Warm-Start)
+Para todas as redes experimentais com expansão de entradas (ex: 456 -> 480, 588, 612), os pesos $456 \times 512$ da campeã de produção (`race512-cr200k-champion`) são copiados diretamente e as novas colunas são inicializadas com **exatamente 0**. Isso assegura que no passo inicial o modelo apresente divergência matemática absolutamente zero em relação à campeã, aprendendo as novas interações de forma suave durante o recozimento térmico de 60 épocas.
 
 ## 4. Redes já treinadas: settings, dados e TODO
 

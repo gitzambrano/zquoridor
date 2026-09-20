@@ -8,7 +8,14 @@ from torch import nn
 from torch.nn import functional as F
 from quantize_nnue import quantize, write_quantized
 
-FEATURES = {"base": 354, "race": 456, "multipath": 480}
+FEATURES = {
+    "base": 354,
+    "race": 456,
+    "multipath": 480,
+    "margin_regime": 588,
+    "phase": 480,
+    "margin_phase": 612,
+}
 LAYOUT = ("w1", "b1", "wv1_wl", "bv1_wl", "wv2_wl", "bv2_wl", "wp", "bp")
 
 
@@ -50,7 +57,7 @@ def encode_features(data, indices, architecture="base"):
     x = dense_features(data, indices)
     if architecture == "base":
         return x
-    if architecture not in ("race", "multipath"):
+    if architecture not in ("race", "multipath", "margin_regime", "phase", "margin_phase"):
         raise ValueError(f"unknown architecture: {architecture}")
     n = len(indices)
     extra = np.zeros((n, 102), dtype=np.float32)
@@ -65,6 +72,32 @@ def encode_features(data, indices, architecture="base"):
     extra[rows, 54 + race * 16 + np.minimum(ow, 3) * 4 + np.minimum(pw, 3)] = 1
     x = np.concatenate((x, extra), axis=1)
     if architecture == "race":
+        return x
+
+    if architecture in ("margin_regime", "margin_phase"):
+        mr = np.zeros((n, 132), dtype=np.float32)
+        delta = np.clip(own - opp, -16, 16) + 16
+        regime = np.zeros(n, dtype=np.int64)
+        regime[(ow == 0) & (pw > 0)] = 1
+        regime[(ow > 0) & (pw == 0)] = 2
+        regime[(ow == 0) & (pw == 0)] = 3
+        mr[rows, regime * 33 + delta] = 1.0
+        x = np.concatenate((x, mr), axis=1)
+        if architecture == "margin_regime":
+            return x
+
+    if architecture in ("phase", "margin_phase"):
+        ph = np.zeros((n, 24), dtype=np.float32)
+        total_w = ow + pw
+        phase_bucket = np.zeros(n, dtype=np.int64)
+        phase_bucket[(total_w >= 1) & (total_w <= 2)] = 1
+        phase_bucket[(total_w >= 3) & (total_w <= 5)] = 2
+        phase_bucket[(total_w >= 6) & (total_w <= 9)] = 3
+        phase_bucket[(total_w >= 10) & (total_w <= 14)] = 4
+        phase_bucket[(total_w >= 15)] = 5
+        ph[rows, phase_bucket] = 1.0
+        ph[rows, 6 + race * 6 + phase_bucket] = 1.0
+        x = np.concatenate((x, ph), axis=1)
         return x
 
     # multipath: 24 additional cheap features (zero extra BFS)
@@ -232,8 +265,10 @@ def export(model, path):
     manifest = dict(schema="zquoridor.student.v1", architecture=model.architecture,
                     features=FEATURES[model.architecture], hidden=model.hidden, value_hidden=32,
                     policy_out=209, qa=255, qb=64, qat=model.qat,
-                    cpp_flags=[f"-DZQ_NNUE_RACE_FEATURES={int(model.architecture in ('race', 'multipath'))}",
+                    cpp_flags=[f"-DZQ_NNUE_RACE_FEATURES={int(model.architecture in ('race', 'multipath', 'margin_regime', 'phase', 'margin_phase'))}",
                                f"-DZQ_NNUE_MULTIPATH_FEATURES={int(model.architecture == 'multipath')}",
+                               f"-DZQ_NNUE_MARGIN_REGIME_FEATURES={int(model.architecture in ('margin_regime', 'margin_phase'))}",
+                               f"-DZQ_NNUE_PHASE_FEATURES={int(model.architecture in ('phase', 'margin_phase'))}",
                                f"-DZQ_NNUE_HIDDEN={model.hidden}"],
                     float_sha256=hashlib.sha256(path.read_bytes()).hexdigest(),
                     int8_sha256=hashlib.sha256(quant_path.read_bytes()).hexdigest())
