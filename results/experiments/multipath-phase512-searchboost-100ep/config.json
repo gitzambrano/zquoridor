@@ -1,0 +1,58 @@
+{
+  "config": {
+    "data": "data\\teaching\\multipath-weakness-boosted-11m\\dataset.npz",
+    "out_dir": "results\\experiments\\multipath-phase512-searchboost-100ep",
+    "architecture": "multipath_phase",
+    "hidden": 512,
+    "init_from": "results\\experiments\\multipath512-weakness-cr60ep\\student.bin",
+    "init_architecture": "multipath",
+    "init_hidden": 512,
+    "from_scratch": false,
+    "qat": true,
+    "epochs": 100,
+    "batch_size": 2048,
+    "lr": 1.5e-05,
+    "schedule": "cosine",
+    "warmup_epochs": 5,
+    "min_lr": 1e-07,
+    "trunk_lr_scale": 0.2,
+    "weight_decay": 1e-05,
+    "weight_decay_schedule": "cosine",
+    "min_weight_decay": 1e-07,
+    "weight_boosts": [
+      [
+        10500000,
+        10600000,
+        1.5
+      ],
+      [
+        10600000,
+        10700000,
+        1.5
+      ],
+      [
+        10700000,
+        10800000,
+        1.25
+      ],
+      [
+        10800000,
+        10810000,
+        1.5
+      ]
+    ],
+    "max_sample_weight": 30.0,
+    "policy_weight": 1.0,
+    "value_weight": 1.0,
+    "train_scope": "full",
+    "grad_clip": 1.0,
+    "patience": 100,
+    "seed": 20260920,
+    "device": "cuda",
+    "cpu_threads": 2
+  },
+  "data_sha256": "f0ccab25620e7a45f3b0a2589fc2562fd73da6b099e0780faafdd5c7a934709b",
+  "init_sha256": "684bc76c058f443790b47a0d163dda43229eb1bab9b2d4daafd11962d2d4cd64",
+  "trainer_sha256": "81aeca18964ecb6ef1a789fae68e97feea7617ff17a50b628e29c29b2dbff3fa",
+  "model_sha256": "73dd88b844709c551b30eacd7ff463f106783131932cba30d0001130934b4e56"
+}

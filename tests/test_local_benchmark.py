@@ -9,6 +9,10 @@ import time
 import unittest
 from pathlib import Path
 
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
 from tools import run_benchmark
 from tools.external import local_arena
 
@@ -65,14 +69,23 @@ class ProcessTests(unittest.TestCase):
                 f"""
                 import sys, time
                 behavior = {behavior!r}
+                last_position = ''
                 for raw in sys.stdin:
                     cmd = raw.strip()
                     if cmd == 'uci': print('uciok', flush=True)
                     elif cmd == 'isready': print('readyok', flush=True)
+                    elif cmd.startswith('position '): last_position = cmd
                     elif cmd.startswith('go '):
                         if behavior == 'timeout': time.sleep(30)
                         elif behavior == 'error': print('info string error fake failure', flush=True)
                         elif behavior == 'exit': sys.exit(7)
+                        elif behavior == 'clock_echo':
+                            print('info string ' + cmd, flush=True)
+                            print('bestmove e2', flush=True)
+                        elif behavior == 'clock_game':
+                            history = last_position.split(' moves ', 1)
+                            count = len(history[1].split()) if len(history) == 2 else 0
+                            print('bestmove ' + ['e2', 'e8', 'e3', 'e7'][count], flush=True)
                         else: print('bestmove e2', flush=True)
                     elif cmd == 'quit': break
                 """
@@ -103,6 +116,48 @@ class ProcessTests(unittest.TestCase):
                 engine.bestmove([], budget=10, timeout_s=0.15)
             self.assertLess(time.monotonic() - started, 3.0)
             self.assertIsNotNone(engine.process.poll())
+
+    def test_uci_clock_command_includes_both_clocks_and_increment(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            engine = local_arena.UciPlayer(
+                self._fake_engine(Path(raw), "clock_echo"), "fake", startup_timeout_s=1.0
+            )
+            try:
+                move, _, info = engine.bestmove_clock(
+                    [], white_ms=180_000, black_ms=179_250,
+                    increment_ms=2_000, timeout_s=1.0,
+                )
+            finally:
+                engine.close()
+            self.assertEqual(move, "e2")
+            self.assertIn(
+                "info string go wtime 180000 btime 179250 winc 2000 binc 2000",
+                info,
+            )
+
+    def test_clock_game_tracks_remaining_time_for_both_players(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            command = self._fake_engine(Path(raw), "clock_game")
+            row = local_arena.play_game(
+                opponent="baseline",
+                opening_index=0,
+                opening=[],
+                zq_player=0,
+                zq_factory=lambda: local_arena.UciPlayer(command, "candidate"),
+                opponent_factory=lambda: local_arena.UciPlayer(command, "baseline"),
+                zq_budget=0,
+                opponent_budget=0,
+                move_timeout_s=1.0,
+                max_plies=4,
+                run_id="clock-test",
+                clock_initial_ms=180_000,
+                clock_increment_ms=2_000,
+            )
+        self.assertEqual(row["status"], "ok")
+        self.assertEqual(row["termination"], "max_plies")
+        self.assertEqual(len(row["move_times"]), 4)
+        self.assertTrue(all("clock_before_ms" in move for move in row["move_times"]))
+        self.assertTrue(all(clock > 180_000 for clock in row["final_clocks_ms"]))
 
     def test_failed_game_is_recorded_and_excluded_from_pair_statistic(self) -> None:
         rows = [
@@ -169,6 +224,60 @@ class ResumeAndConfigTests(unittest.TestCase):
                 "--opponents", "claustrophobia", "--zq-move-time-ms", "200",
                 "--claustrophobia-move-time-ms", "100",
             ]))
+
+    def test_category_summary_keeps_complete_color_swapped_pairs(self) -> None:
+        rows = [
+            {"status": "ok", "opponent": "claustrophobia", "opening_index": 0,
+             "zq_player": 0, "result": 1.0},
+            {"status": "ok", "opponent": "claustrophobia", "opening_index": 0,
+             "zq_player": 1, "result": 1.0},
+            {"status": "ok", "opponent": "claustrophobia", "opening_index": 1,
+             "zq_player": 0, "result": 1.0},
+            {"status": "ok", "opponent": "claustrophobia", "opening_index": 1,
+             "zq_player": 1, "result": 0.0},
+        ]
+        report = run_benchmark.summarize_by_category(
+            rows, {0: "front_wall", 1: "pawn_jump"}, bootstrap=1000, seed=19
+        )
+        self.assertEqual(report["front_wall"]["complete_pairs"], 1)
+        self.assertEqual(report["front_wall"]["score_pct"], 100.0)
+        self.assertEqual(report["pawn_jump"]["score_pct"], 50.0)
+
+    def test_category_reader_uses_the_same_physical_indices_as_openings(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            path = Path(raw) / "openings.jsonl"
+            path.write_text(
+                '{"moves":[],"category":"first"}\n\n'
+                '{"moves":["e2"],"category":"second"}\n',
+                encoding="utf-8",
+            )
+            categories = run_benchmark._read_opening_categories(path)
+            openings = run_benchmark._read_openings(path, pairs=2, seed=1)
+        self.assertEqual(categories, {0: "first", 2: "second"})
+        self.assertEqual({index for index, _ in openings}, {0, 2})
+
+    def test_category_summary_omits_unlabeled_openings(self) -> None:
+        rows = [
+            {"status": "ok", "opponent": "x", "opening_index": 4,
+             "zq_player": side, "result": 1.0}
+            for side in (0, 1)
+        ]
+        self.assertEqual(
+            run_benchmark.summarize_by_category(rows, {}, bootstrap=1000, seed=2),
+            {},
+        )
+
+    def test_category_gate_requires_every_family_strictly_above_threshold(self) -> None:
+        summaries = {
+            "front_wall": {"score_pct": 61.0},
+            "pawn_jump": {"score_pct": 60.0},
+        }
+        gate = run_benchmark.evaluate_category_gate(
+            summaries, ["front_wall", "pawn_jump", "reed_rear_wall"], 60.0
+        )
+        self.assertFalse(gate["passed"])
+        self.assertEqual(gate["missing_categories"], ["reed_rear_wall"])
+        self.assertEqual(gate["failing_categories"], ["pawn_jump", "reed_rear_wall"])
 
 
 if __name__ == "__main__":

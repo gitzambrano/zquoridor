@@ -38,6 +38,8 @@ CONFIG = {
     "move_timeout_s": 30.0,
     "max_plies": 180,
     "bootstrap": 20000,
+    "required_opening_categories": [],
+    "category_score_threshold": 60.0,
 }
 
 if str(ROOT) not in sys.path:
@@ -67,6 +69,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--move-timeout-s", type=float)
     parser.add_argument("--max-plies", type=int)
     parser.add_argument("--bootstrap", type=int)
+    parser.add_argument(
+        "--required-opening-categories",
+        help="Use a comma-separated list for the per-category score gate.",
+    )
+    parser.add_argument("--category-score-threshold", type=float)
     parser.add_argument("--resume", action=argparse.BooleanOptionalAction, default=None)
     parser.add_argument("--retry-failed", action=argparse.BooleanOptionalAction, default=None)
     parser.add_argument("--auto-setup", action=argparse.BooleanOptionalAction, default=None)
@@ -82,6 +89,10 @@ def resolve_config(args: argparse.Namespace) -> dict:
         config["opponents"] = [item.strip().lower() for item in config["opponents"].split(",")
                                if item.strip()]
     config["zq_args"] = list(config.get("zq_args") or [])
+    required = config.get("required_opening_categories") or []
+    if isinstance(required, str):
+        required = [item.strip() for item in required.split(",") if item.strip()]
+    config["required_opening_categories"] = list(dict.fromkeys(required))
     supported = {"titanium", "claustrophobia"}
     unknown = set(config["opponents"]) - supported
     if unknown:
@@ -93,6 +104,8 @@ def resolve_config(args: argparse.Namespace) -> dict:
     for key in ("startup_timeout_s", "move_timeout_s", "claustrophobia_cpuct"):
         if float(config[key]) <= 0:
             raise ValueError(f"{key} must be positive")
+    if not 0.0 <= float(config["category_score_threshold"]) <= 100.0:
+        raise ValueError("category_score_threshold must be in [0,100]")
     if "titanium" in config["opponents"] and (
             int(config["titanium_move_time_ms"]) != int(config["zq_move_time_ms"])):
         raise ValueError("Titanium and Zquoridor must use the same move clock")
@@ -121,6 +134,54 @@ def _read_openings(path: Path, pairs: int, seed: int) -> list[tuple[int, list[st
         raise ValueError(f"the opening file has {len(rows)} rows but the run needs {pairs}")
     random.Random(seed).shuffle(rows)
     return rows[:pairs]
+
+
+def _read_opening_categories(path: Path) -> dict[int, str]:
+    categories = {}
+    for index, line in enumerate(path.read_text(encoding="utf-8").splitlines()):
+        if not line.strip():
+            continue
+        value = json.loads(line)
+        category = value.get("category")
+        if category is not None and str(category).strip():
+            categories[index] = str(category).strip()
+    return categories
+
+
+def summarize_by_category(rows: list[dict], categories: dict[int, str], *,
+                          bootstrap: int, seed: int) -> dict[str, dict]:
+    """Calculate paired summaries for each labeled opening category."""
+    report = {}
+    labels = sorted({categories.get(int(row.get("opening_index", -1))) for row in rows}
+                    - {None})
+    for offset, label in enumerate(labels):
+        selected = [row for row in rows
+                    if categories.get(int(row.get("opening_index", -1))) == label]
+        summary = local_arena.summarize_pairs(
+            selected, bootstrap=bootstrap, seed=seed + offset
+        )
+        summary["opening_indices"] = sorted({int(row["opening_index"]) for row in selected})
+        report[label] = summary
+    return report
+
+
+def evaluate_category_gate(summaries: dict[str, dict], required: list[str],
+                           threshold: float) -> dict:
+    """Evaluate a strict observed-score gate across required categories."""
+    missing = sorted(category for category in required if category not in summaries)
+    scores = {category: summaries.get(category, {}).get("score_pct")
+              for category in required}
+    failing = sorted(category for category, score in scores.items()
+                     if score is None or float(score) <= threshold)
+    return {
+        "comparison": ">",
+        "threshold_pct": float(threshold),
+        "required_categories": list(required),
+        "scores_pct": scores,
+        "missing_categories": missing,
+        "failing_categories": failing,
+        "passed": not failing,
+    }
 
 
 def _build_zq(output: Path) -> Path:
@@ -175,6 +236,7 @@ def run(config: dict) -> dict:
             "the benchmark requires a persistent model process"
         )
     openings = _read_openings(openings_path, int(config["pairs"]), int(config["seed"]))
+    opening_categories = _read_opening_categories(openings_path)
 
     identity_config = {key: value for key, value in config.items()
                        if key not in ("resume", "retry_failed", "auto_setup", "output", "workers")}
@@ -182,6 +244,10 @@ def run(config: dict) -> dict:
     identity_config["nnue"] = str(nnue)
     identity_config["zq_executable"] = str(zq_executable)
     identity_config["selected_opening_indices"] = [index for index, _ in openings]
+    identity_config["selected_opening_categories"] = {
+        str(index): opening_categories[index]
+        for index, _ in openings if index in opening_categories
+    }
     identity_config["compute"] = {
         "zquoridor": "cpu fixed move time",
         "titanium": "cpu fixed move time" if "titanium" in bot_info else None,
@@ -243,7 +309,7 @@ def run(config: dict) -> dict:
                 startup_timeout_s=float(config["startup_timeout_s"]),
             )
             opponent_budget = int(config["claustrophobia_move_time_ms"])
-        return local_arena.play_game(
+        row = local_arena.play_game(
             opponent=opponent,
             opening_index=opening_index,
             opening=opening,
@@ -256,6 +322,9 @@ def run(config: dict) -> dict:
             max_plies=int(config["max_plies"]),
             run_id=manifest["run_id"],
         )
+        if opening_index in opening_categories:
+            row["opening_category"] = opening_categories[opening_index]
+        return row
 
     print(json.dumps({
         "run_id": manifest["run_id"],
@@ -290,6 +359,20 @@ def run(config: dict) -> dict:
         summaries[opponent] = local_arena.summarize_pairs(
             rows, bootstrap=int(config["bootstrap"]), seed=int(config["seed"]) + offset
         )
+        by_category = summarize_by_category(
+            rows, opening_categories,
+            bootstrap=int(config["bootstrap"]),
+            seed=int(config["seed"]) + 1000 + offset * 100,
+        )
+        if by_category:
+            summaries[opponent]["by_opening_category"] = by_category
+        required_categories = list(config["required_opening_categories"])
+        if required_categories:
+            summaries[opponent]["opening_category_gate"] = evaluate_category_gate(
+                by_category,
+                required_categories,
+                float(config["category_score_threshold"]),
+            )
     report = {
         "schema": "zquoridor.local_benchmark.report.v1",
         "run_id": manifest["run_id"],

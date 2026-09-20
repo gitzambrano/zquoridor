@@ -1,0 +1,33 @@
+{
+  "config": {
+    "data": "data/teaching/multipath-master-11m/dataset.npz",
+    "out_dir": "results/experiments/multipath512-master-champion",
+    "architecture": "multipath",
+    "hidden": 512,
+    "init_from": "results/experiments/race512-cr200k-champion/student.bin",
+    "init_architecture": "race",
+    "init_hidden": 512,
+    "from_scratch": false,
+    "qat": true,
+    "epochs": 20,
+    "batch_size": 2048,
+    "lr": 2e-05,
+    "schedule": "cosine",
+    "warmup_epochs": 2,
+    "min_lr": 5e-07,
+    "trunk_lr_scale": 0.2,
+    "weight_decay": 1e-05,
+    "policy_weight": 1.0,
+    "value_weight": 1.0,
+    "train_scope": "full",
+    "grad_clip": 1.0,
+    "patience": 12,
+    "seed": 20260914,
+    "device": "cuda",
+    "cpu_threads": 4
+  },
+  "data_sha256": "adb1a4ddd099593b7e87f32dd63debebafa39af07c462ed435ae5b7d21694abb",
+  "init_sha256": "25c5234cbd8085eb96ae28327ee9ba3dae93db7cb92a301a307362ca241cef90",
+  "trainer_sha256": "d10f8d158d5486e5adece30ee442d17bbe1a6debb43448f95be82f0ba2977028",
+  "model_sha256": "c4ad1b31acf38eb540083e3a33b8baabdac71b5f5d8dce1124c0c28f8e9fe081"
+}

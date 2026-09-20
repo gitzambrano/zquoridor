@@ -38,6 +38,32 @@ class StudentTests(unittest.TestCase):
         for old, new in zip(baseline(x), candidate(expanded)):
             torch.testing.assert_close(old, new, rtol=1e-12, atol=1e-12)
 
+    def test_multipath_phase_expansion_preserves_multipath_output(self):
+        import student_model as s
+        baseline = s.Student("multipath", 512)
+        candidate = s.Student("multipath_phase", 512)
+        candidate.warm_start(baseline)
+
+        data = dict(
+            own_pawn=np.array([4, 31, 40]),
+            opp_pawn=np.array([76, 49, 41]),
+            walls_h=np.array([0, 1 << 12, 1 << 35], dtype=np.uint64),
+            walls_v=np.array([0, 1 << 28, 1 << 36], dtype=np.uint64),
+            own_dist=np.array([8, 6, 4]),
+            opp_dist=np.array([8, 7, 5]),
+            walls_left_own=np.array([10, 6, 2]),
+            walls_left_opp=np.array([10, 5, 1]),
+        )
+        indices = np.arange(3)
+        old_features = torch.from_numpy(s.encode_features(data, indices, "multipath"))
+        new_features = torch.from_numpy(s.encode_features(data, indices, "multipath_phase"))
+
+        self.assertEqual(new_features.shape, (3, 504))
+        torch.testing.assert_close(new_features[:, :456], old_features[:, :456], rtol=0, atol=0)
+        torch.testing.assert_close(new_features[:, 480:], old_features[:, 456:], rtol=0, atol=0)
+        for old, new in zip(baseline(old_features), candidate(new_features)):
+            torch.testing.assert_close(old, new, rtol=0, atol=0)
+
     def test_width_expansion_and_export_roundtrip(self):
         import student_model as s
         old = s.Student("base", 256)

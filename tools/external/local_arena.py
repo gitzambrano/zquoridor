@@ -301,12 +301,26 @@ class UciPlayer(LinePlayer):
 
     def bestmove(self, history: Sequence[str], *, budget: int,
                  timeout_s: float) -> tuple[str, float, list[str]]:
+        return self._bestmove(history, f"go movetime {budget}", timeout_s)
+
+    def bestmove_clock(self, history: Sequence[str], *, white_ms: int,
+                       black_ms: int, increment_ms: int,
+                       timeout_s: float) -> tuple[str, float, list[str]]:
+        """Search one move with a complete game clock."""
+        if min(white_ms, black_ms, increment_ms) < 0:
+            raise ValueError("game clock values must be nonnegative")
+        go = (f"go wtime {white_ms} btime {black_ms} "
+              f"winc {increment_ms} binc {increment_ms}")
+        return self._bestmove(history, go, timeout_s)
+
+    def _bestmove(self, history: Sequence[str], go: str,
+                  timeout_s: float) -> tuple[str, float, list[str]]:
         command = "position startpos"
         if history:
             command += " moves " + " ".join(history)
         self._send(command)
         started = time.monotonic()
-        self._send(f"go movetime {budget}")
+        self._send(go)
         info: list[str] = []
         deadline = started + timeout_s
         while True:
@@ -380,7 +394,8 @@ def play_game(*, opponent: str, opening_index: int, opening: Sequence[str],
               zq_player: int, zq_factory: Callable[[], LinePlayer],
               opponent_factory: Callable[[], LinePlayer], zq_budget: int,
               opponent_budget: int, move_timeout_s: float, max_plies: int,
-              run_id: str) -> dict:
+              run_id: str, clock_initial_ms: int = 0,
+              clock_increment_ms: int = 0) -> dict:
     """Play one game and return an explicit success or failure record."""
     base = {
         "schema": "zquoridor.local_benchmark.game.v1",
@@ -395,6 +410,8 @@ def play_game(*, opponent: str, opening_index: int, opening: Sequence[str],
     referee = Referee()
     think = {"zquoridor": 0.0, opponent: 0.0}
     move_times: list[dict[str, float | int | str]] = []
+    clocks = ([int(clock_initial_ms), int(clock_initial_ms)]
+              if clock_initial_ms > 0 else None)
     state_visits = defaultdict(int)
     repeated_states = 0
     def count_state():
@@ -419,9 +436,36 @@ def play_game(*, opponent: str, opening_index: int, opening: Sequence[str],
             player = zq if side == zq_player else other
             name = "zquoridor" if side == zq_player else opponent
             budget = zq_budget if side == zq_player else opponent_budget
-            move, elapsed, _ = player.bestmove(history, budget=budget, timeout_s=move_timeout_s)
+            clock_before = None
+            if clocks is None:
+                move, elapsed, _ = player.bestmove(
+                    history, budget=budget, timeout_s=move_timeout_s
+                )
+            else:
+                if not isinstance(player, UciPlayer):
+                    raise EngineError("game clock mode requires UCI players")
+                clock_before = clocks[side]
+                move, elapsed, _ = player.bestmove_clock(
+                    history,
+                    white_ms=clocks[0],
+                    black_ms=clocks[1],
+                    increment_ms=int(clock_increment_ms),
+                    timeout_s=move_timeout_s,
+                )
+                elapsed_ms = max(0, math.ceil(elapsed * 1000.0))
+                if elapsed_ms > clock_before:
+                    raise EngineTimeout(
+                        f"{name}: used {elapsed_ms} ms with {clock_before} ms remaining"
+                    )
+                clocks[side] = clock_before - elapsed_ms + int(clock_increment_ms)
             think[name] += elapsed
-            move_times.append({"player": name, "budget_ms": budget, "elapsed_ms": elapsed * 1000.0})
+            timing = {"player": name, "budget_ms": budget,
+                      "elapsed_ms": elapsed * 1000.0}
+            if clocks is not None:
+                timing.update({"clock_before_ms": clock_before,
+                               "clock_after_ms": clocks[side],
+                               "increment_ms": int(clock_increment_ms)})
+            move_times.append(timing)
             referee.apply(move)
             history.append(move)
             count_state()
@@ -442,6 +486,7 @@ def play_game(*, opponent: str, opening_index: int, opening: Sequence[str],
             "moves": history,
             "think_s": think,
             "move_times": move_times,
+            "final_clocks_ms": clocks,
         }
     except BaseException as exc:
         if isinstance(exc, KeyboardInterrupt):
@@ -456,6 +501,7 @@ def play_game(*, opponent: str, opening_index: int, opening: Sequence[str],
             "moves": history,
             "think_s": think,
             "move_times": move_times,
+            "final_clocks_ms": clocks,
         }
     finally:
         for player in (zq, other):

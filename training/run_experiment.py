@@ -43,6 +43,10 @@ CONFIG = {
     "min_lr": 0.000005,
     "trunk_lr_scale": 0.1,
     "weight_decay": 0.00001,
+    "weight_decay_schedule": "constant",
+    "min_weight_decay": 0.00001,
+    "weight_boosts": [],
+    "max_sample_weight": 30.0,
     "policy_weight": 1.0,
     "value_weight": 1.0,
     "train_scope": "full",
@@ -125,6 +129,26 @@ def load_dataset(path):
     return data
 
 
+def apply_weight_boosts(weights, boosts, max_weight):
+    """Scale nonoverlapping sample ranges and limit the final weights."""
+    result = np.asarray(weights, dtype=np.float32).copy()
+    if not math.isfinite(max_weight) or max_weight <= 0:
+        raise ValueError("max_sample_weight must be finite and positive")
+    previous_end = 0
+    for item in sorted(boosts, key=lambda value: value[0]):
+        if len(item) != 3:
+            raise ValueError("each weight boost must contain start, end, and factor")
+        start, end, factor = item
+        if int(start) != start or int(end) != end or start < previous_end or end <= start or end > len(result):
+            raise ValueError("weight boost ranges must be valid and nonoverlapping")
+        if not math.isfinite(factor) or factor <= 0:
+            raise ValueError("weight boost factors must be finite and positive")
+        result[int(start):int(end)] *= float(factor)
+        previous_end = int(end)
+    np.clip(result, 0, float(max_weight), out=result)
+    return result
+
+
 def _path(value):
     p = Path(value)
     return p if p.is_absolute() else ROOT / p
@@ -161,6 +185,23 @@ def learning_rate(config, epoch: int) -> float:
     return float(config["min_lr"]) + (float(config["lr"]) - float(config["min_lr"])) * 0.5 * (
         1.0 + math.cos(math.pi * progress)
     )
+
+
+def weight_decay(config, epoch: int) -> float:
+    """Return the weight decay for zero-based ``epoch``."""
+    if not 0 <= epoch < config["epochs"]:
+        raise ValueError("epoch is outside the configured training range")
+    schedule = config["weight_decay_schedule"]
+    if schedule == "constant":
+        return float(config["weight_decay"])
+    if schedule != "cosine":
+        raise ValueError("weight_decay_schedule must be constant or cosine")
+    if config["epochs"] <= 1:
+        return float(config["min_weight_decay"])
+    progress = epoch / (config["epochs"] - 1)
+    return float(config["min_weight_decay"]) + (
+        float(config["weight_decay"]) - float(config["min_weight_decay"])
+    ) * 0.5 * (1.0 + math.cos(math.pi * progress))
 
 
 def _epoch(model, data, indices, config, device, optimizer=None, rng=None):
@@ -200,20 +241,26 @@ def train(config):
     for key in ("lr", "min_lr", "trunk_lr_scale", "grad_clip"):
         if not math.isfinite(config[key]) or config[key] <= 0:
             raise ValueError(f"{key} must be finite and positive")
-    for key in ("policy_weight", "value_weight", "weight_decay"):
+    for key in ("policy_weight", "value_weight", "weight_decay", "min_weight_decay"):
         if not math.isfinite(config[key]) or config[key] < 0:
             raise ValueError(f"{key} must be finite and nonnegative")
     if config["policy_weight"] + config["value_weight"] == 0:
         raise ValueError("at least one loss weight must be positive")
     if config["min_lr"] > config["lr"]:
         raise ValueError("min_lr must not exceed lr")
+    if config["min_weight_decay"] > config["weight_decay"]:
+        raise ValueError("min_weight_decay must not exceed weight_decay")
     if config["schedule"] not in ("constant", "cosine"):
         raise ValueError("schedule must be constant or cosine")
+    if config["weight_decay_schedule"] not in ("constant", "cosine"):
+        raise ValueError("weight_decay_schedule must be constant or cosine")
     if config["train_scope"] not in ("full", "policy", "heads"):
         raise ValueError("train_scope must be full, policy, or heads")
     path, folder = _path(config["data"]), _path(config["out_dir"])
     folder.mkdir(parents=True, exist_ok=True)
     data = load_dataset(path)
+    data["weight"] = apply_weight_boosts(
+        data["weight"], config["weight_boosts"], config["max_sample_weight"])
     train_idx, val_idx = split_indices(data)
     torch.set_num_threads(config["cpu_threads"])
     torch.manual_seed(config["seed"])
@@ -265,11 +312,14 @@ def train(config):
         if bad >= config["patience"]:
             break
         base_lr = learning_rate(config, epoch)
+        epoch_weight_decay = weight_decay(config, epoch)
         for group in optimizer.param_groups:
             group["lr"] = base_lr * group["lr_scale"]
+            group["weight_decay"] = epoch_weight_decay
         training = _epoch(model, data, train_idx, config, device, optimizer, rng)
         validation = _epoch(model, data, val_idx, config, device)
-        row = dict(epoch=epoch + 1, lr=base_lr, train=training, val=validation)
+        row = dict(epoch=epoch + 1, lr=base_lr, weight_decay=epoch_weight_decay,
+                   train=training, val=validation)
         history.append(row)
         print(json.dumps(row), flush=True)
         if validation["loss"] < best_loss:
@@ -305,10 +355,10 @@ def build_candidate(config):
     folder = _path(config["out_dir"])
     suffix = ".exe" if os.name == "nt" else ""
     exe = folder / ("zquoridor" + suffix)
-    flags = [f"-DZQ_NNUE_RACE_FEATURES={int(config['architecture'] in ('race', 'multipath', 'margin_regime', 'phase', 'margin_phase'))}",
-             f"-DZQ_NNUE_MULTIPATH_FEATURES={int(config['architecture'] == 'multipath')}",
+    flags = [f"-DZQ_NNUE_RACE_FEATURES={int(config['architecture'] in ('race', 'multipath', 'margin_regime', 'phase', 'margin_phase', 'multipath_phase'))}",
+             f"-DZQ_NNUE_MULTIPATH_FEATURES={int(config['architecture'] in ('multipath', 'multipath_phase'))}",
              f"-DZQ_NNUE_MARGIN_REGIME_FEATURES={int(config['architecture'] in ('margin_regime', 'margin_phase'))}",
-             f"-DZQ_NNUE_PHASE_FEATURES={int(config['architecture'] in ('phase', 'margin_phase'))}",
+             f"-DZQ_NNUE_PHASE_FEATURES={int(config['architecture'] in ('phase', 'margin_phase', 'multipath_phase'))}",
              f"-DZQ_NNUE_HIDDEN={config['hidden']}"]
     build_inputs = dict(flags=flags, compiler=_hash(Path(compiler)),
         files={str(p.relative_to(ROOT)): _hash(p) for p in [ROOT/"tools/external/zquoridor_uci.cpp",

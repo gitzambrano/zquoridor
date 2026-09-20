@@ -25,12 +25,23 @@ relearn by experiment.
   - `margin_regime:512` (`src/nnue.hpp`, opt-in via `-DZQ_NNUE_MARGIN_REGIME_FEATURES=1`):
     `588 -> 512` SCReLU accumulator adding 132 distance margin $\times$ wall regime interaction features.
     **600-game match vs Claustrophobia GPU: 49.00% (-6.95 Elo)**.
+  - `multipath_phase:512` (active experiment, started 2026-09-20):
+    `504 -> 512` SCReLU accumulator combining the 24 multipath features and 24 phase features.
+    The phase block adds no BFS and keeps the value and policy heads unchanged. The warm start remaps
+    the existing multipath columns and initializes only the phase columns to zero. Training uses the
+    11,065,000-sample weakness-boosted dataset for 100 QAT epochs. Cosine schedules reduce the learning
+    rate and weight decay to `1e-7`. Source-level boosts increase the weight of bilateral search,
+    critical search, crisis search, and 512-simulation deep-search samples. The campaign will run a
+    paired match against `multipath:512`, then the full Claustrophobia and Titanium benchmark suite.
+    The promotion target is more than 60% against Claustrophobia in every opening family at 200 ms.
 - **Time management**: `src/time_manager.hpp` allocates a move budget from
   the remaining clock, increment, estimated moves to go, ply, and move overhead.
   Version 1 returns an optimum and maximum budget. The production search uses
   the optimum budget as the effective move limit. The external adapter accepts
   `wtime/btime/winc/binc/movestogo`, and the arena accepts
-  `--tc-base-ms` plus `--tc-inc-ms` for game-clock tests.
+  `--tc-base-ms` plus `--tc-inc-ms` for game-clock tests. `tools/run_clock_smoke.py`
+  runs four Zquoridor games from two color-swapped openings at 3 minutes plus a
+  2-second increment. This is a clock-safety check, not a strength benchmark.
 - **Performance baseline (2026-09-20)**:
   - `race512-cr200k-champion` (Production baseline on `main`):
     - vs Titanium: **63.0% (+92.5 Elo)** in official 600-game match (378W / 0D / 222L).
@@ -59,6 +70,8 @@ relearn by experiment.
    >80% vs previous baseline). Mine losses from the completed 600-game match
    vs Claustrophobia, execute deep MCTS search relabeling (512-1024 sims) with
    Action-Q sharpening, and run modular fine-tuning.
+   The active `multipath_phase:512` campaign tests whether the wall-stock phase interaction improves
+   weak central openings without a measurable search-speed regression.
 2. **Self-play generation, Gen 6**: regenerate datasets with the current
    engine (~3.3x more MCTS nodes per move than the data the Gen 5 net saw),
    root visit distribution as policy target. Retrain, quantize, arena-test
@@ -142,6 +155,20 @@ relearn by experiment.
   to use root visit share, Q gap, best-move changes, and tree reuse to decide
   whether the search can continue from the optimum limit toward the maximum
   limit.
+
+- **Recovered center-loss rollouts (2026-09-20)**: A live-process recovery
+  preserved 3,344 terminal rollout steps from 61 completed rollouts across 15
+  crisis seeds in `data/teaching/loss-center-rollouts`. A full semantic audit
+  found zero illegal histories, illegal policy actions, mover mismatches,
+  broken trajectory links, or discounted-value mismatches. The grouped split
+  keeps complete seeds on one side. The corpus has 3,274 unique histories. Of
+  33 repeated-state groups, 30 contain different stochastic actions and values,
+  so the records are valid Monte Carlo samples but are not fully independent.
+  At weight 8, this dataset adds only 26,752
+  units of gradient mass, approximately 0.06% of the 44,002,312-unit active
+  training mix. It is too small to affect the current campaign and too narrow
+  to upweight without a controlled follow-up experiment. Keep it separate
+  unless the opening-family benchmark confirms a matching weakness.
 
 - **Experimental candidate models tracked in version control (2026-09-18)**: The
   experimental network weights (`student.bin` and `student_int8.bin`) and their

@@ -15,6 +15,7 @@ FEATURES = {
     "margin_regime": 588,
     "phase": 480,
     "margin_phase": 612,
+    "multipath_phase": 504,
 }
 LAYOUT = ("w1", "b1", "wv1_wl", "bv1_wl", "wv2_wl", "bv2_wl", "wp", "bp")
 
@@ -57,7 +58,7 @@ def encode_features(data, indices, architecture="base"):
     x = dense_features(data, indices)
     if architecture == "base":
         return x
-    if architecture not in ("race", "multipath", "margin_regime", "phase", "margin_phase"):
+    if architecture not in ("race", "multipath", "margin_regime", "phase", "margin_phase", "multipath_phase"):
         raise ValueError(f"unknown architecture: {architecture}")
     n = len(indices)
     extra = np.zeros((n, 102), dtype=np.float32)
@@ -86,7 +87,7 @@ def encode_features(data, indices, architecture="base"):
         if architecture == "margin_regime":
             return x
 
-    if architecture in ("phase", "margin_phase"):
+    if architecture in ("phase", "margin_phase", "multipath_phase"):
         ph = np.zeros((n, 24), dtype=np.float32)
         total_w = ow + pw
         phase_bucket = np.zeros(n, dtype=np.int64)
@@ -98,7 +99,8 @@ def encode_features(data, indices, architecture="base"):
         ph[rows, phase_bucket] = 1.0
         ph[rows, 6 + race * 6 + phase_bucket] = 1.0
         x = np.concatenate((x, ph), axis=1)
-        return x
+        if architecture != "multipath_phase":
+            return x
 
     # multipath: 24 additional cheap features (zero extra BFS)
     mp = np.zeros((n, 24), dtype=np.float32)
@@ -202,7 +204,11 @@ class Student(nn.Module):
             raise ValueError("warm start cannot shrink a network; use output distillation from scratch")
         for param in self.parameters():
             param.zero_()
-        self.fc1.weight[:old.hidden, :old.fc1.in_features].copy_(old.fc1.weight)
+        if self.architecture == "multipath_phase" and old.architecture == "multipath":
+            self.fc1.weight[:old.hidden, :456].copy_(old.fc1.weight[:, :456])
+            self.fc1.weight[:old.hidden, 480:504].copy_(old.fc1.weight[:, 456:480])
+        else:
+            self.fc1.weight[:old.hidden, :old.fc1.in_features].copy_(old.fc1.weight)
         self.fc1.bias[:old.hidden].copy_(old.fc1.bias)
         self.value1_wl.weight[:, :old.hidden].copy_(old.value1_wl.weight)
         self.value1_wl.bias.copy_(old.value1_wl.bias)
@@ -265,10 +271,10 @@ def export(model, path):
     manifest = dict(schema="zquoridor.student.v1", architecture=model.architecture,
                     features=FEATURES[model.architecture], hidden=model.hidden, value_hidden=32,
                     policy_out=209, qa=255, qb=64, qat=model.qat,
-                    cpp_flags=[f"-DZQ_NNUE_RACE_FEATURES={int(model.architecture in ('race', 'multipath', 'margin_regime', 'phase', 'margin_phase'))}",
-                               f"-DZQ_NNUE_MULTIPATH_FEATURES={int(model.architecture == 'multipath')}",
+                    cpp_flags=[f"-DZQ_NNUE_RACE_FEATURES={int(model.architecture in ('race', 'multipath', 'margin_regime', 'phase', 'margin_phase', 'multipath_phase'))}",
+                               f"-DZQ_NNUE_MULTIPATH_FEATURES={int(model.architecture in ('multipath', 'multipath_phase'))}",
                                f"-DZQ_NNUE_MARGIN_REGIME_FEATURES={int(model.architecture in ('margin_regime', 'margin_phase'))}",
-                               f"-DZQ_NNUE_PHASE_FEATURES={int(model.architecture in ('phase', 'margin_phase'))}",
+                               f"-DZQ_NNUE_PHASE_FEATURES={int(model.architecture in ('phase', 'margin_phase', 'multipath_phase'))}",
                                f"-DZQ_NNUE_HIDDEN={model.hidden}"],
                     float_sha256=hashlib.sha256(path.read_bytes()).hexdigest(),
                     int8_sha256=hashlib.sha256(quant_path.read_bytes()).hexdigest())

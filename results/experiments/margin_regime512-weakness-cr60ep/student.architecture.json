@@ -1,0 +1,20 @@
+{
+  "schema": "zquoridor.student.v1",
+  "architecture": "margin_regime",
+  "features": 588,
+  "hidden": 512,
+  "value_hidden": 32,
+  "policy_out": 209,
+  "qa": 255,
+  "qb": 64,
+  "qat": true,
+  "cpp_flags": [
+    "-DZQ_NNUE_RACE_FEATURES=1",
+    "-DZQ_NNUE_MULTIPATH_FEATURES=0",
+    "-DZQ_NNUE_MARGIN_REGIME_FEATURES=1",
+    "-DZQ_NNUE_PHASE_FEATURES=0",
+    "-DZQ_NNUE_HIDDEN=512"
+  ],
+  "float_sha256": "73c4fe52c4e2fa3de3956ef3c14d720522901ac5e4e8bd54f4c93980ced281f4",
+  "int8_sha256": "dd55c3ff1f5930ee964d11ffd463f1cac6df9d713f25271490c9295cd290004f"
+}
