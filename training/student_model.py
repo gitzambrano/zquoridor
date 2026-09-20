@@ -232,7 +232,8 @@ def export(model, path):
     manifest = dict(schema="zquoridor.student.v1", architecture=model.architecture,
                     features=FEATURES[model.architecture], hidden=model.hidden, value_hidden=32,
                     policy_out=209, qa=255, qb=64, qat=model.qat,
-                    cpp_flags=[f"-DZQ_NNUE_RACE_FEATURES={int(model.architecture == 'race')}",
+                    cpp_flags=[f"-DZQ_NNUE_RACE_FEATURES={int(model.architecture in ('race', 'multipath'))}",
+                               f"-DZQ_NNUE_MULTIPATH_FEATURES={int(model.architecture == 'multipath')}",
                                f"-DZQ_NNUE_HIDDEN={model.hidden}"],
                     float_sha256=hashlib.sha256(path.read_bytes()).hexdigest(),
                     int8_sha256=hashlib.sha256(quant_path.read_bytes()).hexdigest())

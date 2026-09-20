@@ -21,6 +21,17 @@ Todos os datasets consolidados no projeto residem em formato `.npz` compactado (
 
 ## 2. Catálogo de Datasets Ativos e de Alta Performance
 
+### 2.0.0 Dataset Calibrado Super-Ponderado nas Fraquezas de Claustrophobia (11,06M) — `data/teaching/multipath-weakness-boosted-11m/`
+- **Arquivo**: `data/teaching/multipath-weakness-boosted-11m/dataset.npz` (~5,65 GB).
+- **Volume**: 11.065.000 amostras consolidadas (9.238.298 treino, 1.826.702 validação estrita sem vazamento).
+- **Script Gerador**: `tools/teacher/calibrate_claustrophobia_weakness_weights.py`.
+- **Filtros e Ponderação Cirúrgica**:
+  1. **1.739.320 Posições de Crise de Center Rush (Peso Médio: 12,66)**: Peões simultaneamente no quadrado central (linhas 2 a 6, colunas 2 a 6) com estoques ativos de muros ($\ge 4$ muros restantes por jogador). Multiplicador focal para erradicar o déficit histórico de Brancas (12,1% no benchmark).
+  2. **721.546 Posições de Gargalo / Abertura Reed Rear-Wall (Peso Médio: 16,99)**: Mover com $\le 2$ saídas desobstruídas e oponente a curta distância ($\text{Manhattan} \le 3$) com muros ativos. Foco no ponto mais vulnerável (18,8% no benchmark).
+  3. **170.009 Posições de Gargalo Severo de 1 Saída (Peso Médio: 20,99)**: Situações de corredor fechado e risco iminente de estrangulamento.
+  4. **8.029.636 Amostras de Fundo de Replay Preservadas em Peso 1,0**: Âncora maciça de regularização para garantir zero esquecimento de finais e jogo aberto.
+- **Uso**: Treinamento aprofundado de 60 épocas com recozimento térmico (`multipath512-weakness-cr60ep`).
+
 ### 2.0 Dataset Mestre Unificado Multi-Caminho (11,06M) — `data/teaching/multipath-master-11m/`
 - **Arquivo**: `data/teaching/multipath-master-11m/dataset.npz` (5,65 GB).
 - **Volume**: 11.065.000 amostras consolidadas.

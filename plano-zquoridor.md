@@ -18,6 +18,11 @@ arquivos de configuração indicados.
 
 ## Painel Executivo: Onde Estamos e Para Onde Vamos
 
+### Meta Estratégica Maior (/goal)
+**Alcançar mais de 60% de vitórias contra a Claustrophobia em todas as famílias de abertura** (superando a barreira histórica do motor e dominando o jogo tanto de Brancas quanto de Pretas, sem qualquer perda de vazão de nós por segundo).
+
+---
+
 ### Onde Estamos (Status Atual)
 - **Baseline de Produção Oficial**: `race512-cr200k-champion` promovida e homologada como rede padrão do `main`:
   - **vs Titanium**: **63,0% (+92,5 Elo)** em match oficial de 600 jogos (378W / 0D / 222L) — recorde histórico absoluto.
@@ -27,36 +32,44 @@ arquivos de configuração indicados.
   - **Suite Tático Center Rush (66 jogos vs Claustrophobia GPU MCTS)**:
     - **Resultado Geral**: **31,8%** (20W / 2D / 44L / 66 jogos).
     - **De Pretas (Jogador 1)**: **51,5%** (16W / 2D / 15L) — superando a Claustrophobia GPU jogando como segundo jogador!
-    - **De Brancas (Jogador 0)**: 12,1% (4W / 0D / 29L) — indicador de vulnerabilidade quando atacada reativamente em abertura central.
+    - **De Brancas (Jogador 0)**: 12,1% (4W / 0D / 29L) — vulnerabilidade crítica quando atacada reativamente em abertura central.
     - **Por Categoria Tática**:
       - `pawn_jump`: **50,0%** (4W / 0D / 4L / 8 jogos) — equilíbrio total no combate corpo a corpo.
       - `front_wall`: **33,3%** (5W / 2D / 11L / 18 jogos).
       - `sidestep_flank`: **33,3%** (4W / 0D / 8L / 12 jogos).
       - `vertical_channel`: **33,3%** (4W / 0D / 8L / 12 jogos).
-      - `reed_rear_wall`: **18,8%** (3W / 0D / 13L / 16 jogos) — ponto crítico de melhoria em contenção traseira.
+      - `reed_rear_wall`: **18,8%** (3W / 0D / 13L / 16 jogos) — ponto mais fraco em contenção traseira.
   - **Pesos e Código Canônicos**: Pesos em `data/nnue/nnue_weights.bin` (f32) e `data/nnue/nnue_weights_int8.bin` (int8), C++ padrão com `ZQ_NNUE_RACE_FEATURES = 1` e `ZQ_NNUE_HIDDEN = 512`, WASM e web GUI 100% atualizados.
 
 - **Frente de Dados e Mineração de Crise**:
   - **10.030 Estados Críticos Minerados** (`data/teaching/loss-center-seeds/positions.jsonl`): 5.952 estados de derrotas contra Claustrophobia, 4.295 de derrotas contra Titanium e 198 do catálogo Center Rush.
-  - **Geração de Rollouts Sintéticos**: Em execução multithread (`bin/generate_rollouts.exe` sobre 1.000 sementes com profundidade e ramificação top-K, >10.600 CPU segundos).
-  - **Match Focado de Center Rush (66 jogos)**: **CONCLUÍDO** com relatório completo em `benchmark_results/champion-center-rush-gpu/`.
+  - **Geração de Rollouts Sintéticos**: Em execução multithread (`bin/generate_rollouts.exe` sobre 1.000 sementes com profundidade e ramificação top-K, >27.000 CPU segundos).
 
 - **Nova Arquitetura Experimental (`multipath:512` — 480 entradas)**:
   - **Zero BFS Extras**: Adiciona 24 features ultra-baratas baseadas em operações de bits instantâneas e geometria de colisão de peões.
   - **Features**: 8 saídas direcionais desobstruídas (Forward, Backward, Left, Right), 8 classes de grau de saída (gargalo de 1 saída, corredor de 2, bifurcação de 3, campo aberto de 4) e 8 relações de proximidade/salto direto de peões.
-  - **Paridade Numérica C++**: `bin/test_nnue_multipath.exe` validou 1.563 plies com **0 divergências** entre acumulador incremental e rebuild completo.
-  - **Paridade Python-C++**: `Student("multipath", 512)` com warm-start exato a partir da campeã reproduz 100% dos valores iniciais (erro máx float: 7.4e-9).
-  - **Dataset Mestre Consolidado (`multipath-master-11m`)**: 11.065.000 amostras integrando integralmente os Tiers 1, 2, 3, 3.5, 4, 5 e o corpus Center Rush Priority.
-  - **Treinamento Experimental**: Ativo na GPU RTX 4050 CUDA (`results/experiments/multipath512-master-champion/`). Épocas 1 a 3 concluídas com melhora contínua de loss (0.8651 -> 0.8609).
+  - **Screening Experimental Concluído**: Treinamento preliminar atingiu **val_loss = 0.8561** (superando a campeã anterior de 0.8641), policy KL **0.3946**, e 0 divergências numéricas em 4.758 posições.
 
-### Para Onde Vamos (Próximos Passos Prioritários)
-1. **Acompanhar Treinamento de `multipath512-master-champion`**: Avaliar curva de loss até o fim das 20 épocas ou convergência antecipada.
-2. **Concluir Geração de Rollouts de Crise**: Transformar os rollouts gerados em dataset compacto ponderado (`data/teaching/loss-center-rollouts/dataset.npz`).
-3. **Triagem e Benchmark da Rede Multipath**:
-   - Rodar benchmark idêntico de 66 jogos de Center Rush vs Claustrophobia GPU para comparar diretamente com os 31,8% do baseline.
-   - Medir nós por segundo em C++ para confirmar ausência de sobrecarga computacional.
-   - Confronto direto (head-to-head) contra a campeã `race512-cr200k-champion`.
-4. **Promoção Condicional**: A rede experimental só será promovida se demonstrar superioridade estatística comprovada sem perda de vazão de nós por segundo.
+### Protocolo Mandatório para os Próximos Treinamentos
+1. **Mínimo de 60 Épocas com Recozimento Térmico (Annealing)**: Treinamentos não podem ser interrompidos prematuramente; devem cumprir $\ge 60$ épocas com decaimento suave de learning rate (cosine schedule até $2\cdot 10^{-7}$) para garantir assentamento profundo dos pesos quantizados (QAT).
+2. **Super-Ponderação das Fraquezas contra Claustrophobia**:
+   - Posições de Brancas em colisão central e aberturas `reed_rear_wall` recebem multiplicador focal ($\times 6,0 \sim \times 10,0$).
+   - Estados de derrotas mineradas contra a Claustrophobia recebem peso máximo.
+   - Fundo do Tier 1 (10M) mantido com peso $\times 1,0$ como âncora de regularização contra esquecimento catastrófico.
+3. **Alvo Híbrido TD($\lambda$) / MCTS Value Blending**:
+   $$V_{\text{target}} = \lambda \cdot V_{\text{search}} + (1 - \lambda) \cdot z_{\text{rollout}} \quad (\lambda \approx 0,75)$$
+4. **Action-Q Sharpening de Política**:
+   $$\pi'_a \propto N_a^\alpha \cdot \exp(\beta \cdot Q_a)$$
+   Filtra ruído e purifica a distribuição de probabilidade para lances decisivos.
+
+### Para Onde Vamos (Próximos Passos Imediatos)
+1. **Calibrar Pesos das Fraquezas de Claustrophobia**: Gerar a versão super-ponderada do dataset com ênfase nas posições de Brancas no Center Rush, `reed_rear_wall` e derrotas mineradas.
+2. **Executar Treinamento de 60 Épocas com Annealing**: Rodar o treino completo de 60 épocas da rede `multipath:512` no dataset re-calibrado.
+3. **Bateria Completa de Benchmark**:
+   - 66 jogos no livro de Center Rush contra Claustrophobia GPU (meta: saltar de 31,8% para >45%).
+   - Head-to-Head contra `race512-cr200k-champion`.
+   - Medição de nós por segundo (NPS).
+4. **Promoção para Baseline**: Somente após bater a campeã e demonstrar ganho robusto contra Claustrophobia.
 
 ---
 
