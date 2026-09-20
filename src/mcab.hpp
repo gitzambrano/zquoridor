@@ -739,7 +739,8 @@ public:
         if (haveLeafDeadline) leafDeadline = t0 + std::chrono::milliseconds(treeBudgetMs);
         while (mstats.nodesExpanded < budget) {
             if (params.simulationBudget > 0 &&
-                mstats.simulations >= params.simulationBudget) break;
+                mstats.simulations >= params.simulationBudget &&
+                !params.smartReinvestQ) break;
             if (treeBudgetMs > 0) {
                 auto elapsedMs = std::chrono::duration_cast<std::chrono::milliseconds>(
                                      std::chrono::steady_clock::now() - t0)
