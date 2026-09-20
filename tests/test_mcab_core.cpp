@@ -53,6 +53,30 @@ void tryLoadRealWeights() {
 } // namespace
 
 // ---------------------------------------------------------------------
+// Automatic node guardrail follows move time but preserves the 200 ms era
+// floor. Explicit fixed-node mode remains unchanged.
+// ---------------------------------------------------------------------
+void testAutomaticNodeBudget() {
+    mcab::McabParams p;
+    p.nodeBudget = 20000;
+    p.autoNodeBudget = true;
+    p.autoNodeBudgetPerMs = 32;
+    p.autoNodeBudgetCeiling = 640000;
+
+    assert(mcab::effectiveNodeBudget(p, 0) == 20000);
+    assert(mcab::effectiveNodeBudget(p, 200) == 20000);
+    assert(mcab::effectiveNodeBudget(p, 2000) == 64000);
+    assert(mcab::effectiveNodeBudget(p, 8000) == 256000);
+    assert(mcab::effectiveNodeBudget(p, 13000) == 416000);
+    assert(mcab::effectiveNodeBudget(p, 30000) == 640000);
+
+    p.autoNodeBudget = false;
+    assert(mcab::effectiveNodeBudget(p, 13000) == 20000);
+
+    printf("[testAutomaticNodeBudget] 200ms=20k 2s=64k 8s=256k 13s=416k cap=640k OK\n");
+}
+
+// ---------------------------------------------------------------------
 // 1) Pool não estoura o orçamento configurado.
 // ---------------------------------------------------------------------
 void testPoolBudget() {
@@ -378,6 +402,7 @@ void testProgressiveWidening() {
 
 int main() {
     testScoreToQMatchesWinProb();
+    testAutomaticNodeBudget();
     testPoolBudget();
     testBackupSignTrivialWin();
     testBackupSignTrivialWinOtherPlayer();
