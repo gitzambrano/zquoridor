@@ -1,0 +1,254 @@
+name: CR200k persistent eval-cache confirmation 400+400
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "src/mcab.hpp"
+      - "tools/external/zquoridor_uci.cpp"
+      - ".github/workflows/cr200k-persistent-eval-v2.yml"
+
+permissions:
+  contents: read
+
+env:
+  PYTHONUNBUFFERED: "1"
+  OMP_NUM_THREADS: "1"
+  MKL_NUM_THREADS: "1"
+  BASE_SHA: "ea62cca1bf8dbdf8fed866c4606c4d56752a8a8e"
+  OPENING_SEED: "2026092403"
+
+jobs:
+  preflight:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Verify frozen baseline and NNUE identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          git worktree add --detach /tmp/zq-main "$BASE_SHA"
+          cmp data/nnue/nnue_weights_int8.bin /tmp/zq-main/data/nnue/nnue_weights_int8.bin
+          sha256sum data/nnue/nnue_weights_int8.bin /tmp/zq-main/data/nnue/nnue_weights_int8.bin
+      - name: Native correctness gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash build/build_tests.sh
+          ./bin/test_rules_sanity
+          ./bin/test_mcab_core
+          ./bin/test_mcab_phase9
+          ./bin/test_endgame_race_fuzz
+          ./bin/test_policy_ab
+      - name: Build frozen main and candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p gate-bin
+          g++ -O3 -DNDEBUG -std=c++17 -march=native -pthread -I/tmp/zq-main/src /tmp/zq-main/tools/external/zquoridor_uci.cpp -o gate-bin/main-base
+          g++ -O3 -DNDEBUG -std=c++17 -march=native -pthread -Isrc tools/external/zquoridor_uci.cpp -o gate-bin/candidate
+      - name: Persistent-cache smoke
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import subprocess
+          from pathlib import Path
+          root=Path(".").resolve()
+          w=str((root/"data/nnue/nnue_weights_int8.bin").resolve())
+          p=subprocess.Popen([str(root/"gate-bin/candidate"),"--nnue",w,"--persistent-eval-cache","--nodes","6000"],
+                             stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True,bufsize=1)
+          def send(x): p.stdin.write(x+"\n"); p.stdin.flush()
+          send("uci")
+          while p.stdout.readline().strip()!="uciok": pass
+          send("isready")
+          while p.stdout.readline().strip()!="readyok": pass
+          infos=[]
+          for moves in ([],["e2e3"],["e2e3","e8e7"]):
+              send("position startpos"+((" moves "+" ".join(moves)) if moves else ""))
+              send("go movetime 0")
+              while True:
+                  line=p.stdout.readline().strip()
+                  if line.startswith("info "): infos.append(line)
+                  if line.startswith("bestmove "): break
+          send("quit"); p.wait(timeout=5)
+          print("\n".join(infos[-3:]))
+          assert all("persistentEval=1" in x for x in infos[-3:])
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: persistent-eval-binaries-${{ github.run_id }}
+          retention-days: 7
+          path: gate-bin/*
+
+  h2h:
+    needs: preflight
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0,1,2,3]
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: persistent-eval-binaries-${{ github.run_id }}
+          path: gate-bin
+      - name: Play 100 H2H games
+        env:
+          SHARD: ${{ matrix.shard }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          chmod +x gate-bin/main-base gate-bin/candidate
+          mkdir -p benchmark_results/persistent-eval/h2h
+          python - <<'PY'
+          import json,os,sys
+          from pathlib import Path
+          ROOT=Path(".").resolve(); sys.path.insert(0,str(ROOT))
+          from tools import run_benchmark
+          from tools.external import local_arena
+          shard=int(os.environ["SHARD"]); seed=int(os.environ["OPENING_SEED"])
+          total_pairs=200; per=50
+          W=str((ROOT/"data/nnue/nnue_weights_int8.bin").resolve())
+          cand=[str((ROOT/"gate-bin/candidate").resolve()),"--nnue",W,"--persistent-eval-cache"]
+          base=[str((ROOT/"gate-bin/main-base").resolve()),"--nnue",W]
+          openings=run_benchmark._read_openings(ROOT/"tools/external/openings_confirmation_v1.jsonl",total_pairs,seed)[shard*per:(shard+1)*per]
+          rows=[]
+          for oi,op in openings:
+              for side in (0,1):
+                  rows.append(local_arena.play_game(
+                    opponent="baseline",opening_index=int(oi),opening=op,zq_player=side,
+                    zq_factory=lambda cmd=cand: local_arena.UciPlayer(cmd,"persistent-eval"),
+                    opponent_factory=lambda cmd=base: local_arena.UciPlayer(cmd,"main"),
+                    zq_budget=200,opponent_budget=200,move_timeout_s=30.0,max_plies=240,
+                    run_id=f"persistent-eval-h2h-{shard}"))
+          summary=local_arena.summarize_pairs(rows,bootstrap=20000,seed=seed+shard)
+          p=ROOT/"benchmark_results/persistent-eval/h2h"/f"shard-{shard}.json"
+          p.write_text(json.dumps({"games":rows,"summary":summary},indent=2)+"\n")
+          print("SHARD_SUMMARY",json.dumps(summary,sort_keys=True))
+          if summary["failed_games"]: raise SystemExit(summary["failed_games"])
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: persistent-eval-h2h-${{ matrix.shard }}-${{ github.run_id }}
+          path: benchmark_results/persistent-eval/h2h/shard-${{ matrix.shard }}.json
+
+  claustro:
+    needs: preflight
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0,1,2,3]
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - uses: actions/download-artifact@v4
+        with:
+          name: persistent-eval-binaries-${{ github.run_id }}
+          path: gate-bin
+      - name: Prepare runtime and pinned Claustrophobia
+        shell: bash
+        run: |
+          set -euo pipefail
+          chmod +x gate-bin/candidate
+          python -m pip install --disable-pip-version-check numpy
+          python -m pip install --disable-pip-version-check torch --index-url https://download.pytorch.org/whl/cpu
+          python - <<'PY'
+          from pathlib import Path
+          from tools.external.bot_setup import ensure_bot,CLAUSTROPHOBIA_SHA,CLAUSTROPHOBIA_CHECKPOINT_SHA256
+          print(ensure_bot("claustrophobia",root=Path("."),build=True))
+          print(CLAUSTROPHOBIA_SHA,CLAUSTROPHOBIA_CHECKPOINT_SHA256)
+          PY
+      - name: Play 100 games vs Claustrophobia
+        env:
+          SHARD: ${{ matrix.shard }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p benchmark_results/persistent-eval/claustro
+          python - <<'PY'
+          import json,os,sys
+          from pathlib import Path
+          ROOT=Path(".").resolve(); sys.path.insert(0,str(ROOT))
+          from tools import run_benchmark
+          from tools.external import local_arena
+          from tools.external.bot_setup import ensure_bot
+          shard=int(os.environ["SHARD"]); seed=int(os.environ["OPENING_SEED"])
+          total_pairs=200; per=50
+          W=str((ROOT/"data/nnue/nnue_weights_int8.bin").resolve())
+          cand=[str((ROOT/"gate-bin/candidate").resolve()),"--nnue",W,"--persistent-eval-cache"]
+          info=ensure_bot("claustrophobia",root=ROOT,build=False)
+          openings=run_benchmark._read_openings(ROOT/"tools/external/openings_confirmation_v1.jsonl",total_pairs,seed)[shard*per:(shard+1)*per]
+          rows=[]
+          for oi,op in openings:
+              for side in (0,1):
+                  rows.append(local_arena.play_game(
+                    opponent="claustrophobia",opening_index=int(oi),opening=op,zq_player=side,
+                    zq_factory=lambda cmd=cand: local_arena.UciPlayer(cmd,"persistent-eval"),
+                    opponent_factory=lambda: local_arena.ClaustrophobiaPlayer(
+                      Path(info["benchmark_bridge"]),Path(info["checkpoint"]),
+                      move_time_ms=200,max_sims=4096,cpuct=1.5,device="cpu"),
+                    zq_budget=200,opponent_budget=200,move_timeout_s=30.0,max_plies=240,
+                    run_id=f"persistent-eval-claustro-{shard}"))
+          summary=local_arena.summarize_pairs(rows,bootstrap=20000,seed=seed+100+shard)
+          p=ROOT/"benchmark_results/persistent-eval/claustro"/f"shard-{shard}.json"
+          p.write_text(json.dumps({"games":rows,"summary":summary},indent=2)+"\n")
+          print("SHARD_SUMMARY",json.dumps(summary,sort_keys=True))
+          if summary["failed_games"]: raise SystemExit(summary["failed_games"])
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: persistent-eval-claustro-${{ matrix.shard }}-${{ github.run_id }}
+          path: benchmark_results/persistent-eval/claustro/shard-${{ matrix.shard }}.json
+
+  aggregate:
+    needs: [h2h, claustro]
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: persistent-eval-h2h-*-${{ github.run_id }}
+          path: benchmark_results/persistent-eval/all-h2h
+          merge-multiple: true
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: persistent-eval-claustro-*-${{ github.run_id }}
+          path: benchmark_results/persistent-eval/all-claustro
+          merge-multiple: true
+      - name: Aggregate both 400-game gates
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json,sys,os
+          from pathlib import Path
+          ROOT=Path(".").resolve(); sys.path.insert(0,str(ROOT))
+          from tools.external import local_arena
+          out={}
+          for key,folder in (("vs_baseline","all-h2h"),("vs_claustrophobia","all-claustro")):
+              rows=[]
+              for p in sorted((ROOT/"benchmark_results/persistent-eval"/folder).glob("shard-*.json")):
+                  rows += json.loads(p.read_text())["games"]
+              assert len(rows)==400,(key,len(rows))
+              out[key]=local_arena.summarize_pairs(rows,bootstrap=100000,seed=int(os.environ["OPENING_SEED"]))
+          print("FINAL_RESULT",json.dumps(out,sort_keys=True))
+          p=ROOT/"benchmark_results/persistent-eval/final.json"
+          p.write_text(json.dumps(out,indent=2)+"\n")
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: persistent-eval-final-${{ github.run_id }}
+          path: benchmark_results/persistent-eval/final.json
