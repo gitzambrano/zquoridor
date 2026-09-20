@@ -149,7 +149,7 @@ jobs:
                 "--simulations",os.environ["SMART_SIMS"],"--smart-pruning"]
           base=[str((ROOT/"gate-bin/main-base").resolve()),"--nnue",W]
           general=[op for _,op in run_benchmark._read_openings(ROOT/"tools/external/openings_confirmation_v1.jsonl",100,seed)]
-          center=[op for _,op in run_benchmark._read_openings(ROOT/"tools/external/openings_center_rush_v1.jsonl",100,seed+1)]
+          center=[op for _,op in run_benchmark._read_openings(ROOT/"tools/external/openings_center_rush_gate100_v1.jsonl",100,seed+1)]
           mixed=list(enumerate(general+center))
           openings=mixed[shard*per:(shard+1)*per]
           rows=[]
@@ -227,7 +227,7 @@ jobs:
                 "--simulations",os.environ["SMART_SIMS"],"--smart-pruning"]
           info=ensure_bot("claustrophobia",root=ROOT,build=False)
           general=[op for _,op in run_benchmark._read_openings(ROOT/"tools/external/openings_confirmation_v1.jsonl",100,seed)]
-          center=[op for _,op in run_benchmark._read_openings(ROOT/"tools/external/openings_center_rush_v1.jsonl",100,seed+1)]
+          center=[op for _,op in run_benchmark._read_openings(ROOT/"tools/external/openings_center_rush_gate100_v1.jsonl",100,seed+1)]
           mixed=list(enumerate(general+center))
           openings=mixed[shard*per:(shard+1)*per]
           rows=[]
