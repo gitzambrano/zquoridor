@@ -216,6 +216,10 @@ struct McabParams {
     // status.md antes de assumir que vale para o seu controle de tempo.
     bool enabled = true;
     int nodeBudget = 20000;              // 0/1 = modo equivalência, Seção 6
+    // Optional explicit simulation ceiling used by exact root smart pruning.
+    // Zero preserves production's historical node/time-bounded behavior.
+    int simulationBudget = 0;
+    bool smartPruning = false;            // exact MaxVisits early stop; requires simulationBudget > 0
     // 0 = folha avaliada só por nnueEvalInt no acumulador incremental, sem
     // searchLeaf e sem quiescência de muro. Era 4 (valor do plano); a Fase 8
     // mediu 4 como catastrófico a 200ms/lance e 0 como o único ponto que
@@ -313,6 +317,8 @@ struct McabStats {
     long long evalCacheValueMisses = 0;
     long long evalCachePolicyEvictions = 0;
     long long evalCacheValueEvictions = 0;
+    bool smartPruned = false;
+    long long smartPruneSaved = 0;
                                      // (ver evaluateLeaf). Muitas = leafDepth alto demais para o
                                      // controle de tempo em uso; a árvore fica cega nessas folhas.
 };
@@ -726,6 +732,8 @@ public:
         haveLeafDeadline = (treeBudgetMs > 0);
         if (haveLeafDeadline) leafDeadline = t0 + std::chrono::milliseconds(treeBudgetMs);
         while (mstats.nodesExpanded < budget) {
+            if (params.simulationBudget > 0 &&
+                mstats.simulations >= params.simulationBudget) break;
             if (treeBudgetMs > 0) {
                 auto elapsedMs = std::chrono::duration_cast<std::chrono::milliseconds>(
                                      std::chrono::steady_clock::now() - t0)
@@ -733,6 +741,33 @@ public:
                 if (elapsedMs >= treeBudgetMs) break;
             }
             if (pool[0].terminal) break;  // raiz já resolvida (ex.: vitória em 0 lances -- não deveria ocorrer)
+
+            // Exact early-stop for MaxVisits under a fixed simulation budget.
+            // If even allocating every remaining simulation to the runner-up
+            // cannot reach the current leader, the final MaxVisits move is
+            // mathematically fixed and the remaining work is unnecessary.
+            if (params.smartPruning && params.simulationBudget > 0 &&
+                params.rootSelectMode == RootSelectMode::MaxVisits &&
+                mstats.simulations > 0) {
+                long long remaining =
+                    (long long)params.simulationBudget - mstats.simulations;
+                if (remaining > 0) {
+                    float first = 0.f, second = 0.f;
+                    size_t nm = (size_t)std::min(pool[0].activeMoves,
+                                                (int)pool[0].moves.size());
+                    for (size_t i = 0; i < nm; ++i) {
+                        float n = pool[0].N[i];
+                        if (n > first) { second = first; first = n; }
+                        else if (n > second) { second = n; }
+                    }
+                    if ((double)first - (double)second > (double)remaining) {
+                        mstats.smartPruned = true;
+                        mstats.smartPruneSaved = remaining;
+                        break;
+                    }
+                }
+            }
+
             runSimulation(engine, stats, mstats);
         }
 
