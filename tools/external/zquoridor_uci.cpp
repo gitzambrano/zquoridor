@@ -61,6 +61,8 @@ struct Options {
     double cpuct = -1.0;
     double scoreScale = -1.0;
     int nodeBudget = -1;
+    int simulationBudget = -1;
+    bool smartPruning = false;
     int leafDepth = -1;
     int policyMinDepth = 3;
     bool policyOrdering = true;
@@ -99,6 +101,8 @@ static Options parseArgs(int argc, char** argv) {
         else if (a == "--cpuct") o.cpuct = std::atof(need("--cpuct"));
         else if (a == "--score-scale") o.scoreScale = std::atof(need("--score-scale"));
         else if (a == "--nodes") o.nodeBudget = std::atoi(need("--nodes"));
+        else if (a == "--simulations") o.simulationBudget = std::atoi(need("--simulations"));
+        else if (a == "--smart-pruning") o.smartPruning = true;
         else if (a == "--leaf-depth") o.leafDepth = std::atoi(need("--leaf-depth"));
         else if (a == "--policy-min-depth") o.policyMinDepth = std::atoi(need("--policy-min-depth"));
         else if (a == "--no-policy-order") o.policyOrdering = false;
@@ -158,6 +162,8 @@ int main(int argc, char** argv) {
     if (opt.cpuct > 0.0) params.cPuct = opt.cpuct;
     if (opt.scoreScale > 0.0) params.scoreScale = opt.scoreScale;
     if (opt.nodeBudget >= 0) params.nodeBudget = opt.nodeBudget;
+    if (opt.simulationBudget >= 0) params.simulationBudget = opt.simulationBudget;
+    if (opt.smartPruning) params.smartPruning = true;
     if (opt.leafDepth >= 0) params.leafDepth = opt.leafDepth;
     if (opt.progressiveWidening) params.progressiveWidening = true;
     if (opt.clearTTPerMove) params.clearTTPerMove = true;
