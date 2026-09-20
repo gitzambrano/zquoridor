@@ -74,6 +74,7 @@ struct Options {
     int lmrMinMoveIndex = -999;
     double lmrDivisor = -1.0;
     bool progressiveWidening = false;
+    bool persistentEvalCache = false;
     bool clearTTPerMove = false;
     bool disableTreeReuse = false;
     int wideningInitialMoves = -1;
@@ -112,6 +113,7 @@ static Options parseArgs(int argc, char** argv) {
         else if (a == "--lmr-min-move") o.lmrMinMoveIndex = std::atoi(need("--lmr-min-move"));
         else if (a == "--lmr-divisor") o.lmrDivisor = std::atof(need("--lmr-divisor"));
         else if (a == "--progressive-widening") o.progressiveWidening = true;
+        else if (a == "--persistent-eval-cache") o.persistentEvalCache = true;
         else if (a == "--clear-tt-per-move") o.clearTTPerMove = true;
         else if (a == "--no-tree-reuse") o.disableTreeReuse = true;
         else if (a == "--widening-initial") o.wideningInitialMoves = std::atoi(need("--widening-initial"));
@@ -160,6 +162,7 @@ int main(int argc, char** argv) {
     if (opt.nodeBudget >= 0) params.nodeBudget = opt.nodeBudget;
     if (opt.leafDepth >= 0) params.leafDepth = opt.leafDepth;
     if (opt.progressiveWidening) params.progressiveWidening = true;
+    if (opt.persistentEvalCache) params.persistentEvalCache = true;
     if (opt.clearTTPerMove) params.clearTTPerMove = true;
     if (opt.disableTreeReuse) params.treeReuse = false;
     if (opt.wideningInitialMoves >= 0) params.wideningInitialMoves = opt.wideningInitialMoves;
@@ -275,6 +278,7 @@ int main(int argc, char** argv) {
                       << " lmrMove=" << engine.getLmrMinMoveIndex()
                       << " lmrDiv=" << engine.getLmrDivisor()
                       << " pw=" << (params.progressiveWidening ? 1 : 0)
+                      << " persistentEval=" << (params.persistentEvalCache ? 1 : 0)
                       << " clearTT=" << (params.clearTTPerMove ? 1 : 0)
                       << " reuse=" << (params.treeReuse ? 1 : 0) << "\n";
             std::cout << "bestmove " << moveToText(best) << "\n" << std::flush;
