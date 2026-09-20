@@ -48,8 +48,8 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p gate-bin
-          g++ -O3 -DNDEBUG -std=c++17 -march=native -pthread             -I/tmp/zq-main/src /tmp/zq-main/tools/external/zquoridor_uci.cpp             -o gate-bin/main-base
-          g++ -O3 -DNDEBUG -std=c++17 -march=native -pthread             -Isrc tools/external/zquoridor_uci.cpp             -o gate-bin/candidate
+          g++ -O3 -DNDEBUG -std=c++17 -pthread             -I/tmp/zq-main/src /tmp/zq-main/tools/external/zquoridor_uci.cpp             -o gate-bin/main-base
+          g++ -O3 -DNDEBUG -std=c++17 -pthread             -Isrc tools/external/zquoridor_uci.cpp             -o gate-bin/candidate
           ./gate-bin/candidate --nnue data/nnue/nnue_weights_int8.bin --root-select robust-q75 <<'EOF' >/tmp/smoke.txt
           uci
           isready
