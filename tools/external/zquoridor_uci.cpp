@@ -63,6 +63,8 @@ struct Options {
     int nodeBudget = -1;
     int simulationBudget = -1;
     bool smartPruning = false;
+    bool smartReinvestQ = false;
+    int smartRefineTopK = -1;
     int leafDepth = -1;
     int policyMinDepth = 3;
     bool policyOrdering = true;
@@ -103,6 +105,8 @@ static Options parseArgs(int argc, char** argv) {
         else if (a == "--nodes") o.nodeBudget = std::atoi(need("--nodes"));
         else if (a == "--simulations") o.simulationBudget = std::atoi(need("--simulations"));
         else if (a == "--smart-pruning") o.smartPruning = true;
+        else if (a == "--smart-reinvest-q") o.smartReinvestQ = true;
+        else if (a == "--smart-refine-topk") o.smartRefineTopK = std::atoi(need("--smart-refine-topk"));
         else if (a == "--leaf-depth") o.leafDepth = std::atoi(need("--leaf-depth"));
         else if (a == "--policy-min-depth") o.policyMinDepth = std::atoi(need("--policy-min-depth"));
         else if (a == "--no-policy-order") o.policyOrdering = false;
@@ -164,6 +168,8 @@ int main(int argc, char** argv) {
     if (opt.nodeBudget >= 0) params.nodeBudget = opt.nodeBudget;
     if (opt.simulationBudget >= 0) params.simulationBudget = opt.simulationBudget;
     if (opt.smartPruning) params.smartPruning = true;
+    if (opt.smartReinvestQ) params.smartReinvestQ = true;
+    if (opt.smartRefineTopK > 0) params.smartRefineTopK = opt.smartRefineTopK;
     if (opt.leafDepth >= 0) params.leafDepth = opt.leafDepth;
     if (opt.progressiveWidening) params.progressiveWidening = true;
     if (opt.clearTTPerMove) params.clearTTPerMove = true;
@@ -285,7 +291,9 @@ int main(int argc, char** argv) {
                       << " reuse=" << (params.treeReuse ? 1 : 0)
                       << " sims=" << mstats.simulations
                       << " smartPruned=" << (mstats.smartPruned ? 1 : 0)
-                      << " smartSaved=" << mstats.smartPruneSaved << "\n";
+                      << " smartSaved=" << mstats.smartPruneSaved
+                      << " smartReinvested=" << (mstats.smartReinvested ? 1 : 0)
+                      << " smartRefineK=" << mstats.smartRefineCandidates << "\n";
             std::cout << "bestmove " << moveToText(best) << "\n" << std::flush;
         } else if (cmd == "quit") {
             break;
