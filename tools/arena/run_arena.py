@@ -429,7 +429,7 @@ def resolve_weights_path(weights_dir, engine_source_dir, engine_label):
 
 import multiprocessing
 
-def worker_process(exe_path, worker_games, time_ms, random_plies, seed, report_games, bin_path, invert_colors, progress_queue, e1_nnue="", e2_nnue="", heuristic=False, e1_heuristic=False, e2_heuristic=False, policy_order=False, e1_policy_order=False, e2_policy_order=False, e1_policy_min_depth=3, e2_policy_min_depth=3, e1_mcab=None, e2_mcab=None, e1_engine_args=None, e2_engine_args=None):
+def worker_process(exe_path, worker_games, time_ms, random_plies, seed, report_games, bin_path, invert_colors, progress_queue, tc_base_ms=0, tc_inc_ms=0, move_overhead_ms=20, e1_nnue="", e2_nnue="", heuristic=False, e1_heuristic=False, e2_heuristic=False, policy_order=False, e1_policy_order=False, e2_policy_order=False, e1_policy_min_depth=3, e2_policy_min_depth=3, e1_mcab=None, e2_mcab=None, e1_engine_args=None, e2_engine_args=None):
     cmd = [
         exe_path,
         "--games", str(worker_games),
@@ -437,6 +437,12 @@ def worker_process(exe_path, worker_games, time_ms, random_plies, seed, report_g
         "--random-plies", str(random_plies),
         "--seed", str(seed)
     ]
+    if tc_base_ms > 0:
+        cmd.extend([
+            "--tc-base-ms", str(tc_base_ms),
+            "--tc-inc-ms", str(max(0, tc_inc_ms)),
+            "--move-overhead-ms", str(max(0, move_overhead_ms)),
+        ])
     if not invert_colors:
         cmd.append("--no-invert")
     if report_games > 0:
@@ -540,6 +546,9 @@ def main():
     parser.add_argument("--report-games", type=int, default=REPORT_GAMES, help=f"Frequencia do relatorio de progresso (padrao: {REPORT_GAMES})")
     parser.add_argument("--create-bin", action="store_true", default=CREATE_BIN, help="Salva dataset .bin das partidas em data/arena/")
     parser.add_argument("--time", type=int, default=TIME_MS, help=f"Tempo por lance em ms (padrao: {TIME_MS})")
+    parser.add_argument("--tc-base-ms", type=int, default=0, help="Tempo inicial do relogio em ms. Se maior que zero, ativa o controle de tempo da partida.")
+    parser.add_argument("--tc-inc-ms", type=int, default=0, help="Incremento por lance em ms no modo de relogio.")
+    parser.add_argument("--move-overhead-ms", type=int, default=20, help="Reserva de tempo por lance em ms no modo de relogio.")
     parser.add_argument("--threads", type=int, default=THREADS, help=f"Numero de nucleos/threads (padrao: {THREADS})")
     parser.add_argument("--random-plies", type=int, default=RANDOM_OPENING_PLIES, help=f"Lances aleatorios na abertura (padrao: {RANDOM_OPENING_PLIES})")
     parser.add_argument("--seed", type=int, default=SEED, help=f"Semente RNG (padrao: {SEED})")
@@ -680,7 +689,10 @@ def main():
     print("=" * 65)
     print(f"  Engine 1 : {ref1_label}")
     print(f"  Engine 2 : {ref2_label}")
-    print(f"  Config   : {args.games} jogos | {args.threads} threads | {args.time}ms/lance | Relatorio a cada {args.report_games} jogos")
+    if args.tc_base_ms > 0:
+        print(f"  Config   : {args.games} jogos | {args.threads} threads | relogio {args.tc_base_ms}ms + {args.tc_inc_ms}ms | overhead {args.move_overhead_ms}ms | Relatorio a cada {args.report_games} jogos")
+    else:
+        print(f"  Config   : {args.games} jogos | {args.threads} threads | {args.time}ms/lance | Relatorio a cada {args.report_games} jogos")
     print(f"  Salvar .bin: {args.create_bin}")
     # So aparece o que foi tirado do valor de producao; silencio = as duas
     # engines em producao, que e o caso normal.
@@ -776,7 +788,7 @@ def main():
     for worker_games, worker_seed, worker_bin in tasks:
         p = multiprocessing.Process(
             target=worker_process,
-            args=(cand_exe, worker_games, args.time, args.random_plies, worker_seed, worker_report, worker_bin, args.invert_colors, queue, args.e1_nnue, args.e2_nnue, args.heuristic, args.e1_heuristic, args.e2_heuristic, False, args.e1_policy_order, args.e2_policy_order, args.e1_policy_order_min_depth, args.e2_policy_order_min_depth, args.e1_mcab, args.e2_mcab, args.e1_engine_args, args.e2_engine_args)
+            args=(cand_exe, worker_games, args.time, args.random_plies, worker_seed, worker_report, worker_bin, args.invert_colors, queue, args.tc_base_ms, args.tc_inc_ms, args.move_overhead_ms, args.e1_nnue, args.e2_nnue, args.heuristic, args.e1_heuristic, args.e2_heuristic, False, args.e1_policy_order, args.e2_policy_order, args.e1_policy_order_min_depth, args.e2_policy_order_min_depth, args.e1_mcab, args.e2_mcab, args.e1_engine_args, args.e2_engine_args)
         )
         p.start()
         processes.append(p)
