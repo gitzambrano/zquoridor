@@ -64,6 +64,7 @@
 // e aplicado por SFINAE -- um ref antigo que nao tenha um dos metodos
 // simplesmente ignora aquele knob, sem quebrar a compilacao.
 #include "../../src/search_tuning.hpp"
+#include "../../src/time_manager.hpp"
 
 // Aliases de instanciacao do McabRunner para cada engine (Secao 4.1 do
 // plano) -- um McabRunner por engine, vivo pela partida inteira (criado em
@@ -442,7 +443,8 @@ static int g_e2PolicyOrderMinDepth = E2_POLICY_ORDER_MIN_DEPTH_DEFAULT;
 int playArenaGame(int engine1PlayerIdx, int timeMs, int randomPlies, std::mt19937_64& rng,
                    uint64_t& eng1NodesOut, uint64_t& eng2NodesOut,
                    double& eng1TimeOut, double& eng2TimeOut,
-                   std::vector<TrainingSample>* samplesOut) {
+                   std::vector<TrainingSample>* samplesOut,
+                   int tcBaseMs, int tcIncMs, int moveOverheadMs) {
     qr_e1::Negamax eng1;
     qr_e2::Negamax eng2;
     if (g_e1UseNnue) trySetEvalModeNnue(eng1, 0);
@@ -536,6 +538,7 @@ int playArenaGame(int engine1PlayerIdx, int timeMs, int randomPlies, std::mt1993
 
     qr_e1::State s1 = qr_e1::initialState();
     qr_e2::State s2 = qr_e2::initialState();
+    long long clocksMs[2] = {tcBaseMs, tcBaseMs};
 
     // Abertura aleatÃ³ria: gerada a partir do ref1 (fonte-da-verdade das
     // regras) e replicada lance-a-lance no estado do ref2.
@@ -572,14 +575,24 @@ int playArenaGame(int engine1PlayerIdx, int timeMs, int randomPlies, std::mt1993
 
         int currentTurn = s1.turn;
         qr_e1::Move mChosen;
+        int moveBudgetMs = timeMs;
+        if (tcBaseMs > 0) {
+            const zqtime::TimeBudget timeBudget = zqtime::allocate(
+                zqtime::TimeControl{clocksMs[currentTurn], tcIncMs,
+                                    randomPlies + ply, 0, moveOverheadMs});
+            moveBudgetMs = timeBudget.optimumMs;
+        }
+        long long elapsedMoveMs = 0;
 
         if (currentTurn == engine1PlayerIdx) {
             qr_e1::SearchStats st;
             mcab::McabStats mcabStats;
-            auto t0 = std::chrono::high_resolution_clock::now();
-            mChosen = mcabRunner1.choose(eng1, s1, 40, timeMs, st, hist1, &mcabStats);
-            auto t1 = std::chrono::high_resolution_clock::now();
+            auto t0 = std::chrono::steady_clock::now();
+            mChosen = mcabRunner1.choose(eng1, s1, 40, moveBudgetMs, st, hist1, &mcabStats);
+            auto t1 = std::chrono::steady_clock::now();
             eng1TimeOut += std::chrono::duration<double>(t1 - t0).count();
+            elapsedMoveMs = std::max<long long>(
+                1, std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count());
             // leafDepth=0 evaluates MCTS leaves directly with NNUE, so the
             // alpha-beta SearchStats counter is intentionally zero. Count
             // expanded tree nodes while MCAB is active; otherwise retain the
@@ -591,15 +604,26 @@ int playArenaGame(int engine1PlayerIdx, int timeMs, int randomPlies, std::mt1993
         } else {
             qr_e2::SearchStats st;
             mcab::McabStats mcabStats;
-            auto t0 = std::chrono::high_resolution_clock::now();
-            qr_e2::Move m2 = mcabRunner2.choose(eng2, s2, 40, timeMs, st, hist2, &mcabStats);
-            auto t1 = std::chrono::high_resolution_clock::now();
+            auto t0 = std::chrono::steady_clock::now();
+            qr_e2::Move m2 = mcabRunner2.choose(eng2, s2, 40, moveBudgetMs, st, hist2, &mcabStats);
+            auto t1 = std::chrono::steady_clock::now();
             eng2TimeOut += std::chrono::duration<double>(t1 - t0).count();
+            elapsedMoveMs = std::max<long long>(
+                1, std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count());
             eng2NodesOut += mcabRunner2.activeForThisEngine()
                                 ? (uint64_t)mcabStats.nodesExpanded
                                 : st.nodes;
             mChosen = qr_e1::Move{m2.isWall, m2.a, m2.b, m2.c};
             if (samplesOut) gameRecords.push_back({s1, mChosen, currentTurn, st.score});
+        }
+
+        if (tcBaseMs > 0) {
+            clocksMs[currentTurn] -= elapsedMoveMs;
+            if (clocksMs[currentTurn] <= 0) {
+                winnerPlayer = 1 - currentTurn;
+                break;
+            }
+            clocksMs[currentTurn] += tcIncMs;
         }
 
         // Compat com refs antigos: push(hash, irreversible) so existe no
@@ -658,6 +682,9 @@ int playArenaGame(int engine1PlayerIdx, int timeMs, int randomPlies, std::mt1993
 int main(int argc, char* argv[]) {
     int totalGames = GAMES_DEFAULT;
     int timeMs = TIME_MS_DEFAULT;
+    int tcBaseMs = 0;
+    int tcIncMs = 0;
+    int moveOverheadMs = 20;
     int randomPlies = RANDOM_PLIES_DEFAULT;
     int reportGames = REPORT_GAMES_DEFAULT;
     uint64_t seed = SEED_DEFAULT;
@@ -728,6 +755,9 @@ int main(int argc, char* argv[]) {
     for (int i = 1; i < argc; i++) {
         if (std::strcmp(argv[i], "--games") == 0 && i + 1 < argc) totalGames = std::atoi(argv[++i]);
         else if (std::strcmp(argv[i], "--time") == 0 && i + 1 < argc) timeMs = std::atoi(argv[++i]);
+        else if (std::strcmp(argv[i], "--tc-base-ms") == 0 && i + 1 < argc) tcBaseMs = std::max(0, std::atoi(argv[++i]));
+        else if (std::strcmp(argv[i], "--tc-inc-ms") == 0 && i + 1 < argc) tcIncMs = std::max(0, std::atoi(argv[++i]));
+        else if (std::strcmp(argv[i], "--move-overhead-ms") == 0 && i + 1 < argc) moveOverheadMs = std::max(0, std::atoi(argv[++i]));
         else if (std::strcmp(argv[i], "--random-plies") == 0 && i + 1 < argc) randomPlies = std::atoi(argv[++i]);
         else if (std::strcmp(argv[i], "--seed") == 0 && i + 1 < argc) seed = std::stoull(argv[++i]);
         else if (std::strcmp(argv[i], "--report-games") == 0 && i + 1 < argc) reportGames = std::atoi(argv[++i]);
@@ -1060,6 +1090,12 @@ int main(int argc, char* argv[]) {
         if (!t2.empty()) std::fprintf(stderr, "[arena] Engine 2: busca fora do default -> %s\n", t2.c_str());
     }
 
+    if (tcBaseMs > 0) {
+        std::fprintf(stderr,
+                     "[arena] game clock: base=%dms increment=%dms overhead=%dms; TimeManager v1 uses the optimum budget as the move limit\n",
+                     tcBaseMs, tcIncMs, moveOverheadMs);
+    }
+
     if (totalGames % 2 != 0) totalGames++;
     int totalPairs = totalGames / 2;
     std::mt19937_64 rng(seed);
@@ -1097,12 +1133,14 @@ int main(int argc, char* argv[]) {
             std::mt19937_64 openingRng(rng());
             std::mt19937_64 openingRngCopy = openingRng;
 
-            int resA = playArenaGame(0, timeMs, randomPlies, openingRng, eng1Nodes, baseNodes, eng1TimeSec, baseTimeSec, samplesPtr);
+            int resA = playArenaGame(0, timeMs, randomPlies, openingRng, eng1Nodes, baseNodes, eng1TimeSec, baseTimeSec, samplesPtr,
+                                     tcBaseMs, tcIncMs, moveOverheadMs);
             if (resA == -1) { draws++; totalDraws++; }
             else if (resA == 0) { eng1Wins++; totalEng1Wins++; }
             else { baseWins++; totalBaseWins++; }
 
-            int resB = playArenaGame(1, timeMs, randomPlies, openingRngCopy, eng1Nodes, baseNodes, eng1TimeSec, baseTimeSec, samplesPtr);
+            int resB = playArenaGame(1, timeMs, randomPlies, openingRngCopy, eng1Nodes, baseNodes, eng1TimeSec, baseTimeSec, samplesPtr,
+                                     tcBaseMs, tcIncMs, moveOverheadMs);
             if (resB == -1) { draws++; totalDraws++; }
             else if (resB == 1) { eng1Wins++; totalEng1Wins++; }
             else { baseWins++; totalBaseWins++; }
@@ -1113,7 +1151,8 @@ int main(int argc, char* argv[]) {
         for (int g = 0; g < totalGames; g++) {
             std::mt19937_64 openingRng(rng());
             int eng1Player = g % 2;
-            int res = playArenaGame(eng1Player, timeMs, randomPlies, openingRng, eng1Nodes, baseNodes, eng1TimeSec, baseTimeSec, samplesPtr);
+            int res = playArenaGame(eng1Player, timeMs, randomPlies, openingRng, eng1Nodes, baseNodes, eng1TimeSec, baseTimeSec, samplesPtr,
+                                    tcBaseMs, tcIncMs, moveOverheadMs);
             if (res == -1) { draws++; totalDraws++; }
             else if (res == eng1Player) { eng1Wins++; totalEng1Wins++; }
             else { baseWins++; totalBaseWins++; }
