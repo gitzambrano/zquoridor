@@ -63,13 +63,15 @@ arquivos de configuração indicados.
    Filtra ruído e purifica a distribuição de probabilidade para lances decisivos.
 
 ### Para Onde Vamos (Próximos Passos Imediatos)
-1. **Calibrar Pesos das Fraquezas de Claustrophobia**: Gerar a versão super-ponderada do dataset com ênfase nas posições de Brancas no Center Rush, `reed_rear_wall` e derrotas mineradas.
-2. **Executar Treinamento de 60 Épocas com Annealing**: Rodar o treino completo de 60 épocas da rede `multipath:512` no dataset re-calibrado.
-3. **Bateria Completa de Benchmark**:
-   - 66 jogos no livro de Center Rush contra Claustrophobia GPU (meta: saltar de 31,8% para >45%).
-   - Head-to-Head contra `race512-cr200k-champion`.
-   - Medição de nós por segundo (NPS).
-4. **Promoção para Baseline**: Somente após bater a campeã e demonstrar ganho robusto contra Claustrophobia.
+1. **Concluir Treinamento de 60 Épocas com Annealing (`multipath512-weakness-cr60ep`)**: Atualmente na metade do ciclo (Época 29/60) com loss caindo suavemente (train: 0,7039, val: 0,7305, policy KL: 0,1982).
+2. **Executar Bateria Oficial Completa de Benchmark**:
+   - **vs Claustrophobia (GPU)**: **600 jogos** (300 pares em `openings_600g_300pairs.jsonl`) cobrindo todas as famílias de abertura, com extração e segregação analítica dos resultados específicos de aberturas centrais para comparação direta com os 31,8% do baseline.
+   - **vs Titanium**: **200 jogos** divididos estritamente em:
+     - **100 jogos em aberturas normais** (50 pares em `openings_screen_v1.jsonl`).
+     - **100 jogos em aberturas centrais** (50 pares em `openings_center_rush_v1.jsonl`).
+   - **Head-to-Head**: Match direto contra a atual campeã oficial (`race512-cr200k-champion`).
+   - **Medição de Nós por Segundo (NPS)**: Confirmação de custo zero das 24 features multipath em C++.
+3. **Avaliação para Promoção**: Se superar os índices da campeã (63,0% vs Titanium, 47,9% vs Claustrophobia e 31,8% em Center Rush), promover a arquitetura multipath para baseline oficial do `main`.
 
 ---
 
