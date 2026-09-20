@@ -220,6 +220,9 @@ struct McabParams {
     // Zero preserves production's historical node/time-bounded behavior.
     int simulationBudget = 0;
     bool smartPruning = false;            // exact MaxVisits early stop; requires simulationBudget > 0
+    bool smartPostAB = false;              // after an exact lock, verify only the top root candidates with AB
+    int smartVerifyTopK = 3;
+    int smartVerifyDepth = 4;              // root-relative depth; child search uses depth-1
     // 0 = folha avaliada só por nnueEvalInt no acumulador incremental, sem
     // searchLeaf e sem quiescência de muro. Era 4 (valor do plano); a Fase 8
     // mediu 4 como catastrófico a 200ms/lance e 0 como o único ponto que
@@ -319,6 +322,9 @@ struct McabStats {
     long long evalCacheValueEvictions = 0;
     bool smartPruned = false;
     long long smartPruneSaved = 0;
+    bool smartVerified = false;
+    int smartVerifyCandidates = 0;
+    int smartVerifyCompleted = 0;
                                      // (ver evaluateLeaf). Muitas = leafDepth alto demais para o
                                      // controle de tempo em uso; a árvore fica cega nessas folhas.
 };
@@ -431,6 +437,14 @@ template <typename MoveT>
 inline bool mcabIsWall(const MoveT&, ...) {
     return false;
 }
+
+template <typename RepTblT, typename StateT, typename MoveT>
+inline auto mcabPushRepetition(RepTblT& tbl, const StateT& s, const MoveT& m, int)
+    -> decltype(tbl.push(s.hash, m.isWall), void()) {
+    tbl.push(s.hash, m.isWall);
+}
+template <typename RepTblT, typename StateT, typename MoveT>
+inline void mcabPushRepetition(RepTblT&, const StateT&, const MoveT&, ...) {}
 
 // inv/ab-policy hooks (directions B and E). Both are optional engine
 // capabilities detected by SFINAE, same pattern as mcabPathCache above:
@@ -733,7 +747,8 @@ public:
         if (haveLeafDeadline) leafDeadline = t0 + std::chrono::milliseconds(treeBudgetMs);
         while (mstats.nodesExpanded < budget) {
             if (params.simulationBudget > 0 &&
-                mstats.simulations >= params.simulationBudget) break;
+                mstats.simulations >= params.simulationBudget &&
+                !params.smartPostAB) break;
             if (treeBudgetMs > 0) {
                 auto elapsedMs = std::chrono::duration_cast<std::chrono::milliseconds>(
                                      std::chrono::steady_clock::now() - t0)
@@ -773,6 +788,19 @@ public:
 
         // Passo 6 (Seção 5): escolhe o lance final na raiz.
         MoveT best = pickRootMove(pool[0]);
+
+        // Experimental post-MCTS verification: only after exact MaxVisits lock.
+        // The simulation horizon is a proof target, not a hard time stop. If the
+        // lock fires early, spend only the remaining wall-clock budget comparing
+        // the top visited root candidates with AB. Any truncated verification
+        // falls back to the original MCTS choice to avoid partial-ranking bias.
+        if (params.smartPostAB && mstats.smartPruned && treeBudgetMs > 0 &&
+            !pool[0].terminal) {
+            MoveT verified{};
+            if (verifyTopRootCandidatesAB(engine, root, gameHistory, t0,
+                                          treeBudgetMs, mstats, verified))
+                best = verified;
+        }
 
         // Passo 7 (Seção 5): com reuso ligado, o pool inteiro fica de pé
         // para a próxima chamada (a compactação acontece lá, quando a nova
@@ -1535,6 +1563,73 @@ private:
                 v = nodeQ(node);
         }
         mstats.simulations++;
+    }
+
+    bool verifyTopRootCandidatesAB(
+        Eng& engine, const StateT& root, const RepTblT& gameHistory,
+        std::chrono::steady_clock::time_point searchStart, int totalBudgetMs,
+        McabStats& mstats, MoveT& outMove) {
+        if (pool.empty() || pool[0].terminal) return false;
+        const NodeT& r = pool[0];
+        size_t nm = (size_t)std::min(r.activeMoves, (int)r.moves.size());
+        if (nm == 0) return false;
+
+        std::vector<size_t> order(nm);
+        for (size_t i = 0; i < nm; ++i) order[i] = i;
+        std::stable_sort(order.begin(), order.end(),
+                         [&](size_t a, size_t b) { return r.N[a] > r.N[b]; });
+        int k = std::max(1, std::min(params.smartVerifyTopK, (int)nm));
+        order.resize((size_t)k);
+        mstats.smartVerifyCandidates = k;
+
+        bool haveBest = false;
+        int bestScore = std::numeric_limits<int>::min();
+        size_t bestIdx = 0;
+        int completed = 0;
+
+        for (int j = 0; j < k; ++j) {
+            auto elapsedMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                 std::chrono::steady_clock::now() - searchStart).count();
+            long long remainingMs = (long long)totalBudgetMs - elapsedMs - 2;
+            if (remainingMs <= 1) return false;
+            int left = k - j;
+            int perCandidateMs = (int)std::max<long long>(1, remainingMs / left);
+
+            size_t idx = order[(size_t)j];
+            const MoveT& mv = r.moves[idx];
+            StateT child = applyMove(root, mv);
+            int w = winner(child);
+            int rootScore = 0;
+            if (w != -1) {
+                int childScore = (w == child.turn) ? MCAB_WIN_SCORE : -MCAB_WIN_SCORE;
+                rootScore = -childScore;
+            } else {
+                RepTblT verifyHistory = gameHistory;
+                verifyHistory.markRoot();
+                mcabPushRepetition(verifyHistory, child, mv, 0);
+                SearchStatsT verifyStats{};
+                int depth = std::max(0, params.smartVerifyDepth - 1);
+                int childScore = engine.searchLeaf(child, depth, verifyStats,
+                                                   verifyHistory, nullptr,
+                                                   perCandidateMs);
+                if (engine.searchWasStopped()) return false;
+                rootScore = -childScore;
+            }
+
+            ++completed;
+            if (!haveBest || rootScore > bestScore ||
+                (rootScore == bestScore && r.N[idx] > r.N[bestIdx])) {
+                haveBest = true;
+                bestScore = rootScore;
+                bestIdx = idx;
+            }
+        }
+
+        mstats.smartVerifyCompleted = completed;
+        if (!haveBest || completed != k) return false;
+        mstats.smartVerified = true;
+        outMove = r.moves[bestIdx];
+        return true;
     }
 
     // ---------------------------------------------------------------
