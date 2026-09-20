@@ -74,10 +74,16 @@ jobs:
     timeout-minutes: 150
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
         with:
-          name: robust-q75-binaries-${{ github.run_id }}
-          path: gate-bin
+          fetch-depth: 0
+      - name: Build shard-local native binaries
+        shell: bash
+        run: |
+          set -euo pipefail
+          git worktree add --detach /tmp/zq-main "$BASE_SHA"
+          mkdir -p gate-bin
+          g++ -O3 -DNDEBUG -std=c++17 -march=native -pthread -I/tmp/zq-main/src /tmp/zq-main/tools/external/zquoridor_uci.cpp -o gate-bin/main-base
+          g++ -O3 -DNDEBUG -std=c++17 -march=native -pthread -Isrc tools/external/zquoridor_uci.cpp -o gate-bin/candidate
       - name: Play 100 H2H games
         env:
           SHARD: ${{ matrix.shard }}
@@ -131,13 +137,17 @@ jobs:
     timeout-minutes: 180
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-      - uses: actions/download-artifact@v4
-        with:
-          name: robust-q75-binaries-${{ github.run_id }}
-          path: gate-bin
+      - name: Build shard-local native candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p gate-bin
+          g++ -O3 -DNDEBUG -std=c++17 -march=native -pthread -Isrc tools/external/zquoridor_uci.cpp -o gate-bin/candidate
       - name: Prepare runtime and pinned Claustrophobia
         shell: bash
         run: |
