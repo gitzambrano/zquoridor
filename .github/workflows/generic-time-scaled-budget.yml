@@ -26,7 +26,8 @@ jobs:
           bash build/build_tests.sh
           ./bin/test_mcab_core
           ./bin/test_time_manager
-          bash build/build_external.sh
+          mkdir -p bin
+          g++ -O3 -DNDEBUG -std=c++17 -pthread -Isrc tools/external/zquoridor_uci.cpp -o bin/zquoridor_external
       - name: UCI node-cap smoke
         shell: bash
         run: |
