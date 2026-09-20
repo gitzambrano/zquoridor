@@ -935,7 +935,7 @@ private:
     }
 
     int findGraphTransposition(const StateT& st, int parentIdx, McabStats& mstats) {
-        if (!params.graphTT) return -1;
+        if (!params.graphTT || params.leafDepth > 0 || endgameLeafActive) return -1;
         uint64_t key = mcabEvalStateKey(st, 0);
         if (key == 0) return -1;
         ++mstats.graphTTProbes;
