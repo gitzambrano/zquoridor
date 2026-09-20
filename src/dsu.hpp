@@ -390,4 +390,110 @@ inline bool wallCandidateAmbiguous(RollbackDSU& dsu, uint64_t wallsH, uint64_t w
     return anyRedundant || cornerOrSpan;
 }
 
+
+// Post-lattice DSU: obstacle connectivity on the 10x10 board-post lattice.
+// The full perimeter belongs to one outside boundary component. Existing
+// walls join three consecutive posts. For a geometrically valid candidate
+// A-M-B, an exact path test is only potentially needed when either new
+// segment is redundant or both segments connect already-connected roots.
+// The DSU is flattened once per wall topology so the predicate is three
+// direct root loads in the hot candidate loop.
+struct FlatPostDSU {
+    std::array<uint8_t, 100> parent{};
+
+    void init() {
+        for (int i = 0; i < 100; ++i) parent[(size_t)i] = (uint8_t)i;
+        auto findRaw = [&](int x) {
+            while (parent[(size_t)x] != (uint8_t)x) x = parent[(size_t)x];
+            return x;
+        };
+        auto uniteRaw = [&](int a, int b) {
+            int ra = findRaw(a), rb = findRaw(b);
+            if (ra != rb) parent[(size_t)rb] = (uint8_t)ra;
+        };
+        for (int c = 1; c < 10; ++c) {
+            uniteRaw(0, c);
+            uniteRaw(90, 90 + c);
+        }
+        for (int rr = 1; rr < 10; ++rr) {
+            uniteRaw(0, rr * 10);
+            uniteRaw(0, rr * 10 + 9);
+        }
+    }
+
+    int find(int x) const {
+        while (parent[(size_t)x] != (uint8_t)x) x = parent[(size_t)x];
+        return x;
+    }
+
+    void unite(int a, int b) {
+        int ra = find(a), rb = find(b);
+        if (ra != rb) parent[(size_t)rb] = (uint8_t)ra;
+    }
+
+    void flatten() {
+        for (int i = 0; i < 100; ++i) parent[(size_t)i] = (uint8_t)find(i);
+    }
+};
+
+inline std::array<int, 3> wallPostIds(int orientation, int r, int c) {
+    if (orientation == 0) {
+        int a = (r + 1) * 10 + c;
+        return {a, a + 1, a + 2};
+    }
+    int a = r * 10 + (c + 1);
+    return {a, a + 10, a + 20};
+}
+
+inline void buildFlatPostDSU(FlatPostDSU& d, uint64_t wallsH, uint64_t wallsV) {
+    d.init();
+    uint64_t h = wallsH;
+    while (h) {
+        int s = __builtin_ctzll(h);
+        h &= h - 1;
+        auto q = wallPostIds(0, s / WS, s % WS);
+        d.unite(q[0], q[1]);
+        d.unite(q[1], q[2]);
+    }
+    uint64_t v = wallsV;
+    while (v) {
+        int s = __builtin_ctzll(v);
+        v &= v - 1;
+        auto q = wallPostIds(1, s / WS, s % WS);
+        d.unite(q[0], q[1]);
+        d.unite(q[1], q[2]);
+    }
+    d.flatten();
+}
+
+inline bool wallCandidateClosesPostCycle(const FlatPostDSU& d,
+                                         int orientation, int r, int c) {
+    auto q = wallPostIds(orientation, r, c);
+    int a = d.parent[(size_t)q[0]];
+    int m = d.parent[(size_t)q[1]];
+    int b = d.parent[(size_t)q[2]];
+    return a == m || m == b || a == b;
+}
+
+struct FlatPostDSUCacheEntry {
+    uint64_t wallsH = 0, wallsV = 0;
+    FlatPostDSU dsu{};
+    bool valid = false;
+};
+
+inline const FlatPostDSU& cachedFlatPostDSU(uint64_t wallsH, uint64_t wallsV) {
+    static thread_local std::array<FlatPostDSUCacheEntry, 4096> cache{};
+    uint64_t h = wallsH * 0x9E3779B97F4A7C15ull ^
+                 (wallsV * 0xC2B2AE3D27D4EB4Full + 0x165667B19E3779F9ull);
+    h ^= h >> 33;
+    auto& e = cache[(size_t)h & (cache.size() - 1)];
+    if (!e.valid || e.wallsH != wallsH || e.wallsV != wallsV) {
+        e.wallsH = wallsH;
+        e.wallsV = wallsV;
+        e.valid = true;
+        buildFlatPostDSU(e.dsu, wallsH, wallsV);
+    }
+    return e.dsu;
+}
+
 } // namespace qr
