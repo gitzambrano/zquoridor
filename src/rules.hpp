@@ -17,13 +17,13 @@ constexpr int WS = 8;            // 8x8 slots de muro por orientação
 constexpr int WALLS_PER_PLAYER = 10;
 constexpr int GOAL_ROW[2] = {N - 1, 0};
 
-inline int cellIdx(int r, int c) { return r * N + c; }
-inline int rowOf(int cell) { return cell / N; }
-inline int colOf(int cell) { return cell % N; }
-inline bool inBounds(int r, int c) { return r >= 0 && r < N && c >= 0 && c < N; }
+constexpr int cellIdx(int r, int c) { return r * N + c; }
+constexpr int rowOf(int cell) { return cell / N; }
+constexpr int colOf(int cell) { return cell % N; }
+constexpr bool inBounds(int r, int c) { return r >= 0 && r < N && c >= 0 && c < N; }
 
 // slot de muro (r,c), r,c em 0..7 -> índice 0..63
-inline int slotIdx(int r, int c) { return r * WS + c; }
+constexpr int slotIdx(int r, int c) { return r * WS + c; }
 
 } // namespace qr
 
@@ -46,14 +46,18 @@ struct Move {
 // legalMoves/pawnStepMoves/legalWallMoves, que alocava a cada chamada
 // (praticamente todo nó da árvore de busca, ver negamax em search.hpp).
 // Mesmo padrão/motivação do buffer `static thread_local` já usado em
-// orderMoves (search.hpp, Seção 4/5.6 do plano): capacidade 256 dá folga
-// generosa sobre o máximo real de lances legais (3 peão + 128 muro =
-// 131). Interface mínima compatível com o uso existente de
+// orderMoves (search.hpp, Seção 4/5.6 do plano). O limite pelas regras é
+// 133: no máximo 128 ações de muro e no máximo 5 ações de peão. Um peão
+// tem 4 direções ortogonais; se uma está ocupada pelo adversário, essa ação
+// vira no máximo 2 diagonais, logo 3+2=5. Mantemos 144 por folga/alinhamento,
+// em vez de 256. MCAB guarda MoveList inline por nó, então reduzir o slack
+// melhora residência em cache sem alterar a enumeração de lances.
+// Interface mínima compatível com o uso existente de
 // std::vector<Move> nos call sites (size/empty/operator[]/begin/end/
 // push_back) -- troca de tipo por `auto`/assinatura, sem mudar a lógica
 // de quem consome.
 struct MoveList {
-    static constexpr size_t CAP = 256;
+    static constexpr size_t CAP = 144;
     std::array<Move, CAP> data;
     size_t n = 0;
 
@@ -123,6 +127,66 @@ inline State initialState() {
 }
 
 // --- bloqueio de arestas -------------------------------------------------
+// Precomputed board-neighbour and wall-slot masks for the four orthogonal
+// directions used by every BFS/pawn-move expansion. Direction order matches
+// dr/dc: 0=N, 1=S, 2=W, 3=E.
+constexpr std::array<std::array<int8_t, 4>, N * N> makeNeighborTable() {
+    std::array<std::array<int8_t, 4>, N * N> a{};
+    for (int cell = 0; cell < N * N; ++cell) {
+        int r = cell / N, col = cell % N;
+        a[(size_t)cell][0] = (int8_t)(r > 0 ? cell - N : -1);
+        a[(size_t)cell][1] = (int8_t)(r + 1 < N ? cell + N : -1);
+        a[(size_t)cell][2] = (int8_t)(col > 0 ? cell - 1 : -1);
+        a[(size_t)cell][3] = (int8_t)(col + 1 < N ? cell + 1 : -1);
+    }
+    return a;
+}
+constexpr std::array<std::array<uint64_t, 4>, N * N> makeEdgeHMaskTable() {
+    std::array<std::array<uint64_t, 4>, N * N> a{};
+    for (int cell = 0; cell < N * N; ++cell) {
+        int r = cell / N, col = cell % N;
+        if (r > 0) {
+            int wr = r - 1;
+            if (col > 0) a[(size_t)cell][0] |= 1ull << slotIdx(wr, col - 1);
+            if (col < WS) a[(size_t)cell][0] |= 1ull << slotIdx(wr, col);
+        }
+        if (r < WS) {
+            int wr = r;
+            if (col > 0) a[(size_t)cell][1] |= 1ull << slotIdx(wr, col - 1);
+            if (col < WS) a[(size_t)cell][1] |= 1ull << slotIdx(wr, col);
+        }
+    }
+    return a;
+}
+constexpr std::array<std::array<uint64_t, 4>, N * N> makeEdgeVMaskTable() {
+    std::array<std::array<uint64_t, 4>, N * N> a{};
+    for (int cell = 0; cell < N * N; ++cell) {
+        int r = cell / N, col = cell % N;
+        if (col > 0) {
+            int wc = col - 1;
+            if (r > 0) a[(size_t)cell][2] |= 1ull << slotIdx(r - 1, wc);
+            if (r < WS) a[(size_t)cell][2] |= 1ull << slotIdx(r, wc);
+        }
+        if (col < WS) {
+            int wc = col;
+            if (r > 0) a[(size_t)cell][3] |= 1ull << slotIdx(r - 1, wc);
+            if (r < WS) a[(size_t)cell][3] |= 1ull << slotIdx(r, wc);
+        }
+    }
+    return a;
+}
+constexpr auto ORTH_NEIGHBOR = makeNeighborTable();
+constexpr auto EDGE_H_MASK = makeEdgeHMaskTable();
+constexpr auto EDGE_V_MASK = makeEdgeVMaskTable();
+
+inline bool edgeBlockedDir(uint64_t wallsH, uint64_t wallsV, int cell, int dir) {
+    return ((wallsH & EDGE_H_MASK[(size_t)cell][(size_t)dir]) |
+            (wallsV & EDGE_V_MASK[(size_t)cell][(size_t)dir])) != 0;
+}
+inline bool isGoalCell(int cell, int player) {
+    return player == 0 ? cell >= (N - 1) * N : cell < N;
+}
+
 inline bool edgeBlocked(uint64_t wallsH, uint64_t wallsV, int ra, int ca, int rb, int cb) {
     if (ra == rb) {
         int r = ra, c = ca < cb ? ca : cb;
@@ -153,6 +217,22 @@ inline bool wallSlotAvailable(uint64_t wallsH, uint64_t wallsV, int orientation,
         if ((wallsH >> slotIdx(r, c)) & 1ull) return false;
     }
     return true;
+}
+
+constexpr uint64_t WALL_COL0 = 0x0101010101010101ull;
+constexpr uint64_t WALL_COL7 = 0x8080808080808080ull;
+constexpr uint64_t WALL_ROW0 = 0x00000000000000FFull;
+constexpr uint64_t WALL_ROW7 = 0xFF00000000000000ull;
+
+inline uint64_t geometricWallMaskH(uint64_t wallsH, uint64_t wallsV) {
+    return ~(wallsH | wallsV |
+             ((wallsH << 1) & ~WALL_COL0) |
+             ((wallsH >> 1) & ~WALL_COL7));
+}
+inline uint64_t geometricWallMaskV(uint64_t wallsH, uint64_t wallsV) {
+    return ~(wallsV | wallsH |
+             ((wallsV << WS) & ~WALL_ROW0) |
+             ((wallsV >> WS) & ~WALL_ROW7));
 }
 
 // ---------------------------------------------------------------------
@@ -236,22 +316,20 @@ namespace detail {
         if (rowOf(startCell) == goalRow) { e.goalCell = startCell; e.distToGoal = 0; return; }
         while (head < tail) {
             int cell = e.queue[head++];
-            int r = rowOf(cell), c = colOf(cell);
             int d0 = e.dist[cell];
             for (int d = 0; d < 4; d++) {
-                int nr = r + dr[d], nc = c + dc[d];
-                if (!inBounds(nr, nc)) continue;
-                int ncell = cellIdx(nr, nc);
+                int ncell = (int)ORTH_NEIGHBOR[(size_t)cell][(size_t)d];
+                if (ncell < 0) continue;
                 if (e.visitGen[ncell] == e.gen) continue;
-                if (edgeBlocked(wallsH, wallsV, r, c, nr, nc)) continue;
+                if (edgeBlockedDir(wallsH, wallsV, cell, d)) continue;
                 e.visitGen[ncell] = e.gen;
                 e.parent[ncell] = cell;
                 e.dist[ncell] = d0 + 1;
                 e.touched[e.touchedCount++] = ncell;
-                if (nr == goalRow) {
+                if (isGoalCell(ncell, player)) {
                     e.goalCell = ncell;
                     e.distToGoal = d0 + 1;
-                    return;  // early exit total -- idêntico às 3 funções antigas
+                    return;
                 }
                 e.queue[tail++] = ncell;
             }
@@ -264,7 +342,7 @@ namespace detail {
 // para topologias de muro DIFERENTES a cada vez (candidato ambíguo em
 // legalWallMoves/isWallMoveLegal, um por candidato) -- não há BFS
 // duplicada aqui pra fundir, cada chamada já é sobre uma topologia única.
-inline bool hasPathToGoal(uint64_t wallsH, uint64_t wallsV, int startCell, int player) {
+inline bool hasPathToGoalBFS(uint64_t wallsH, uint64_t wallsV, int startCell, int player) {
     int goalRow = GOAL_ROW[player];
     if (rowOf(startCell) == goalRow) return true;
     static thread_local uint64_t visitGen[N * N] = {};
@@ -291,6 +369,88 @@ inline bool hasPathToGoal(uint64_t wallsH, uint64_t wallsV, int startCell, int p
         }
     }
     return false;
+}
+
+// 81-cell bit-parallel reachability, following the same edge semantics as
+// Claustrophobia's production flood. The queue BFS above remains as an
+// independent correctness oracle and distance/path reconstruction still uses
+// detail::runBFS unchanged.
+using CellBits = unsigned __int128;
+constexpr CellBits CELL_BOARD = (((CellBits)1 << (N * N)) - 1);
+
+constexpr CellBits makeCol8Mask() {
+    CellBits m = 0;
+    for (int r = 0; r < N; ++r) m |= (CellBits)1 << cellIdx(r, N - 1);
+    return m;
+}
+constexpr CellBits CELL_COL8 = makeCol8Mask();
+constexpr CellBits CELL_GOAL0 = ((CellBits)0x1FF) << ((N - 1) * N);
+constexpr CellBits CELL_GOAL1 = (CellBits)0x1FF;
+
+constexpr std::array<CellBits, WS * WS> makeHBlockMasks128() {
+    std::array<CellBits, WS * WS> a{};
+    for (int r = 0; r < WS; ++r)
+        for (int col = 0; col < WS; ++col) {
+            int s = slotIdx(r, col);
+            a[(size_t)s] = ((CellBits)1 << cellIdx(r, col)) |
+                           ((CellBits)1 << cellIdx(r, col + 1));
+        }
+    return a;
+}
+constexpr std::array<CellBits, WS * WS> makeVBlockMasks128() {
+    std::array<CellBits, WS * WS> a{};
+    for (int r = 0; r < WS; ++r)
+        for (int col = 0; col < WS; ++col) {
+            int s = slotIdx(r, col);
+            a[(size_t)s] = ((CellBits)1 << cellIdx(r, col)) |
+                           ((CellBits)1 << cellIdx(r + 1, col));
+        }
+    return a;
+}
+constexpr auto H_BLOCK_MASK128 = makeHBlockMasks128();
+constexpr auto V_BLOCK_MASK128 = makeVBlockMasks128();
+
+inline void buildEdgeBlockBits(uint64_t wallsH, uint64_t wallsV,
+                               CellBits& hblock, CellBits& vblock) {
+    hblock = 0;
+    vblock = 0;
+    while (wallsH) {
+        int slot = __builtin_ctzll(wallsH);
+        wallsH &= wallsH - 1;
+        hblock |= H_BLOCK_MASK128[(size_t)slot];
+    }
+    while (wallsV) {
+        int slot = __builtin_ctzll(wallsV);
+        wallsV &= wallsV - 1;
+        vblock |= V_BLOCK_MASK128[(size_t)slot];
+    }
+}
+
+inline CellBits floodStepBits(CellBits r, CellBits hblock, CellBits vblock) {
+    CellBits south = ((r & ~hblock) << N) & CELL_BOARD;
+    CellBits north = (r >> N) & ~hblock;
+    CellBits east  = ((r & ~vblock & ~CELL_COL8) << 1) & CELL_BOARD;
+    CellBits west  = (r >> 1) & ~vblock & ~CELL_COL8;
+    return r | south | north | east | west;
+}
+
+inline bool hasPathToGoalBlocked(CellBits hblock, CellBits vblock,
+                                 int startCell, int player) {
+    CellBits f = (CellBits)1 << startCell;
+    const CellBits goal = player == 0 ? CELL_GOAL0 : CELL_GOAL1;
+    for (;;) {
+        if (f & goal) return true;
+        CellBits nf = floodStepBits(f, hblock, vblock);
+        if (nf == f) return false;
+        f = nf;
+    }
+}
+
+inline bool hasPathToGoal(uint64_t wallsH, uint64_t wallsV,
+                          int startCell, int player) {
+    CellBits hb, vb;
+    buildEdgeBlockBits(wallsH, wallsV, hb, vb);
+    return hasPathToGoalBlocked(hb, vb, startCell, player);
 }
 
 // Distância mais curta até a meta -- wrapper fino sobre detail::runBFS
@@ -611,27 +771,21 @@ inline void computeDistCached(uint64_t wallsH, uint64_t wallsV, int startCell, i
 // como Move::pawn(destCell) em out (Fase 4.2.2: sem std::vector<int>
 // intermediário, out é o MoveList final de legalMoves).
 inline void pawnStepMoves(const State& s, int player, MoveList& out) {
-    static const int dr[4] = {-1, 1, 0, 0};
-    static const int dc[4] = {0, 0, -1, 1};
     int me = s.pawn[player], opp = s.pawn[1 - player];
-    int mr = rowOf(me), mc = colOf(me);
     for (int d = 0; d < 4; d++) {
-        int r1 = mr + dr[d], c1 = mc + dc[d];
-        if (!inBounds(r1, c1) || edgeBlocked(s.wallsH, s.wallsV, mr, mc, r1, c1)) continue;
-        int step1 = cellIdx(r1, c1);
+        int step1 = (int)ORTH_NEIGHBOR[(size_t)me][(size_t)d];
+        if (step1 < 0 || edgeBlockedDir(s.wallsH, s.wallsV, me, d)) continue;
         if (step1 != opp) { out.push_back(Move::pawn(step1)); continue; }
-        int r2 = r1 + dr[d], c2 = c1 + dc[d];
-        if (inBounds(r2, c2) && !edgeBlocked(s.wallsH, s.wallsV, r1, c1, r2, c2)) {
-            out.push_back(Move::pawn(cellIdx(r2, c2)));
-            continue;
+        int straight = (int)ORTH_NEIGHBOR[(size_t)opp][(size_t)d];
+        if (straight >= 0 && !edgeBlockedDir(s.wallsH, s.wallsV, opp, d)) {
+            out.push_back(Move::pawn(straight)); continue;
         }
-        // diagonais
         int pd0, pd1;
         if (d < 2) { pd0 = 2; pd1 = 3; } else { pd0 = 0; pd1 = 1; }
         for (int pd : {pd0, pd1}) {
-            int rdi = r1 + dr[pd], cdi = c1 + dc[pd];
-            if (inBounds(rdi, cdi) && !edgeBlocked(s.wallsH, s.wallsV, r1, c1, rdi, cdi))
-                out.push_back(Move::pawn(cellIdx(rdi, cdi)));
+            int diag = (int)ORTH_NEIGHBOR[(size_t)opp][(size_t)pd];
+            if (diag >= 0 && !edgeBlockedDir(s.wallsH, s.wallsV, opp, pd))
+                out.push_back(Move::pawn(diag));
         }
     }
 }
@@ -662,12 +816,8 @@ inline void legalWallMoves(const State& s, int player, MoveList& out,
                             uint64_t* touchOutH1 = nullptr, uint64_t* touchOutV1 = nullptr,
                             PlayerPathCache* cacheOut0 = nullptr, PlayerPathCache* cacheOut1 = nullptr,
                             PlayerPathCacheTable* xtable = nullptr) {
-    PlayerPathCache localCache0, localCache1;
-    PlayerPathCache& c0 = cacheOut0 ? *cacheOut0 : localCache0;
-    PlayerPathCache& c1 = cacheOut1 ? *cacheOut1 : localCache1;
-    computeDistCached(s.wallsH, s.wallsV, s.pawn[0], 0, xtable, c0);
-    computeDistCached(s.wallsH, s.wallsV, s.pawn[1], 1, xtable, c1);
-
+    // Zero walls means zero legal wall moves. Return before touching either
+    // path cache: otherwise this empty result still pays two path lookups/BFS.
     if (s.wallsLeft[player] <= 0) {
         if (touchOutH0) *touchOutH0 = 0;
         if (touchOutV0) *touchOutV0 = 0;
@@ -675,6 +825,12 @@ inline void legalWallMoves(const State& s, int player, MoveList& out,
         if (touchOutV1) *touchOutV1 = 0;
         return;
     }
+
+    PlayerPathCache localCache0, localCache1;
+    PlayerPathCache& c0 = cacheOut0 ? *cacheOut0 : localCache0;
+    PlayerPathCache& c1 = cacheOut1 ? *cacheOut1 : localCache1;
+    computeDistCached(s.wallsH, s.wallsV, s.pawn[0], 0, xtable, c0);
+    computeDistCached(s.wallsH, s.wallsV, s.pawn[1], 1, xtable, c1);
 
     // Pré-filtro (Fase 4.2.1 do plano): calculado uma única vez por
     // chamada (2 BFS, não 2×128, e agora possivelmente ZERO BFS -- ver
@@ -700,43 +856,35 @@ inline void legalWallMoves(const State& s, int player, MoveList& out,
     // sempre que o candidato provadamente não fecha nenhuma barreira
     // esquerda-direita -- se fecha, cai de volta no hasPathToGoal exato
     // (mesmo comportamento de antes, sem risco de regressão).
-    RollbackDSU dsu;
-    buildWallDSU(dsu, s.wallsH, s.wallsV);
+    const FlatWallDSU& dsu = cachedFlatWallDSU(s.wallsH, s.wallsV);
 
     for (int orientation = 0; orientation < 2; orientation++) {
         uint64_t touch0 = orientation == 0 ? touchH0 : touchV0;
         uint64_t touch1 = orientation == 0 ? touchH1 : touchV1;
-        for (int r = 0; r < WS; r++) {
-            for (int c = 0; c < WS; c++) {
-                if (!wallSlotAvailable(s.wallsH, s.wallsV, orientation, r, c)) continue;
-                int slot = slotIdx(r, c);
-                bool touches0 = (touch0 >> slot) & 1ull;
-                bool touches1 = (touch1 >> slot) & 1ull;
-                if (!touches0 && !touches1) {
-                    // não toca o caminho testemunha de ninguém -> legal, sem BFS
-                    out.push_back(Move::wall(orientation, r, c));
-                    continue;
-                }
-                if (!wallCandidateAmbiguous(dsu, s.wallsH, s.wallsV, orientation, r, c)) {
-                    // DSU prova que este muro não fecha nenhum ciclo
-                    // (bolso/cercado), nem conecta esquerda-direita
-                    // (barreira completa), nem fecha nenhum bolso de
-                    // canto (superior/inferior × esquerda/direita) ->
-                    // nenhum jogador pode ficar sem caminho até sua
-                    // meta -> legal, sem BFS (prova em dsu.hpp).
-                    out.push_back(Move::wall(orientation, r, c));
-                    continue;
-                }
-                // Ambíguo (fecha ciclo e/ou conecta esquerda-direita):
-                // pode ou não bloquear de fato -- cai no BFS exato como
-                // antes.
-                uint64_t nh = s.wallsH, nv = s.wallsV;
-                if (orientation == 0) nh |= (1ull << slot);
-                else nv |= (1ull << slot);
-                if (touches0 && !hasPathToGoal(nh, nv, s.pawn[0], 0)) continue;
-                if (touches1 && !hasPathToGoal(nh, nv, s.pawn[1], 1)) continue;
-                out.push_back(Move::wall(orientation, r, c));
+        uint64_t candidates = orientation == 0
+            ? geometricWallMaskH(s.wallsH, s.wallsV)
+            : geometricWallMaskV(s.wallsH, s.wallsV);
+
+        while (candidates) {
+            int slot = __builtin_ctzll(candidates);
+            candidates &= candidates - 1;
+            int r = slot / WS, cc = slot % WS;
+            bool touches0 = (touch0 >> slot) & 1ull;
+            bool touches1 = (touch1 >> slot) & 1ull;
+            if (!touches0 && !touches1) {
+                out.push_back(Move::wall(orientation, r, cc));
+                continue;
             }
+            if (!wallCandidateAmbiguousFlat(dsu, s.wallsH, s.wallsV, orientation, r, cc)) {
+                out.push_back(Move::wall(orientation, r, cc));
+                continue;
+            }
+            uint64_t nh = s.wallsH, nv = s.wallsV;
+            if (orientation == 0) nh |= (1ull << slot);
+            else nv |= (1ull << slot);
+            if (touches0 && !hasPathToGoal(nh, nv, s.pawn[0], 0)) continue;
+            if (touches1 && !hasPathToGoal(nh, nv, s.pawn[1], 1)) continue;
+            out.push_back(Move::wall(orientation, r, cc));
         }
     }
 }
@@ -828,27 +976,21 @@ inline EvalWeights& evalWeights() { static EvalWeights w; return w; }
 // em orderMoves (Seção 5.6 do plano) -- mesma lógica de geração de lance
 // de pawnStepMoves acima, sem o vector.
 inline int pawnMobilityCount(const State& s, int player) {
-    static const int dr[4] = {-1, 1, 0, 0};
-    static const int dc[4] = {0, 0, -1, 1};
     int me = s.pawn[player], opp = s.pawn[1 - player];
-    int mr = rowOf(me), mc = colOf(me);
     int count = 0;
     for (int d = 0; d < 4; d++) {
-        int r1 = mr + dr[d], c1 = mc + dc[d];
-        if (!inBounds(r1, c1) || edgeBlocked(s.wallsH, s.wallsV, mr, mc, r1, c1)) continue;
-        int step1 = cellIdx(r1, c1);
+        int step1 = (int)ORTH_NEIGHBOR[(size_t)me][(size_t)d];
+        if (step1 < 0 || edgeBlockedDir(s.wallsH, s.wallsV, me, d)) continue;
         if (step1 != opp) { count++; continue; }
-        int r2 = r1 + dr[d], c2 = c1 + dc[d];
-        if (inBounds(r2, c2) && !edgeBlocked(s.wallsH, s.wallsV, r1, c1, r2, c2)) {
-            count++;
-            continue;
+        int straight = (int)ORTH_NEIGHBOR[(size_t)opp][(size_t)d];
+        if (straight >= 0 && !edgeBlockedDir(s.wallsH, s.wallsV, opp, d)) {
+            count++; continue;
         }
         int pd0, pd1;
         if (d < 2) { pd0 = 2; pd1 = 3; } else { pd0 = 0; pd1 = 1; }
         for (int pd : {pd0, pd1}) {
-            int rdi = r1 + dr[pd], cdi = c1 + dc[pd];
-            if (inBounds(rdi, cdi) && !edgeBlocked(s.wallsH, s.wallsV, r1, c1, rdi, cdi))
-                count++;
+            int diag = (int)ORTH_NEIGHBOR[(size_t)opp][(size_t)pd];
+            if (diag >= 0 && !edgeBlockedDir(s.wallsH, s.wallsV, opp, pd)) count++;
         }
     }
     return count;
