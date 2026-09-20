@@ -10,6 +10,14 @@ on:
       - "tools/external/**"
       - "training/teachers/**"
       - "docs/engine-lab.md"
+  pull_request:
+    paths:
+      - ".github/workflows/engine-lab.yml"
+      - "build/build_tests.*"
+      - "src/time_manager.hpp"
+      - "tests/test_time_manager.cpp"
+      - "tools/arena/**"
+      - "tools/external/**"
   workflow_dispatch:
     inputs:
       mode:
@@ -73,7 +81,7 @@ env:
 
 jobs:
   smoke:
-    if: ${{ github.event_name == 'push' || inputs.mode == 'smoke' }}
+    if: ${{ github.event_name == 'push' || github.event_name == 'pull_request' || inputs.mode == 'smoke' }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -83,7 +91,7 @@ jobs:
           python-version: "3.11"
       - name: Syntax and frozen-identity sanity
         run: |
-          python -m py_compile tools/external/titanium_arena.py tools/external/titanium_arena_fixed.py tools/external/analyze_paired_arena.py training/teachers/titanium_collect.py
+          python -m py_compile tools/arena/run_arena.py tools/external/titanium_arena.py tools/external/titanium_arena_fixed.py tools/external/analyze_paired_arena.py training/teachers/titanium_collect.py
           bash -n tools/external/build_pinned_titanium.sh
           test -s checkpoints/gen8/nnue_weights.bin
           test -s checkpoints/gen8/nnue_weights_int8.bin
@@ -124,7 +132,21 @@ jobs:
           bash build/build_tests.sh
           ./bin/test_rules_sanity
           ./bin/test_mcab_core
+          ./bin/test_time_manager
           echo 'Full search regressions (including test_policy_ab) stay in candidate/search gates.'
+      - name: Game-clock smoke
+        shell: bash
+        run: |
+          set -euo pipefail
+          printf 'uci\nisready\nposition startpos\ngo wtime 180000 btime 180000 winc 2000 binc 2000\nquit\n' |
+            ./bin/zquoridor_external --nnue data/nnue/nnue_weights_int8.bin |
+            tee /tmp/time-uci.log
+          grep -q '^bestmove ' /tmp/time-uci.log
+          grep -q 'string budget=' /tmp/time-uci.log
+          ./bin/arena.exe --games 4 --random-plies 4 --report-games 0 \
+            --tc-base-ms 1000 --tc-inc-ms 100 --move-overhead-ms 5 \
+            --e1-nnue data/nnue/nnue_weights_int8.bin \
+            --e2-nnue data/nnue/nnue_weights_int8.bin
 
   selfplay:
     if: ${{ github.event_name == 'workflow_dispatch' && inputs.mode == 'selfplay' }}

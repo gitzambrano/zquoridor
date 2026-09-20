@@ -11,6 +11,7 @@
 
 #include "search.hpp"
 #include "mcab.hpp"
+#include "time_manager.hpp"
 
 using Runner = mcab::McabRunner<qr::Negamax, qr::State, qr::Move, qr::MoveList,
                                 qr::AccPair, qr::RepetitionTable, qr::SearchStats>;
@@ -81,6 +82,7 @@ struct Options {
     double wideningExponent = -1.0;
     int endgameMoverWallThreshold = -999;
     int endgameLeafDepth = -1;
+    int moveOverheadMs = 20;
 };
 
 static Options parseArgs(int argc, char** argv) {
@@ -119,6 +121,7 @@ static Options parseArgs(int argc, char** argv) {
         else if (a == "--widening-exp") o.wideningExponent = std::atof(need("--widening-exp"));
         else if (a == "--endgame-mover-walls") o.endgameMoverWallThreshold = std::atoi(need("--endgame-mover-walls"));
         else if (a == "--endgame-leaf-depth") o.endgameLeafDepth = std::atoi(need("--endgame-leaf-depth"));
+        else if (a == "--move-overhead") o.moveOverheadMs = std::max(0, std::atoi(need("--move-overhead")));
         else {
             std::cerr << "unknown argument: " << a << "\n";
             std::exit(2);
@@ -233,10 +236,20 @@ int main(int argc, char** argv) {
                 std::cout << "info string error illegal position history\n" << std::flush;
             }
         } else if (cmd == "go") {
-            int movetime = 200;
+            int movetime = -1;
+            long long wtime = -1;
+            long long btime = -1;
+            long long winc = 0;
+            long long binc = 0;
+            int movesToGo = 0;
             std::string token;
             while (iss >> token) {
                 if (token == "movetime") iss >> movetime;
+                else if (token == "wtime") iss >> wtime;
+                else if (token == "btime") iss >> btime;
+                else if (token == "winc") iss >> winc;
+                else if (token == "binc") iss >> binc;
+                else if (token == "movestogo") iss >> movesToGo;
                 else if (token == "depth") {
                     int ignored = 0;
                     iss >> ignored;
@@ -247,17 +260,33 @@ int main(int argc, char** argv) {
                 continue;
             }
 
+            int budgetMs = movetime > 0 ? movetime : 200;
+            zqtime::TimeBudget timeBudget{budgetMs, budgetMs};
+            if (movetime <= 0) {
+                const long long remaining = state.turn == 0 ? wtime : btime;
+                const long long increment = state.turn == 0 ? winc : binc;
+                if (remaining >= 0) {
+                    timeBudget = zqtime::allocate(
+                        zqtime::TimeControl{remaining, increment,
+                                            static_cast<int>(currentMoves.size()),
+                                            movesToGo, opt.moveOverheadMs});
+                    budgetMs = timeBudget.optimumMs;
+                }
+            }
+
             qr::SearchStats stats;
             mcab::McabStats mstats;
             auto t0 = std::chrono::steady_clock::now();
-            qr::Move best = runner.choose(engine, state, 40, movetime, stats, history, &mstats);
+            qr::Move best = runner.choose(engine, state, 40, budgetMs, stats, history, &mstats);
             auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
                 std::chrono::steady_clock::now() - t0).count();
             uint64_t nodes = runner.activeForThisEngine() ? (uint64_t)mstats.nodesExpanded : stats.nodes;
             std::cout << "info depth " << stats.reachedDepth
                       << " nodes " << nodes
                       << " time " << elapsed
-                      << " string cpuct=" << params.cPuct
+                      << " string budget=" << budgetMs
+                      << " hard=" << timeBudget.maximumMs
+                      << " cpuct=" << params.cPuct
                       << " scale=" << params.scoreScale
                       << " mcab=" << (params.enabled ? 1 : 0)
                       << " leaf=" << params.leafDepth

@@ -25,6 +25,12 @@ relearn by experiment.
   - `margin_regime:512` (`src/nnue.hpp`, opt-in via `-DZQ_NNUE_MARGIN_REGIME_FEATURES=1`):
     `588 -> 512` SCReLU accumulator adding 132 distance margin $\times$ wall regime interaction features.
     **600-game match vs Claustrophobia GPU: 49.00% (-6.95 Elo)**.
+- **Time management**: `src/time_manager.hpp` allocates a move budget from
+  the remaining clock, increment, estimated moves to go, ply, and move overhead.
+  Version 1 returns an optimum and maximum budget. The production search uses
+  the optimum budget as the effective move limit. The external adapter accepts
+  `wtime/btime/winc/binc/movestogo`, and the arena accepts
+  `--tc-base-ms` plus `--tc-inc-ms` for game-clock tests.
 - **Performance baseline (2026-09-20)**:
   - `race512-cr200k-champion` (Production baseline on `main`):
     - vs Titanium: **63.0% (+92.5 Elo)** in official 600-game match (378W / 0D / 222L).
@@ -125,6 +131,17 @@ relearn by experiment.
 ---
 
 ## 3. History Notes (durable lessons only)
+
+- **Game-clock time manager v1 (2026-09-20)**: The engine previously accepted
+  one fixed `timeBudgetMs` per move. Therefore, the search did not know the
+  remaining game clock or the increment. Version 1 adds a conservative budget
+  allocator and keeps the existing search deadline as the enforcement point.
+  The search uses the optimum budget as its hard move limit until a separate
+  root-stability rule is validated. This avoids spending a larger maximum
+  budget on every move before an adaptive stop rule exists. The next step is
+  to use root visit share, Q gap, best-move changes, and tree reuse to decide
+  whether the search can continue from the optimum limit toward the maximum
+  limit.
 
 - **Experimental candidate models tracked in version control (2026-09-18)**: The
   experimental network weights (`student.bin` and `student_int8.bin`) and their
