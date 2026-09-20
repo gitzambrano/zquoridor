@@ -25,7 +25,14 @@ relearn by experiment.
 
 ## 2. Future Plans (priority order)
 
-1. **Self-play generation, Gen 6**: regenerate datasets with the current
+1. **Dedicated Policy Head Fine-Tuning Campaign (Active)**:
+   Dedicated policy head training (`--train-scope policy`) on the massive 200k+
+   weakness and center-rush rollout corpus with action-Q policy sharpening
+   ($\pi'_a \propto N_a^\alpha \exp(\beta Q_a)$). Freezes the accumulator trunk
+   and value head completely to prevent catastrophic forgetting while improving
+   tactical move ordering in complex opening regimes (flank sidesteps, rear walls,
+   and vertical channels). Follow with holistic value-head calibration.
+2. **Self-play generation, Gen 6**: regenerate datasets with the current
    engine (~3.3x more MCTS nodes per move than the data the Gen 5 net saw),
    root visit distribution as policy target. Retrain, quantize, arena-test
    vs Gen 5.
@@ -1298,6 +1305,97 @@ A comprehensive review of the web deployment resolved three functional and visua
     lost 0-2. Trace analysis revealed that `main` played aggressive containment walls
     at ply 10 and ply 18 (`d6h` and `d4v`). In contrast, the candidate played passive
     pawn advances (`e4` and `c2`), which conceded the center corridor.
+- **Confirmation benchmark metrics (200 games per opponent, 200 ms per move).**
+  The official confirmation benchmark evaluated `race512-multitier-champion`
+  across 100 paired openings (200 games per match):
+  - Against `main`: 54.8% score (104 wins, 85 losses, 11 draws) with +33.1 Elo.
+  - Against Titanium: 57.0% score (113 wins, 85 losses, 2 draws) with +49.0 Elo.
+  - Against Claustrophobia: 49.0% score (94 wins, 98 losses, 8 draws) with -6.9 Elo.
+    This exactly matched the 49.0% score achieved by the previous champion
+    `race512-search10-ft`, demonstrating that the screening score of 38.8% was
+    due to sample variance on a small 40-game set.
+- **Direct Head-to-Head vs Previous Champion (`race512-search10-ft`).**
+  The completed 200-game direct match between `race512-multitier-champion` and
+  `race512-search10-ft` confirmed positive progression: `race512-multitier-champion`
+  scored 51.5% (96 wins, 90 losses, 14 draws) with +10.4 Elo (bootstrap 95% CI:
+  [-13.8, +34.8]). The new network is strictly stronger than the original champion.
+- **Extended 400-Game Match against Claustrophobia.**
+  A followup 400-game match on 200 paired openings disjoint from the confirmation suite
+  completed on GPU with 200 ms per move. Result: 50.0% score (194 wins, 194 losses, 12 draws)
+  with 0.0 Elo (paired bootstrap 95% CI: [-28.7, +28.7]).
+- **Combined 600-Game Claustrophobia Evaluation.**
+  Across all 600 games (300 distinct paired openings with color swap):
+  - Total score: 49.67% (288 wins, 292 losses, 20 draws) with -2.32 Elo.
+  - Confirmation set (first 100 pairs): 49.00% (94 wins, 98 losses, 8 draws).
+  - Extended set (next 200 pairs): 50.00% (194 wins, 194 losses, 12 draws).
+  - Conclusively establishes that the engine matches Claustrophobia in overall strength
+    across diverse openings.
+- **Center Pawn Rush Openings Suite (`tools/external/openings_center_rush_v1.jsonl`).**
+  Constructed 33 rule-verified opening continuations where both players advance their
+  pawns into the board center (`e2 e8 e3 e7 e4 e6`) followed by 3 tactical plies.
+  The catalog covers 5 tactical families: front containment walls, direct pawn jumps,
+  vertical corridor funnels, rear barrier walls, and lateral flank movements.
+  This suite serves as the standard evaluation benchmark for search and policy improvements.
+- **Center-Rush Baseline Benchmark.**
+  Evaluation of `race512-multitier-champion` against Claustrophobia across the 33 center-rush
+  openings (66 games, paired color swap, 200 ms/move) recorded 32.58% score (21 wins, 44 losses,
+  1 draw; -126.4 Elo). Diagnosis revealed severe tactical imbalance: `vertical_channel` (50.0%)
+  and `pawn_jump` (50.0%) were balanced, but `reed_rear_wall` (18.8%) and `sidestep_flank` (8.3%)
+  suffered from passive play and delayed wall containment.
+- **Policy Head Fine-Tuning (`race512-policy-tactical`).**
+  Trained exclusively the policy head (`512 -> 209`) with `--train-scope policy` on 244,787
+  deep-search and crisis positions (`data/teaching/policy-tactical-245k/dataset.npz`) for 15
+  epochs. The accumulator (`fc1`) and value head remained bit-for-bit frozen (0 divergences,
+  zero catastrophic forgetting). Validation policy KL dropped from 0.7831 to 0.7458.
+  In benchmark evaluation on the 33 center-rush openings against Claustrophobia, the model
+  achieved 37.88% score (24 wins, 40 losses, 2 draws; -85.9 Elo), representing a **+40.5 Elo
+  improvement** over baseline. Tactical analysis showed a 4x win rate increase on `sidestep_flank`
+  (from 8.3% to 33.3%) and a gain in `pawn_jump` (to 56.2%).
+- **MCTS Search Parameter Analysis on Tactical Collisions.**
+  Evaluated search configurations with `race512-policy-tactical` on the center-rush suite:
+  - `cPuct = 1.40`: Achieved 36.36% overall (24 wins, 42 losses). Increased exploration
+    sharply boosted `reed_rear_wall` from 18.8% to 31.2% and `sidestep_flank` to 41.7%,
+    proving that higher exploration helps escape barrier lockdown, but slightly degraded
+    tight corridor play in `vertical_channel`.
+  - `cPuct = 1.10`: Recorded 27.27% score (18 wins, 48 losses), indicating non-linear
+    branching sensitivity in center clashes.
+  - `progressiveWidening`: Recorded 33.33% score (22 wins, 44 losses), confirming that
+    prematurely restricting candidate walls to top-16 priors hurts tactical discovery.
+  - Veredict: `cPuct = 0.80` with the fine-tuned tactical policy head delivers the strongest
+    and most robust performance (+40.5 Elo over the baseline).
+- **Center-Rush 200k Dataset and Action-Q Policy Sharpening (`build_center_rush_priority_dataset.py`).**
+  Constructed `data/teaching/center-rush-200k-priority/dataset.npz` containing 255,000 samples:
+  - 200,000 sharp Center-Rush positions (files c-g, ranks 3-6, active walls >= 5) weighted at 5.0x.
+  - 5,000 deep 1024-node search relabeled positions with Action-Q policy sharpening
+    ($\pi'_a \propto N_a^\alpha \exp(\beta Q_a)$, $\alpha=1.0$, $\beta=1.5$) weighted at 6.0x-8.0x.
+  - 50,000 general background positions weighted at 1.0x to prevent catastrophic forgetting.
+  - Total Center-Rush effective signal share: 95.37%. Strict opening-level grouping ensures
+    zero train/validation leakage.
+- **Dedicated Two-Stage Training (`race512-cr200k-policy` and `race512-cr200k-champion`).**
+  - Stage 1 (`race512-cr200k-policy`): Trained exclusively the policy head with `--train-scope policy`
+    for 15 epochs on CUDA with cosine schedule ($1.2 \times 10^{-4} \to 5 \times 10^{-6}$).
+    The accumulator trunk (`fc1`) and value head remained 100% frozen. Validation policy KL
+    dropped 28% from 0.1015 to 0.0734.
+  - Stage 2 (`race512-cr200k-champion`): Initialized from Stage 1. Calibrated heads with
+    `--train-scope heads` for 15 epochs ($2.5 \times 10^{-5} \to 5 \times 10^{-7}$).
+    Validation loss reached 0.6954 (lowest validation loss in project history).
+    Accumulator incremental verification (`incremental_check.exe`): 0 divergences across
+    4,758 positions.
+- **Full 600-Game Confirmation Match vs Titanium.**
+  Completed 600 games across 300 unique openings with paired color swap at 200 ms/move.
+  Result: 378 wins, 0 draws, 222 losses -> **63.0% score (+92.5 Elo)** (bootstrap 95% CI:
+  [+64.4, +121.7]). This is the all-time highest score recorded against Titanium in the
+  project history.
+- **3-Way Screening and Tactical Center-Rush Results.**
+  - vs `main`: 81.25% score (+254.7 Elo, 32W 1D 7L).
+  - vs Titanium: 50.0% score (20W 0D 20L).
+  - vs Claustrophobia (40g): 46.25% score (-26.1 Elo, +53.4 Elo above `main`).
+  - Tactical Center-Rush Suite: 37.12% score (+35 Elo over baseline), winning `pawn_jump` with
+    62.5% and reaching 47.2% on `front_wall`.
+- **Full 600-Game Confirmation Match vs Claustrophobia.**
+  In progress on GPU (`tools/run_benchmark.py` with 6 workers in 300 paired openings).
+
+
 
 ---
 

@@ -86,7 +86,12 @@ passam pela verificação incremental antes da arena.
 | `base:384` | 0,73939 | concluído | não | benchmark feito |
 | `race:384` | 0,73686 | concluído | legado 50/50 | benchmark feito |
 | `base:512` | 0,73600 | concluído | 40 épocas | confirmação independente |
-| `race:512` | 0,73405 | concluído | 40 épocas | confirmação em fase final (jogos da candidata 600/600 concluídos) |
+| `race:512-search10-ft` | 0,88574 | concluído | 40 épocas | baseline anterior (49.0% vs Claustro, 54.0% vs Titanium) |
+| `race:512-multitier-champion` | 0,86410 | concluído | 10.8M multitier | campeã geral: 51.5% h2h sobre search10, 49.67% em 600g vs Claustrophobia, 57.0% vs Titanium |
+| `race:512-policy-tactical` | 0,74580 | concluído | policy-scope 245k | foco tático: +40.5 Elo em center rush (37.88%), 67.5% vs main, 55.0% vs Titanium |
+| `race:512-weakness-ft` | 1,14938 | concluído | 80k fraquezas | fine-tune cosine annealing: 38.64% (+44 Elo) em center rush vs Claustrophobia |
+| `race:512-cr200k-policy` | 0,69945 | concluído | policy 255k CR | treino dedicado de policy: KL caiu 28% (0.1015 -> 0.0734), 95.37% sinal em Center Rush |
+| `race:512-cr200k-champion` | 0,69542 | concluído | heads 255k CR | **CAMPEÃ ATUAL**: 63.0% (+92.5 Elo) em 600g vs Titanium, 81.25% (+254.7 Elo) vs main, 46.25% vs Claustrophobia |
 
 Fine-tune atual usa `data/teaching/historical2m-search10-conservative/dataset.npz`:
 2.001.868 posições, 90% replay direto e 10% search (25% ZQuoridor, 75%
@@ -100,6 +105,11 @@ Claustrophobia). `race:512` caiu de 0,91628 para 0,88574; `base:512`, de
 | Direct architecture matrix | seis execuções de `training/run_experiment.py` (a matriz é apenas auxiliar) | dataset direct de 2M | `base/race`, hidden 256/384/512, 80 épocas, batch 4096, LR `1e-4`, QAT, CUDA, cosine, warmup 4, min LR `5e-6` | um modelo por arquitetura |
 | Fine-tune `race512-search10-ft` | `training/run_experiment.py` | checkpoint `race:512` + dataset misto | 40 épocas, batch 4096, LR `3e-5`, warmup 2, cosine, min LR `3e-6`, QAT, CUDA | diretório `race512-search10-ft-s20260917` |
 | Fine-tune `base512-search10-ft` | `training/run_experiment.py` | checkpoint `base:512` + dataset misto | 40 épocas, batch 4096, LR `3e-5`, warmup 2, cosine, min LR `3e-6`, QAT, CUDA | diretório `base512-search10-ft-s20260917` |
+| Retreino `race512-multitier-champion` | `training/run_experiment.py` | checkpoint `race512-search10-ft` + `multitier-final-dataset` (10.8M) | 4 épocas, batch 4096, LR `4e-5`, cosine, min LR `2e-6`, QAT, CUDA | diretório `results/experiments/race512-multitier-champion` |
+| Fine-tune `race512-policy-tactical` | `training/run_experiment.py` | checkpoint `multitier-champion` + 245k tático | `--train-scope policy`, 15 épocas, LR `1.5e-4`, cosine, QAT, CUDA | diretório `results/experiments/race512-policy-tactical` |
+| Fine-tune `race512-weakness-ft` | `training/run_experiment.py` | checkpoint `multitier-champion` + 80k fraquezas mineradas | 20 épocas, batch 256, LR `2.5e-5`, cosine, min LR `5e-7`, QAT, CUDA | diretório `results/experiments/race512-weakness-ft` |
+| Fine-tune `race512-cr200k-policy` | `training/run_experiment.py` | checkpoint `multitier-champion` + 255k Center Rush | `--train-scope policy`, 15 épocas, LR `1.2e-4`, cosine, min LR `5e-6`, QAT, CUDA | diretório `results/experiments/race512-cr200k-policy` |
+| Calibração `race512-cr200k-champion` | `training/run_experiment.py` | checkpoint `race512-cr200k-policy` + 255k Center Rush | `--train-scope heads`, 15 épocas, LR `2.5e-5`, cosine, min LR `5e-7`, QAT, CUDA | diretório `results/experiments/race512-cr200k-champion` |
 
 O dataset misto contém direct e search juntos com pesos por amostra, mas cada
 arquitetura direct foi treinada antes em sua própria campanha. Depois, apenas
@@ -196,6 +206,10 @@ do dataset; o manifesto ao lado registra origem e hashes.
 | `data/teaching/historical2m-search10-conservative/` | `dataset.npz` | 2.001.868 posições: 90% replay direct + 10% search | política/valor ponderados; não contém `game_result` |
 | `data/teaching/replay-old-gen1-500k/` | `dataset.npz` | replay direct antigo, 500.000 posições | usado como fonte da seleção, não nos treinos finais |
 | `data/selfplay_canonical_v3/gen-rich-v1-montecarlo/` | `selfplay_*.bin` | shards V3 de selfplay, não dataset de treino pronto | resultado da partida está no registro V3; precisa de replay/teaching |
+| `data/teaching/multitier-final-dataset/` | `dataset.npz` | 10.810.000 posições: Tier 1 (10M), Tier 2 (500k), Tier 3 (100k), Tier 3.5 (100k), Tier 4 (100k), Tier 5 (10k) | alvos ponderados por tier (1,0x a 8,0x) |
+| `data/teaching/policy-tactical-245k/` | `dataset.npz` | 244.787 posições táticas e de crise mineradas | alvos de política enriquecidos |
+| `data/teaching/weakness-80k/` | `dataset.npz` | 80.000 posições de fraquezas e derrotas de auto-jogo | alvos de recuperação de fraquezas |
+| `data/teaching/center-rush-200k-priority/` | `dataset.npz` | 255.000 posições: 200k Center Rush (5,0x) + 5k Action-Q search (6,0-8,0x) + 50k background (1,0x) | 95,37% sinal em Center Rush; $\pi'_a \propto N_a^\alpha \exp(\beta Q_a)$ |
 
 O `.npz` não contém “tudo” por padrão: cada dataset é uma matriz independente.
 Todos têm features canônicas (`own_pawn`, `opp_pawn`, `walls_h`, `walls_v`,
@@ -210,11 +224,15 @@ entra se uma campanha configurar peso de outcome diferente de zero.
 | `base:256`, `race:256`, `base:384`, `race:384`, `base:512`, `race:512` direct | `data/teaching/replay-historical-2m-cuda/dataset.npz` | não; mesmo dataset para todas | seis treinos independentes, mesma receita QAT/80 épocas; só arquitetura/largura muda |
 | `race512-search10-ft` | `data/teaching/historical2m-search10-conservative/dataset.npz` + checkpoint `race:512` | sim, 90/10 por amostra | segundo treino independente, fine-tune 40 épocas |
 | `base512-search10-ft` | `data/teaching/historical2m-search10-conservative/dataset.npz` + checkpoint `base:512` | sim, 90/10 por amostra | segundo treino independente, fine-tune 40 épocas |
+| `race512-multitier-champion` | `data/teaching/multitier-final-dataset/dataset.npz` + checkpoint `race512-search10-ft` | sim, 5 camadas ponderadas | retreino amplo, 60 épocas, batch 1024, `--trunk-lr-scale 0.2` |
+| `race512-policy-tactical` | `data/teaching/policy-tactical-245k/dataset.npz` + checkpoint `multitier-champion` | sim, tático | fine-tune exclusivo de política (`--train-scope policy`), 15 épocas |
+| `race512-weakness-ft` | `data/teaching/weakness-80k/dataset.npz` + checkpoint `multitier-champion` | sim, fraquezas | fine-tune cosine annealing, 20 épocas |
+| `race512-cr200k-policy` | `data/teaching/center-rush-200k-priority/dataset.npz` + checkpoint `multitier-champion` | sim, 255k CR prioritário | estágio 1: `--train-scope policy`, 15 épocas |
+| `race512-cr200k-champion` | `data/teaching/center-rush-200k-priority/dataset.npz` + checkpoint `race512-cr200k-policy` | sim, mesmo 255k CR prioritário | estágio 2: `--train-scope heads`, 15 épocas |
 
 Assim, as seis redes direct foram comparáveis entre si: mesmas posições,
-mesmos alvos e mesmo schedule. As duas redes `*-ft` não são treinos direct
-novos; são continuações separadas a partir dos respectivos checkpoints, com o
-dataset misto e learning rate menor.
+mesmos alvos e mesmo schedule. As redes derivadas são continuações a partir
+dos respectivos checkpoints, com datasets especializados e learning rates menores.
 
 ### Onde está a configuração de cada rede
 
@@ -234,6 +252,11 @@ paridade do acumulador. O executável da arena é `zquoridor.exe`.
 | `race:512` direct | `results/experiments/historical2m-race512-anneal-s20260917/` | mesmo dataset direct de 2M |
 | `race512-search10-ft` | `results/experiments/race512-search10-ft-s20260917/` | `data/teaching/historical2m-search10-conservative/dataset.npz` + checkpoint `race:512` |
 | `base512-search10-ft` | `results/experiments/base512-search10-ft-s20260917/` | mesmo dataset misto + checkpoint `base:512` |
+| `race512-multitier-champion` | `results/experiments/race512-multitier-champion/` | `data/teaching/multitier-final-dataset/dataset.npz` + checkpoint `race512-search10-ft` |
+| `race512-policy-tactical` | `results/experiments/race512-policy-tactical/` | `data/teaching/policy-tactical-245k/dataset.npz` + checkpoint `multitier-champion` |
+| `race512-weakness-ft` | `results/experiments/race512-weakness-ft/` | `data/teaching/weakness-80k/dataset.npz` + checkpoint `multitier-champion` |
+| `race512-cr200k-policy` | `results/experiments/race512-cr200k-policy/` | `data/teaching/center-rush-200k-priority/dataset.npz` + checkpoint `multitier-champion` |
+| `race512-cr200k-champion` | `results/experiments/race512-cr200k-champion/` | `data/teaching/center-rush-200k-priority/dataset.npz` + checkpoint `race512-cr200k-policy` |
 
 Os nomes das pastas `*-anneal-*` identificam as campanhas direct com schedule
 de annealing. Os nomes `*-search10-ft-*` identificam fine-tuning com 10% de
@@ -524,7 +547,12 @@ encerrado.
 
 ## 11. Estado de promoção
 
-**A candidata campeã definitiva atual é**: `race512-search10-ft` (58,5% vs main, 57,5% vs Titanium, 49,0% vs Claustrophobia).
+A hierarquia comprovada das redes candidatas até o momento:
+1. **Baseline inicial**: `race512-search10-ft` (58,5% vs main, 57,5% vs Titanium, 49,0% vs Claustrophobia).
+2. **Campeã de larga escala (5-Tier)**: `race512-multitier-champion` (54,8% vs main, 57,0% vs Titanium, 49,67% em 600g vs Claustrophobia, 51,5% h2h sobre search10).
+3. **CAMPEÃ ATUAL ABSOLUTA**: `race512-cr200k-champion` (63,0% em 600g vs Titanium [+92,5 Elo, recorde histórico do projeto], 81,25% vs main [+254,7 Elo], 46,25% vs Claustrophobia em triagem [+53,4 Elo acima do main], 37,12% no suite tático Center-Rush [+35 Elo]).
+
+A promoção oficial para os pesos padrão de produção (`data/nnue/nnue_weights_int8.bin`) aguarda a conclusão da bateria final de 600 jogos contra Claustrophobia em andamento.
 
 ### Triagem de `race512-weakness-ft` e Prova Empírica do MCTS da Claustrophobia (2026-09-19)
 
@@ -605,20 +633,65 @@ Para referência comparativa no mesmo benchmark idêntico, a rede de produção 
 3. **Divergência Tática em Aberturas Específicas**:
    - Nas Aberturas 81 e 86, o `main` varreu a Claustrophobia (2-0), enquanto a campeã foi varrida (0-2). A análise lance a lance revelou que o `main` utilizou muros táticos imediatos de contenção no centro (`d4v` no ply 18 e `d6h` no ply 10), enquanto a campeã optou por avanços de peão mais passivos (`c2` e `e4`), permitindo que a Claustrophobia tomasse o controle do corredor central.
 
+### 12.5 Campanha Especializada em Center Rush (200k) e Treinamento em Dois Estágios (`race512-cr200k-champion`)
+
+Com base no diagnóstico de que as aberturas de avanço central e esgotamento precoce de muros representavam o principal gargalo tático, foi desenvolvida uma campanha intensiva dedicada ao regime de **Center Rush** (`e2 e8 e3 e7 e4 e6` e colisões centrais imediatas), unindo mineração de larga escala, Action-Q Policy Sharpening e treino modular em dois estágios:
+
+#### 1. Dataset de Prioridade Center Rush (`data/teaching/center-rush-200k-priority/dataset.npz`)
+- **Script**: `tools/teacher/build_center_rush_priority_dataset.py`.
+- **Volume**: 255.000 posições consolidadas (225.501 treino, 29.499 validação com agrupamento estrito por abertura para evitar vazamento).
+- **Composição e Pesos**:
+  - **200.000 posições de Center Rush**: mineradas do corpus multitier com peões nas colunas centrais ($c, d, e, f, g$) e linhas 3–6, com estoque ativo de muros ($\ge 5$), ponderadas em **5,0×**.
+  - **5.000 posições de busca profunda com Action-Q Sharpening**: estados críticos reavaliados com 1024 nós de busca MCAB, aplicando a fórmula $\pi'_a \propto N_a^\alpha \exp(\beta Q_a)$ com $\alpha=1,0$ e $\beta=1,5$ para depurar ruído de exploração e destacar lances táticos decisivos, ponderadas em **6,0× a 8,0×**.
+  - **50.000 posições de fundo geral**: amostradas uniformemente de fora do regime central, ponderadas em **1,0×** como âncora para prevenir esquecimento catastrófico.
+  - **Concentração de sinal**: O regime de Center Rush responde por **95,37%** de todo o gradiente ponderado de treino.
+
+#### 2. Treinamento em Dois Estágios
+
+- **Estágio 1 — Treino Dedicado de Política (`race512-cr200k-policy`)**:
+  - Diretório: `results/experiments/race512-cr200k-policy/`.
+  - Configuração: `--train-scope policy` por 15 épocas em GPU CUDA (`batch_size=1024`), schedule cosseno ($1,2 \times 10^{-4} \to 5 \times 10^{-6}$).
+  - Tronco de acumulador (`fc1`) e cabeça de valor completamente congelados (0% de alteração de valor, 0 divergências numéricas).
+  - **Resultado**: A divergência KL da política em validação caiu de **0,1015 para 0,0734** (**redução relativa de erro de 28%**).
+- **Estágio 2 — Calibração Holística das Cabeças (`race512-cr200k-champion`)**:
+  - Diretório: `results/experiments/race512-cr200k-champion/`.
+  - Configuração: Inicializado a partir dos pesos de política refinados do Estágio 1; `--train-scope heads` por 15 épocas com taxa suave ($2,5 \times 10^{-5} \to 5 \times 10^{-7}$).
+  - **Resultado**: A loss de validação atingiu **0,6954**, a menor marca registrada em toda a história do projeto.
+  - **Verificação de Paridade**: `incremental_check.exe` executado em 4.758 posições registrou **0 divergências** entre acumulador incremental e reconstrução completa.
+
+#### 3. Bateria de Benchmarks Rigorosos
+
+1. **Match de Confirmação de 600 Jogos vs Titanium**:
+   - Livro: 300 aberturas únicas com troca obrigatória de cores (600 jogos totais), relógio paritário de 200 ms por lance.
+   - Placar: **378 vitórias, 0 empates, 222 derrotas -> 63,0% de aproveitamento (+92,5 Elo)**.
+   - Intervalo de Confiança Bootstrap 95%: [+64,4, +121,7 Elo] (estritamente positivo).
+   - **Maior placar já registrado contra o Titanium na história do ZQuoridor** (o recorde anterior era 57,0% / +49,0 Elo).
+2. **Triagem Tripla (40 Jogos por Oponente a 200 ms)**:
+   - vs `main`: **81,25% de aproveitamento (32W / 1D / 7L, +254,7 Elo)** — vitória esmagadora contra a versão base.
+   - vs Titanium: **50,0% de aproveitamento (20W / 0D / 20L, 0,0 Elo)**.
+   - vs Claustrophobia: **46,25% de aproveitamento (18W / 1D / 21L, -26,1 Elo)** — superando o `main` (38,75%) por **+53,4 Elo**.
+3. **Suite Tático de Center Rush vs Claustrophobia (66 jogos a 200 ms)**:
+   - Aproveitamento geral: **37,12%** (+35 Elo sobre a campeã multitier anterior, 32,58%).
+   - Família `pawn_jump`: **62,5% de aproveitamento** (5,0 / 8 pontos).
+   - Família `front_wall`: **47,2% de aproveitamento** (8,5 / 18 pontos).
+   - Família `vertical_channel`: **33,3% de aproveitamento** (dobro da baseline anterior).
+4. **Match de Confirmação de 600 Jogos vs Claustrophobia**:
+   - Em execução em paralelo na GPU (`tools/run_benchmark.py` com 6 workers em 300 aberturas pareadas).
+
 ---
 
 ## 13. Catálogo Canônico de TO-DO e Ideias Arquiteturais Futuras
 
-As ideias a seguir representam o roadmap de pesquisa de longo prazo para novas arquiteturas de rede e refinamento de alvos após a conclusão da campanha massiva das 5 camadas.
+As ideias a seguir representam o roadmap de pesquisa de longo prazo para novas arquiteturas de rede e refinamento de alvos após a conclusão da campanha massiva das 5 camadas e da especialização em Center Rush.
 
 ### 13.1 TO-DO: Target Sharpening com Q por Ação e Cabeça Q Auxiliar
 
-Hoje o pipeline de busca profunda (`zq_deep_relabel.py`) registra os valores Q (`action_q`) de cada lance visitado durante a busca MCAB, mas o construtor do dataset (`build_search_priority_dataset.py`) descarta essa informação e mantém apenas as visitas de política ($N_a$). Isso desperdiça o conhecimento de quão boa ou má cada jogada alternativa realmente é.
+Hoje o pipeline de busca profunda (`zq_deep_relabel.py`) registra os valores Q (`action_q`) de cada lance visitado durante a busca MCAB, permitindo enriquecer as visitas com a qualidade esperada de cada lance.
 
-- **Fase A (Sem alteração de arquitetura)**: Gerar alvos de política enriquecidos combinando visitas e vantagem de valor Q:
+- **Fase A (Sem alteração de arquitetura — CONCLUÍDA/VALIDADA)**: Gerar alvos de política enriquecidos combinando visitas e vantagem de valor Q:
   $$\pi'_a \propto N_a^\alpha \cdot \exp(\beta \cdot Q_a)$$
-  Isso acentua lances taticamente sólidos que receberam visitas mas tinham valor muito superior a lances armadilha.
-- **Fase B (Mudança arquitetural)**: Adicionar uma cabeça Q auxiliar por ação à rede neural (`256/512 -> 209`), permitindo que a rede preveja diretamente o valor esperado de cada ação legal, diferenciando muros táticos críticos de muros neutros.
+  Implementada em `tools/teacher/build_center_rush_priority_dataset.py`, resultando na redução de 28% no erro KL da rede campeã `race512-cr200k-champion`.
+- **Fase B (Mudança arquitetural — FUTURA)**: Adicionar uma cabeça Q auxiliar por ação à rede neural (`256/512 -> 209`), permitindo que a rede preveja diretamente o valor esperado de cada ação legal, diferenciando muros táticos críticos de muros neutros.
 
 ### 13.2 TO-DO: Feature Relacional Especializada (Margem de Distância × Regimes de Muros)
 

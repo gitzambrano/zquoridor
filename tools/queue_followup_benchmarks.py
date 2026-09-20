@@ -79,6 +79,10 @@ def run_claustrophobia_400(args: argparse.Namespace) -> None:
     log("Starting Job 2: 400 games (200 pairs) vs Claustrophobia on GPU")
     log("=================================================================")
 
+    claustro_openings = ROOT / "tools" / "external" / "openings_claustro_followup_200pairs.jsonl"
+    if not claustro_openings.exists():
+        claustro_openings = Path(args.openings).resolve()
+
     cmd = [
         sys.executable,
         str(ROOT / "tools" / "run_benchmark.py"),
@@ -86,7 +90,7 @@ def run_claustrophobia_400(args: argparse.Namespace) -> None:
         "--pairs", str(args.claustro_pairs),
         "--workers", str(args.workers),
         "--seed", str(args.seed + 1),
-        "--openings", str(Path(args.openings).resolve()),
+        "--openings", str(claustro_openings),
         "--zq-executable", str(ROOT / "results" / "experiments" / "race512-multitier-champion" / "zquoridor.exe"),
         "--nnue", str(ROOT / "results" / "experiments" / "race512-multitier-champion" / "student_int8.bin"),
         "--zq-move-time-ms", str(args.move_time_ms),
