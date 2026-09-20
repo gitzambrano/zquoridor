@@ -56,11 +56,26 @@ arquivos de configuração indicados.
   - **vs Titanium (100 jogos Center Rush)**: **45,0% (-34,86 Elo)** (Pretas dominando com 72,0% de vitórias; Brancas em 18,0%).
   - **Zero Custo de BFS**: Validação incremental em C++ com 100% de paridade (0 divergências em 4.758 posições).
 
-- **Rede Experimental Treinada e em Benchmark (`margin_regime:512` — 588 entradas)**:
+- **Rede Experimental Avaliada (`margin_regime:512` — 588 entradas)**:
   - 132 features de interação direta: $\Delta d \in [-16..16] \times 4$ regimes de esgotamento de muros.
-  - Treinamento de 60 épocas com QAT concluído com sucesso: `best_val_loss = 0.7308`, `policy_kl = 0.1983`, `value_mae = 0.2060`.
+  - Treinamento de 60 épocas com QAT concluído: `best_val_loss = 0.7308`, `policy_kl = 0.1983`, `value_mae = 0.2060`.
   - Paridade incremental em C++ verificada: 0 divergências em 4.758 posições.
-  - Bateria oficial completa de 800 jogos (600g Claustrophobia GPU + 200g Titanium) em execução ativa.
+  - **Bateria Oficial de 800 Jogos Concluída (com 6 workers paralelos)**:
+    - **vs Claustrophobia (GPU, 600 jogos)**: **49,00% (294,0 / 600)** (-6,95 Elo).
+      - Aberturas Centrais/Peão: **43,92% (32,5 / 74)** (Brancas: 35,1% | Pretas: 52,7%).
+      - Aberturas de Muro: **49,71% (261,5 / 526)** (Brancas: 51,9% | Pretas: 47,5%).
+      - Brancas: 149,5 / 300 (49,8%) | Pretas: 144,5 / 300 (48,2%).
+    - **vs Titanium (100 jogos normais)**: **65,00% (65,0 / 100)** (+107,5 Elo).
+    - **vs Titanium (100 jogos Center Rush)**: **47,00% (47,0 / 100)** (-20,9 Elo) (Pretas: 70,0% | Brancas: 24,0%).
+  - **Conclusão Arquitetural**: A rede `margin_regime` é competitiva, mas fica atrás da `multipath:512` por **14,5 Elo** contra a Claustrophobia (49,0% vs 51,08%) e por **2,7%** nas aberturas centrais. A multiplicidade e resiliência topológica de rotas da `multipath` provou ser uma heurística mais informativa para a rede do que a matriz cartesiana distância $\times$ regime de muros.
+
+- **Status dos Rollouts de Crise (`generate_rollouts.exe`)**:
+  - Em execução com **8 threads** em background sobre 1.000 sementes críticas (6 rollouts/semente, MCAB com 128 nós por lance, busca profunda até 120 plies).
+  - Mais de 293.600 CPU segundos consumidos (~10,2h de parede), atingindo aproximadamente **~95% de conclusão**.
+  - O dataset resultante fornecerá alvos ricos de política (visitas) e valor descontado TD($\lambda$) para o fine-tuning cirúrgico da defesa de Brancas em aberturas centrais.
+
+- **Infraestrutura de Benchmark Paralelo**:
+  - `tools/run_full_candidate_suite.py` e `tools/run_benchmark.py` parametrizados com `--workers 6` como padrão. O tempo total de execução dos 800 jogos caiu de ~3 horas para ~25 minutos na máquina local com total isolamento e persistência dos dados.
 
 ### Protocolo Mandatório para os Próximos Treinamentos
 1. **Mínimo de 60 Épocas com Recozimento Térmico (Annealing)**: Treinamentos não podem ser interrompidos prematuramente; devem cumprir $\ge 60$ épocas com decaimento suave de learning rate (cosine schedule até $2\cdot 10^{-7}$) para garantir assentamento profundo dos pesos quantizados (QAT).
@@ -75,15 +90,13 @@ arquivos de configuração indicados.
    Filtra ruído e purifica a distribuição de probabilidade para lances decisivos.
 
 ### Para Onde Vamos (Próximos Passos Imediatos)
-1. **Concluir Treinamento de 60 Épocas com Annealing (`multipath512-weakness-cr60ep`)**: Atualmente na metade do ciclo (Época 29/60) com loss caindo suavemente (train: 0,7039, val: 0,7305, policy KL: 0,1982).
-2. **Executar Bateria Oficial Completa de Benchmark**:
-   - **vs Claustrophobia (GPU)**: **600 jogos** (300 pares em `openings_600g_300pairs.jsonl`) cobrindo todas as famílias de abertura, com extração e segregação analítica dos resultados específicos de aberturas centrais para comparação direta com os 31,8% do baseline.
-   - **vs Titanium**: **200 jogos** divididos estritamente em:
-     - **100 jogos em aberturas normais** (50 pares em `openings_screen_v1.jsonl`).
-     - **100 jogos em aberturas centrais** (50 pares em `openings_center_rush_v1.jsonl`).
-   - **Head-to-Head**: Match direto contra a atual campeã oficial (`race512-cr200k-champion`).
-   - **Medição de Nós por Segundo (NPS)**: Confirmação de custo zero das 24 features multipath em C++.
-3. **Avaliação para Promoção**: Se superar os índices da campeã (63,0% vs Titanium, 47,9% vs Claustrophobia e 31,8% em Center Rush), promover a arquitetura multipath para baseline oficial do `main`.
+1. **Fine-Tuning Focal da Campeã (`multipath:512`) na Defesa de Brancas**:
+   - A `multipath:512` é a líder isolada do projeto contra Claustrophobia GPU (51,08% / +7,5 Elo).
+   - O calcanhar de aquiles identificado é a defesa de Brancas contra Center Rush (18% vs Titanium, 35% vs Claustrophobia).
+   - Executar fine-tuning com os rollouts de crise de `task-6945` e learning rate recozido (`1.5e-5 → 1e-7`) para elevar o score de Brancas para >50%.
+2. **Treinar Próximas Variações Arquiteturais**:
+   - `phase:512` (480 inputs: estoque de muros e fase).
+   - `multipath_phase:512` (combinação de multiplicidade de rotas + fase do jogo).
 
 ---
 

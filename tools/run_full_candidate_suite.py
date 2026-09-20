@@ -14,7 +14,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def run_cmd(cmd: list[str]):
-    print(f"\n>>> Running: {' '.join(str(c) for c in cmd)}")
+    print(f"\n>>> Running: {' '.join(str(c) for c in cmd)}", flush=True)
     subprocess.run(cmd, check=True, cwd=ROOT)
 
 
@@ -23,6 +23,7 @@ def main():
     parser.add_argument("--candidate-exe", required=True, help="Path to candidate executable")
     parser.add_argument("--candidate-nnue", required=True, help="Path to candidate quantized weights (.bin)")
     parser.add_argument("--suite-name", required=True, help="Folder name for benchmark outputs")
+    parser.add_argument("--workers", type=int, default=6, help="Number of concurrent game workers (default: 6)")
     parser.add_argument("--skip-claustro", action="store_true", help="Skip Claustrophobia 600g")
     parser.add_argument("--skip-titanium", action="store_true", help="Skip Titanium 200g")
     args = parser.parse_args()
@@ -37,14 +38,15 @@ def main():
 
     # 1. 600 games vs Claustrophobia (GPU)
     if not args.skip_claustro:
-        print("\n" + "=" * 70)
-        print("PHASE 1: 600 GAMES VS CLAUSTROPHOBIA (GPU)")
-        print("=" * 70)
+        print("\n" + "=" * 70, flush=True)
+        print("PHASE 1: 600 GAMES VS CLAUSTROPHOBIA (GPU)", flush=True)
+        print("=" * 70, flush=True)
         run_cmd([
-            sys.executable, str(ROOT / "tools" / "run_benchmark.py"),
+            sys.executable, "-u", str(ROOT / "tools" / "run_benchmark.py"),
             "--opponents", "claustrophobia",
             "--openings", str(ROOT / "tools" / "external" / "openings_600g_300pairs.jsonl"),
             "--pairs", "300",
+            "--workers", str(args.workers),
             "--claustrophobia-device", "gpu",
             "--zq-executable", str(exe),
             "--nnue", str(nnue),
@@ -53,28 +55,31 @@ def main():
 
     # 2. 100 games vs Titanium (Normal)
     if not args.skip_titanium:
-        print("\n" + "=" * 70)
-        print("PHASE 2: 100 GAMES VS TITANIUM (NORMAL OPENINGS)")
-        print("=" * 70)
+        print("\n" + "=" * 70, flush=True)
+        print("PHASE 2: 100 GAMES VS TITANIUM (NORMAL OPENINGS)", flush=True)
+        print("=" * 70, flush=True)
         run_cmd([
-            sys.executable, str(ROOT / "tools" / "run_benchmark.py"),
+            sys.executable, "-u", str(ROOT / "tools" / "run_benchmark.py"),
             "--opponents", "titanium",
             "--openings", str(ROOT / "tools" / "external" / "openings_screen_v1.jsonl"),
             "--pairs", "50",
+            "--workers", str(args.workers),
             "--zq-executable", str(exe),
             "--nnue", str(nnue),
             "--output", str(titanium_norm_out)
         ])
 
-        # 3. 100 games vs Titanium (Center Rush)
-        print("\n" + "=" * 70)
-        print("PHASE 3: 100 GAMES VS TITANIUM (CENTER RUSH OPENINGS)")
-        print("=" * 70)
+    # 3. 100 games vs Titanium (Center Rush)
+    if not args.skip_titanium:
+        print("\n" + "=" * 70, flush=True)
+        print("PHASE 3: 100 GAMES VS TITANIUM (CENTER RUSH OPENINGS)", flush=True)
+        print("=" * 70, flush=True)
         run_cmd([
-            sys.executable, str(ROOT / "tools" / "run_benchmark.py"),
+            sys.executable, "-u", str(ROOT / "tools" / "run_benchmark.py"),
             "--opponents", "titanium",
             "--openings", str(ROOT / "tools" / "external" / "openings_center_rush_50pairs.jsonl"),
             "--pairs", "50",
+            "--workers", str(args.workers),
             "--zq-executable", str(exe),
             "--nnue", str(nnue),
             "--output", str(titanium_cr_out)

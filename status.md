@@ -17,15 +17,30 @@ relearn by experiment.
 - **Network**: Production baseline `race512-cr200k-champion` (`data/nnue/nnue_weights_int8.bin`),
   `456 -> 512` SCReLU accumulator (`ZQ_NNUE_RACE_FEATURES = 1`, `ZQ_NNUE_HIDDEN = 512`),
   WL head `512->32->1`, policy head `512->209`. QAT with fixed `QA=255`, `QB=64`.
-- **Experimental Architecture**: `multipath:512` (`src/nnue.hpp`, opt-in via `-DZQ_NNUE_MULTIPATH_FEATURES=1`),
-  `480 -> 512` SCReLU accumulator adding 24 cheap multi-path and pawn collision features
-  (0 extra BFS: 8 directional unblocked exits, 8 exit count/branching factor buckets,
-  and 8 pawn jump/contact geometry features).
+- **Experimental Architectures**:
+  - `multipath:512` (`src/nnue.hpp`, opt-in via `-DZQ_NNUE_MULTIPATH_FEATURES=1`):
+    `480 -> 512` SCReLU accumulator adding 24 multi-path and pawn collision features
+    (0 extra BFS: 8 directional unblocked exits, 8 exit count buckets, 8 pawn collision features).
+    **600-game match vs Claustrophobia GPU: 51.08% (+7.53 Elo)** — project historical first win vs Claustrophobia GPU.
+  - `margin_regime:512` (`src/nnue.hpp`, opt-in via `-DZQ_NNUE_MARGIN_REGIME_FEATURES=1`):
+    `588 -> 512` SCReLU accumulator adding 132 distance margin $\times$ wall regime interaction features.
+    **600-game match vs Claustrophobia GPU: 49.00% (-6.95 Elo)**.
 - **Performance baseline (2026-09-20)**:
-  - vs Titanium: **63.0% (+92.5 Elo)** in official 600-game match (378W / 0D / 222L) — project record.
-  - vs `main` (Gen 5): **81.25% (+254.7 Elo)** in direct screening (32W / 1D / 7L).
-  - vs Claustrophobia: **47.92% (-14.5 Elo)** in 600-game match on GPU (141W white / 140W black; color parity restored).
-  - Center-Rush Tactical Suite: **37.12% (+35 Elo)** against Claustrophobia (`pawn_jump` at 62.5%, `front_wall` at 47.2%).
+  - `race512-cr200k-champion` (Production baseline on `main`):
+    - vs Titanium: **63.0% (+92.5 Elo)** in official 600-game match (378W / 0D / 222L).
+    - vs `main` (Gen 5): **81.25% (+254.7 Elo)** in direct screening (32W / 1D / 7L).
+    - vs Claustrophobia: **47.92% (-14.5 Elo)** in 600-game match on GPU (141W white / 140W black).
+    - Center-Rush Tactical Suite: **37.12% (+35 Elo)** against Claustrophobia (`pawn_jump` at 62.5%, `front_wall` at 47.2%).
+  - `multipath:512` (Experimental Champion):
+    - vs Claustrophobia GPU (600g): **51.08% (+7.53 Elo)** (306.5 / 600, 95% CI: [47.50%, 54.58%]).
+    - Claustrophobia Central Openings: **46.62% (34.5 / 74)** (up from 31.8% baseline).
+    - vs Titanium Normal (100g): **64.0% (+99.95 Elo)**.
+    - vs Titanium Center Rush (100g): **45.0% (-34.86 Elo)** (Black: 72.0%, White: 18.0%).
+  - `margin_regime:512` (Experimental Candidate):
+    - vs Claustrophobia GPU (600g): **49.00% (-6.95 Elo)** (294.0 / 600, 95% CI: [45.25%, 52.75%]).
+    - Claustrophobia Central Openings: **43.92% (32.5 / 74)** (White: 35.1%, Black: 52.7%).
+    - vs Titanium Normal (100g): **65.0% (+107.5 Elo)**.
+    - vs Titanium Center Rush (100g): **47.0% (-20.87 Elo)** (Black: 70.0%, White: 24.0%).
 
 ---
 
@@ -1401,13 +1416,18 @@ A comprehensive review of the web deployment resolved three functional and visua
   600 games across 300 unique openings with paired color swap at 200 ms/move on GPU (RTX 4050).
   Result: 281 wins, 13 draws, 306 losses -> **47.92% score (-14.5 Elo)** (bootstrap 95% CI:
   [44.33%, 51.50%], Elo: [-39.55, +10.43]).
-- **Formal Promotion of `race512-cr200k-champion` to Production Baseline.**
-  Following confirmation of all-time high benchmarks (+92.5 Elo over Titanium in 600 games;
-  47.92% in 600 games vs Claustrophobia with 141W White / 140W Black; +254.7 Elo over previous baseline):
-  - Migrated `student.bin` and `student_int8.bin` to `data/nnue/nnue_weights.bin` and `data/nnue/nnue_weights_int8.bin`.
-  - Updated `src/nnue.hpp` canonical defaults to `ZQ_NNUE_RACE_FEATURES = 1` and `ZQ_NNUE_HIDDEN = 512`.
-  - Recompiled test suite (`build_tests.bat`), benchmarks (`build_bench.bat`), and WebAssembly bundle (`gui_web/zquoridor.html` and `index.html`).
-  - Updated `readme.md` to reflect the new 456-feature NNUE architecture and competitive benchmark records.
+- **Experimental Architecture Evaluations (2026-09-20).**
+  - Evaluated `multipath:512` (480 inputs, 24 multi-path & collision features) across 800 total benchmark games:
+    - **vs Claustrophobia GPU (600 games)**: **51.08% score (+7.53 Elo)** (306.5 / 600, paired bootstrap 95% CI: [47.50%, 54.58%]).
+      Recorded the first positive strength claim against Claustrophobia GPU in project history.
+      Central openings improved to 46.62% (34.5 / 74).
+    - **vs Titanium (200 games)**: 64.0% normal, 45.0% center rush (Black: 72.0%, White: 18.0%).
+  - Evaluated `margin_regime:512` (588 inputs, 132 distance margin $\times$ wall regime interaction features) across 800 games:
+    - **vs Claustrophobia GPU (600 games)**: **49.00% score (-6.95 Elo)** (294.0 / 600, paired bootstrap 95% CI: [45.25%, 52.75%]).
+      Central openings: 43.92% (32.5 / 74).
+    - **vs Titanium (200 games)**: 65.0% normal, 47.0% center rush (Black: 70.0%, White: 24.0%).
+  - **Architectural Conclusion**: `multipath:512` outperforms `margin_regime:512` by +14.5 Elo against Claustrophobia and +2.7% in central openings, showing that path redundancy information provides stronger inductive bias than wall-regime distance interactions. Both networks exhibit asymmetric White defense weakness against Center Rush (18% - 24% winrate for White vs 70% - 72% for Black).
+  - **Multi-Worker Benchmark Runner**: Enhanced `tools/run_full_candidate_suite.py` and `tools/run_benchmark.py` to support `--workers 6` with manifest isolation, reducing 800-game test suite time from ~3 hours to ~25 minutes.
 
 
 

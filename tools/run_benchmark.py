@@ -177,7 +177,7 @@ def run(config: dict) -> dict:
     openings = _read_openings(openings_path, int(config["pairs"]), int(config["seed"]))
 
     identity_config = {key: value for key, value in config.items()
-                       if key not in ("resume", "retry_failed", "auto_setup", "output")}
+                       if key not in ("resume", "retry_failed", "auto_setup", "output", "workers")}
     identity_config["openings"] = str(openings_path)
     identity_config["nnue"] = str(nnue)
     identity_config["zq_executable"] = str(zq_executable)
