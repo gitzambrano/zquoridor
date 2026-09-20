@@ -62,6 +62,7 @@ struct Options {
     double scoreScale = -1.0;
     int nodeBudget = -1;
     int leafDepth = -1;
+    std::string rootSelect;
     int policyMinDepth = 3;
     bool policyOrdering = true;
     bool quiescence = true;
@@ -100,6 +101,7 @@ static Options parseArgs(int argc, char** argv) {
         else if (a == "--score-scale") o.scoreScale = std::atof(need("--score-scale"));
         else if (a == "--nodes") o.nodeBudget = std::atoi(need("--nodes"));
         else if (a == "--leaf-depth") o.leafDepth = std::atoi(need("--leaf-depth"));
+        else if (a == "--root-select") o.rootSelect = need("--root-select");
         else if (a == "--policy-min-depth") o.policyMinDepth = std::atoi(need("--policy-min-depth"));
         else if (a == "--no-policy-order") o.policyOrdering = false;
         else if (a == "--no-qsearch") o.quiescence = false;
@@ -159,6 +161,7 @@ int main(int argc, char** argv) {
     if (opt.scoreScale > 0.0) params.scoreScale = opt.scoreScale;
     if (opt.nodeBudget >= 0) params.nodeBudget = opt.nodeBudget;
     if (opt.leafDepth >= 0) params.leafDepth = opt.leafDepth;
+    if (!opt.rootSelect.empty()) params.rootSelectMode = mcab::resolveRootSelect(opt.rootSelect.c_str(), params.rootSelectMode);
     if (opt.progressiveWidening) params.progressiveWidening = true;
     if (opt.clearTTPerMove) params.clearTTPerMove = true;
     if (opt.disableTreeReuse) params.treeReuse = false;
