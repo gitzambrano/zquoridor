@@ -21,6 +21,12 @@ relearn by experiment.
   `480 -> 512` SCReLU accumulator adding 24 cheap multi-path and pawn collision features
   (0 extra BFS: 8 directional unblocked exits, 8 exit count/branching factor buckets,
   and 8 pawn jump/contact geometry features).
+- **Time management**: `src/time_manager.hpp` allocates a move budget from
+  the remaining clock, increment, estimated moves to go, ply, and move overhead.
+  Version 1 returns an optimum and maximum budget. The production search uses
+  the optimum budget as the effective move limit. The external adapter accepts
+  `wtime/btime/winc/binc/movestogo`, and the arena accepts
+  `--tc-base-ms` plus `--tc-inc-ms` for game-clock tests.
 - **Performance baseline (2026-09-20)**:
   - vs Titanium: **63.0% (+92.5 Elo)** in official 600-game match (378W / 0D / 222L) — project record.
   - vs `main` (Gen 5): **81.25% (+254.7 Elo)** in direct screening (32W / 1D / 7L).
@@ -110,6 +116,17 @@ relearn by experiment.
 ---
 
 ## 3. History Notes (durable lessons only)
+
+- **Game-clock time manager v1 (2026-09-20)**: The engine previously accepted
+  one fixed `timeBudgetMs` per move. Therefore, the search did not know the
+  remaining game clock or the increment. Version 1 adds a conservative budget
+  allocator and keeps the existing search deadline as the enforcement point.
+  The search uses the optimum budget as its hard move limit until a separate
+  root-stability rule is validated. This avoids spending a larger maximum
+  budget on every move before an adaptive stop rule exists. The next step is
+  to use root visit share, Q gap, best-move changes, and tree reuse to decide
+  whether the search can continue from the optimum limit toward the maximum
+  limit.
 
 - **Experimental candidate models tracked in version control (2026-09-18)**: The
   experimental network weights (`student.bin` and `student_int8.bin`) and their
