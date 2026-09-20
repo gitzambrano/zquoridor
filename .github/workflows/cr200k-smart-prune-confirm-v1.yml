@@ -32,7 +32,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          git worktree add --detach /tmp/zq-main "$BASE_SHA"
+          git fetch --no-tags origin "$BASE_SHA"
+          git worktree add --detach /tmp/zq-main FETCH_HEAD
           cmp data/nnue/nnue_weights_int8.bin /tmp/zq-main/data/nnue/nnue_weights_int8.bin
           sha256sum data/nnue/nnue_weights_int8.bin /tmp/zq-main/data/nnue/nnue_weights_int8.bin
       - name: Native correctness gate
@@ -128,7 +129,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          git worktree add --detach /tmp/zq-main "$BASE_SHA"
+          git fetch --no-tags origin "$BASE_SHA"
+          git worktree add --detach /tmp/zq-main FETCH_HEAD
           mkdir -p gate-bin
           g++ -O3 -DNDEBUG -std=c++17 -march=native -pthread -I/tmp/zq-main/src /tmp/zq-main/tools/external/zquoridor_uci.cpp -o gate-bin/main-base
           g++ -O3 -DNDEBUG -std=c++17 -march=native -pthread -Isrc tools/external/zquoridor_uci.cpp -o gate-bin/candidate
@@ -197,7 +199,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          git worktree add --detach /tmp/zq-main "$BASE_SHA"
+          git fetch --no-tags origin "$BASE_SHA"
+          git worktree add --detach /tmp/zq-main FETCH_HEAD
           mkdir -p gate-bin
           g++ -O3 -DNDEBUG -std=c++17 -march=native -pthread -I/tmp/zq-main/src /tmp/zq-main/tools/external/zquoridor_uci.cpp -o gate-bin/main-base
           g++ -O3 -DNDEBUG -std=c++17 -march=native -pthread -Isrc tools/external/zquoridor_uci.cpp -o gate-bin/candidate
