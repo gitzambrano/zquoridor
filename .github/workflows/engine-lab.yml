@@ -124,7 +124,21 @@ jobs:
           bash build/build_tests.sh
           ./bin/test_rules_sanity
           ./bin/test_mcab_core
+          ./bin/test_time_manager
           echo 'Full search regressions (including test_policy_ab) stay in candidate/search gates.'
+      - name: Game-clock smoke
+        shell: bash
+        run: |
+          set -euo pipefail
+          printf 'uci\nisready\nposition startpos\ngo wtime 180000 btime 180000 winc 2000 binc 2000\nquit\n' |
+            ./bin/zquoridor_external --nnue data/nnue/nnue_weights_int8.bin |
+            tee /tmp/time-uci.log
+          grep -q '^bestmove ' /tmp/time-uci.log
+          grep -q 'string budget=' /tmp/time-uci.log
+          ./bin/arena.exe --games 2 --random-plies 4 --report-games 0 \
+            --tc-base-ms 1000 --tc-inc-ms 100 --move-overhead-ms 5 \
+            --e1-nnue data/nnue/nnue_weights_int8.bin \
+            --e2-nnue data/nnue/nnue_weights_int8.bin
 
   selfplay:
     if: ${{ github.event_name == 'workflow_dispatch' && inputs.mode == 'selfplay' }}
