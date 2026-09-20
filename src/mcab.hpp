@@ -66,6 +66,7 @@
 #include <type_traits>
 #include <utility>
 #include <memory>
+#include <unordered_map>
 
 namespace mcab {
 
@@ -237,6 +238,7 @@ struct McabParams {
     double wideningCoefficient = 2.0;   // added coefficient in c*N^alpha
     double wideningExponent = 0.5;      // exponent alpha in c*N^alpha
     bool treeReuse = true;               // reuso de subárvore entre lances (Seção 8)
+    bool graphTT = false;                 // merge exact transpositions into a DAG (experimental)
     bool clearTTPerMove = false;
     // Separate bounded policy/value inference caches; experimental opt-in.
     bool evalCache = true;
@@ -313,6 +315,10 @@ struct McabStats {
     long long evalCacheValueMisses = 0;
     long long evalCachePolicyEvictions = 0;
     long long evalCacheValueEvictions = 0;
+    long long graphTTProbes = 0;
+    long long graphTTHits = 0;
+    long long graphTTMerges = 0;
+    long long graphTTCycleRejects = 0;
                                      // (ver evaluateLeaf). Muitas = leafDepth alto demais para o
                                      // controle de tempo em uso; a árvore fica cega nessas folhas.
 };
@@ -353,6 +359,23 @@ inline auto mcabEvalStateKey(const S& s, int)
 template <typename S>
 inline uint64_t mcabEvalStateKey(const S& s, ...) {
     return mcabStateKey(s, 0);
+}
+
+// Exact production-state equality for graph transposition merging. The
+// fallback keeps template compatibility for toy engines; graphTT is opt-in.
+template <typename S>
+inline auto mcabStatesEqual(const S& a, const S& b, int)
+    -> decltype((void)a.pawn[0], (void)a.wallsH, (void)a.wallsV,
+                (void)a.wallsLeft[0], (void)a.turn, bool()) {
+    return a.pawn[0] == b.pawn[0] && a.pawn[1] == b.pawn[1] &&
+           a.wallsH == b.wallsH && a.wallsV == b.wallsV &&
+           a.wallsLeft[0] == b.wallsLeft[0] && a.wallsLeft[1] == b.wallsLeft[1] &&
+           a.turn == b.turn;
+}
+template <typename S>
+inline bool mcabStatesEqual(const S& a, const S& b, ...) {
+    uint64_t ka = mcabEvalStateKey(a, 0), kb = mcabEvalStateKey(b, 0);
+    return ka != 0 && ka == kb;
 }
 
 // Cache de BFS de distância (PlayerPathCacheTable em rules.hpp) usado ao
@@ -682,6 +705,7 @@ public:
             pool.push_back(std::move(rootNode));
         }
         pool.reserve(pool.size() + (size_t)budget + 1);
+        rebuildGraphIndex();
 
         mcabAccStack[0] = buildAccPairRoot(root, mcabPathCache(engine, 0));
 
@@ -743,13 +767,13 @@ public:
         // para a próxima chamada (a compactação acontece lá, quando a nova
         // raiz é conhecida -- só aí dá para saber qual subárvore sobrevive).
         // Sem reuso, descarta agora para não segurar memória entre lances.
-        if (!params.treeReuse) pool.clear();
+        if (!params.treeReuse) { pool.clear(); graphIndex.clear(); }
         return best;
     }
 
     // Descarta a árvore acumulada (usado entre partidas, ou quando o
     // chamador sabe que o histórico mudou de forma incompatível).
-    void resetTree() { pool.clear(); }
+    void resetTree() { pool.clear(); graphIndex.clear(); }
 
     // Semente do gerador de ruído de Dirichlet -- varie por thread em
     // self-play, senão todas as threads geram a mesma sequência de ruído e
@@ -840,6 +864,9 @@ private:
     }
 
     std::vector<NodeT> pool;
+    std::unordered_multimap<uint64_t, int> graphIndex;
+    std::vector<uint32_t> graphSeen;
+    uint32_t graphSeenGeneration = 0;
     std::vector<AccPairT> mcabAccStack;   // Seção 4.3.3 -- pilha por caminho de descida
     RepTblT localRepTbl;                  // cópia mutável de gameHistory, 1x por chooseMoveMCAB (ver Seção 5, negamax/searchLeaf)
     std::mt19937 rng;                     // ruído de Dirichlet (Seção 9) -- por instância, nunca compartilhado entre threads
@@ -869,6 +896,64 @@ private:
     // ---------------------------------------------------------------
     // Seção 8 -- reuso de subárvore entre lances
     // ---------------------------------------------------------------
+
+    void rebuildGraphIndex() {
+        graphIndex.clear();
+        if (!params.graphTT) return;
+        graphIndex.reserve(pool.size() * 2 + 1);
+        for (size_t i = 0; i < pool.size(); i++) {
+            uint64_t key = mcabEvalStateKey(pool[i].state, 0);
+            if (key != 0) graphIndex.emplace(key, (int)i);
+        }
+    }
+
+    bool graphWouldCycle(int parentIdx, int childIdx) {
+        if (parentIdx == childIdx) return true;
+        if (childIdx < 0 || parentIdx < 0) return false;
+        if (graphSeen.size() < pool.size()) graphSeen.resize(pool.size(), 0);
+        ++graphSeenGeneration;
+        if (graphSeenGeneration == 0) {
+            std::fill(graphSeen.begin(), graphSeen.end(), 0);
+            graphSeenGeneration = 1;
+        }
+        static thread_local std::vector<int> stack;
+        stack.clear();
+        stack.push_back(childIdx);
+        size_t scanned = 0;
+        while (!stack.empty()) {
+            int idx = stack.back();
+            stack.pop_back();
+            if (idx == parentIdx) return true;
+            if (idx < 0 || (size_t)idx >= pool.size()) continue;
+            if (graphSeen[(size_t)idx] == graphSeenGeneration) continue;
+            graphSeen[(size_t)idx] = graphSeenGeneration;
+            if (++scanned > 4096) return true;
+            for (int32_t c : pool[(size_t)idx].child)
+                if (c >= 0) stack.push_back((int)c);
+        }
+        return false;
+    }
+
+    int findGraphTransposition(const StateT& st, int parentIdx, McabStats& mstats) {
+        if (!params.graphTT) return -1;
+        uint64_t key = mcabEvalStateKey(st, 0);
+        if (key == 0) return -1;
+        ++mstats.graphTTProbes;
+        auto range = graphIndex.equal_range(key);
+        for (auto it = range.first; it != range.second; ++it) {
+            int idx = it->second;
+            if (idx < 0 || (size_t)idx >= pool.size()) continue;
+            if (!mcabStatesEqual(pool[(size_t)idx].state, st, 0)) continue;
+            ++mstats.graphTTHits;
+            if (graphWouldCycle(parentIdx, idx)) {
+                ++mstats.graphTTCycleRejects;
+                continue;
+            }
+            return idx;
+        }
+        return -1;
+    }
+
     // Procura, na árvore do lance anterior, o nó cuja posição é a nova
     // raiz: normalmente um NETO da raiz antiga (nosso lance escolhido +
     // resposta do oponente), mas o caso de FILHO é aceito também (cobre
@@ -1370,7 +1455,16 @@ private:
             int childIdx = node.child[e];
             if (childIdx == -1) {
                 StateT childState = applyMove(beforeState, mv);
-                childIdx = createChild(childState);
+                childIdx = findGraphTransposition(childState, curIdx, mstats);
+                if (childIdx >= 0) {
+                    ++mstats.graphTTMerges;
+                } else {
+                    childIdx = createChild(childState);
+                    if (params.graphTT) {
+                        uint64_t key = mcabEvalStateKey(pool[(size_t)childIdx].state, 0);
+                        if (key != 0) graphIndex.emplace(key, childIdx);
+                    }
+                }
                 pool[curIdx].child[e] = childIdx;  // reindexado -- `node` pode ter sido invalidada
             }
 
