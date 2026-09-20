@@ -45,10 +45,20 @@ arquivos de configuração indicados.
   - **10.030 Estados Críticos Minerados** (`data/teaching/loss-center-seeds/positions.jsonl`): 5.952 estados de derrotas contra Claustrophobia, 4.295 de derrotas contra Titanium e 198 do catálogo Center Rush.
   - **Geração de Rollouts Sintéticos**: Em execução multithread (`bin/generate_rollouts.exe` sobre 1.000 sementes com profundidade e ramificação top-K, >27.000 CPU segundos).
 
-- **Nova Arquitetura Experimental (`multipath:512` — 480 entradas)**:
-  - **Zero BFS Extras**: Adiciona 24 features ultra-baratas baseadas em operações de bits instantâneas e geometria de colisão de peões.
-  - **Features**: 8 saídas direcionais desobstruídas (Forward, Backward, Left, Right), 8 classes de grau de saída (gargalo de 1 saída, corredor de 2, bifurcação de 3, campo aberto de 4) e 8 relações de proximidade/salto direto de peões.
-  - **Screening Experimental Concluído**: Treinamento preliminar atingiu **val_loss = 0.8561** (superando a campeã anterior de 0.8641), policy KL **0.3946**, e 0 divergências numéricas em 4.758 posições.
+- **Nova Campeã Homologada (`multipath:512` — 480 entradas, 60 épocas de Annealing)**:
+  - **vs Claustrophobia (GPU, 600 jogos)**: **51,08% (+7,53 Elo)** — **PRIMEIRA VITÓRIA HISTÓRICA DO PROJETO CONTRA A CLAUSTROPHOBIA GPU!**
+    - Supera a campeã anterior (47,92%) em **+22,0 Elo**.
+    - Brancas: **152,0 / 300 (50,7%)** | Pretas: **154,5 / 300 (51,5%)**.
+    - Aberturas de Muro/Laterais: **272,0 / 526 (51,71%)**.
+    - Aberturas Centrais/Peão: **34,5 / 74 (46,62%)** (salto de +15 pontos percentuais vs baseline anterior).
+    - Status estatístico: **Strength claim ready: true** (IC 95%: [47,50%, 54,58%]).
+  - **vs Titanium (100 jogos normais)**: **64,0% (+99,95 Elo)** (35W Brancas / 29W Pretas).
+  - **vs Titanium (100 jogos Center Rush)**: **45,0% (-34,86 Elo)** (Pretas dominando com 72,0% de vitórias; Brancas em 18,0%).
+  - **Zero Custo de BFS**: Validação incremental em C++ com 100% de paridade (0 divergências em 4.758 posições).
+
+- **Rede Experimental em Treinamento (`margin_regime:512` — 588 entradas)**:
+  - 132 features de interação direta: $\Delta d \in [-16..16] \times 4$ regimes de esgotamento de muros.
+  - Treinamento ativo no GPU de 60 épocas com warm-start cirúrgico da campeã.
 
 ### Protocolo Mandatório para os Próximos Treinamentos
 1. **Mínimo de 60 Épocas com Recozimento Térmico (Annealing)**: Treinamentos não podem ser interrompidos prematuramente; devem cumprir $\ge 60$ épocas com decaimento suave de learning rate (cosine schedule até $2\cdot 10^{-7}$) para garantir assentamento profundo dos pesos quantizados (QAT).
