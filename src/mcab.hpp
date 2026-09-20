@@ -240,6 +240,10 @@ struct McabParams {
     bool clearTTPerMove = false;
     // Separate bounded policy/value inference caches; experimental opt-in.
     bool evalCache = true;
+    // Exact experiment: retain policy/value entries across chooseMove calls.
+    // The cache key includes board/turn plus both wall stocks, so a retained
+    // entry is semantically identical to recomputing the NNUE output.
+    bool persistentEvalCache = false;
     bool rootNoiseEnabled = false;       // ruído de Dirichlet nos priors da raiz (Seção 9) -- só self-play
     double rootNoiseAlpha = 0.3;
     double rootNoiseEpsilon = 0.25;
@@ -566,11 +570,17 @@ public:
         if (params.evalCache) {
             if (policyEvalCache.empty()) policyEvalCache.resize(kEvalCacheEntries);
             if (valueEvalCache.empty()) valueEvalCache.resize(kEvalCacheEntries);
-            ++evalCacheGeneration;
-            if (evalCacheGeneration == 0) {
-                for (auto& entry : policyEvalCache) entry.generation = 0;
-                for (auto& entry : valueEvalCache) entry.generation = 0;
-                evalCacheGeneration = 1;
+            if (params.persistentEvalCache) {
+                // Keep one live generation for the whole engine/game. Entries
+                // are still bounded and replaced by the existing 4-way policy.
+                if (evalCacheGeneration == 0) evalCacheGeneration = 1;
+            } else {
+                ++evalCacheGeneration;
+                if (evalCacheGeneration == 0) {
+                    for (auto& entry : policyEvalCache) entry.generation = 0;
+                    for (auto& entry : valueEvalCache) entry.generation = 0;
+                    evalCacheGeneration = 1;
+                }
             }
         }
 
