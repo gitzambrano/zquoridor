@@ -1391,9 +1391,12 @@ A comprehensive review of the web deployment resolved three functional and visua
   - vs Titanium: 50.0% score (20W 0D 20L).
   - vs Claustrophobia (40g): 46.25% score (-26.1 Elo, +53.4 Elo above `main`).
   - Tactical Center-Rush Suite: 37.12% score (+35 Elo over baseline), winning `pawn_jump` with
-    62.5% and reaching 47.2% on `front_wall`.
-- **Full 600-Game Confirmation Match vs Claustrophobia.**
-  In progress on GPU (`tools/run_benchmark.py` with 6 workers in 300 paired openings).
+- **Full 600-Game Confirmation Match vs Claustrophobia (Completed).**
+  600 games across 300 unique openings with paired color swap at 200 ms/move on GPU (RTX 4050).
+  Result: 281 wins, 13 draws, 306 losses -> **47.92% score (-14.5 Elo)** (bootstrap 95% CI:
+  [44.33%, 51.50%], Elo: [-39.55, +10.43]).
+  P0 vs P1 color parity achieved: 141 wins as White (47.0%) and 140 wins as Black (46.7%),
+  completely eliminating the historic Player 2 weakness.
 
 
 

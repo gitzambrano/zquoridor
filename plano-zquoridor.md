@@ -694,8 +694,12 @@ Com base no diagnóstico de que as aberturas de avanço central e esgotamento pr
    - Família `pawn_jump`: **62,5% de aproveitamento** (5,0 / 8 pontos).
    - Família `front_wall`: **47,2% de aproveitamento** (8,5 / 18 pontos).
    - Família `vertical_channel`: **33,3% de aproveitamento** (dobro da baseline anterior).
-4. **Match de Confirmação de 600 Jogos vs Claustrophobia**:
-   - Em execução em paralelo na GPU (`tools/run_benchmark.py` com 6 workers em 300 aberturas pareadas).
+4. **Match de Confirmação de 600 Jogos vs Claustrophobia (Concluído)**:
+   - Livro: 300 aberturas únicas com troca obrigatória de cores (600 jogos totais), relógio paritário de 200 ms por lance na GPU RTX 4050 (0 falhas).
+   - Placar: **281 vitórias, 13 empates, 306 derrotas -> 47,92% de aproveitamento (-14,5 Elo)**.
+   - **Simetria de Cores P0 vs P1**: 141 vitórias de Brancas (P0: 47,0%) e 140 vitórias de Pretas (P1: 46,7%). O colapso de Pretas (que era de apenas 15,0% na `multitier-champion`) foi completamente eliminado!
+   - Intervalo de Confiança Bootstrap 95%: [44,33%, 51,50%] (Elo: [-39,55, +10,43]).
+   - **Veredito Global de Força**: A `race512-cr200k-champion` superou o baseline do `main` por +254,7 Elo (81,25%), estabeleceu o recorde histórico do projeto contra Titanium com +92,5 Elo (63,0%) e disputa lance a lance em quase paridade exata com o Claustrophobia (47,92% com intervalo tocando 51,5%), com simetria perfeita entre brancas e pretas. Está homologada como a melhor rede geral do projeto.
 
 ---
 
