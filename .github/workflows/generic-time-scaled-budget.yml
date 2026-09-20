@@ -1,0 +1,94 @@
+name: Generic time-scaled MCAB gate
+
+on:
+  push:
+    branches:
+      - search/generic-time-scaled-budget-v1
+    paths:
+      - "src/mcab.hpp"
+      - "tools/arena/arena.cpp"
+      - "tools/external/zquoridor_uci.cpp"
+      - "tests/test_mcab_core.cpp"
+      - ".github/workflows/generic-time-scaled-budget.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  correctness:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build and core tests
+        run: |
+          set -euo pipefail
+          bash build/build_tests.sh
+          ./bin/test_mcab_core
+          ./bin/test_time_manager
+          bash build/build_external.sh
+      - name: UCI node-cap smoke
+        shell: bash
+        run: |
+          set -euo pipefail
+          W=data/nnue/nnue_weights_int8.bin
+          run_case() {
+            local name="$1"; shift
+            printf 'uci\nisready\nposition startpos\n%s\nquit\n' "$*" |
+              ./bin/zquoridor_external --nnue "$W" | tee "/tmp/$name.log"
+            grep -q '^bestmove ' "/tmp/$name.log"
+          }
+          run_case fixed200 'go movetime 200'
+          grep -q 'nodecap=20000' /tmp/fixed200.log
+          run_case tc1m0 'go wtime 60000 btime 60000 winc 0 binc 0'
+          run_case tc3m2 'go wtime 180000 btime 180000 winc 2000 binc 2000'
+          run_case tc5m3 'go wtime 300000 btime 300000 winc 3000 binc 3000'
+          python - <<'PY'
+          import re
+          for name in ("tc1m0","tc3m2","tc5m3"):
+              s=open(f"/tmp/{name}.log").read()
+              m=re.search(r"budget=(\d+).*nodecap=(\d+)",s)
+              assert m,(name,s)
+              budget,cap=map(int,m.groups())
+              assert cap>=20000
+              assert cap<=640000
+              assert cap==min(640000,max(20000,budget*32)),(name,budget,cap)
+              print(name,budget,cap)
+          PY
+
+  arena:
+    needs: correctness
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    strategy:
+      fail-fast: false
+      matrix:
+        case: [fixed200, tc1m0, tc3m2, tc5m3]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Auto-budget vs fixed 20k
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p results/generic-time
+          case "${{ matrix.case }}" in
+            fixed200) GAMES=80; TC="--time 200" ;;
+            tc1m0) GAMES=60; TC="--tc-base-ms 60000 --tc-inc-ms 0 --move-overhead-ms 20" ;;
+            tc3m2) GAMES=40; TC="--tc-base-ms 180000 --tc-inc-ms 2000 --move-overhead-ms 20" ;;
+            tc5m3) GAMES=24; TC="--tc-base-ms 300000 --tc-inc-ms 3000 --move-overhead-ms 20" ;;
+          esac
+          python tools/arena/run_arena.py \
+            --ref1 '' --ref2 '' \
+            --games "$GAMES" --threads 4 --report-games 10 --random-plies 4 \
+            $TC \
+            --e2-mcab-nodes 20000 \
+            | tee "results/generic-time/${{ matrix.case }}.log"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: generic-time-${{ matrix.case }}
+          path: results/generic-time/${{ matrix.case }}.log
+          retention-days: 7
