@@ -120,7 +120,10 @@ jobs:
           W=str((ROOT/"data/nnue/nnue_weights_int8.bin").resolve())
           cand=[str((ROOT/"gate-bin/candidate").resolve()),"--nnue",W,"--persistent-eval-cache"]
           base=[str((ROOT/"gate-bin/main-base").resolve()),"--nnue",W]
-          openings=run_benchmark._read_openings(ROOT/"tools/external/openings_confirmation_v1.jsonl",total_pairs,seed)[shard*per:(shard+1)*per]
+          general=[op for _,op in run_benchmark._read_openings(ROOT/"tools/external/openings_confirmation_v1.jsonl",100,seed)]
+          center=[op for _,op in run_benchmark._read_openings(ROOT/"tools/external/openings_center_rush_v1.jsonl",100,seed+1)]
+          mixed=list(enumerate(general+center))
+          openings=mixed[shard*per:(shard+1)*per]
           rows=[]
           for oi,op in openings:
               for side in (0,1):
@@ -193,7 +196,10 @@ jobs:
           W=str((ROOT/"data/nnue/nnue_weights_int8.bin").resolve())
           cand=[str((ROOT/"gate-bin/candidate").resolve()),"--nnue",W,"--persistent-eval-cache"]
           info=ensure_bot("claustrophobia",root=ROOT,build=False)
-          openings=run_benchmark._read_openings(ROOT/"tools/external/openings_confirmation_v1.jsonl",total_pairs,seed)[shard*per:(shard+1)*per]
+          general=[op for _,op in run_benchmark._read_openings(ROOT/"tools/external/openings_confirmation_v1.jsonl",100,seed)]
+          center=[op for _,op in run_benchmark._read_openings(ROOT/"tools/external/openings_center_rush_v1.jsonl",100,seed+1)]
+          mixed=list(enumerate(general+center))
+          openings=mixed[shard*per:(shard+1)*per]
           rows=[]
           for oi,op in openings:
               for side in (0,1):
