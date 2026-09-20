@@ -63,6 +63,9 @@ struct Options {
     int nodeBudget = -1;
     int simulationBudget = -1;
     bool smartPruning = false;
+    bool smartPostAB = false;
+    int smartVerifyTopK = -1;
+    int smartVerifyDepth = -1;
     int leafDepth = -1;
     int policyMinDepth = 3;
     bool policyOrdering = true;
@@ -103,6 +106,9 @@ static Options parseArgs(int argc, char** argv) {
         else if (a == "--nodes") o.nodeBudget = std::atoi(need("--nodes"));
         else if (a == "--simulations") o.simulationBudget = std::atoi(need("--simulations"));
         else if (a == "--smart-pruning") o.smartPruning = true;
+        else if (a == "--smart-post-ab") o.smartPostAB = true;
+        else if (a == "--smart-verify-topk") o.smartVerifyTopK = std::atoi(need("--smart-verify-topk"));
+        else if (a == "--smart-verify-depth") o.smartVerifyDepth = std::atoi(need("--smart-verify-depth"));
         else if (a == "--leaf-depth") o.leafDepth = std::atoi(need("--leaf-depth"));
         else if (a == "--policy-min-depth") o.policyMinDepth = std::atoi(need("--policy-min-depth"));
         else if (a == "--no-policy-order") o.policyOrdering = false;
@@ -164,6 +170,9 @@ int main(int argc, char** argv) {
     if (opt.nodeBudget >= 0) params.nodeBudget = opt.nodeBudget;
     if (opt.simulationBudget >= 0) params.simulationBudget = opt.simulationBudget;
     if (opt.smartPruning) params.smartPruning = true;
+    if (opt.smartPostAB) params.smartPostAB = true;
+    if (opt.smartVerifyTopK > 0) params.smartVerifyTopK = opt.smartVerifyTopK;
+    if (opt.smartVerifyDepth > 0) params.smartVerifyDepth = opt.smartVerifyDepth;
     if (opt.leafDepth >= 0) params.leafDepth = opt.leafDepth;
     if (opt.progressiveWidening) params.progressiveWidening = true;
     if (opt.clearTTPerMove) params.clearTTPerMove = true;
@@ -285,7 +294,10 @@ int main(int argc, char** argv) {
                       << " reuse=" << (params.treeReuse ? 1 : 0)
                       << " sims=" << mstats.simulations
                       << " smartPruned=" << (mstats.smartPruned ? 1 : 0)
-                      << " smartSaved=" << mstats.smartPruneSaved << "\n";
+                      << " smartSaved=" << mstats.smartPruneSaved
+                      << " smartVerified=" << (mstats.smartVerified ? 1 : 0)
+                      << " smartVerifyK=" << mstats.smartVerifyCandidates
+                      << " smartVerifyDone=" << mstats.smartVerifyCompleted << "\n";
             std::cout << "bestmove " << moveToText(best) << "\n" << std::flush;
         } else if (cmd == "quit") {
             break;
