@@ -61,14 +61,13 @@ inline int wallsLeftBucket(int n) {
     return n >= WALLS_LEFT_BUCKETS ? WALLS_LEFT_BUCKETS - 1 : n;
 }
 
-// NUM_FEATURES = 81 (peão próprio) + 81 (peão oponente) + 64 (muro H) +
-// 64 (muro V) + 21 (bucket dist. própria) + 21 (bucket dist. oponente) +
-// 11 (bucket muros restantes próprios) + 11 (bucket muros restantes do
-// oponente) = 354. Mudança de arquitetura (2026-08): pesos treinados para
-// NUM_FEATURES=332 são INCOMPATÍVEIS com esta versão -- não dá pra fazer
-// warm-start via --init-from de um checkpoint antigo (o fingerprint em
-// compute_fingerprint()/try_load_train_state() já detecta e recusa isso).
-// É preciso retreinar do zero com training/train_nnue.py atualizado.
+// BASE_FEATURES = 81 (own pawn) + 81 (opponent pawn) + 64 (horizontal
+// walls) + 64 (vertical walls) + 21 own-distance buckets + 21 opponent-
+// distance buckets + 11 own-wall-stock buckets + 11 opponent-wall-stock
+// buckets = 354. Production adds race (102), phase (24), and multipath (24)
+// blocks, for NUM_FEATURES = 504 with the defaults below. Optional feature
+// blocks change the weight-file layout and therefore require matching NNUE
+// weights; the loader/fingerprint checks reject incompatible architectures.
 #ifndef ZQ_NNUE_RACE_FEATURES
 #define ZQ_NNUE_RACE_FEATURES 1
 #endif
