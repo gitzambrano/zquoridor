@@ -1061,6 +1061,7 @@ private:
 
     bool graphQCorrectionActive() const {
         return params.transpositionGraph && params.graphQCorrection &&
+               params.backupMode == BackupMode::AvgBlend &&
                params.leafDepth == 0 && !endgameLeafActive;
     }
 
