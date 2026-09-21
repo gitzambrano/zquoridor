@@ -66,6 +66,8 @@
 #include <type_traits>
 #include <utility>
 #include <memory>
+#include <queue>
+#include <unordered_map>
 
 namespace mcab {
 
@@ -216,6 +218,23 @@ struct McabParams {
     // status.md antes de assumir que vale para o seu controle de tempo.
     bool enabled = true;
     int nodeBudget = 20000;              // 0/1 = modo equivalência, Seção 6
+    // A fixed node budget is useful for deterministic benchmarks and
+    // self-play. Real game front-ends enable autoNodeBudget so wall-clock
+    // time, not a 200 ms-era node cap, becomes the primary limit.
+    bool autoNodeBudget = false;
+    int autoNodeBudgetPerMs = 32;
+    int autoNodeBudgetCeiling = 640000;
+
+    // Experimental real-clock time allocation. Front-ends set
+    // adaptiveOptimumMs to TimeManager::optimum and pass maximumMs as the
+    // hard timeBudgetMs. Fixed-movetime/self-play keep this disabled.
+    bool adaptiveTime = false;
+    int adaptiveOptimumMs = 0;
+    double adaptiveMinFactor = 1.00;
+    double adaptiveStableFactor = 1.00;
+    double adaptiveUncertainFactor = 1.25;
+    double adaptiveVolatileFactor = 1.60;
+    int adaptiveMinSimulations = 1500;
     // 0 = folha avaliada só por nnueEvalInt no acumulador incremental, sem
     // searchLeaf e sem quiescência de muro. Era 4 (valor do plano); a Fase 8
     // mediu 4 como catastrófico a 200ms/lance e 0 como o único ponto que
@@ -237,6 +256,9 @@ struct McabParams {
     double wideningCoefficient = 2.0;   // added coefficient in c*N^alpha
     double wideningExponent = 0.5;      // exponent alpha in c*N^alpha
     bool treeReuse = true;               // reuso de subárvore entre lances (Seção 8)
+    // Experimental DAG mode. Nodes at the same root-relative ply that
+    // represent the same complete state share one MCAB node.
+    bool transpositionGraph = true;
     bool clearTTPerMove = false;
     // Separate bounded policy/value inference caches; experimental opt-in.
     bool evalCache = true;
@@ -297,11 +319,39 @@ struct McabParams {
     int endgameLeafDepth = 2;
 };
 
+inline int effectiveNodeBudget(const McabParams& params, int timeBudgetMs) {
+    int budget = std::max(1, params.nodeBudget);
+    if (!params.autoNodeBudget || timeBudgetMs <= 0 || params.nodeBudget <= 1)
+        return budget;
+
+    const long long scaled =
+        (long long)timeBudgetMs * (long long)std::max(1, params.autoNodeBudgetPerMs);
+    const long long ceiling =
+        std::max<long long>(params.nodeBudget, params.autoNodeBudgetCeiling);
+    return (int)std::min<long long>(
+        std::max<long long>(params.nodeBudget, scaled), ceiling);
+}
+
+// Stockfish-inspired, but MCAB-specific, conversion from root uncertainty to
+// a multiplier of the TimeManager optimum. These values are intentionally
+// exposed as a pure function so regression tests can pin the classification.
+inline double adaptiveTimeFactor(double visitRatio, double qGap, double stableFraction,
+                                 const McabParams& p) {
+    if (stableFraction < 0.15 || visitRatio < 1.15 || qGap < -0.01)
+        return p.adaptiveVolatileFactor;
+    if (visitRatio < 1.50 || qGap < 0.005)
+        return p.adaptiveUncertainFactor;
+    if (stableFraction >= 0.35 && visitRatio >= 2.0 && qGap >= 0.015)
+        return p.adaptiveStableFactor;
+    return 1.0;
+}
+
 // Estatísticas agregadas de UMA chamada a chooseMoveMCAB (não confundir
 // com SearchStatsT, que é por-chamada-de-searchLeaf/negamax).
 struct McabStats {
     long long simulations = 0;
     long long nodesExpanded = 0;
+    int effectiveNodeBudget = 0;
     long long leafSearches = 0;      // avaliações de folha (nnueEvalInt ou searchLeaf)
     long long leafDepthSum = 0;      // soma das profundidades usadas (média = /leafSearches)
     bool treeReused = false;         // esta chamada reaproveitou a subárvore do lance anterior (Seção 8)
@@ -313,6 +363,13 @@ struct McabStats {
     long long evalCacheValueMisses = 0;
     long long evalCachePolicyEvictions = 0;
     long long evalCacheValueEvictions = 0;
+    long long transpositionHits = 0;
+    long long transpositionLookups = 0;
+    bool adaptiveTimeStop = false;
+    int adaptiveTargetMs = 0;
+    long long adaptiveLeaderChanges = 0;
+    double adaptiveVisitRatio = 0.0;
+    double adaptiveQGap = 0.0;
                                      // (ver evaluateLeaf). Muitas = leafDepth alto demais para o
                                      // controle de tempo em uso; a árvore fica cega nessas folhas.
 };
@@ -333,6 +390,38 @@ inline uint64_t mcabStateKey(const S&, ...) {
     return 0;
 }
 
+// The normal Zobrist key does not include wallsLeft. For a graph
+// transposition, the wall stock is part of the game state and must be in
+// the identity key.
+template <typename S>
+inline auto mcabGraphKey(const S& s, int)
+    -> decltype((void)s.wallsLeft[0], (uint64_t)s.hash) {
+    uint64_t k = (uint64_t)s.hash;
+    k ^= (uint64_t)(uint8_t)s.wallsLeft[0] * 0x9E3779B185EBCA87ULL;
+    k ^= (uint64_t)(uint8_t)s.wallsLeft[1] * 0xC2B2AE3D27D4EB4FULL;
+    return k;
+}
+template <typename S>
+inline uint64_t mcabGraphKey(const S& s, ...) {
+    return mcabStateKey(s, 0);
+}
+
+template <typename S>
+inline auto mcabGraphStateEqual(const S& a, const S& b, int)
+    -> decltype((void)a.pawn[0], (void)a.wallsH, (void)a.wallsV,
+                (void)a.wallsLeft[0], (void)a.turn, bool()) {
+    return a.pawn[0] == b.pawn[0] &&
+           a.pawn[1] == b.pawn[1] &&
+           a.wallsH == b.wallsH &&
+           a.wallsV == b.wallsV &&
+           a.wallsLeft[0] == b.wallsLeft[0] &&
+           a.wallsLeft[1] == b.wallsLeft[1] &&
+           a.turn == b.turn;
+}
+template <typename S>
+inline bool mcabGraphStateEqual(const S& a, const S& b, ...) {
+    return mcabStateKey(a, 0) == mcabStateKey(b, 0);
+}
 // The board Zobrist key does not encode wall ownership, while NNUE consumes
 // both remaining-wall counts. Include both stocks in inference-cache identity.
 template <typename S>
@@ -502,6 +591,7 @@ struct MCABNode {
     std::vector<size_t> activeCandidateIndices;
     size_t nextCandidate = 0;
     int totalN = 0;
+    int graphDepth = -1;           // root-relative ply for safe DAG sharing
     bool noised = false;          // ruído de Dirichlet já aplicado a `P` (Seção 9) -- evita
                                   // recompor o ruído sobre si mesmo quando este nó vira raiz
                                   // reaproveitada de novo (Seção 8).
@@ -657,7 +747,8 @@ public:
             mcabAccStack.resize(params.maxTreeDepth + 2);
         }
 
-        int budget = std::max(1, params.nodeBudget);
+        int budget = effectiveNodeBudget(params, timeBudgetMs);
+        mstats.effectiveNodeBudget = budget;
         bool reused = false;
         // Seção 8.2: não reusar quando clearTTPerMove está ligado -- a
         // árvore depende de valores computados com aquela TT.
@@ -672,6 +763,7 @@ public:
         if (reused) {
             pool[0].state = root;  // hash bate; normaliza o objeto por segurança
             pool[0].side = root.turn;
+            normalizeGraphDepths();
             mstats.treeReused = true;
             mstats.reusedNodes = (int)pool.size();
         } else {
@@ -679,9 +771,18 @@ public:
             NodeT rootNode;
             rootNode.state = root;
             rootNode.side = root.turn;
+            rootNode.graphDepth = 0;
             pool.push_back(std::move(rootNode));
         }
-        pool.reserve(pool.size() + (size_t)budget + 1);
+        rebuildTranspositionIndex();
+        // With adaptive clocks, timeBudgetMs is the hard maximum and can be
+        // ~3x optimum. Reserve only the expected optimum working set up front;
+        // vector growth remains safe because the tree stores indices, not
+        // pointers.
+        int reserveBudget = budget;
+        if (params.adaptiveTime && params.adaptiveOptimumMs > 0)
+            reserveBudget = std::min(budget, effectiveNodeBudget(params, params.adaptiveOptimumMs));
+        pool.reserve(pool.size() + (size_t)reserveBudget + 1);
 
         mcabAccStack[0] = buildAccPairRoot(root, mcabPathCache(engine, 0));
 
@@ -725,15 +826,67 @@ public:
         auto t0 = std::chrono::steady_clock::now();
         haveLeafDeadline = (treeBudgetMs > 0);
         if (haveLeafDeadline) leafDeadline = t0 + std::chrono::milliseconds(treeBudgetMs);
+
+        const int optimumMs =
+            params.adaptiveTime && params.adaptiveOptimumMs > 0 && treeBudgetMs > 0
+                ? std::clamp(params.adaptiveOptimumMs, 1, treeBudgetMs)
+                : treeBudgetMs;
+        const int earliestStopMs =
+            params.adaptiveTime && optimumMs > 0
+                ? std::clamp((int)std::lround(params.adaptiveMinFactor * optimumMs), 1, treeBudgetMs)
+                : treeBudgetMs;
+        int adaptiveLeader = -1;
+        long long adaptiveLeaderChangedMs = 0;
+
         while (mstats.nodesExpanded < budget) {
+            long long elapsedMs = 0;
             if (treeBudgetMs > 0) {
-                auto elapsedMs = std::chrono::duration_cast<std::chrono::milliseconds>(
-                                     std::chrono::steady_clock::now() - t0)
-                                     .count();
+                elapsedMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                std::chrono::steady_clock::now() - t0)
+                                .count();
                 if (elapsedMs >= treeBudgetMs) break;
+
+                if (params.adaptiveTime && optimumMs > 0 &&
+                    mstats.simulations >= params.adaptiveMinSimulations &&
+                    elapsedMs >= earliestStopMs) {
+                    RootTimeSignal sig = rootTimeSignal(pool[0]);
+                    if (sig.valid) {
+                        double stableFraction =
+                            (double)std::max<long long>(0, elapsedMs - adaptiveLeaderChangedMs) /
+                            (double)std::max(1, optimumMs);
+                        double factor = adaptiveTimeFactor(
+                            sig.visitRatio, sig.qGap, stableFraction, params);
+                        int targetMs = std::clamp(
+                            (int)std::lround((double)optimumMs * factor),
+                            earliestStopMs, treeBudgetMs);
+                        mstats.adaptiveTargetMs = targetMs;
+                        mstats.adaptiveVisitRatio = sig.visitRatio;
+                        mstats.adaptiveQGap = sig.qGap;
+                        if (elapsedMs >= targetMs) {
+                            mstats.adaptiveTimeStop = true;
+                            break;
+                        }
+                    }
+                }
             }
             if (pool[0].terminal) break;  // raiz já resolvida (ex.: vitória em 0 lances -- não deveria ocorrer)
             runSimulation(engine, stats, mstats);
+
+            if (params.adaptiveTime && (mstats.simulations & 63LL) == 0) {
+                int leader = rootVisitLeader(pool[0]);
+                long long nowMs = treeBudgetMs > 0
+                    ? std::chrono::duration_cast<std::chrono::milliseconds>(
+                          std::chrono::steady_clock::now() - t0).count()
+                    : 0;
+                if (adaptiveLeader < 0) {
+                    adaptiveLeader = leader;
+                    adaptiveLeaderChangedMs = nowMs;
+                } else if (leader >= 0 && leader != adaptiveLeader) {
+                    adaptiveLeader = leader;
+                    adaptiveLeaderChangedMs = nowMs;
+                    ++mstats.adaptiveLeaderChanges;
+                }
+            }
         }
 
         // Passo 6 (Seção 5): escolhe o lance final na raiz.
@@ -840,6 +993,7 @@ private:
     }
 
     std::vector<NodeT> pool;
+    std::unordered_multimap<uint64_t, int32_t> transpositionIndex;
     std::vector<AccPairT> mcabAccStack;   // Seção 4.3.3 -- pilha por caminho de descida
     RepTblT localRepTbl;                  // cópia mutável de gameHistory, 1x por chooseMoveMCAB (ver Seção 5, negamax/searchLeaf)
     std::mt19937 rng;                     // ruído de Dirichlet (Seção 9) -- por instância, nunca compartilhado entre threads
@@ -865,6 +1019,56 @@ private:
         int nodeIdx;
         int edgeIdx;
     };
+
+    void rebuildTranspositionIndex() {
+        transpositionIndex.clear();
+        if (!params.transpositionGraph) return;
+        transpositionIndex.reserve(pool.size() * 2 + 1);
+        for (size_t i = 0; i < pool.size(); ++i) {
+            uint64_t key = mcabGraphKey(pool[i].state, 0);
+            if (key != 0) transpositionIndex.emplace(key, (int32_t)i);
+        }
+    }
+
+    void normalizeGraphDepths() {
+        if (pool.empty()) return;
+        for (NodeT& n : pool) n.graphDepth = -1;
+        std::queue<int32_t> q;
+        pool[0].graphDepth = 0;
+        q.push(0);
+        while (!q.empty()) {
+            int32_t idx = q.front();
+            q.pop();
+            int nextDepth = pool[(size_t)idx].graphDepth + 1;
+            for (int32_t childIdx : pool[(size_t)idx].child) {
+                if (childIdx < 0) continue;
+                NodeT& child = pool[(size_t)childIdx];
+                if (child.graphDepth < 0) {
+                    child.graphDepth = nextDepth;
+                    q.push(childIdx);
+                }
+            }
+        }
+    }
+
+    int findGraphTransposition(const StateT& state, int depth, McabStats& mstats) const {
+        if (!params.transpositionGraph) return -1;
+        uint64_t key = mcabGraphKey(state, 0);
+        if (key == 0) return -1;
+        ++mstats.transpositionLookups;
+        auto range = transpositionIndex.equal_range(key);
+        for (auto it = range.first; it != range.second; ++it) {
+            int32_t idx = it->second;
+            if (idx < 0 || idx >= (int32_t)pool.size()) continue;
+            const NodeT& candidate = pool[(size_t)idx];
+            if (candidate.graphDepth != depth) continue;
+            if (!mcabGraphStateEqual(candidate.state, state, 0)) continue;
+            ++mstats.transpositionHits;
+            return idx;
+        }
+        return -1;
+    }
+
 
     // ---------------------------------------------------------------
     // Seção 8 -- reuso de subárvore entre lances
@@ -894,32 +1098,57 @@ private:
     // Move a subárvore enraizada em `rootIdx` para os índices [0, k) do
     // pool, remapeando os índices de `child`, e descarta todo o resto
     // (Seção 8.1: compactação obrigatória para não vazar memória do que
-    // ficou fora do caminho jogado). Aborta (devolve false -> árvore nova)
-    // se a subárvore herdada sozinha já passar do orçamento de nós: isso
-    // limita o pool a no máximo ~2x nodeBudget mesmo após muitos lances
-    // seguidos com reuso (Seção 12, risco de memória).
+    // ficou fora do caminho jogado). Se a subárvore herdada for maior que
+    // o orçamento, preserva até `budget` nós priorizando os filhos mais
+    // visitados, em vez de descartar toda a árvore reutilizável.
     bool compactTo(int rootIdx, int budget) {
+        if (rootIdx < 0 || rootIdx >= (int)pool.size()) return false;
+        budget = std::max(1, budget);
+
         std::vector<int32_t> remap(pool.size(), -1);
+        std::vector<uint8_t> queued(pool.size(), 0);
         std::vector<int32_t> order;
-        order.reserve((size_t)budget + 1);
-        remap[rootIdx] = 0;
-        order.push_back(rootIdx);
-        for (size_t i = 0; i < order.size(); i++) {
-            if ((int)order.size() > budget) return false;
-            const NodeT& n = pool[order[i]];
-            for (int32_t c : n.child) {
-                if (c >= 0 && remap[c] < 0) {
-                    remap[c] = (int32_t)order.size();
-                    order.push_back(c);
-                }
+        order.reserve(std::min(pool.size(), (size_t)budget));
+
+        // Retain the hottest inherited nodes first. This avoids discarding
+        // the entire reused tree just because the reachable subtree is larger
+        // than the reuse budget. Ties are deterministic by old pool index.
+        using FrontierItem = std::pair<int, int32_t>; // {visits, -oldIdx}
+        std::priority_queue<FrontierItem> frontier;
+
+        auto enqueueChildren = [&](int32_t oldIdx) {
+            const NodeT& n = pool[(size_t)oldIdx];
+            for (int32_t childIdx : n.child) {
+                if (childIdx < 0 || queued[(size_t)childIdx]) continue;
+                queued[(size_t)childIdx] = 1;
+                frontier.emplace(pool[(size_t)childIdx].totalN, -childIdx);
             }
+        };
+
+        remap[(size_t)rootIdx] = 0;
+        queued[(size_t)rootIdx] = 1;
+        order.push_back(rootIdx);
+        enqueueChildren(rootIdx);
+
+        while ((int)order.size() < budget && !frontier.empty()) {
+            int32_t oldIdx = -frontier.top().second;
+            frontier.pop();
+            if (remap[(size_t)oldIdx] >= 0) continue;
+            remap[(size_t)oldIdx] = (int32_t)order.size();
+            order.push_back(oldIdx);
+            enqueueChildren(oldIdx);
         }
+
         std::vector<NodeT> compacted;
         compacted.reserve(order.size());
-        for (int32_t oldIdx : order) compacted.push_back(std::move(pool[oldIdx]));
+        for (int32_t oldIdx : order)
+            compacted.push_back(std::move(pool[(size_t)oldIdx]));
+
         for (NodeT& n : compacted) {
-            for (int32_t& c : n.child) {
-                if (c >= 0) c = remap[c];
+            for (int32_t& childIdx : n.child) {
+                if (childIdx < 0) continue;
+                int32_t mapped = remap[(size_t)childIdx];
+                childIdx = mapped >= 0 ? mapped : -1;
             }
         }
         pool.swap(compacted);
@@ -1276,6 +1505,43 @@ private:
         return visited ? best : 0.5;
     }
 
+    struct RootTimeSignal {
+        bool valid = false;
+        int leader = -1;
+        int second = -1;
+        double visitRatio = 0.0;
+        double qGap = 0.0;
+    };
+
+    int rootVisitLeader(const NodeT& node) const {
+        size_t nm = (size_t)std::min(node.activeMoves, (int)node.moves.size());
+        if (nm == 0) return -1;
+        int best = 0;
+        for (size_t i = 1; i < nm; ++i)
+            if (node.N[i] > node.N[(size_t)best]) best = (int)i;
+        return best;
+    }
+
+    RootTimeSignal rootTimeSignal(const NodeT& node) const {
+        RootTimeSignal s;
+        size_t nm = (size_t)std::min(node.activeMoves, (int)node.moves.size());
+        if (nm <= 1) return s;
+        s.leader = rootVisitLeader(node);
+        if (s.leader < 0 || node.N[(size_t)s.leader] <= 0.f) return s;
+        for (size_t i = 0; i < nm; ++i) {
+            if ((int)i == s.leader || node.N[i] <= 0.f) continue;
+            if (s.second < 0 || node.N[i] > node.N[(size_t)s.second])
+                s.second = (int)i;
+        }
+        if (s.second < 0 || node.N[(size_t)s.second] <= 0.f) return s;
+        s.visitRatio = (double)node.N[(size_t)s.leader] /
+                       (double)node.N[(size_t)s.second];
+        s.qGap = edgeQ(node, (size_t)s.leader) -
+                 edgeQ(node, (size_t)s.second);
+        s.valid = true;
+        return s;
+    }
+
     int selectChildPUCT(const NodeT& node) const {
         size_t nm = (size_t)std::min(node.activeMoves, (int)node.moves.size());
         if (nm == 0) return -1;
@@ -1370,7 +1636,9 @@ private:
             int childIdx = node.child[e];
             if (childIdx == -1) {
                 StateT childState = applyMove(beforeState, mv);
-                childIdx = createChild(childState);
+                childIdx = findGraphTransposition(childState, depth + 1, mstats);
+                if (childIdx < 0)
+                    childIdx = createChild(childState, depth + 1);
                 pool[curIdx].child[e] = childIdx;  // reindexado -- `node` pode ter sido invalidada
             }
 
@@ -1387,17 +1655,23 @@ private:
     // pool. Marca terminal=true imediatamente se `s` já é posição de fim
     // de jogo (Seção 5 passo b: "Se terminal, marca terminal=true e usa
     // o valor exato, sem chamar searchLeaf").
-    int createChild(const StateT& s) {
+    int createChild(const StateT& s, int graphDepth) {
         NodeT node;
         node.state = s;
         node.side = s.turn;
+        node.graphDepth = graphDepth;
         int w = winner(s);
         if (w != -1) {
             node.terminal = true;
             node.terminalScore = (w == s.turn) ? MCAB_WIN_SCORE : -MCAB_WIN_SCORE;
         }
         pool.push_back(std::move(node));
-        return (int)pool.size() - 1;
+        int idx = (int)pool.size() - 1;
+        if (params.transpositionGraph) {
+            uint64_t key = mcabGraphKey(pool[(size_t)idx].state, 0);
+            if (key != 0) transpositionIndex.emplace(key, idx);
+        }
+        return idx;
     }
 
     // Avalia um nó recém-expandido e não-terminal. Com leafDepth==0 (o

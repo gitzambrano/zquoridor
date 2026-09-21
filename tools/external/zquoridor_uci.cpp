@@ -160,6 +160,7 @@ int main(int argc, char** argv) {
     params.enabled = opt.useMcab;
     if (opt.cpuct > 0.0) params.cPuct = opt.cpuct;
     if (opt.scoreScale > 0.0) params.scoreScale = opt.scoreScale;
+    params.autoNodeBudget = opt.nodeBudget < 0;
     if (opt.nodeBudget >= 0) params.nodeBudget = opt.nodeBudget;
     if (opt.leafDepth >= 0) params.leafDepth = opt.leafDepth;
     if (opt.progressiveWidening) params.progressiveWidening = true;
@@ -274,6 +275,15 @@ int main(int argc, char** argv) {
                 }
             }
 
+            // Adaptive time management is a clock-only feature. Fixed
+            // movetime benchmarks remain bit-for-bit on the normal path.
+            const bool adaptiveClock = movetime <= 0 &&
+                (state.turn == 0 ? wtime : btime) >= 0;
+            runner.params().adaptiveTime = adaptiveClock;
+            runner.params().adaptiveOptimumMs =
+                adaptiveClock ? timeBudget.optimumMs : 0;
+            if (adaptiveClock) budgetMs = timeBudget.maximumMs;
+
             qr::SearchStats stats;
             mcab::McabStats mstats;
             auto t0 = std::chrono::steady_clock::now();
@@ -285,6 +295,7 @@ int main(int argc, char** argv) {
                       << " nodes " << nodes
                       << " time " << elapsed
                       << " string budget=" << budgetMs
+                      << " nodecap=" << mstats.effectiveNodeBudget
                       << " hard=" << timeBudget.maximumMs
                       << " cpuct=" << params.cPuct
                       << " scale=" << params.scoreScale
