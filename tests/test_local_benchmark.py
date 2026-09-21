@@ -41,6 +41,22 @@ class RefereeTests(unittest.TestCase):
         self.assertIn("f6", diagonal.legal_moves())
         self.assertNotIn("e7", diagonal.legal_moves())
 
+    def test_threefold_repetition_uses_complete_state_and_third_occurrence(self) -> None:
+        state = local_arena.Referee()
+        repetition = local_arena.RepetitionTracker()
+        self.assertFalse(repetition.observe(state))
+        cycle = ("e2", "e8", "e1", "e9")
+        for move in cycle:
+            state.apply(move)
+            self.assertFalse(repetition.observe(state))
+        for move in cycle[:-1]:
+            state.apply(move)
+            self.assertFalse(repetition.observe(state))
+        state.apply(cycle[-1])
+        self.assertTrue(repetition.observe(state))
+        self.assertEqual(repetition.max_count, 3)
+        self.assertEqual(repetition.repeated_states, 5)
+
     def test_referee_rejects_crossing_and_path_blocking_walls(self) -> None:
         state = local_arena.Referee()
         state.apply("e2")
@@ -86,6 +102,10 @@ class ProcessTests(unittest.TestCase):
                             history = last_position.split(' moves ', 1)
                             count = len(history[1].split()) if len(history) == 2 else 0
                             print('bestmove ' + ['e2', 'e8', 'e3', 'e7'][count], flush=True)
+                        elif behavior == 'repeat_game':
+                            history = last_position.split(' moves ', 1)
+                            count = len(history[1].split()) if len(history) == 2 else 0
+                            print('bestmove ' + ['e2', 'e8', 'e1', 'e9'][count % 4], flush=True)
                         else: print('bestmove e2', flush=True)
                     elif cmd == 'quit': break
                 """
@@ -159,6 +179,28 @@ class ProcessTests(unittest.TestCase):
         self.assertTrue(all("clock_before_ms" in move for move in row["move_times"]))
         self.assertTrue(all(clock > 180_000 for clock in row["final_clocks_ms"]))
 
+    def test_game_adjudicates_threefold_repetition_before_max_plies(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            command = self._fake_engine(Path(raw), "repeat_game")
+            row = local_arena.play_game(
+                opponent="baseline",
+                opening_index=0,
+                opening=[],
+                zq_player=0,
+                zq_factory=lambda: local_arena.UciPlayer(command, "candidate"),
+                opponent_factory=lambda: local_arena.UciPlayer(command, "baseline"),
+                zq_budget=10,
+                opponent_budget=10,
+                move_timeout_s=1.0,
+                max_plies=20,
+                run_id="repetition-test",
+            )
+        self.assertEqual(row["status"], "ok")
+        self.assertEqual(row["termination"], "repetition")
+        self.assertEqual(row["result"], 0.5)
+        self.assertEqual(row["plies"], 8)
+        self.assertEqual(row["repetition_max_count"], 3)
+
     def test_failed_game_is_recorded_and_excluded_from_pair_statistic(self) -> None:
         rows = [
             {"status": "ok", "opponent": "x", "opening_index": 0,
@@ -175,6 +217,7 @@ class ProcessTests(unittest.TestCase):
         self.assertEqual(report["complete_pairs"], 1)
         self.assertEqual(report["excluded_ok_games"], 1)
         self.assertEqual(report["score_pct"], 75.0)
+        self.assertEqual(report["repetition_games"], 0)
 
 
 class ResumeAndConfigTests(unittest.TestCase):
