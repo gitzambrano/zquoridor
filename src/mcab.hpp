@@ -223,6 +223,17 @@ struct McabParams {
     bool autoNodeBudget = false;
     int autoNodeBudgetPerMs = 32;
     int autoNodeBudgetCeiling = 640000;
+
+    // Experimental real-clock time allocation. Front-ends set
+    // adaptiveOptimumMs to TimeManager::optimum and pass maximumMs as the
+    // hard timeBudgetMs. Fixed-movetime/self-play keep this disabled.
+    bool adaptiveTime = false;
+    int adaptiveOptimumMs = 0;
+    double adaptiveMinFactor = 1.00;
+    double adaptiveStableFactor = 1.00;
+    double adaptiveUncertainFactor = 1.25;
+    double adaptiveVolatileFactor = 1.60;
+    int adaptiveMinSimulations = 1500;
     // 0 = folha avaliada só por nnueEvalInt no acumulador incremental, sem
     // searchLeaf e sem quiescência de muro. Era 4 (valor do plano); a Fase 8
     // mediu 4 como catastrófico a 200ms/lance e 0 como o único ponto que
@@ -317,6 +328,20 @@ inline int effectiveNodeBudget(const McabParams& params, int timeBudgetMs) {
         std::max<long long>(params.nodeBudget, scaled), ceiling);
 }
 
+// Stockfish-inspired, but MCAB-specific, conversion from root uncertainty to
+// a multiplier of the TimeManager optimum. These values are intentionally
+// exposed as a pure function so regression tests can pin the classification.
+inline double adaptiveTimeFactor(double visitRatio, double qGap, double stableFraction,
+                                 const McabParams& p) {
+    if (stableFraction < 0.15 || visitRatio < 1.15 || qGap < -0.01)
+        return p.adaptiveVolatileFactor;
+    if (visitRatio < 1.50 || qGap < 0.005)
+        return p.adaptiveUncertainFactor;
+    if (stableFraction >= 0.35 && visitRatio >= 2.0 && qGap >= 0.015)
+        return p.adaptiveStableFactor;
+    return 1.0;
+}
+
 // Estatísticas agregadas de UMA chamada a chooseMoveMCAB (não confundir
 // com SearchStatsT, que é por-chamada-de-searchLeaf/negamax).
 struct McabStats {
@@ -334,6 +359,11 @@ struct McabStats {
     long long evalCacheValueMisses = 0;
     long long evalCachePolicyEvictions = 0;
     long long evalCacheValueEvictions = 0;
+    bool adaptiveTimeStop = false;
+    int adaptiveTargetMs = 0;
+    long long adaptiveLeaderChanges = 0;
+    double adaptiveVisitRatio = 0.0;
+    double adaptiveQGap = 0.0;
                                      // (ver evaluateLeaf). Muitas = leafDepth alto demais para o
                                      // controle de tempo em uso; a árvore fica cega nessas folhas.
 };
@@ -703,7 +733,14 @@ public:
             rootNode.side = root.turn;
             pool.push_back(std::move(rootNode));
         }
-        pool.reserve(pool.size() + (size_t)budget + 1);
+        // With adaptive clocks, timeBudgetMs is the hard maximum and can be
+        // ~3x optimum. Reserve only the expected optimum working set up front;
+        // vector growth remains safe because the tree stores indices, not
+        // pointers.
+        int reserveBudget = budget;
+        if (params.adaptiveTime && params.adaptiveOptimumMs > 0)
+            reserveBudget = std::min(budget, effectiveNodeBudget(params, params.adaptiveOptimumMs));
+        pool.reserve(pool.size() + (size_t)reserveBudget + 1);
 
         mcabAccStack[0] = buildAccPairRoot(root, mcabPathCache(engine, 0));
 
@@ -747,15 +784,67 @@ public:
         auto t0 = std::chrono::steady_clock::now();
         haveLeafDeadline = (treeBudgetMs > 0);
         if (haveLeafDeadline) leafDeadline = t0 + std::chrono::milliseconds(treeBudgetMs);
+
+        const int optimumMs =
+            params.adaptiveTime && params.adaptiveOptimumMs > 0 && treeBudgetMs > 0
+                ? std::clamp(params.adaptiveOptimumMs, 1, treeBudgetMs)
+                : treeBudgetMs;
+        const int earliestStopMs =
+            params.adaptiveTime && optimumMs > 0
+                ? std::clamp((int)std::lround(params.adaptiveMinFactor * optimumMs), 1, treeBudgetMs)
+                : treeBudgetMs;
+        int adaptiveLeader = -1;
+        long long adaptiveLeaderChangedMs = 0;
+
         while (mstats.nodesExpanded < budget) {
+            long long elapsedMs = 0;
             if (treeBudgetMs > 0) {
-                auto elapsedMs = std::chrono::duration_cast<std::chrono::milliseconds>(
-                                     std::chrono::steady_clock::now() - t0)
-                                     .count();
+                elapsedMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                std::chrono::steady_clock::now() - t0)
+                                .count();
                 if (elapsedMs >= treeBudgetMs) break;
+
+                if (params.adaptiveTime && optimumMs > 0 &&
+                    mstats.simulations >= params.adaptiveMinSimulations &&
+                    elapsedMs >= earliestStopMs) {
+                    RootTimeSignal sig = rootTimeSignal(pool[0]);
+                    if (sig.valid) {
+                        double stableFraction =
+                            (double)std::max<long long>(0, elapsedMs - adaptiveLeaderChangedMs) /
+                            (double)std::max(1, optimumMs);
+                        double factor = adaptiveTimeFactor(
+                            sig.visitRatio, sig.qGap, stableFraction, params);
+                        int targetMs = std::clamp(
+                            (int)std::lround((double)optimumMs * factor),
+                            earliestStopMs, treeBudgetMs);
+                        mstats.adaptiveTargetMs = targetMs;
+                        mstats.adaptiveVisitRatio = sig.visitRatio;
+                        mstats.adaptiveQGap = sig.qGap;
+                        if (elapsedMs >= targetMs) {
+                            mstats.adaptiveTimeStop = true;
+                            break;
+                        }
+                    }
+                }
             }
             if (pool[0].terminal) break;  // raiz já resolvida (ex.: vitória em 0 lances -- não deveria ocorrer)
             runSimulation(engine, stats, mstats);
+
+            if (params.adaptiveTime && (mstats.simulations & 63LL) == 0) {
+                int leader = rootVisitLeader(pool[0]);
+                long long nowMs = treeBudgetMs > 0
+                    ? std::chrono::duration_cast<std::chrono::milliseconds>(
+                          std::chrono::steady_clock::now() - t0).count()
+                    : 0;
+                if (adaptiveLeader < 0) {
+                    adaptiveLeader = leader;
+                    adaptiveLeaderChangedMs = nowMs;
+                } else if (leader >= 0 && leader != adaptiveLeader) {
+                    adaptiveLeader = leader;
+                    adaptiveLeaderChangedMs = nowMs;
+                    ++mstats.adaptiveLeaderChanges;
+                }
+            }
         }
 
         // Passo 6 (Seção 5): escolhe o lance final na raiz.
@@ -1321,6 +1410,43 @@ private:
             visited = true;
         }
         return visited ? best : 0.5;
+    }
+
+    struct RootTimeSignal {
+        bool valid = false;
+        int leader = -1;
+        int second = -1;
+        double visitRatio = 0.0;
+        double qGap = 0.0;
+    };
+
+    int rootVisitLeader(const NodeT& node) const {
+        size_t nm = (size_t)std::min(node.activeMoves, (int)node.moves.size());
+        if (nm == 0) return -1;
+        int best = 0;
+        for (size_t i = 1; i < nm; ++i)
+            if (node.N[i] > node.N[(size_t)best]) best = (int)i;
+        return best;
+    }
+
+    RootTimeSignal rootTimeSignal(const NodeT& node) const {
+        RootTimeSignal s;
+        size_t nm = (size_t)std::min(node.activeMoves, (int)node.moves.size());
+        if (nm <= 1) return s;
+        s.leader = rootVisitLeader(node);
+        if (s.leader < 0 || node.N[(size_t)s.leader] <= 0.f) return s;
+        for (size_t i = 0; i < nm; ++i) {
+            if ((int)i == s.leader || node.N[i] <= 0.f) continue;
+            if (s.second < 0 || node.N[i] > node.N[(size_t)s.second])
+                s.second = (int)i;
+        }
+        if (s.second < 0 || node.N[(size_t)s.second] <= 0.f) return s;
+        s.visitRatio = (double)node.N[(size_t)s.leader] /
+                       (double)node.N[(size_t)s.second];
+        s.qGap = edgeQ(node, (size_t)s.leader) -
+                 edgeQ(node, (size_t)s.second);
+        s.valid = true;
+        return s;
     }
 
     int selectChildPUCT(const NodeT& node) const {
