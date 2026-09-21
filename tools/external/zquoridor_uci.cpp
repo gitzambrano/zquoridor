@@ -275,6 +275,15 @@ int main(int argc, char** argv) {
                 }
             }
 
+            // Adaptive time management is a clock-only feature. Fixed
+            // movetime benchmarks remain bit-for-bit on the normal path.
+            const bool adaptiveClock = movetime <= 0 &&
+                (state.turn == 0 ? wtime : btime) >= 0;
+            runner.params().adaptiveTime = adaptiveClock;
+            runner.params().adaptiveOptimumMs =
+                adaptiveClock ? timeBudget.optimumMs : 0;
+            if (adaptiveClock) budgetMs = timeBudget.maximumMs;
+
             qr::SearchStats stats;
             mcab::McabStats mstats;
             auto t0 = std::chrono::steady_clock::now();

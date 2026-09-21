@@ -215,6 +215,7 @@ MCAB_VALUE_KNOBS = [
 # nesse campo significa "aquele lado é o default do binário, não há flag".
 #   (dest base, const E1, const E2, flag_on, flag_off)
 MCAB_FLAG_KNOBS = [
+    ("mcab_adaptive_time",       None, None, "mcab-adaptive-time", "no-mcab-adaptive-time"),
     ("mcab_adaptive_leaf_depth", E1_MCAB_ADAPTIVE_LEAF_DEPTH, E2_MCAB_ADAPTIVE_LEAF_DEPTH, "mcab-adaptive-leaf-depth", None),
     ("mcab_tree_reuse",          E1_MCAB_TREE_REUSE,          E2_MCAB_TREE_REUSE,          None, "mcab-no-tree-reuse"),
     ("mcab_clear_tt_per_move",   E1_MCAB_CLEAR_TT_PER_MOVE,   E2_MCAB_CLEAR_TT_PER_MOVE,   "mcab-clear-tt-per-move", None),
