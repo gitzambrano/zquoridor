@@ -13,11 +13,12 @@ relearn by experiment.
 - **Search**: production hybrid PUCT/MCGS with alpha-beta support, graph
   transpositions, Q-corrected cross-ply sharing, persistent tree reuse,
   bounded caches, root repetition escape, and adaptive real-clock budgeting.
-- **Pondering**: opponent-root pondering is a production feature. A paired
-  120-game fixed-200 ms A/B against the same engine without pondering scored
-  **68.33% (+133.6 Elo)** with a 95% bootstrap score interval of
-  **61.25%–75.42%**. The candidate reused a pondered subtree on **86.8%** of
-  its searches. A separate 100-game-per-configuration Claustrophobia check
+- **Pondering**: opponent-root pondering is a production feature. The
+  confirmation gate used 400 paired fixed-200 ms games against the same engine
+  without pondering and scored **63.125% (+93.4 Elo)**. The paired bootstrap
+  95% interval was **59.0%–67.125%** (about **+63 to +124 Elo**), with zero
+  failed games. The candidate reused a pondered subtree on **88.1%** of its
+  searches. A separate 100-game-per-configuration Claustrophobia check
   moved from **51.0%** without pondering to **51.5%** with pondering; that
   sample establishes no significant external-opponent gain but showed no
   measured regression. The small 3+2 experiment contained a clock timeout
