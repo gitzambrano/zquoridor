@@ -77,6 +77,13 @@ relearn by experiment.
   `--tc-base-ms` plus `--tc-inc-ms` for game-clock tests. `tools/run_clock_smoke.py`
   runs four Zquoridor games from two color-swapped openings at 3 minutes plus a
   2-second increment. This is a clock-safety check, not a strength benchmark.
+- **MCGS self-play heap fix (2026-09-21)**: `MCABSearch::runSimulation` no
+  longer keeps its descent path in a dynamic `thread_local` vector. MinGW
+  could report `0xC0000374` when a self-play worker destroyed that vector
+  after hundreds of games. The path buffer now belongs to each search object.
+  Replaying the failing shard 14 (512 games, 10 threads, 50 ms/move) changed
+  the result from a crash at 509/512 to exit 0 with 512/512 games and 13,995
+  positions. The accepted self-play shards were preserved.
 - **Performance baseline (2026-09-20)**:
   - `race512-cr200k-champion` (Production baseline on `main`):
     - vs Titanium: **63.0% (+92.5 Elo)** in official 600-game match (378W / 0D / 222L).

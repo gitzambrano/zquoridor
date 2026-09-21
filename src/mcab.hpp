@@ -1028,6 +1028,11 @@ private:
         int edgeIdx;
     };
 
+    // Per-search descent storage. Avoid dynamic thread-local storage: MinGW
+    // can report heap corruption while destroying a thread-local vector when
+    // a self-play worker exits.
+    std::vector<PathEdge> simulationPath;
+
     void rebuildTranspositionIndex() {
         transpositionIndex.clear();
         if (!params.transpositionGraph) return;
@@ -1593,7 +1598,7 @@ private:
     void runSimulation(Eng& engine, SearchStatsT& stats, McabStats& mstats) {
         // Search is sequential within one MCABSearch. Reuse the descent buffer
         // across simulations instead of paying allocator traffic every visit.
-        static thread_local std::vector<PathEdge> path;
+        std::vector<PathEdge>& path = simulationPath;
         path.clear();
         const size_t need = (size_t)params.maxTreeDepth + 2;
         if (path.capacity() < need) path.reserve(need);
