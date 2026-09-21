@@ -1,4 +1,4 @@
-// app.js -- Zquoridor premium GUI logic (plan gui-premium.md).
+// app.js -- Zquoridor premium GUI logic (see docs/plan.md).
 // Sections: 1 constants - 2 wasm bindings - 3 settings - 4 state -
 // 5 hud/clocks/race/eval - 6 board bridge - 7 wall input - 8 pawn input -
 // 9 play flow - 10 sound/haptics - 11 modals/toasts - 12 keyboard - 13 boot
@@ -2458,9 +2458,10 @@ $('btnNew').onclick = () => modalNewGame();
 $('lvlChip').onclick = () => modalNewGame();
 $('btnSettings').onclick = () => modalSettings();
 $('logo').onclick = () => openModal(`<h3>ABOUT <span class="x" data-close>&#10005;</span></h3>
-  <p style="line-height:1.7;color:var(--txt2)">Zquoridor plays with an NNUE evaluation network
-  (354 inputs, hybrid PUCT MCTS over alpha-beta) trained on self-play.
-  Place walls to slow your opponent; reach the far row to win.</p>`);
+  <p style="line-height:1.7;color:var(--txt2)"><b>Zquoridor 2.00</b> uses a
+  504-input, 512-hidden NNUE with value and policy heads inside a hybrid
+  PUCT/MCGS search with alpha-beta support. Place walls to slow your opponent;
+  reach the far row to win.</p>`);
 document.querySelectorAll('.tab[data-pane]').forEach(t => t.onclick = () => switchPane(t.dataset.pane));
 const bcvs = $('board');
 bcvs.addEventListener('pointerdown', onBoardPointerDown);
