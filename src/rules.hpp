@@ -1166,6 +1166,18 @@ struct RepetitionTable {
         }
         return preRoot ? (total >= 3) : (total >= 2);
     }
+
+    // True when hash already occurred in the real game history, before
+    // markRoot(). This is deliberately weaker than isRepetitionDraw(): the
+    // root conversion guard only needs to know whether the move returns to a
+    // previously played state; it does not adjudicate a draw by itself.
+    bool repeatsRealGameHistory(uint64_t hash) const {
+        const int end = std::min(rootSize, size);
+        for (int i = end - 1; i >= lastIrrev; --i)
+            if (hist[i] == hash) return true;
+        return false;
+    }
+
     void clear() { size = 0; rootSize = 0; lastIrrev = 0; }
 };
 
