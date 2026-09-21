@@ -243,6 +243,47 @@ int main(int argc, char** argv) {
             if (!rebuildPosition(moves)) {
                 std::cout << "info string error illegal position history\n" << std::flush;
             }
+        } else if (cmd == "ponder") {
+            int movetime = -1;
+            std::string token;
+            while (iss >> token) {
+                if (token == "movetime") iss >> movetime;
+            }
+            if (movetime <= 0) {
+                std::cout << "info string error ponder requires 'movetime MS'\n" << std::flush;
+                continue;
+            }
+            if (qr::winner(state) != -1) {
+                std::cout << "ponderok time=0 nodes=0 treeHit=0 reusedNodes=0\n" << std::flush;
+                continue;
+            }
+
+            // Experimental opponent-root pondering. The caller must set the
+            // position to the state BEFORE the opponent move, then grant only
+            // time the opponent actually consumed. We search that root without
+            // changing game state or emitting a move. McabRunner keeps the
+            // resulting tree; when the real opponent move is later appended to
+            // the position history, normal choose() reroots onto that child.
+            //
+            // Adaptive clock allocation is deliberately disabled here: ponder
+            // time is free compute on the opponent clock, not our game clock.
+            runner.params().adaptiveTime = false;
+            runner.params().adaptiveOptimumMs = 0;
+
+            qr::SearchStats stats;
+            mcab::McabStats mstats;
+            auto t0 = std::chrono::steady_clock::now();
+            qr::Move suggested =
+                runner.choose(engine, state, 40, movetime, stats, history, &mstats);
+            auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::steady_clock::now() - t0).count();
+            uint64_t nodes =
+                runner.activeForThisEngine() ? (uint64_t)mstats.nodesExpanded : stats.nodes;
+            std::cout << "ponderok time=" << elapsed
+                      << " nodes=" << nodes
+                      << " treeHit=" << (mstats.treeReused ? 1 : 0)
+                      << " reusedNodes=" << mstats.reusedNodes
+                      << " suggested=" << moveToText(suggested) << "\n" << std::flush;
         } else if (cmd == "go") {
             int movetime = -1;
             long long wtime = -1;
@@ -323,7 +364,9 @@ int main(int argc, char** argv) {
                       << " lmrDiv=" << engine.getLmrDivisor()
                       << " pw=" << (params.progressiveWidening ? 1 : 0)
                       << " clearTT=" << (params.clearTTPerMove ? 1 : 0)
-                      << " reuse=" << (params.treeReuse ? 1 : 0) << "\n";
+                      << " reuse=" << (params.treeReuse ? 1 : 0)
+                      << " treeHit=" << (mstats.treeReused ? 1 : 0)
+                      << " reusedNodes=" << mstats.reusedNodes << "\n";
             std::cout << "bestmove " << moveToText(best) << "\n" << std::flush;
         } else if (cmd == "quit") {
             break;
