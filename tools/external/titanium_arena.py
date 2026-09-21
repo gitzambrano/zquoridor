@@ -132,6 +132,8 @@ class GameResult:
     both_emptyhand_zq_pawn_moves: int
     first_zero: str
     termination: str
+    repeated_states: int
+    repetition_max_count: int
     moves: List[str]
 
 
@@ -167,8 +169,6 @@ def play_game(
     max_plies: int,
 ) -> GameResult:
     """Legacy Titanium arena using the canonical complete local referee."""
-    zq = UCIEngine(zq_cmd, "zquoridor")
-    ti = UCIEngine(titanium_cmd, "titanium")
     referee = local_arena.Referee()
     repetition = local_arena.RepetitionTracker()
     repetition_draw = repetition.observe(referee)
@@ -184,6 +184,8 @@ def play_game(
     walls_left = list(referee.walls_left)
     pawn_ranks = [referee.pawns[0][0] + 1, referee.pawns[1][0] + 1]
 
+    zq = UCIEngine(zq_cmd, "zquoridor")
+    ti = UCIEngine(titanium_cmd, "titanium")
     zq_think = ti_think = 0.0
     zq_wall_moves = zq_pawn_moves = 0
     zq_backward = zq_lateral = 0
@@ -270,6 +272,8 @@ def play_game(
         both_emptyhand_zq_pawn_moves=both_emptyhand_zq_pawns,
         first_zero=first_zero or "neither",
         termination=termination,
+        repeated_states=repetition.repeated_states,
+        repetition_max_count=repetition.max_count,
         moves=history,
     )
 
@@ -346,6 +350,8 @@ def summarize(results: Sequence[GameResult]) -> dict:
         "zq_both_emptyhand_pawn_moves": empty_pawns,
         "by_color": by_color,
         "by_first_zero_walls": first_zero,
+        "repetition_games": sum(g.termination == "repetition" for g in results),
+        "repeated_states": sum(g.repeated_states for g in results),
         "terminations": {k: sum(g.termination == k for g in results) for k in sorted({g.termination for g in results})},
     }
 
