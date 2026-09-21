@@ -76,10 +76,13 @@ inline int wallsLeftBucket(int n) {
 #define ZQ_NNUE_MARGIN_REGIME_FEATURES 0
 #endif
 #ifndef ZQ_NNUE_PHASE_FEATURES
-#define ZQ_NNUE_PHASE_FEATURES 0
+#define ZQ_NNUE_PHASE_FEATURES 1
 #endif
 #ifndef ZQ_NNUE_MULTIPATH_FEATURES
-#define ZQ_NNUE_MULTIPATH_FEATURES 0
+#define ZQ_NNUE_MULTIPATH_FEATURES 1
+#endif
+#ifndef ZQ_NNUE_CONTACT_FEATURES
+#define ZQ_NNUE_CONTACT_FEATURES 0
 #endif
 #ifndef ZQ_NNUE_HIDDEN
 #define ZQ_NNUE_HIDDEN 512
@@ -89,11 +92,13 @@ constexpr int RACE_EXTRA_FEATURES = 102;
 constexpr int MARGIN_REGIME_EXTRA_FEATURES = 132;
 constexpr int PHASE_EXTRA_FEATURES = 24;
 constexpr int MULTIPATH_EXTRA_FEATURES = 24;
+constexpr int CONTACT_EXTRA_FEATURES = 354;
 constexpr int NUM_FEATURES = BASE_FEATURES
     + (ZQ_NNUE_RACE_FEATURES ? RACE_EXTRA_FEATURES : 0)
     + (ZQ_NNUE_MARGIN_REGIME_FEATURES ? MARGIN_REGIME_EXTRA_FEATURES : 0)
     + (ZQ_NNUE_PHASE_FEATURES ? PHASE_EXTRA_FEATURES : 0)
-    + (ZQ_NNUE_MULTIPATH_FEATURES ? MULTIPATH_EXTRA_FEATURES : 0);
+    + (ZQ_NNUE_MULTIPATH_FEATURES ? MULTIPATH_EXTRA_FEATURES : 0)
+    + (ZQ_NNUE_CONTACT_FEATURES ? CONTACT_EXTRA_FEATURES : 0);
 constexpr int HIDDEN = ZQ_NNUE_HIDDEN;
 static_assert(HIDDEN == 128 || HIDDEN == 256 || HIDDEN == 384 || HIDDEN == 512,
               "unsupported NNUE width");
@@ -304,6 +309,69 @@ inline void updateMultipathFeatures(Acc& acc, const MultipathFeatures& prev, con
             if (prev.features[j] == f) { wasActive = true; break; }
         }
         if (!wasActive) acc.addFeature(f);
+    }
+}
+
+// Four active features describe exact pawn relation, local edge masks, and
+// legal jump or diagonal options. The block uses local edge checks only.
+inline std::array<int, 4> getContactFeatures(const State& s, int perspective) {
+    constexpr int BASE = BASE_FEATURES + (ZQ_NNUE_RACE_FEATURES ? RACE_EXTRA_FEATURES : 0)
+                       + (ZQ_NNUE_MARGIN_REGIME_FEATURES ? MARGIN_REGIME_EXTRA_FEATURES : 0)
+                       + (ZQ_NNUE_PHASE_FEATURES ? PHASE_EXTRA_FEATURES : 0)
+                       + (ZQ_NNUE_MULTIPATH_FEATURES ? MULTIPATH_EXTRA_FEATURES : 0);
+    const int ownCell = s.pawn[perspective];
+    const int oppCell = s.pawn[1 - perspective];
+    const int ownCanon = mirroredPawnCell(ownCell, perspective);
+    const int oppCanon = mirroredPawnCell(oppCell, perspective);
+    const int dr = rowOf(oppCanon) - rowOf(ownCanon);
+    const int dc = colOf(oppCanon) - colOf(ownCanon);
+
+    auto rawDir = [perspective](int canonicalDir) {
+        if (perspective == 0 || canonicalDir >= 2) return canonicalDir;
+        return 1 - canonicalDir;
+    };
+    auto isOpen = [&](int cell, int canonicalDir) {
+        const int direction = rawDir(canonicalDir);
+        return ORTH_NEIGHBOR[(size_t)cell][(size_t)direction] >= 0 &&
+               !edgeBlockedDir(s.wallsH, s.wallsV, cell, direction);
+    };
+    auto edgeMask = [&](int cell) {
+        int mask = 0;
+        for (int direction = 0; direction < 4; ++direction)
+            if (!isOpen(cell, direction)) mask |= 1 << direction;
+        return mask;
+    };
+
+    int adjacentDir = -1;
+    if (dr == -1 && dc == 0) adjacentDir = 0;
+    else if (dr == 1 && dc == 0) adjacentDir = 1;
+    else if (dr == 0 && dc == -1) adjacentDir = 2;
+    else if (dr == 0 && dc == 1) adjacentDir = 3;
+
+    int option = 0;
+    if (adjacentDir >= 0) {
+        const bool straight = isOpen(oppCell, adjacentDir);
+        const int firstPerpendicular = adjacentDir < 2 ? 2 : 0;
+        const int secondPerpendicular = adjacentDir < 2 ? 3 : 1;
+        int mask = straight ? 1 : 0;
+        if (!straight && isOpen(oppCell, firstPerpendicular)) mask |= 2;
+        if (!straight && isOpen(oppCell, secondPerpendicular)) mask |= 4;
+        option = 1 + adjacentDir * 8 + mask;
+    }
+
+    return {{BASE + (dr + 8) * 17 + dc + 8,
+             BASE + 289 + edgeMask(ownCell),
+             BASE + 305 + edgeMask(oppCell),
+             BASE + 321 + option}};
+}
+
+template<class Acc>
+inline void updateContactFeatures(Acc& acc, const std::array<int, 4>& previous,
+                                  const std::array<int, 4>& current) {
+    for (int i = 0; i < 4; ++i) {
+        if (previous[i] == current[i]) continue;
+        acc.removeFeature(previous[i]);
+        acc.addFeature(current[i]);
     }
 }
 
@@ -542,6 +610,9 @@ inline Accumulator buildAccumulator(const State& s, int perspective, PlayerPathC
     auto mp = getMultipathFeatures(s, perspective);
     for (int i = 0; i < mp.count; ++i) acc.addFeature(mp.features[i]);
 #endif
+#if ZQ_NNUE_CONTACT_FEATURES
+    for (int feature : getContactFeatures(s, perspective)) acc.addFeature(feature);
+#endif
     return acc;
 }
 
@@ -725,6 +796,11 @@ inline void updateAccumulatorForMove(Accumulator& acc, bool viewerIsMover, const
     auto prevMp = getMultipathFeatures(before, viewerPlayer);
     auto nextMp = getMultipathFeatures(after, viewerPlayer);
     updateMultipathFeatures(acc, prevMp, nextMp);
+#endif
+#if ZQ_NNUE_CONTACT_FEATURES
+    int contactViewer = viewerIsMover ? mover : opp;
+    updateContactFeatures(acc, getContactFeatures(before, contactViewer),
+                          getContactFeatures(after, contactViewer));
 #endif
 }
 
@@ -961,6 +1037,9 @@ inline AccumulatorQuant buildAccumulatorQuant(const State& s, int perspective, P
     auto mp = getMultipathFeatures(s, perspective);
     for (int i = 0; i < mp.count; ++i) acc.addFeature(mp.features[i]);
 #endif
+#if ZQ_NNUE_CONTACT_FEATURES
+    for (int feature : getContactFeatures(s, perspective)) acc.addFeature(feature);
+#endif
     return acc;
 }
 
@@ -1056,6 +1135,11 @@ inline void updateAccumulatorForMoveQuant(AccumulatorQuant& acc, bool viewerIsMo
     auto prevMp = getMultipathFeatures(before, viewerPlayer);
     auto nextMp = getMultipathFeatures(after, viewerPlayer);
     updateMultipathFeatures(acc, prevMp, nextMp);
+#endif
+#if ZQ_NNUE_CONTACT_FEATURES
+    int contactViewer = viewerIsMover ? mover : opp;
+    updateContactFeatures(acc, getContactFeatures(before, contactViewer),
+                          getContactFeatures(after, contactViewer));
 #endif
 }
 

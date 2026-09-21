@@ -14,30 +14,96 @@ relearn by experiment.
   once the side to move has no walls left. Backup `AvgBlend`,
   tree reuse on, node budget 20000/move (not time-binding: p99 is ~18.6k
   nodes at 150ms).
-- **Network**: Production baseline `race512-cr200k-champion` (`data/nnue/nnue_weights_int8.bin`),
-  `456 -> 512` SCReLU accumulator (`ZQ_NNUE_RACE_FEATURES = 1`, `ZQ_NNUE_HIDDEN = 512`),
+- **Network**: Production baseline `multipath_phase:512` (`data/nnue/nnue_weights_int8.bin`),
+  `504 -> 512` SCReLU accumulator (`ZQ_NNUE_RACE_FEATURES = 1`,
+  `ZQ_NNUE_MULTIPATH_FEATURES = 1`, `ZQ_NNUE_PHASE_FEATURES = 1`,
+  `ZQ_NNUE_HIDDEN = 512`),
   WL head `512->32->1`, policy head `512->209`. QAT with fixed `QA=255`, `QB=64`.
-- **Experimental Architecture**: `multipath:512` (`src/nnue.hpp`, opt-in via `-DZQ_NNUE_MULTIPATH_FEATURES=1`),
-  `480 -> 512` SCReLU accumulator adding 24 cheap multi-path and pawn collision features
-  (0 extra BFS: 8 directional unblocked exits, 8 exit count/branching factor buckets,
-  and 8 pawn jump/contact geometry features).
+- **Experimental Architectures**:
+  - `multipath:512` (`src/nnue.hpp`, opt-in via `-DZQ_NNUE_MULTIPATH_FEATURES=1`):
+    `480 -> 512` SCReLU accumulator adding 24 multi-path and pawn collision features
+    (0 extra BFS: 8 directional unblocked exits, 8 exit count buckets, 8 pawn collision features).
+    **600-game match vs Claustrophobia GPU: 51.08% (+7.53 Elo)** — project historical first win vs Claustrophobia GPU.
+  - `margin_regime:512` (`src/nnue.hpp`, opt-in via `-DZQ_NNUE_MARGIN_REGIME_FEATURES=1`):
+    `588 -> 512` SCReLU accumulator adding 132 distance margin $\times$ wall regime interaction features.
+    **600-game match vs Claustrophobia GPU: 49.00% (-6.95 Elo)**.
+  - `multipath_phase:512` (active experiment, started 2026-09-20):
+    `504 -> 512` SCReLU accumulator combining the 24 multipath features and 24 phase features.
+    The phase block adds no BFS and keeps the value and policy heads unchanged. The warm start remaps
+    the existing multipath columns and initializes only the phase columns to zero. Training uses the
+    11,065,000-sample weakness-boosted dataset for 100 QAT epochs. Cosine schedules reduce the learning
+    rate and weight decay to `1e-7`. Source-level boosts increase the weight of bilateral search,
+    critical search, crisis search, and 512-simulation deep-search samples. The campaign will run a
+    paired match against `multipath:512`, then the full Claustrophobia and Titanium benchmark suite.
+    The promotion target is more than 60% against Claustrophobia in every opening family at 200 ms.
+    The completed candidate scored 51.25% against the synchronized multipath baseline
+    (200 games), 50.83% against Claustrophobia overall (600 games), 60.0% against
+    Titanium normal (100 games), and 46.0% against Titanium Center Rush (100 games).
+    Its direct Claustrophobia Center Rush score was 37.5% (100 games). All five required
+    families failed the gate: `front_wall` 38.46%, `pawn_jump` 50.0%,
+    `vertical_channel` 41.67%, `reed_rear_wall` 22.22%, and `sidestep_flank` 33.33%.
+    The 3+2 clock smoke completed four games without a failure.
+  - `multipath_phase:512` reliable-search fine-tune (queued 2026-09-20):
+    the follow-up dataset contains 313,344 samples and excludes direct-network labels,
+    stale Gen 1 search, and duplicated standalone subsets. It contains 100k bilateral
+    generic-search positions, 100k generic-critical positions at 2x weight, 100k
+    dual-crisis positions at 2.5x weight, 10k Claustrophobia 512-simulation positions
+    at 8x weight, and 3,344 terminal rollout steps at 4x their stored weight. Total
+    gradient mass is 3,672,536.25; critical-search sources contribute most of it and
+    recovered rollouts remain a small auxiliary block. The 40-epoch fine-tune starts
+    from the completed phase network with a `5e-6` head learning rate and a 0.05 trunk
+    multiplier. It runs only after the active benchmark releases the GPU. Promotion
+    requires paired matches against both the phase network and the strongest multipath
+    baseline, the five-family Claustrophobia gate, the full external suite, and a four-game
+    3+2 clock smoke test.
+  - `multipath_phase_contact:512` (queued 2026-09-20): `858 -> 512`
+    SCReLU accumulator. The architecture keeps all 504 Stage A inputs and adds
+    354 sparse contact columns. Exactly four new columns are active: one exact
+    relative pawn displacement, one local edge mask for each pawn, and one
+    direct-jump or diagonal-option state. These features use local wall tests
+    and add no BFS. A zero-column warm start from Stage A preserves both heads
+    exactly before training. The campaign uses 11,065,000 broad samples plus
+    313,344 reliable search and rollout samples at 2x source weight. It uses
+    160 QAT epochs, eight warmup epochs, cosine learning-rate and weight-decay
+    schedules, a 1.5 policy-loss weight, a 1.0 value-loss weight, 6 GB of GPU
+    memory, and 16 CPU threads. The campaign starts after the active Stage B
+    controller exits. It then runs paired 200 ms tests and a four-game 3+2
+    clock smoke.
 - **Time management**: `src/time_manager.hpp` allocates a move budget from
   the remaining clock, increment, estimated moves to go, ply, and move overhead.
   Version 1 returns an optimum and maximum budget. The production search uses
   the optimum budget as the effective move limit. The external adapter accepts
   `wtime/btime/winc/binc/movestogo`, and the arena accepts
-  `--tc-base-ms` plus `--tc-inc-ms` for game-clock tests.
-- **Search promotion checkpoint (2026-09-20)**:
-  - **Promoted / retained:** post-lattice DSU move generation; increment-aware TimeManager; generic real-clock MCAB node guardrail; bounded hot tree reuse.
-  - **Fixed 200 ms:** post-DSU paired Claustrophobia A/B moved from 48.875% to 50.25% (+1.375 pp; bootstrap 95% [-0.375,+3.25]); fixed-200 auto-budget remains at the historical 20k ceiling.
-  - **Real clocks:** automatic node budgeting was neutral at fixed 200 ms but clearly stronger at 1+0 (+127 Elo screen); 3+2 node-cap screens favored 40k/80k/160k over 20k (+117/+180/+234 Elo screens), motivating time-scaled search under increment clocks.
-  - **Rejected for production strength:** Robust-Q75 (53.5% vs baseline but 45.5% vs Claustrophobia), persistent eval cache (50.25% vs baseline, 38.75% vs Claustrophobia), exact/mixed smart pruning (regressed in 400+400 gates), and path-scratch (neutral).
-  - **Full fast-wall generator beyond post-DSU:** remains experimental until its current 400+400 gate completes; do not infer promotion from fixed-node equivalence alone.
+  `--tc-base-ms` plus `--tc-inc-ms` for game-clock tests. `tools/run_clock_smoke.py`
+  runs four Zquoridor games from two color-swapped openings at 3 minutes plus a
+  2-second increment. This is a clock-safety check, not a strength benchmark.
 - **Performance baseline (2026-09-20)**:
-  - vs Titanium: **63.0% (+92.5 Elo)** in official 600-game match (378W / 0D / 222L) — project record.
-  - vs `main` (Gen 5): **81.25% (+254.7 Elo)** in direct screening (32W / 1D / 7L).
-  - vs Claustrophobia: **47.92% (-14.5 Elo)** in 600-game match on GPU (141W white / 140W black; color parity restored).
-  - Center-Rush Tactical Suite: **37.12% (+35 Elo)** against Claustrophobia (`pawn_jump` at 62.5%, `front_wall` at 47.2%).
+  - `race512-cr200k-champion` (Production baseline on `main`):
+    - vs Titanium: **63.0% (+92.5 Elo)** in official 600-game match (378W / 0D / 222L).
+    - vs `main` (Gen 5): **81.25% (+254.7 Elo)** in direct screening (32W / 1D / 7L).
+    - vs Claustrophobia: **47.92% (-14.5 Elo)** in 600-game match on GPU (141W white / 140W black).
+- Center-Rush Tactical Suite: **37.12% (+35 Elo)** against Claustrophobia (`pawn_jump` at 62.5%, `front_wall` at 47.2%).
+
+### Main synchronization and baseline promotion (2026-09-21)
+
+- Local `main` now includes the MCGS Q-correction promotion through `fb110ab`.
+- The synchronized search includes the MCAB transposition DAG, adaptive real-clock budgeting, and bounded hot-node retention.
+- The DSU move-generation changes were already present before this synchronization.
+- The production weights now use the Stage A `multipath_phase:512` checkpoint.
+- Default native and WASM builds use the 504-feature layout.
+- C++ and Python parity checks agree on the fixed test position.
+- The MCGS promotion is active in the production search path.
+- A 400-game Claustrophobia check remains an external experiment. Its result does not change the selected weights automatically.
+  - `multipath:512` (Experimental Champion):
+    - vs Claustrophobia GPU (600g): **51.08% (+7.53 Elo)** (306.5 / 600, 95% CI: [47.50%, 54.58%]).
+    - Claustrophobia Central Openings: **46.62% (34.5 / 74)** (up from 31.8% baseline).
+    - vs Titanium Normal (100g): **64.0% (+99.95 Elo)**.
+    - vs Titanium Center Rush (100g): **45.0% (-34.86 Elo)** (Black: 72.0%, White: 18.0%).
+  - `margin_regime:512` (Experimental Candidate):
+    - vs Claustrophobia GPU (600g): **49.00% (-6.95 Elo)** (294.0 / 600, 95% CI: [45.25%, 52.75%]).
+    - Claustrophobia Central Openings: **43.92% (32.5 / 74)** (White: 35.1%, Black: 52.7%).
+    - vs Titanium Normal (100g): **65.0% (+107.5 Elo)**.
+    - vs Titanium Center Rush (100g): **47.0% (-20.87 Elo)** (Black: 70.0%, White: 24.0%).
 
 ---
 
@@ -50,6 +116,8 @@ relearn by experiment.
    >80% vs previous baseline). Mine losses from the completed 600-game match
    vs Claustrophobia, execute deep MCTS search relabeling (512-1024 sims) with
    Action-Q sharpening, and run modular fine-tuning.
+   The active `multipath_phase:512` campaign tests whether the wall-stock phase interaction improves
+   weak central openings without a measurable search-speed regression.
 2. **Self-play generation, Gen 6**: regenerate datasets with the current
    engine (~3.3x more MCTS nodes per move than the data the Gen 5 net saw),
    root visit distribution as policy target. Retrain, quantize, arena-test
@@ -133,6 +201,34 @@ relearn by experiment.
   to use root visit share, Q gap, best-move changes, and tree reuse to decide
   whether the search can continue from the optimum limit toward the maximum
   limit.
+
+- **Recovered center-loss rollouts (2026-09-20)**: A live-process recovery
+  preserved 3,344 terminal rollout steps from 61 completed rollouts across 15
+  crisis seeds in `data/teaching/loss-center-rollouts`. A full semantic audit
+  found zero illegal histories, illegal policy actions, mover mismatches,
+  broken trajectory links, or discounted-value mismatches. The grouped split
+  keeps complete seeds on one side. The corpus has 3,274 unique histories. Of
+  33 repeated-state groups, 30 contain different stochastic actions and values,
+  so the records are valid Monte Carlo samples but are not fully independent.
+  At weight 8, this dataset adds only 26,752
+  units of gradient mass, approximately 0.06% of the 44,002,312-unit active
+  training mix. It is too small to affect the current campaign and too narrow
+  to upweight without a controlled follow-up experiment. Keep it separate
+  unless the opening-family benchmark confirms a matching weakness.
+
+- **Seeded weakness self-play (2026-09-20)**: `selfplay` accepts
+  `--positions <zquoridor.position.v1.jsonl>` and starts each game from a
+  validated nonterminal snapshot. The loader replays the full move history,
+  preserves the side to move and the repetition table, and rejects an illegal
+  history before generation starts. `tools/teacher/run_weakness_selfplay.py`
+  writes resumable 64-byte V3 shards and stops at a position target.
+  `tools/teacher/weight_weakness_seeds.py` builds the current 60% Claustrophobia
+  and 40% Titanium schedule. It increases the sampling weight for swept
+  openings, ZQuoridor turns in losses, and early crisis positions. The active
+  campaign uses 12 CPU threads, 100 ms per move, and the
+  `multipath_phase:512` Stage A weights. Its primary target is 500,000
+  positions. It can add one 100,000-position block only if Stage C has no
+  training report when the primary target completes.
 
 - **Experimental candidate models tracked in version control (2026-09-18)**: The
   experimental network weights (`student.bin` and `student_int8.bin`) and their
@@ -1424,22 +1520,19 @@ A comprehensive review of the web deployment resolved three functional and visua
   600 games across 300 unique openings with paired color swap at 200 ms/move on GPU (RTX 4050).
   Result: 281 wins, 13 draws, 306 losses -> **47.92% score (-14.5 Elo)** (bootstrap 95% CI:
   [44.33%, 51.50%], Elo: [-39.55, +10.43]).
-- **Formal Promotion of `race512-cr200k-champion` to Production Baseline.**
-  Following confirmation of all-time high benchmarks (+92.5 Elo over Titanium in 600 games;
-  47.92% in 600 games vs Claustrophobia with 141W White / 140W Black; +254.7 Elo over previous baseline):
-  - Migrated `student.bin` and `student_int8.bin` to `data/nnue/nnue_weights.bin` and `data/nnue/nnue_weights_int8.bin`.
-  - Updated `src/nnue.hpp` canonical defaults to `ZQ_NNUE_RACE_FEATURES = 1` and `ZQ_NNUE_HIDDEN = 512`.
-  - Recompiled test suite (`build_tests.bat`), benchmarks (`build_bench.bat`), and WebAssembly bundle (`gui_web/zquoridor.html` and `index.html`).
-  - Updated `readme.md` to reflect the new 456-feature NNUE architecture and competitive benchmark records.
+- **Experimental Architecture Evaluations (2026-09-20).**
+  - Evaluated `multipath:512` (480 inputs, 24 multi-path & collision features) across 800 total benchmark games:
+    - **vs Claustrophobia GPU (600 games)**: **51.08% score (+7.53 Elo)** (306.5 / 600, paired bootstrap 95% CI: [47.50%, 54.58%]).
+      Recorded the first positive strength claim against Claustrophobia GPU in project history.
+      Central openings improved to 46.62% (34.5 / 74).
+    - **vs Titanium (200 games)**: 64.0% normal, 45.0% center rush (Black: 72.0%, White: 18.0%).
+  - Evaluated `margin_regime:512` (588 inputs, 132 distance margin $\times$ wall regime interaction features) across 800 games:
+    - **vs Claustrophobia GPU (600 games)**: **49.00% score (-6.95 Elo)** (294.0 / 600, paired bootstrap 95% CI: [45.25%, 52.75%]).
+      Central openings: 43.92% (32.5 / 74).
+    - **vs Titanium (200 games)**: 65.0% normal, 47.0% center rush (Black: 70.0%, White: 24.0%).
+  - **Architectural Conclusion**: `multipath:512` outperforms `margin_regime:512` by +14.5 Elo against Claustrophobia and +2.7% in central openings, showing that path redundancy information provides stronger inductive bias than wall-regime distance interactions. Both networks exhibit asymmetric White defense weakness against Center Rush (18% - 24% winrate for White vs 70% - 72% for Black).
+  - **Multi-Worker Benchmark Runner**: Enhanced `tools/run_full_candidate_suite.py` and `tools/run_benchmark.py` to support `--workers 6` with manifest isolation, reducing 800-game test suite time from ~3 hours to ~25 minutes.
 
-
-- **Generic real-clock MCAB budget promotion (2026-09-20).** The old 20k-node production ceiling was retained for fixed-time/fixed-node 200 ms play, but real clocks now scale the MCAB guardrail with the TimeManager move budget so the search is normally time-bound instead of node-bound. Cross-control gate on the promoted implementation: at fixed 200 ms, auto-budget vs explicit 20k was neutral (38W/3D/39L, -4.3 ±74.7 Elo); at 1+0 it was clearly stronger (36W/9D/15L, +127.0 ±85.5 Elo). Independent 3+2 node-budget screens on the same main baseline showed 40k vs 20k +117.2 ±75.9 Elo, 80k +179.5 ±80.7 Elo, and 160k +234.1 ±85.6 Elo, confirming that 20k materially underuses long-clock compute. The current main already includes post-DSU move generation, whose paired 400-game A/B against Claustrophobia moved from 48.875% pre-DSU to 50.25% post-DSU; the paired delta (+1.375 pp, 95% bootstrap [-0.375,+3.25]) is directional rather than statistically conclusive. Smart-pruning/post-AB and reinvest-Q variants were rejected after 400+400 confirmations because they regressed versus both baseline and Claustrophobia.
-
-
-- **Adaptive real-clock MCAB time control promotion (2026-09-21).** The real-clock search now uses the TimeManager optimum as the normal target. The search can extend the target to 1.25 times the optimum when the root is uncertain and to 1.60 times the optimum when the root is volatile. The search never stops before the optimum. Fixed `movetime` search keeps the previous behavior. A paired 60-game fixed-200 ms screen against Claustrophobia gave 50.0% for the candidate and 48.33% for the frozen main on the same positions. The paired difference was +1.67 percentage points with a bootstrap interval from 0.0 to +5.0 points. A 32-game 3+2 match against the frozen main gave 15 wins, 4 draws, and 13 losses, or +21.7 ±112.8 Elo. An earlier 24-game 3+2 screen gave 12 wins, 7 draws, and 5 losses, or +104.4 ±119.9 Elo. Therefore, the two independent 3+2 screens gave the same positive direction and the fixed-200 ms gate found no regression.
-- **cPuct 0.70 final gate rejected (2026-09-21).** The 0.70 candidate gave +10.9 ±114.6 Elo at 1+0, but it gave -88.7 ±134.7 Elo at 3+2 and -88.7 ±173.9 Elo at 5+3. Therefore, production keeps `cPuct = 0.80`.
-
-- **MCAB same-ply transposition DAG promotion (2026-09-21).** The MCAB tree now shares a node when two move orders reach the same complete state at the same root-relative ply. The graph key includes the board Zobrist key and both remaining-wall counts, and the implementation verifies the full state before sharing. Same-ply sharing prevents repetition cycles in this first graph version. An 80k-node probe found 12,154 transposition hits in 92,153 lookups, a 13.19% hit rate. The graph reduced raw search throughput, from 16,484 to 12,483 nodes/s at fixed 200 ms in the 64-game A/B, but the candidate scored 33 wins, 2 draws, and 29 losses, or +21.7 ±83.9 Elo. At 3+2, the 16-game A/B gave 12 wins, 2 draws, and 2 losses, or +254.7 ±194.4 Elo. Against Claustrophobia at fixed 200 ms on the same 40-game screen, the frozen main scored 55.0% and the graph candidate scored 60.0%, a +5.0 percentage-point delta. The arena keeps per-engine graph toggles for future ablations.
 
 
 ---

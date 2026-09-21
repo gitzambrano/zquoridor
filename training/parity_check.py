@@ -39,11 +39,13 @@ Uso:
 import sys
 import numpy as np
 
+from student_model import encode_features
+
 N, WS = 9, 8
 DIST_BUCKETS = 21   # ver DIST_BUCKETS em nnue.hpp (Seção 7.10 do plano)
 WALLS_LEFT_BUCKETS = 11  # WALLS_PER_PLAYER + 1 -- ver WALLS_LEFT_BUCKETS em nnue.hpp
-NUM_FEATURES = N * N + N * N + WS * WS * 2 + 2 * DIST_BUCKETS + 2 * WALLS_LEFT_BUCKETS  # 354
-HIDDEN = 256
+NUM_FEATURES = 504  # multipath_phase: race + multipath + phase features
+HIDDEN = 512
 POLICY_OUT = N * N + WS * WS * 2  # 209
 DIST_FEAT_BASE = N * N + N * N + WS * WS * 2              # 290
 WALLS_LEFT_FEAT_BASE = DIST_FEAT_BASE + 2 * DIST_BUCKETS  # 332
@@ -204,57 +206,41 @@ def build_feature_vector(own_pawn, opp_pawn, walls_h_bits, walls_v_bits,
     own_walls_left/opp_walls_left: orçamentos de muro da posição; o default
     WALLS_PER_PLAYER cobre a posição de teste fixa (initialState() + dois
     bits de muro pintados direto no bitboard, sem tocar o orçamento)."""
-    x = np.zeros(NUM_FEATURES, dtype=np.float32)
-    x[mirrored_pawn_cell(own_pawn, own_player)] = 1.0
-    x[81 + mirrored_pawn_cell(opp_pawn, own_player)] = 1.0
+    own_canon = mirrored_pawn_cell(own_pawn, own_player)
+    opp_canon = mirrored_pawn_cell(opp_pawn, own_player)
     walls_h_set = set(walls_h_bits)
     walls_v_set = set(walls_v_bits)
+    walls_h_canon = 0
+    walls_v_canon = 0
     for (r, c) in walls_h_bits:
         rm, cm = mirrored_wall_rc(r, c, own_player)
-        x[162 + slot_idx(rm, cm)] = 1.0
+        walls_h_canon |= 1 << slot_idx(rm, cm)
     for (r, c) in walls_v_bits:
         rm, cm = mirrored_wall_rc(r, c, own_player)
-        x[162 + 64 + slot_idx(rm, cm)] = 1.0
+        walls_v_canon |= 1 << slot_idx(rm, cm)
     opp_player = 1 - own_player
     own_dist = dist_bucket(shortest_path_len(walls_h_set, walls_v_set, own_pawn, own_player))
     opp_dist = dist_bucket(shortest_path_len(walls_h_set, walls_v_set, opp_pawn, opp_player))
-    x[DIST_FEAT_BASE + own_dist] = 1.0
-    x[DIST_FEAT_BASE + DIST_BUCKETS + opp_dist] = 1.0
-    # muros restantes (feature nova, 2026-08): one-hot, mesma família dos
-    # buckets de distância -- ver featOwnWallsLeft/featOppWallsLeft.
-    own_wl_bucket = min(max(own_walls_left, 0), WALLS_LEFT_BUCKETS - 1)
-    opp_wl_bucket = min(max(opp_walls_left, 0), WALLS_LEFT_BUCKETS - 1)
-    x[WALLS_LEFT_FEAT_BASE + own_wl_bucket] = 1.0
-    x[WALLS_LEFT_FEAT_BASE + WALLS_LEFT_BUCKETS + opp_wl_bucket] = 1.0
-    return x
+    data = {
+        "own_pawn": np.array([own_canon], dtype=np.int64),
+        "opp_pawn": np.array([opp_canon], dtype=np.int64),
+        "walls_h": np.array([walls_h_canon], dtype=np.uint64),
+        "walls_v": np.array([walls_v_canon], dtype=np.uint64),
+        "own_dist": np.array([own_dist], dtype=np.int64),
+        "opp_dist": np.array([opp_dist], dtype=np.int64),
+        "walls_left_own": np.array([own_walls_left], dtype=np.int64),
+        "walls_left_opp": np.array([opp_walls_left], dtype=np.int64),
+    }
+    return encode_features(data, np.array([0], dtype=np.int64), "multipath_phase")[0]
 
 
 def build_active_features(own_pawn, opp_pawn, walls_h_bits, walls_v_bits,
                           own_player, own_walls_left=WALLS_PER_PLAYER,
                           opp_walls_left=WALLS_PER_PLAYER):
-    """Mesma posição, mas como lista de índices de feature ativos -- usado
-    no forward quantizado pra somar só as linhas relevantes de w1 (o
-    acumulador em nnue.hpp é sempre incremental/esparso, nunca faz um
-    produto matricial denso contra as 354 features)."""
-    feats = [mirrored_pawn_cell(own_pawn, own_player),
-             81 + mirrored_pawn_cell(opp_pawn, own_player)]
-    for (r, c) in walls_h_bits:
-        rm, cm = mirrored_wall_rc(r, c, own_player)
-        feats.append(162 + slot_idx(rm, cm))
-    for (r, c) in walls_v_bits:
-        rm, cm = mirrored_wall_rc(r, c, own_player)
-        feats.append(162 + 64 + slot_idx(rm, cm))
-    walls_h_set = set(walls_h_bits)
-    walls_v_set = set(walls_v_bits)
-    opp_player = 1 - own_player
-    own_dist = dist_bucket(shortest_path_len(walls_h_set, walls_v_set, own_pawn, own_player))
-    opp_dist = dist_bucket(shortest_path_len(walls_h_set, walls_v_set, opp_pawn, opp_player))
-    feats += [DIST_FEAT_BASE + own_dist, DIST_FEAT_BASE + DIST_BUCKETS + opp_dist]
-    own_wl_bucket = min(max(own_walls_left, 0), WALLS_LEFT_BUCKETS - 1)
-    opp_wl_bucket = min(max(opp_walls_left, 0), WALLS_LEFT_BUCKETS - 1)
-    feats += [WALLS_LEFT_FEAT_BASE + own_wl_bucket,
-              WALLS_LEFT_FEAT_BASE + WALLS_LEFT_BUCKETS + opp_wl_bucket]
-    return feats
+    """Return the active multipath_phase feature indices."""
+    return np.flatnonzero(build_feature_vector(
+        own_pawn, opp_pawn, walls_h_bits, walls_v_bits, own_player,
+        own_walls_left, opp_walls_left)).tolist()
 
 
 def forward_head(a, weights, prefix):

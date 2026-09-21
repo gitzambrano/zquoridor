@@ -62,6 +62,9 @@ else
 fi
 
 em++ -O3 -std=c++17 -msimd128 \
+  -DZQ_NNUE_RACE_FEATURES=1 -DZQ_NNUE_MULTIPATH_FEATURES=1 \
+  -DZQ_NNUE_PHASE_FEATURES=1 -DZQ_NNUE_MARGIN_REGIME_FEATURES=0 \
+  -DZQ_NNUE_HIDDEN=512 \
   engine_wasm.cpp \
   -s MODULARIZE=1 \
   -s EXPORT_NAME=ZquoridorModule \
