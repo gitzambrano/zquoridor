@@ -384,7 +384,7 @@ EMSCRIPTEN_KEEPALIVE
 int qr_engine_move(int maxDepth, int timeMs) {
     if (winner(g_state) != -1 || g_reptbl.count(g_state.hash) >= 3) return 0;
     SearchStats st;
-    // Híbrido só quando a NNUE está ativa; senão, alpha-beta puro.
+    // Hybrid search only when NNUE is active; otherwise use pure alpha-beta.
     mcab::McabParams p = g_mcab.params();
     p.enabled = g_mcabWanted && (g_engine.getEvalMode() == qr::Negamax::EvalMode::NNUE);
     g_mcab.setParams(p);
@@ -394,6 +394,32 @@ int qr_engine_move(int maxDepth, int timeMs) {
     g_state = applyMove(g_state, m);
     recordLiveMove(m);
     return 1;
+}
+
+// Search the current opponent-to-move root without applying a move.
+// The Web Worker calls this in short chunks while the human is thinking.
+// MCAB keeps the resulting tree. When the human move is later applied,
+// qr_engine_move() reroots onto the matching child and reuses that work.
+// Return the number of expanded MCAB nodes, or 0 when pondering is not
+// available (terminal position, repetition, heuristic mode, or MCAB off).
+EMSCRIPTEN_KEEPALIVE
+int qr_engine_ponder(int maxDepth, int timeMs) {
+    if (timeMs <= 0 || winner(g_state) != -1 || g_reptbl.count(g_state.hash) >= 3) return 0;
+    if (!g_mcabWanted || g_engine.getEvalMode() != qr::Negamax::EvalMode::NNUE) return 0;
+
+    mcab::McabParams p = g_mcab.params();
+    p.enabled = true;
+    // Ponder time is free opponent-clock compute. Never apply the game-clock
+    // adaptive extension policy inside a ponder chunk.
+    p.adaptiveTime = false;
+    p.adaptiveOptimumMs = 0;
+    g_mcab.setParams(p);
+
+    SearchStats st;
+    mcab::McabStats mstats;
+    (void)g_mcab.choose(g_engine, g_state, maxDepth, timeMs, st, g_reptbl, &mstats);
+    long long expanded = std::max<long long>(0, mstats.nodesExpanded);
+    return (int)std::min<long long>(expanded, 0x7fffffffLL);
 }
 
 EMSCRIPTEN_KEEPALIVE int qr_last_move_is_wall() { return g_lastEngineMove.isWall ? 1 : 0; }
