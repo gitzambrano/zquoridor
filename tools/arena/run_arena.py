@@ -218,6 +218,7 @@ MCAB_FLAG_KNOBS = [
     ("mcab_adaptive_time",       None, None, "mcab-adaptive-time", "no-mcab-adaptive-time"),
     ("mcab_adaptive_leaf_depth", E1_MCAB_ADAPTIVE_LEAF_DEPTH, E2_MCAB_ADAPTIVE_LEAF_DEPTH, "mcab-adaptive-leaf-depth", None),
     ("mcab_tree_reuse",          E1_MCAB_TREE_REUSE,          E2_MCAB_TREE_REUSE,          None, "mcab-no-tree-reuse"),
+    ("mcab_transposition_graph",  None, None, "mcab-transposition-graph", "no-mcab-transposition-graph"),
     ("mcab_clear_tt_per_move",   E1_MCAB_CLEAR_TT_PER_MOVE,   E2_MCAB_CLEAR_TT_PER_MOVE,   "mcab-clear-tt-per-move", None),
     ("mcab_equiv_mode",          E1_MCAB_EQUIV_MODE,          E2_MCAB_EQUIV_MODE,          "mcab-equiv-mode", None),
     ("mcab_progressive_widening", E1_MCAB_PROGRESSIVE_WIDENING, E2_MCAB_PROGRESSIVE_WIDENING, "mcab-progressive-widening", "mcab-no-progressive-widening"),

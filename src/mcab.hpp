@@ -67,6 +67,7 @@
 #include <utility>
 #include <memory>
 #include <queue>
+#include <unordered_map>
 
 namespace mcab {
 
@@ -255,6 +256,9 @@ struct McabParams {
     double wideningCoefficient = 2.0;   // added coefficient in c*N^alpha
     double wideningExponent = 0.5;      // exponent alpha in c*N^alpha
     bool treeReuse = true;               // reuso de subárvore entre lances (Seção 8)
+    // Experimental DAG mode. Nodes at the same root-relative ply that
+    // represent the same complete state share one MCAB node.
+    bool transpositionGraph = true;
     bool clearTTPerMove = false;
     // Separate bounded policy/value inference caches; experimental opt-in.
     bool evalCache = true;
@@ -359,6 +363,8 @@ struct McabStats {
     long long evalCacheValueMisses = 0;
     long long evalCachePolicyEvictions = 0;
     long long evalCacheValueEvictions = 0;
+    long long transpositionHits = 0;
+    long long transpositionLookups = 0;
     bool adaptiveTimeStop = false;
     int adaptiveTargetMs = 0;
     long long adaptiveLeaderChanges = 0;
@@ -384,6 +390,38 @@ inline uint64_t mcabStateKey(const S&, ...) {
     return 0;
 }
 
+// The normal Zobrist key does not include wallsLeft. For a graph
+// transposition, the wall stock is part of the game state and must be in
+// the identity key.
+template <typename S>
+inline auto mcabGraphKey(const S& s, int)
+    -> decltype((void)s.wallsLeft[0], (uint64_t)s.hash) {
+    uint64_t k = (uint64_t)s.hash;
+    k ^= (uint64_t)(uint8_t)s.wallsLeft[0] * 0x9E3779B185EBCA87ULL;
+    k ^= (uint64_t)(uint8_t)s.wallsLeft[1] * 0xC2B2AE3D27D4EB4FULL;
+    return k;
+}
+template <typename S>
+inline uint64_t mcabGraphKey(const S& s, ...) {
+    return mcabStateKey(s, 0);
+}
+
+template <typename S>
+inline auto mcabGraphStateEqual(const S& a, const S& b, int)
+    -> decltype((void)a.pawn[0], (void)a.wallsH, (void)a.wallsV,
+                (void)a.wallsLeft[0], (void)a.turn, bool()) {
+    return a.pawn[0] == b.pawn[0] &&
+           a.pawn[1] == b.pawn[1] &&
+           a.wallsH == b.wallsH &&
+           a.wallsV == b.wallsV &&
+           a.wallsLeft[0] == b.wallsLeft[0] &&
+           a.wallsLeft[1] == b.wallsLeft[1] &&
+           a.turn == b.turn;
+}
+template <typename S>
+inline bool mcabGraphStateEqual(const S& a, const S& b, ...) {
+    return mcabStateKey(a, 0) == mcabStateKey(b, 0);
+}
 // The board Zobrist key does not encode wall ownership, while NNUE consumes
 // both remaining-wall counts. Include both stocks in inference-cache identity.
 template <typename S>
@@ -553,6 +591,7 @@ struct MCABNode {
     std::vector<size_t> activeCandidateIndices;
     size_t nextCandidate = 0;
     int totalN = 0;
+    int graphDepth = -1;           // root-relative ply for safe DAG sharing
     bool noised = false;          // ruído de Dirichlet já aplicado a `P` (Seção 9) -- evita
                                   // recompor o ruído sobre si mesmo quando este nó vira raiz
                                   // reaproveitada de novo (Seção 8).
@@ -724,6 +763,7 @@ public:
         if (reused) {
             pool[0].state = root;  // hash bate; normaliza o objeto por segurança
             pool[0].side = root.turn;
+            normalizeGraphDepths();
             mstats.treeReused = true;
             mstats.reusedNodes = (int)pool.size();
         } else {
@@ -731,8 +771,10 @@ public:
             NodeT rootNode;
             rootNode.state = root;
             rootNode.side = root.turn;
+            rootNode.graphDepth = 0;
             pool.push_back(std::move(rootNode));
         }
+        rebuildTranspositionIndex();
         // With adaptive clocks, timeBudgetMs is the hard maximum and can be
         // ~3x optimum. Reserve only the expected optimum working set up front;
         // vector growth remains safe because the tree stores indices, not
@@ -951,6 +993,7 @@ private:
     }
 
     std::vector<NodeT> pool;
+    std::unordered_multimap<uint64_t, int32_t> transpositionIndex;
     std::vector<AccPairT> mcabAccStack;   // Seção 4.3.3 -- pilha por caminho de descida
     RepTblT localRepTbl;                  // cópia mutável de gameHistory, 1x por chooseMoveMCAB (ver Seção 5, negamax/searchLeaf)
     std::mt19937 rng;                     // ruído de Dirichlet (Seção 9) -- por instância, nunca compartilhado entre threads
@@ -976,6 +1019,56 @@ private:
         int nodeIdx;
         int edgeIdx;
     };
+
+    void rebuildTranspositionIndex() {
+        transpositionIndex.clear();
+        if (!params.transpositionGraph) return;
+        transpositionIndex.reserve(pool.size() * 2 + 1);
+        for (size_t i = 0; i < pool.size(); ++i) {
+            uint64_t key = mcabGraphKey(pool[i].state, 0);
+            if (key != 0) transpositionIndex.emplace(key, (int32_t)i);
+        }
+    }
+
+    void normalizeGraphDepths() {
+        if (pool.empty()) return;
+        for (NodeT& n : pool) n.graphDepth = -1;
+        std::queue<int32_t> q;
+        pool[0].graphDepth = 0;
+        q.push(0);
+        while (!q.empty()) {
+            int32_t idx = q.front();
+            q.pop();
+            int nextDepth = pool[(size_t)idx].graphDepth + 1;
+            for (int32_t childIdx : pool[(size_t)idx].child) {
+                if (childIdx < 0) continue;
+                NodeT& child = pool[(size_t)childIdx];
+                if (child.graphDepth < 0) {
+                    child.graphDepth = nextDepth;
+                    q.push(childIdx);
+                }
+            }
+        }
+    }
+
+    int findGraphTransposition(const StateT& state, int depth, McabStats& mstats) const {
+        if (!params.transpositionGraph) return -1;
+        uint64_t key = mcabGraphKey(state, 0);
+        if (key == 0) return -1;
+        ++mstats.transpositionLookups;
+        auto range = transpositionIndex.equal_range(key);
+        for (auto it = range.first; it != range.second; ++it) {
+            int32_t idx = it->second;
+            if (idx < 0 || idx >= (int32_t)pool.size()) continue;
+            const NodeT& candidate = pool[(size_t)idx];
+            if (candidate.graphDepth != depth) continue;
+            if (!mcabGraphStateEqual(candidate.state, state, 0)) continue;
+            ++mstats.transpositionHits;
+            return idx;
+        }
+        return -1;
+    }
+
 
     // ---------------------------------------------------------------
     // Seção 8 -- reuso de subárvore entre lances
@@ -1543,7 +1636,9 @@ private:
             int childIdx = node.child[e];
             if (childIdx == -1) {
                 StateT childState = applyMove(beforeState, mv);
-                childIdx = createChild(childState);
+                childIdx = findGraphTransposition(childState, depth + 1, mstats);
+                if (childIdx < 0)
+                    childIdx = createChild(childState, depth + 1);
                 pool[curIdx].child[e] = childIdx;  // reindexado -- `node` pode ter sido invalidada
             }
 
@@ -1560,17 +1655,23 @@ private:
     // pool. Marca terminal=true imediatamente se `s` já é posição de fim
     // de jogo (Seção 5 passo b: "Se terminal, marca terminal=true e usa
     // o valor exato, sem chamar searchLeaf").
-    int createChild(const StateT& s) {
+    int createChild(const StateT& s, int graphDepth) {
         NodeT node;
         node.state = s;
         node.side = s.turn;
+        node.graphDepth = graphDepth;
         int w = winner(s);
         if (w != -1) {
             node.terminal = true;
             node.terminalScore = (w == s.turn) ? MCAB_WIN_SCORE : -MCAB_WIN_SCORE;
         }
         pool.push_back(std::move(node));
-        return (int)pool.size() - 1;
+        int idx = (int)pool.size() - 1;
+        if (params.transpositionGraph) {
+            uint64_t key = mcabGraphKey(pool[(size_t)idx].state, 0);
+            if (key != 0) transpositionIndex.emplace(key, idx);
+        }
+        return idx;
     }
 
     // Avalia um nó recém-expandido e não-terminal. Com leafDepth==0 (o
