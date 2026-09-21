@@ -271,6 +271,10 @@ static bool g_e1McabTreeReuse = mcab::resolve(E1_MCAB_TREE_REUSE_OVERRIDE, MCAB_
 static bool g_e2McabTreeReuse = mcab::resolve(E2_MCAB_TREE_REUSE_OVERRIDE, MCAB_PROD.treeReuse);
 static bool g_e1McabTranspositionGraph = MCAB_PROD.transpositionGraph;
 static bool g_e2McabTranspositionGraph = MCAB_PROD.transpositionGraph;
+static bool g_e1McabGraphQCorrection = MCAB_PROD.graphQCorrection;
+static bool g_e2McabGraphQCorrection = MCAB_PROD.graphQCorrection;
+static double g_e1McabGraphLeafMix = MCAB_PROD.graphLeafMix;
+static double g_e2McabGraphLeafMix = MCAB_PROD.graphLeafMix;
 static bool g_e1McabClearTTPerMove = mcab::resolve(E1_MCAB_CLEAR_TT_PER_MOVE_OVERRIDE, MCAB_PROD.clearTTPerMove);
 static bool g_e2McabClearTTPerMove = mcab::resolve(E2_MCAB_CLEAR_TT_PER_MOVE_OVERRIDE, MCAB_PROD.clearTTPerMove);
 static bool g_e1McabRootNoiseEnabled = mcab::resolve(E1_MCAB_ROOT_NOISE_OVERRIDE, MCAB_PROD.rootNoiseEnabled);
@@ -482,6 +486,8 @@ int playArenaGame(int engine1PlayerIdx, int timeMs, int randomPlies, std::mt1993
         p1.wideningExponent = g_e1McabWideningExponent;
         p1.treeReuse = g_e1McabTreeReuse;
         p1.transpositionGraph = g_e1McabTranspositionGraph;
+        p1.graphQCorrection = g_e1McabGraphQCorrection;
+        p1.graphLeafMix = g_e1McabGraphLeafMix;
         p1.clearTTPerMove = g_e1McabClearTTPerMove;
         p1.rootNoiseEnabled = g_e1McabRootNoiseEnabled;
         p1.rootNoiseAlpha = g_e1McabRootNoiseAlpha;
@@ -513,6 +519,8 @@ int playArenaGame(int engine1PlayerIdx, int timeMs, int randomPlies, std::mt1993
         p2.wideningExponent = g_e2McabWideningExponent;
         p2.treeReuse = g_e2McabTreeReuse;
         p2.transpositionGraph = g_e2McabTranspositionGraph;
+        p2.graphQCorrection = g_e2McabGraphQCorrection;
+        p2.graphLeafMix = g_e2McabGraphLeafMix;
         p2.clearTTPerMove = g_e2McabClearTTPerMove;
         p2.rootNoiseEnabled = g_e2McabRootNoiseEnabled;
         p2.rootNoiseAlpha = g_e2McabRootNoiseAlpha;
@@ -764,6 +772,10 @@ int main(int argc, char* argv[]) {
     bool e2McabTreeReuse = mcab::resolve(E2_MCAB_TREE_REUSE_OVERRIDE, MCAB_PROD.treeReuse);
     bool e1McabTranspositionGraph = MCAB_PROD.transpositionGraph;
     bool e2McabTranspositionGraph = MCAB_PROD.transpositionGraph;
+    bool e1McabGraphQCorrection = MCAB_PROD.graphQCorrection;
+    bool e2McabGraphQCorrection = MCAB_PROD.graphQCorrection;
+    double e1McabGraphLeafMix = MCAB_PROD.graphLeafMix;
+    double e2McabGraphLeafMix = MCAB_PROD.graphLeafMix;
     bool e1McabClearTTPerMove = mcab::resolve(E1_MCAB_CLEAR_TT_PER_MOVE_OVERRIDE, MCAB_PROD.clearTTPerMove);
     bool e2McabClearTTPerMove = mcab::resolve(E2_MCAB_CLEAR_TT_PER_MOVE_OVERRIDE, MCAB_PROD.clearTTPerMove);
     int e1McabMaxTreeDepth = mcab::resolve(E1_MCAB_MAX_TREE_DEPTH_OVERRIDE, MCAB_PROD.maxTreeDepth);
@@ -912,6 +924,15 @@ int main(int argc, char* argv[]) {
         else if (std::strcmp(argv[i], "--e2-mcab-transposition-graph") == 0) e2McabTranspositionGraph = true;
         else if (std::strcmp(argv[i], "--e1-no-mcab-transposition-graph") == 0) e1McabTranspositionGraph = false;
         else if (std::strcmp(argv[i], "--e2-no-mcab-transposition-graph") == 0) e2McabTranspositionGraph = false;
+        else if (std::strcmp(argv[i], "--mcab-graph-qcorr") == 0) e1McabGraphQCorrection = e2McabGraphQCorrection = true;
+        else if (std::strcmp(argv[i], "--no-mcab-graph-qcorr") == 0) e1McabGraphQCorrection = e2McabGraphQCorrection = false;
+        else if (std::strcmp(argv[i], "--e1-mcab-graph-qcorr") == 0) e1McabGraphQCorrection = true;
+        else if (std::strcmp(argv[i], "--e2-mcab-graph-qcorr") == 0) e2McabGraphQCorrection = true;
+        else if (std::strcmp(argv[i], "--e1-no-mcab-graph-qcorr") == 0) e1McabGraphQCorrection = false;
+        else if (std::strcmp(argv[i], "--e2-no-mcab-graph-qcorr") == 0) e2McabGraphQCorrection = false;
+        else if (std::strcmp(argv[i], "--mcab-graph-leaf-mix") == 0 && i + 1 < argc) e1McabGraphLeafMix = e2McabGraphLeafMix = std::atof(argv[++i]);
+        else if (std::strcmp(argv[i], "--e1-mcab-graph-leaf-mix") == 0 && i + 1 < argc) e1McabGraphLeafMix = std::atof(argv[++i]);
+        else if (std::strcmp(argv[i], "--e2-mcab-graph-leaf-mix") == 0 && i + 1 < argc) e2McabGraphLeafMix = std::atof(argv[++i]);
         else if (std::strcmp(argv[i], "--e1-mcab-clear-tt-per-move") == 0) e1McabClearTTPerMove = true;
         else if (std::strcmp(argv[i], "--e2-mcab-clear-tt-per-move") == 0) e2McabClearTTPerMove = true;
         else if (std::strcmp(argv[i], "--e1-mcab-max-tree-depth") == 0 && i + 1 < argc) e1McabMaxTreeDepth = std::atoi(argv[++i]);
@@ -990,6 +1011,10 @@ int main(int argc, char* argv[]) {
     g_e2McabTreeReuse = e2McabTreeReuse;
     g_e1McabTranspositionGraph = e1McabTranspositionGraph;
     g_e2McabTranspositionGraph = e2McabTranspositionGraph;
+    g_e1McabGraphQCorrection = e1McabGraphQCorrection;
+    g_e2McabGraphQCorrection = e2McabGraphQCorrection;
+    g_e1McabGraphLeafMix = std::clamp(e1McabGraphLeafMix, 0.0, 1.0);
+    g_e2McabGraphLeafMix = std::clamp(e2McabGraphLeafMix, 0.0, 1.0);
     g_e1McabClearTTPerMove = e1McabClearTTPerMove;
     g_e2McabClearTTPerMove = e2McabClearTTPerMove;
     g_e1McabMaxTreeDepth = e1McabMaxTreeDepth;
