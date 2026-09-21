@@ -155,6 +155,38 @@ class Referee:
             self.walls_left[player] -= 1
         self.side_to_move ^= 1
 
+    def state_key(self) -> tuple:
+        """Return the complete rule state used for repetition adjudication."""
+        return (
+            self.side_to_move,
+            tuple(self.pawns),
+            tuple(self.walls_left),
+            tuple(sorted(self.horizontal)),
+            tuple(sorted(self.vertical)),
+        )
+
+
+THREEFOLD_REPETITION_COUNT = 3
+
+
+class RepetitionTracker:
+    """Track complete game states and adjudicate the third occurrence as a draw."""
+
+    def __init__(self) -> None:
+        self.visits: dict[tuple, int] = defaultdict(int)
+        self.repeated_states = 0
+        self.max_count = 0
+
+    def observe(self, referee: Referee) -> bool:
+        key = referee.state_key()
+        previous = self.visits[key]
+        if previous:
+            self.repeated_states += 1
+        count = previous + 1
+        self.visits[key] = count
+        self.max_count = max(self.max_count, count)
+        return count >= THREEFOLD_REPETITION_COUNT
+
 
 def _reader(stream, output: "queue.Queue[object]") -> None:
     try:
@@ -412,26 +444,18 @@ def play_game(*, opponent: str, opening_index: int, opening: Sequence[str],
     move_times: list[dict[str, float | int | str]] = []
     clocks = ([int(clock_initial_ms), int(clock_initial_ms)]
               if clock_initial_ms > 0 else None)
-    state_visits = defaultdict(int)
-    repeated_states = 0
-    def count_state():
-        nonlocal repeated_states
-        key = (referee.side_to_move, tuple(referee.pawns), tuple(referee.walls_left),
-               tuple(sorted(referee.horizontal)), tuple(sorted(referee.vertical)))
-        if state_visits[key]:
-            repeated_states += 1
-        state_visits[key] += 1
-    count_state()
+    repetition = RepetitionTracker()
+    repetition_draw = repetition.observe(referee)
     try:
         for move in opening:
             referee.apply(move)
             history.append(move)
-            count_state()
-        if referee.winner is not None:
-            raise IllegalMove("the opening is already terminal")
+            repetition_draw = repetition.observe(referee)
+            if referee.winner is not None or repetition_draw:
+                raise IllegalMove("the opening is already terminal")
         zq = zq_factory()
         other = opponent_factory()
-        while referee.winner is None and len(history) < max_plies:
+        while referee.winner is None and not repetition_draw and len(history) < max_plies:
             side = referee.side_to_move
             player = zq if side == zq_player else other
             name = "zquoridor" if side == zq_player else opponent
@@ -468,17 +492,22 @@ def play_game(*, opponent: str, opening_index: int, opening: Sequence[str],
             move_times.append(timing)
             referee.apply(move)
             history.append(move)
-            count_state()
-        if referee.winner is None:
-            result = 0.5
-            termination = "max_plies"
-        else:
+            if referee.winner is None:
+                repetition_draw = repetition.observe(referee)
+        if referee.winner is not None:
             result = 1.0 if referee.winner == zq_player else 0.0
             termination = "goal"
+        elif repetition_draw:
+            result = 0.5
+            termination = "repetition"
+        else:
+            result = 0.5
+            termination = "max_plies"
         return {
             **base,
             "status": "ok",
-            "repeated_states": repeated_states,
+            "repeated_states": repetition.repeated_states,
+            "repetition_max_count": repetition.max_count,
             "result": result,
             "winner": referee.winner,
             "termination": termination,
@@ -617,6 +646,7 @@ def summarize_pairs(rows: Sequence[dict], *, bootstrap: int, seed: int) -> dict:
     }
     included = [row for colors in grouped.values() if set(colors) == {0, 1} for row in colors.values()]
     report["max_plies_games"] = sum(row.get("termination") == "max_plies" for row in included)
+    report["repetition_games"] = sum(row.get("termination") == "repetition" for row in included)
     report["repeated_states"] = sum(row.get("repeated_states", 0) for row in included)
     report["mean_plies"] = sum(row.get("plies", 0) for row in included) / max(1, len(included))
     if not pair_points:

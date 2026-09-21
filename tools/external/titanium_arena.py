@@ -19,6 +19,11 @@ from dataclasses import dataclass, asdict
 from pathlib import Path
 from typing import List, Optional, Sequence, Tuple
 
+try:
+    from tools.external import local_arena
+except ModuleNotFoundError:  # direct execution from tools/external
+    import local_arena
+
 
 class UCIEngine:
     def __init__(self, argv: Sequence[str], name: str):
@@ -127,6 +132,8 @@ class GameResult:
     both_emptyhand_zq_pawn_moves: int
     first_zero: str
     termination: str
+    repeated_states: int
+    repetition_max_count: int
     moves: List[str]
 
 
@@ -161,18 +168,24 @@ def play_game(
     movetime_ms: int,
     max_plies: int,
 ) -> GameResult:
+    """Legacy Titanium arena using the canonical complete local referee."""
+    referee = local_arena.Referee()
+    repetition = local_arena.RepetitionTracker()
+    repetition_draw = repetition.observe(referee)
+    history: List[str] = []
+
+    for mv in opening:
+        referee.apply(mv)
+        history.append(mv)
+        repetition_draw = repetition.observe(referee)
+        if referee.winner is not None or repetition_draw:
+            raise RuntimeError("opening is already terminal")
+
+    walls_left = list(referee.walls_left)
+    pawn_ranks = [referee.pawns[0][0] + 1, referee.pawns[1][0] + 1]
+
     zq = UCIEngine(zq_cmd, "zquoridor")
     ti = UCIEngine(titanium_cmd, "titanium")
-    history = list(opening)
-    walls_left = [10, 10]
-    pawn_ranks = [1, 9]
-    for ply, mv in enumerate(history):
-        player = ply & 1
-        if is_wall(mv):
-            walls_left[player] -= 1
-        else:
-            pawn_ranks[player] = pawn_rank(mv)
-
     zq_think = ti_think = 0.0
     zq_wall_moves = zq_pawn_moves = 0
     zq_backward = zq_lateral = 0
@@ -182,20 +195,24 @@ def play_game(
     termination = "max_plies"
 
     try:
-        while len(history) < max_plies:
-            player = len(history) & 1
+        while referee.winner is None and not repetition_draw and len(history) < max_plies:
+            player = referee.side_to_move
             engine = zq if player == zq_player else ti
             mv, think_s, _ = engine.bestmove(history, movetime_ms)
             if mv == "(none)":
-                # A no-move response is valid only after a terminal history.
-                termination = "no_move"
-                break
+                raise RuntimeError(f"{engine.name}: returned no move in a non-terminal position")
             if not syntax_ok(mv):
                 raise RuntimeError(f"{engine.name}: invalid move syntax {mv!r}")
 
             before_rank = pawn_ranks[player]
             before_both_empty = walls_left[0] == 0 and walls_left[1] == 0
+
+            # Canonical legality check and state transition.
+            referee.apply(mv)
             history.append(mv)
+            if referee.winner is None:
+                repetition_draw = repetition.observe(referee)
+
             if engine is zq:
                 zq_think += think_s
             else:
@@ -214,7 +231,6 @@ def play_game(
                 pawn_ranks[player] = new_rank
                 if player == zq_player:
                     zq_pawn_moves += 1
-                    forward = (new_rank > before_rank) if player == 0 else (new_rank < before_rank)
                     backward = (new_rank < before_rank) if player == 0 else (new_rank > before_rank)
                     lateral = new_rank == before_rank
                     if backward:
@@ -226,9 +242,12 @@ def play_game(
                         if backward:
                             zq_emptyhand_backward += 1
 
-            if reached_goal(player, mv):
-                winner = player
+            if referee.winner is not None:
+                winner = referee.winner
                 termination = "goal"
+                break
+            if repetition_draw:
+                termination = "repetition"
                 break
     finally:
         zq.close()
@@ -253,9 +272,10 @@ def play_game(
         both_emptyhand_zq_pawn_moves=both_emptyhand_zq_pawns,
         first_zero=first_zero or "neither",
         termination=termination,
+        repeated_states=repetition.repeated_states,
+        repetition_max_count=repetition.max_count,
         moves=history,
     )
-
 
 def elo_from_score(p: float) -> float:
     p = min(1.0 - 1e-9, max(1e-9, p))
@@ -330,6 +350,8 @@ def summarize(results: Sequence[GameResult]) -> dict:
         "zq_both_emptyhand_pawn_moves": empty_pawns,
         "by_color": by_color,
         "by_first_zero_walls": first_zero,
+        "repetition_games": sum(g.termination == "repetition" for g in results),
+        "repeated_states": sum(g.repeated_states for g in results),
         "terminations": {k: sum(g.termination == k for g in results) for k in sorted({g.termination for g in results})},
     }
 
