@@ -52,7 +52,7 @@ int g_lastEngineScore = 0;   // avaliação (SearchStats::score) do último qr_e
 RepetitionTable g_reptbl;
 
 // ---------------------------------------------------------------------------
-// P6 (gui-premium.md): full game history plus a navigation cursor.
+// P6 (docs/plan.md): full game history plus a navigation cursor.
 //
 // Invariant: g_histStates has one entry more than g_histMoves, entry k of
 // g_histStates is the position after k plies, and g_state always equals
@@ -495,7 +495,7 @@ int qr_is_draw() {
 }
 
 // =========================================================================
-// P6 (gui-premium.md) -- history navigation, scratch analysis, editor and
+// P6 (docs/plan.md) -- history navigation, scratch analysis, editor and
 // QFEN serialization. English comments per AGENTS.md; the legacy surface
 // above keeps its original comments.
 // =========================================================================
