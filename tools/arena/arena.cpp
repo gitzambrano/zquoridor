@@ -560,6 +560,12 @@ int playArenaGame(int engine1PlayerIdx, int timeMs, int randomPlies, std::mt1993
     qr_e2::State s2 = qr_e2::initialState();
     long long clocksMs[2] = {tcBaseMs, tcBaseMs};
 
+    // One canonical game history for adjudication plus one history per search.
+    // All three include the random opening from the initial position.
+    qr_e1::RepetitionTable realHistory;
+    qr_e1::RepetitionTable hist1;
+    qr_e2::RepetitionTable hist2;
+
     // Abertura aleatÃ³ria: gerada a partir do ref1 (fonte-da-verdade das
     // regras) e replicada lance-a-lance no estado do ref2.
     for (int ply = 0; ply < randomPlies; ply++) {
@@ -568,11 +574,12 @@ int playArenaGame(int engine1PlayerIdx, int timeMs, int randomPlies, std::mt1993
         if (moves.empty()) break;
         std::uniform_int_distribution<size_t> pick(0, moves.size() - 1);
         qr_e1::Move m = moves[pick(rng)];
+        reptblPushCompat(realHistory, s1.hash, m.isWall, 0);
+        reptblPushCompat(hist1, s1.hash, m.isWall, 0);
+        reptblPushCompat(hist2, s2.hash, m.isWall, 0);
         s1 = qr_e1::applyMove(s1, m);
         s2 = qr_e2::applyMove(s2, toE2(m));
     }
-
-    qr_e1::RepetitionTable realHistory;
 
     struct MoveRecord {
         qr_e1::State state;
@@ -585,8 +592,6 @@ int playArenaGame(int engine1PlayerIdx, int timeMs, int randomPlies, std::mt1993
     int winnerPlayer = -1;
     bool clockForfeit = false;
     int maxPlies = 300;
-    qr_e1::RepetitionTable hist1;
-    qr_e2::RepetitionTable hist2;
 
     for (int ply = 0; ply < maxPlies; ply++) {
         int w = qr_e1::winner(s1);
