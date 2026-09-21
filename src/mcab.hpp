@@ -259,6 +259,11 @@ struct McabParams {
     // Experimental DAG mode. Nodes at the same root-relative ply that
     // represent the same complete state share one MCAB node.
     bool transpositionGraph = true;
+    // MCGS-style graph semantics: allow exact transpositions across plies and
+    // back them up with node-own-frame Q-correction. Off keeps the promoted
+    // same-ply DAG byte-for-byte in behavior.
+    bool graphQCorrection = true;
+    double graphLeafMix = 0.75;
     bool clearTTPerMove = false;
     // Separate bounded policy/value inference caches; experimental opt-in.
     bool evalCache = true;
@@ -365,6 +370,7 @@ struct McabStats {
     long long evalCacheValueEvictions = 0;
     long long transpositionHits = 0;
     long long transpositionLookups = 0;
+    long long graphCycleStops = 0;
     bool adaptiveTimeStop = false;
     int adaptiveTargetMs = 0;
     long long adaptiveLeaderChanges = 0;
@@ -592,6 +598,8 @@ struct MCABNode {
     size_t nextCandidate = 0;
     int totalN = 0;
     int graphDepth = -1;           // root-relative ply for safe DAG sharing
+    uint32_t graphN = 0;           // MCGS node visits, own side-to-move frame
+    double graphW = 0.0;           // MCGS node value sum, own frame
     bool noised = false;          // ruído de Dirichlet já aplicado a `P` (Seção 9) -- evita
                                   // recompor o ruído sobre si mesmo quando este nó vira raiz
                                   // reaproveitada de novo (Seção 8).
@@ -1051,6 +1059,12 @@ private:
         }
     }
 
+    bool graphQCorrectionActive() const {
+        return params.transpositionGraph && params.graphQCorrection &&
+               params.backupMode == BackupMode::AvgBlend &&
+               params.leafDepth == 0 && !endgameLeafActive;
+    }
+
     int findGraphTransposition(const StateT& state, int depth, McabStats& mstats) const {
         if (!params.transpositionGraph) return -1;
         uint64_t key = mcabGraphKey(state, 0);
@@ -1061,12 +1075,20 @@ private:
             int32_t idx = it->second;
             if (idx < 0 || idx >= (int32_t)pool.size()) continue;
             const NodeT& candidate = pool[(size_t)idx];
-            if (candidate.graphDepth != depth) continue;
+            // Production DAG shares only same-ply states. Q-corrected MCGS is
+            // path-safe instead, so it may merge the same position at any ply.
+            if (!graphQCorrectionActive() && candidate.graphDepth != depth) continue;
             if (!mcabGraphStateEqual(candidate.state, state, 0)) continue;
             ++mstats.transpositionHits;
             return idx;
         }
         return -1;
+    }
+
+    static bool pathContainsNode(const std::vector<PathEdge>& path, int nodeIdx) {
+        for (const auto& pe : path)
+            if (pe.nodeIdx == nodeIdx) return true;
+        return false;
     }
 
 
@@ -1586,7 +1608,8 @@ private:
 
             if (node.terminal) {
                 double leafQ = scoreToQ(node.terminalScore, params.scoreScale);
-                backup(path, leafQ, mstats);
+                if (graphQCorrectionActive()) backupGraph(path, curIdx, leafQ, mstats);
+                else backup(path, leafQ, mstats);
                 return;
             }
 
@@ -1615,7 +1638,8 @@ private:
                                         ? pool[0].totalN
                                         : pool[path.back().nodeIdx].totalN;
                 double leafQ = evaluateLeaf(engine, pool[curIdx], depth, branchVisits, stats, mstats);
-                backup(path, leafQ, mstats);
+                if (graphQCorrectionActive()) backupGraph(path, curIdx, leafQ, mstats);
+                else backup(path, leafQ, mstats);
                 return;
             }
 
@@ -1624,7 +1648,8 @@ private:
                 // Nó expandido sem lances -- não deveria ocorrer em
                 // Quoridor não-terminal, mas não crasha: trata como
                 // neutro.
-                backup(path, 0.5, mstats);
+                if (graphQCorrectionActive()) backupGraph(path, curIdx, 0.5, mstats);
+                else backup(path, 0.5, mstats);
                 return;
             }
             path.push_back({curIdx, e});
@@ -1640,6 +1665,15 @@ private:
                 if (childIdx < 0)
                     childIdx = createChild(childState, depth + 1);
                 pool[curIdx].child[e] = childIdx;  // reindexado -- `node` pode ter sido invalidada
+            }
+
+            // Cross-ply MCGS permits global cycles, but never follows one on
+            // the current descent. Score that refused edge as draw-ish and
+            // back up without updating the repeated node twice.
+            if (graphQCorrectionActive() && pathContainsNode(path, childIdx)) {
+                ++mstats.graphCycleStops;
+                backupGraphCycle(path, mstats);
+                return;
             }
 
             makeChildAccPair(mcabAccStack[depth], mcabAccStack[depth + 1], beforeState, mv,
@@ -1757,6 +1791,67 @@ private:
     // the actual minimax backup, rather than taking a max over unrelated
     // leaf samples on the same edge. AvgBlend keeps the standard Monte Carlo
     // sum, so Q=W/N is the mean of all visits.
+    void backupGraph(const std::vector<PathEdge>& path, int leafIdx,
+                     double leafQ, McabStats& mstats) {
+        double v = leafQ;
+        double raw = leafQ;
+        int childIdx = leafIdx;
+        for (int i = (int)path.size() - 1; i >= 0; --i) {
+            NodeT& child = pool[(size_t)childIdx];
+            child.graphN += 1;
+            child.graphW += v;
+            const double mean = child.graphW / (double)child.graphN;
+            const double upChild = params.graphLeafMix * raw +
+                                   (1.0 - params.graphLeafMix) * mean;
+            NodeT& parent = pool[(size_t)path[(size_t)i].nodeIdx];
+            const int e = path[(size_t)i].edgeIdx;
+            const double parentV = 1.0 - upChild;
+            parent.N[(size_t)e] += 1.f;
+            parent.W[(size_t)e] += (float)parentV;
+            parent.totalN += 1;
+            v = parentV;
+            raw = 1.0 - raw;
+            childIdx = path[(size_t)i].nodeIdx;
+        }
+        NodeT& root = pool[(size_t)childIdx];
+        root.graphN += 1;
+        root.graphW += v;
+        mstats.simulations++;
+    }
+
+    void backupGraphCycle(const std::vector<PathEdge>& path, McabStats& mstats) {
+        assert(!path.empty());
+        const PathEdge last = path.back();
+        NodeT& current = pool[(size_t)last.nodeIdx];
+        current.N[(size_t)last.edgeIdx] += 1.f;
+        current.W[(size_t)last.edgeIdx] += 0.5f;
+        current.totalN += 1;
+
+        double v = 0.5, raw = 0.5;
+        int childIdx = last.nodeIdx;
+        for (int i = (int)path.size() - 2; i >= 0; --i) {
+            NodeT& child = pool[(size_t)childIdx];
+            child.graphN += 1;
+            child.graphW += v;
+            const double mean = child.graphW / (double)child.graphN;
+            const double upChild = params.graphLeafMix * raw +
+                                   (1.0 - params.graphLeafMix) * mean;
+            NodeT& parent = pool[(size_t)path[(size_t)i].nodeIdx];
+            const int e = path[(size_t)i].edgeIdx;
+            const double parentV = 1.0 - upChild;
+            parent.N[(size_t)e] += 1.f;
+            parent.W[(size_t)e] += (float)parentV;
+            parent.totalN += 1;
+            v = parentV;
+            raw = 1.0 - raw;
+            childIdx = path[(size_t)i].nodeIdx;
+        }
+        NodeT& root = pool[(size_t)childIdx];
+        root.graphN += 1;
+        root.graphW += v;
+        mstats.simulations++;
+    }
+
     void backup(const std::vector<PathEdge>& path, double leafQ, McabStats& mstats) {
         double v = leafQ;
         for (int i = (int)path.size() - 1; i >= 0; i--) {
