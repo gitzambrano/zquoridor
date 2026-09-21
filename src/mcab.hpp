@@ -264,6 +264,13 @@ struct McabParams {
     // same-ply DAG byte-for-byte in behavior.
     bool graphQCorrection = true;
     double graphLeafMix = 0.75;
+    // Root-only conversion guard. Interior MCGS backups remain unchanged.
+    // Repetition remains available as a defensive resource: production only
+    // leaves a repeated real-game state when the repeating move itself is
+    // above draw and a non-repeating alternative is within 0.01 Q.
+    bool graphRootRepeatEscape = true;
+    double graphRepeatEscapeMinQ = 0.50;
+    double graphRepeatEscapeMaxQLoss = 0.01;
     bool clearTTPerMove = false;
     // Separate bounded policy/value inference caches; experimental opt-in.
     bool evalCache = true;
@@ -548,6 +555,14 @@ inline auto mcabRankRootMoves(Eng& e, const StateT& s, int depth, int budgetMs,
 template <typename Eng, typename StateT, typename MoveT, typename StatsT>
 inline void mcabRankRootMoves(Eng&, const StateT&, int, int, StatsT&,
                                std::vector<std::pair<int, MoveT>>&, ...) {}
+
+template <typename RepTbl>
+inline auto mcabRepeatsRealHistory(const RepTbl& rep, uint64_t hash, int)
+    -> decltype(rep.repeatsRealGameHistory(hash), bool()) {
+    return rep.repeatsRealGameHistory(hash);
+}
+template <typename RepTbl>
+inline bool mcabRepeatsRealHistory(const RepTbl&, uint64_t, ...) { return false; }
 
 template <typename MoveT, typename StateT, typename MoveListT>
 inline auto mcabEnumerateCandidates(const StateT& s, int side, MoveListT& out, int)
@@ -1885,23 +1900,47 @@ private:
         if (nm == 0) return MoveT{};
 
         auto qOf = [&](size_t i) { return r.N[i] > 0.f ? edgeQ(r, i) : -1.0; };
-
-        size_t best = 0;
-        for (size_t i = 1; i < nm; i++) {
-            bool better;
+        auto betterByMode = [&](size_t a, size_t b) {
             switch (params.rootSelectMode) {
                 case RootSelectMode::MaxQ:
-                    better = qOf(i) > qOf(best);
-                    break;
+                    return qOf(a) > qOf(b);
                 case RootSelectMode::MaxVisitsThenQ:
-                    better = (r.N[i] != r.N[best]) ? (r.N[i] > r.N[best]) : (qOf(i) > qOf(best));
-                    break;
+                    return (r.N[a] != r.N[b]) ? (r.N[a] > r.N[b]) : (qOf(a) > qOf(b));
                 case RootSelectMode::MaxVisits:
                 default:
-                    better = r.N[i] > r.N[best];
-                    break;
+                    return r.N[a] > r.N[b];
             }
-            if (better) best = i;
+        };
+        auto repeatsHistory = [&](size_t i) {
+            if (!params.graphRootRepeatEscape) return false;
+            StateT child = applyMove(r.state, r.moves[i]);
+            uint64_t h = mcabStateKey(child, 0);
+            return h != 0 && mcabRepeatsRealHistory(localRepTbl, h, 0);
+        };
+
+        size_t best = 0;
+        for (size_t i = 1; i < nm; ++i)
+            if (betterByMode(i, best)) best = i;
+
+        if (params.graphRootRepeatEscape && repeatsHistory(best)) {
+            const double bestQ = qOf(best);
+
+            // Repetition is a legitimate defensive resource. If the engine
+            // does not already evaluate the repeating move above draw-ish,
+            // preserve it instead of forcing a potentially losing conversion.
+            if (bestQ <= params.graphRepeatEscapeMinQ)
+                return r.moves[best];
+
+            const double floorQ =
+                bestQ - std::max(0.0, params.graphRepeatEscapeMaxQLoss);
+            int escape = -1;
+            for (size_t i = 0; i < nm; ++i) {
+                if (i == best || r.N[i] <= 0.f || repeatsHistory(i) || qOf(i) < floorQ)
+                    continue;
+                if (escape < 0 || betterByMode(i, (size_t)escape))
+                    escape = (int)i;
+            }
+            if (escape >= 0) best = (size_t)escape;
         }
         return r.moves[best];
     }
