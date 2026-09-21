@@ -45,7 +45,7 @@ bool g_mcabWanted = mcab::McabParams{}.enabled;
 // alpha-beta puro, e a GUI costuma pedir buscas bem mais curtas que isso
 // -- abaixo de algum ponto (não medido) a troca inverte e o AB puro volta
 // a ser mais forte. Por isso `qr_set_mcab_enabled` existe e é exposto ao
-// JS: dá para desligar por partida sem recompilar. Ver status.md.
+// JS: dá para desligar por partida sem recompilar. Ver docs/status.md.
 std::vector<Move> g_moves;
 Move g_lastEngineMove = Move::pawn(0);
 int g_lastEngineScore = 0;   // avaliação (SearchStats::score) do último qr_engine_move
