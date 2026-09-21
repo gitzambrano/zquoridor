@@ -364,6 +364,29 @@ class UciPlayer(LinePlayer):
             elif line.startswith("bestmove "):
                 return line.split()[1], time.monotonic() - started, info
 
+    def ponder(self, history: Sequence[str], *, budget: int,
+               timeout_s: float) -> tuple[float, list[str]]:
+        """Spend opponent-clock compute on the current opponent-to-move root."""
+        if budget <= 0:
+            return 0.0, []
+        command = "position startpos"
+        if history:
+            command += " moves " + " ".join(history)
+        self._send(command)
+        started = time.monotonic()
+        self._send(f"ponder movetime {budget}")
+        info: list[str] = []
+        deadline = started + max(timeout_s, budget / 1000.0 + 5.0)
+        while True:
+            line = self._read(max(0.001, deadline - time.monotonic()))
+            if "error" in line.lower():
+                raise EngineError(f"{self.name}: {line}")
+            if line.startswith("info "):
+                info.append(line)
+            elif line.startswith("ponderok"):
+                info.append(line)
+                return time.monotonic() - started, info
+
 
 class TitaniumPlayer(LinePlayer):
     """Use Titanium's documented native session protocol."""
@@ -427,7 +450,7 @@ def play_game(*, opponent: str, opening_index: int, opening: Sequence[str],
               opponent_factory: Callable[[], LinePlayer], zq_budget: int,
               opponent_budget: int, move_timeout_s: float, max_plies: int,
               run_id: str, clock_initial_ms: int = 0,
-              clock_increment_ms: int = 0) -> dict:
+              clock_increment_ms: int = 0, zq_ponder: bool = False) -> dict:
     """Play one game and return an explicit success or failure record."""
     base = {
         "schema": "zquoridor.local_benchmark.game.v1",
@@ -442,6 +465,8 @@ def play_game(*, opponent: str, opening_index: int, opening: Sequence[str],
     referee = Referee()
     think = {"zquoridor": 0.0, opponent: 0.0}
     move_times: list[dict[str, float | int | str]] = []
+    ponder_s = 0.0
+    ponder_calls = 0
     clocks = ([int(clock_initial_ms), int(clock_initial_ms)]
               if clock_initial_ms > 0 else None)
     repetition = RepetitionTracker()
@@ -462,14 +487,14 @@ def play_game(*, opponent: str, opening_index: int, opening: Sequence[str],
             budget = zq_budget if side == zq_player else opponent_budget
             clock_before = None
             if clocks is None:
-                move, elapsed, _ = player.bestmove(
+                move, elapsed, move_info = player.bestmove(
                     history, budget=budget, timeout_s=move_timeout_s
                 )
             else:
                 if not isinstance(player, UciPlayer):
                     raise EngineError("game clock mode requires UCI players")
                 clock_before = clocks[side]
-                move, elapsed, _ = player.bestmove_clock(
+                move, elapsed, move_info = player.bestmove_clock(
                     history,
                     white_ms=clocks[0],
                     black_ms=clocks[1],
@@ -485,10 +510,31 @@ def play_game(*, opponent: str, opening_index: int, opening: Sequence[str],
             think[name] += elapsed
             timing = {"player": name, "budget_ms": budget,
                       "elapsed_ms": elapsed * 1000.0}
+            if move_info:
+                timing["search_last"] = move_info[-1]
             if clocks is not None:
                 timing.update({"clock_before_ms": clock_before,
                                "clock_after_ms": clocks[side],
                                "increment_ms": int(clock_increment_ms)})
+            if side != zq_player and zq_ponder:
+                if not isinstance(zq, UciPlayer):
+                    raise EngineError("zq pondering requires a UCI candidate")
+                # Run after the opponent has finished, but on the position from
+                # BEFORE its move and without passing the move to the candidate.
+                # This serializes the two searches for deterministic CPU fairness
+                # while granting exactly the compute time the opponent consumed.
+                ponder_budget_ms = max(1, math.ceil(elapsed * 1000.0))
+                p_elapsed, p_info = zq.ponder(
+                    history,
+                    budget=ponder_budget_ms,
+                    timeout_s=move_timeout_s,
+                )
+                ponder_s += p_elapsed
+                ponder_calls += 1
+                timing["zq_ponder_budget_ms"] = ponder_budget_ms
+                timing["zq_ponder_elapsed_ms"] = p_elapsed * 1000.0
+                if p_info:
+                    timing["zq_ponder_last"] = p_info[-1]
             move_times.append(timing)
             referee.apply(move)
             history.append(move)
@@ -514,6 +560,8 @@ def play_game(*, opponent: str, opening_index: int, opening: Sequence[str],
             "plies": len(history),
             "moves": history,
             "think_s": think,
+            "ponder_s": ponder_s,
+            "ponder_calls": ponder_calls,
             "move_times": move_times,
             "final_clocks_ms": clocks,
         }
@@ -529,6 +577,8 @@ def play_game(*, opponent: str, opening_index: int, opening: Sequence[str],
             "plies": len(history),
             "moves": history,
             "think_s": think,
+            "ponder_s": ponder_s,
+            "ponder_calls": ponder_calls,
             "move_times": move_times,
             "final_clocks_ms": clocks,
         }
