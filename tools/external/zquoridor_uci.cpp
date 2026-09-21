@@ -219,6 +219,20 @@ int main(int argc, char** argv) {
             std::cout << "uciok\n" << std::flush;
         } else if (cmd == "isready") {
             std::cout << "readyok\n" << std::flush;
+        } else if (cmd == "help") {
+            std::cout
+                << "Zquoridor text protocol (UCI-style)\n"
+                << "  uci\n"
+                << "  isready\n"
+                << "  ucinewgame\n"
+                << "  position startpos [moves <move> ...]\n"
+                << "  go movetime <ms>\n"
+                << "  go wtime <ms> btime <ms> [winc <ms>] [binc <ms>] [movestogo <n>]\n"
+                << "  ponder movetime <ms>\n"
+                << "  help\n"
+                << "  quit\n"
+                << "Moves use Quoridor coordinates such as e2, d4h, or d4v.\n"
+                << std::flush;
         } else if (cmd == "ucinewgame") {
             state = qr::initialState();
             history = qr::RepetitionTable{};
@@ -258,7 +272,7 @@ int main(int argc, char** argv) {
                 continue;
             }
 
-            // Experimental opponent-root pondering. The caller must set the
+            // Opponent-root pondering. The caller must set the
             // position to the state BEFORE the opponent move, then grant only
             // time the opponent actually consumed. We search that root without
             // changing game state or emitting a move. McabRunner keeps the
