@@ -1,44 +1,52 @@
-// worker.js -- analysis worker for the Zquoridor premium GUI (plan sections
-// 12 / 5.6). Owns a second WASM module instance so multi-line analysis and
-// the infinite loop never block the main thread.
+// worker.js -- background engine and analysis worker for the Zquoridor GUI.
 //
-// Protocol (all requests self-contained -- the worker owns no game state):
-//   main -> worker : { id, cmd: 'analyze',  qfen?, moves?, depth, timeMs, lines }
+// The worker owns one WASM module instance. Game requests keep a persistent
+// live position so MCAB can reuse its tree between moves. After an engine move,
+// short ponder slices search the opponent-to-move root while the human thinks.
+// Each slice yields back to the worker event loop, so an incoming move waits at
+// most one short slice and the browser UI remains on the main thread.
+//
+// Protocol:
+//   main -> worker : { id, cmd: 'analyze', qfen?, moves?, depth, timeMs, lines }
 //                  | { id, cmd: 'bestmove', moves?, depth, timeMs }
 //   worker -> main : { type: 'ready' } | { id, type: 'result', ... }
 //                  | { id, type: 'error', msg }
-//
-// An 'analyze' request replays the game line onto the scratch position (QFEN
-// root optional, then packed moves exactly like qr_ply_* exports them) and
-// runs the same qr_analyze the main thread would run.
-//
-// A 'bestmove' request replays the line onto the worker's own LIVE game and
-// runs qr_engine_move, which is the hybrid MCTS plus alpha-beta search. The
-// analysis path cannot serve this: qr_analyze runs pure alpha-beta on the
-// scratch position, so it would silently change how the engine plays. The
-// replay also rebuilds the repetition table, so contempt behaves correctly.
-// Results are plain data.
 'use strict';
 
 importScripts('zquoridor.js');
 
 let M = null;
-const F = {};
+let liveMoves = [];
+let ponderTimer = null;
+let ponderEpoch = 0;
+let ponderSpentMs = 0;
+
+const PONDER_CHUNK_MS = 24;
+const PONDER_MAX_MS = 1200;
 
 function readCStr(buf) {
   const u8 = M.HEAPU8; let s = '';
-  for (let i = 0; i < 640; i++) { const b = u8[buf + i]; if (!b) break; s += String.fromCharCode(b); }
+  for (let i = 0; i < 640; i++) {
+    const b = u8[buf + i];
+    if (!b) break;
+    s += String.fromCharCode(b);
+  }
   return s;
 }
+
 function lastErr() {
   const buf = M._malloc(640);
-  try { M._qr_last_error(buf, 640); return readCStr(buf); } finally { M._free(buf); }
+  try { M._qr_last_error(buf, 640); return readCStr(buf); }
+  finally { M._free(buf); }
 }
+
 function withCStr(str, fn) {
   const bytes = new TextEncoder().encode(String(str) + '\0');
   const p = M._malloc(bytes.length);
-  try { M.HEAPU8.set(bytes, p); return fn(p); } finally { M._free(p); }
+  try { M.HEAPU8.set(bytes, p); return fn(p); }
+  finally { M._free(p); }
 }
+
 function importQfenRoot(qfen) {
   const bytes = new TextEncoder().encode(String(qfen) + '\0');
   const p = M._malloc(bytes.length);
@@ -47,6 +55,7 @@ function importQfenRoot(qfen) {
   finally { M._free(p); }
   return code === 0 ? null : ('root QFEN rejected: ' + lastErr());
 }
+
 function replayIntoScratch(qfen, moves) {
   M._qr_scratch_reset();
   if (qfen) {
@@ -55,48 +64,136 @@ function replayIntoScratch(qfen, moves) {
   }
   for (const packed of moves || []) {
     const isWall = (packed >> 24) & 1;
-    const a = (packed >> 16) & 255, b = (packed >> 8) & 255, c = packed & 255;
+    const a = (packed >> 16) & 255;
+    const b = (packed >> 8) & 255;
+    const c = packed & 255;
     const ok = isWall ? M._qr_scr_apply_wall(a, b, c) : M._qr_scr_apply_pawn(a);
     if (!ok) return 'replay failed at a recorded move';
   }
   return null;
 }
 
-// Replays the recorded line onto the worker's own live game. The worker never
-// shares state with the main thread, so a full replay per request is the only
-// way to keep the two positions identical.
-function replayIntoLive(moves) {
-  M._qr_new_game();
-  for (const packed of moves || []) {
-    const isWall = (packed >> 24) & 1;
-    const a = (packed >> 16) & 255, b = (packed >> 8) & 255, c = packed & 255;
-    const ok = isWall ? M._qr_apply_wall_move(a, b, c) : M._qr_apply_pawn_move(a);
-    if (!ok) return 'replay failed at a recorded move';
+function applyPackedLive(packed) {
+  const isWall = (packed >> 24) & 1;
+  const a = (packed >> 16) & 255;
+  const b = (packed >> 8) & 255;
+  const c = packed & 255;
+  return isWall ? M._qr_apply_wall_move(a, b, c) : M._qr_apply_pawn_move(a);
+}
+
+// Keep the live game when the requested history extends the current one.
+// A takeback, a new game, or any divergent history resets the module and tree.
+function syncIntoLive(moves) {
+  const target = Array.from(moves || [], x => x | 0);
+  const extendsCurrent =
+    liveMoves.length <= target.length &&
+    liveMoves.every((move, i) => move === target[i]);
+
+  if (!extendsCurrent) {
+    M._qr_new_game();
+    liveMoves = [];
+  }
+
+  for (let i = liveMoves.length; i < target.length; i++) {
+    if (!applyPackedLive(target[i])) return 'replay failed at a recorded move';
+    liveMoves.push(target[i]);
   }
   return null;
 }
 
+function cancelPonder() {
+  ponderEpoch++;
+  ponderSpentMs = 0;
+  if (ponderTimer !== null) {
+    clearTimeout(ponderTimer);
+    ponderTimer = null;
+  }
+}
+
+function startPonder() {
+  if (!M || typeof M._qr_engine_ponder !== 'function') return;
+  if (typeof M._qr_mcab_active === 'function' && !M._qr_mcab_active()) return;
+
+  const epoch = ++ponderEpoch;
+  ponderSpentMs = 0;
+
+  const step = () => {
+    ponderTimer = null;
+    if (!M || epoch !== ponderEpoch || ponderSpentMs >= PONDER_MAX_MS) return;
+
+    const slice = Math.max(1, Math.min(PONDER_CHUNK_MS,
+      Math.ceil(PONDER_MAX_MS - ponderSpentMs)));
+    const t0 = performance.now();
+    try {
+      M._qr_engine_ponder(24, slice);
+    } catch (e) {
+      return;
+    }
+    ponderSpentMs += performance.now() - t0;
+
+    if (epoch === ponderEpoch && ponderSpentMs < PONDER_MAX_MS) {
+      ponderTimer = setTimeout(step, 0);
+    }
+  };
+
+  ponderTimer = setTimeout(step, 0);
+}
+
 function handleBestMove(req) {
-  const err = replayIntoLive(req.moves);
-  if (err) { postMessage({ id: req.id, type: 'error', msg: err }); return; }
+  const err = syncIntoLive(req.moves);
+  if (err) {
+    postMessage({ id: req.id, type: 'error', msg: err });
+    return;
+  }
+
   const t0 = performance.now();
-  const ok = M._qr_engine_move(Math.max(1, req.depth | 0), Math.max(20, req.timeMs | 0));
+  const ok = M._qr_engine_move(Math.max(1, req.depth | 0),
+                               Math.max(20, req.timeMs | 0));
   const ms = performance.now() - t0;
-  if (!ok) { postMessage({ id: req.id, type: 'error', msg: 'engine returned no move' }); return; }
+  if (!ok) {
+    postMessage({ id: req.id, type: 'error', msg: 'engine returned no move' });
+    return;
+  }
+
   const isWall = M._qr_last_move_is_wall();
   const packed = (isWall ? (1 << 24) : 0) |
-                 (M._qr_last_move_a() << 16) | (M._qr_last_move_b() << 8) | M._qr_last_move_c();
-  postMessage({ id: req.id, type: 'result', move: packed, score: M._qr_last_move_eval(), ms });
+                 (M._qr_last_move_a() << 16) |
+                 (M._qr_last_move_b() << 8) |
+                 M._qr_last_move_c();
+  liveMoves.push(packed);
+  postMessage({ id: req.id, type: 'result',
+                move: packed, score: M._qr_last_move_eval(), ms });
+
+  // The live module now sits at the human-to-move root. Search it in bounded
+  // slices until a new request arrives or the per-turn ponder cap is reached.
+  startPonder();
 }
 
 self.onmessage = ev => {
   const req = ev.data;
-  if (!M) { postMessage({ id: req.id, type: 'error', msg: 'module not ready' }); return; }
+  if (!M) {
+    postMessage({ id: req.id, type: 'error', msg: 'module not ready' });
+    return;
+  }
+
   try {
     if (req.cmd === 'init') return;
-    if (req.cmd === 'bestmove') { handleBestMove(req); return; }
+
+    // Any real request has priority over background pondering. The current
+    // slice may finish first, but it is bounded by PONDER_CHUNK_MS.
+    cancelPonder();
+
+    if (req.cmd === 'bestmove') {
+      handleBestMove(req);
+      return;
+    }
+
     const err = replayIntoScratch(req.qfen, req.moves);
-    if (err) { postMessage({ id: req.id, type: 'error', msg: err }); return; }
+    if (err) {
+      postMessage({ id: req.id, type: 'error', msg: err });
+      return;
+    }
+
     const t0 = performance.now();
     const got = M._qr_analyze(req.depth | 0, Math.max(50, req.timeMs | 0),
                               Math.max(1, Math.min(5, req.lines | 0)));
@@ -118,9 +215,11 @@ self.onmessage = ev => {
 function bootModule(opts) {
   ZquoridorModule(opts || {}).then(m => {
     M = m;
+    liveMoves = [];
     let nnue = false;
     try {
-      nnue = !!withCStr('/data/nnue/nnue_weights_int8.bin', p => m._qr_load_nnue_weights(p));
+      nnue = !!withCStr('/data/nnue/nnue_weights_int8.bin',
+                        p => m._qr_load_nnue_weights(p));
     } catch (e) {}
     postMessage({ type: 'ready', nnue });
   }).catch(e => postMessage({ type: 'fatal', msg: String(e) }));
@@ -131,9 +230,7 @@ if (typeof __STANDALONE_WORKER__ !== 'undefined' && __STANDALONE_WORKER__) {
     if (ev.data && ev.data.cmd === 'init') {
       self.removeEventListener('message', _onInit);
       const args = { wasmBinary: ev.data.wasmBinary };
-      if (ev.data.dataBytes) {
-        args.getPreloadedPackage = () => ev.data.dataBytes;
-      }
+      if (ev.data.dataBytes) args.getPreloadedPackage = () => ev.data.dataBytes;
       bootModule(args);
     }
   });
