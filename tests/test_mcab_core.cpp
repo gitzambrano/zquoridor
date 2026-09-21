@@ -53,6 +53,20 @@ void tryLoadRealWeights() {
 } // namespace
 
 // ---------------------------------------------------------------------
+// Adaptive clock classification: volatile roots get extra time; clearly
+// stable roots may bank time for later moves.
+// ---------------------------------------------------------------------
+void testAdaptiveTimeFactor() {
+    mcab::McabParams p;
+    assert(std::abs(mcab::adaptiveTimeFactor(1.05, 0.00, 0.50, p) - p.adaptiveVolatileFactor) < 1e-12);
+    assert(std::abs(mcab::adaptiveTimeFactor(1.30, 0.01, 0.50, p) - p.adaptiveUncertainFactor) < 1e-12);
+    assert(std::abs(mcab::adaptiveTimeFactor(1.70, 0.01, 0.30, p) - 1.00) < 1e-12);
+    assert(std::abs(mcab::adaptiveTimeFactor(2.20, 0.02, 0.40, p) - p.adaptiveStableFactor) < 1e-12);
+    assert(std::abs(mcab::adaptiveTimeFactor(2.20, -0.02, 0.40, p) - 1.60) < 1e-12);
+    printf("[testAdaptiveTimeFactor] volatile/uncertain/normal/stable classification OK\n");
+}
+
+// ---------------------------------------------------------------------
 // Automatic node guardrail follows move time but preserves the 200 ms era
 // floor. Explicit fixed-node mode remains unchanged.
 // ---------------------------------------------------------------------
@@ -402,6 +416,7 @@ void testProgressiveWidening() {
 
 int main() {
     testScoreToQMatchesWinProb();
+    testAdaptiveTimeFactor();
     testAutomaticNodeBudget();
     testPoolBudget();
     testBackupSignTrivialWin();
