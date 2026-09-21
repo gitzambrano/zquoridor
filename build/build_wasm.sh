@@ -29,7 +29,7 @@ EXPORTED_FUNCS='[
   "_qr_wall_h_bit","_qr_wall_v_bit","_qr_dist_to_goal",
   "_qr_legal_moves_count","_qr_legal_move_is_wall","_qr_legal_move_a",
   "_qr_legal_move_b","_qr_legal_move_c","_qr_apply_pawn_move",
-  "_qr_apply_wall_move","_qr_engine_move","_qr_last_move_is_wall",
+  "_qr_apply_wall_move","_qr_engine_move","_qr_engine_ponder","_qr_last_move_is_wall",
   "_qr_last_move_a","_qr_last_move_b","_qr_last_move_c",
   "_qr_last_move_eval","_qr_is_draw",
   "_qr_load_nnue_weights","_qr_set_eval_heuristic","_qr_eval_mode_is_nnue",
