@@ -8,6 +8,28 @@ relearn by experiment.
 
 ## 1. Production Status
 
+### Version 2.00 release state — 2026-09-21
+
+- **Search**: production hybrid PUCT/MCGS with alpha-beta support, graph
+  transpositions, Q-corrected cross-ply sharing, persistent tree reuse,
+  bounded caches, root repetition escape, and adaptive real-clock budgeting.
+- **Pondering**: opponent-root pondering is a production feature. A paired
+  120-game fixed-200 ms A/B against the same engine without pondering scored
+  **68.33% (+133.6 Elo)** with a 95% bootstrap score interval of
+  **61.25%–75.42%**. The candidate reused a pondered subtree on **86.8%** of
+  its searches. A separate 100-game-per-configuration Claustrophobia check
+  moved from **51.0%** without pondering to **51.5%** with pondering; that
+  sample establishes no significant external-opponent gain but showed no
+  measured regression. The small 3+2 experiment contained a clock timeout
+  and is not a valid strength measurement.
+- **Browser**: engine play and pondering run in a Web Worker. Pondering is
+  split into short bounded slices so UI work stays on the main browser thread.
+- **Network**: production `multipath_phase:512` at
+  `data/nnue/nnue_weights_int8.bin`: **504 sparse inputs → 512 SCReLU**,
+  WL head `512→32→1`, policy head `512→209`, QAT/int8 inference.
+- **Protocol**: `tools/external/zquoridor_uci.cpp` exposes the UCI-style text
+  protocol plus `ponder movetime <ms>` and an interactive `help` command.
+
 - **Search**: hybrid PUCT MCTS (`src/mcab.hpp`), default in all tools.
   Leaves are direct `nnueEvalInt` (`leafDepth=0`), except in a wall-poor
   endgame: `endgameMoverWallThreshold=0` gives alpha-beta leaves of 2 plies
