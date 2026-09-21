@@ -94,6 +94,8 @@ function bindEngine(m) {
     applyPawn: c('_qr_apply_pawn_move'),
     applyWall: c('_qr_apply_wall_move'),
     engineMove: c('_qr_engine_move'),
+    // Debug/test surface only. Normal play ponders inside the Web Worker.
+    ponder: c('_qr_engine_ponder'),
     lastIsWall: c('_qr_last_move_is_wall'),
     lastA: c('_qr_last_move_a'),
     lastB: c('_qr_last_move_b'),
