@@ -44,10 +44,10 @@ jobs:
             echo "stale documentation path found" >&2
             exit 1
           fi
-          stale_status="$(git grep -n 'status\.md' -- ':!docs/**' || true)"
+          stale_status="$(git grep -n 'status\.md' -- ':!docs/**' | grep -v 'docs/status\.md' || true)"
           if [ -n "$stale_status" ]; then
             echo "$stale_status"
-            echo "status.md references outside docs must use docs/status.md" >&2
+            echo "bare status.md references outside docs must use docs/status.md" >&2
             exit 1
           fi
           git diff --check
