@@ -12,6 +12,8 @@ call "%HERE%build_bench.bat"        || exit /b 1
 call "%HERE%build_tests.bat"        || exit /b 1
 call "%HERE%build_selfplay.bat"     || exit /b 1
 call "%HERE%build_tune_spsa.bat"    || exit /b 1
+call "%HERE%build_arena.bat"        || exit /b 1
+call "%HERE%build_uci.bat"          || exit /b 1
 
 if /I "%~1"=="wasm" (
     call "%HERE%build_wasm.bat" || exit /b 1
