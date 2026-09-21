@@ -269,6 +269,8 @@ static double g_e1McabWideningExponent = mcab::resolve(E1_MCAB_WIDENING_EXPONENT
 static double g_e2McabWideningExponent = mcab::resolve(E2_MCAB_WIDENING_EXPONENT_OVERRIDE, MCAB_PROD.wideningExponent);
 static bool g_e1McabTreeReuse = mcab::resolve(E1_MCAB_TREE_REUSE_OVERRIDE, MCAB_PROD.treeReuse);
 static bool g_e2McabTreeReuse = mcab::resolve(E2_MCAB_TREE_REUSE_OVERRIDE, MCAB_PROD.treeReuse);
+static bool g_e1McabTranspositionGraph = MCAB_PROD.transpositionGraph;
+static bool g_e2McabTranspositionGraph = MCAB_PROD.transpositionGraph;
 static bool g_e1McabClearTTPerMove = mcab::resolve(E1_MCAB_CLEAR_TT_PER_MOVE_OVERRIDE, MCAB_PROD.clearTTPerMove);
 static bool g_e2McabClearTTPerMove = mcab::resolve(E2_MCAB_CLEAR_TT_PER_MOVE_OVERRIDE, MCAB_PROD.clearTTPerMove);
 static bool g_e1McabRootNoiseEnabled = mcab::resolve(E1_MCAB_ROOT_NOISE_OVERRIDE, MCAB_PROD.rootNoiseEnabled);
@@ -479,6 +481,7 @@ int playArenaGame(int engine1PlayerIdx, int timeMs, int randomPlies, std::mt1993
         p1.wideningCoefficient = g_e1McabWideningCoefficient;
         p1.wideningExponent = g_e1McabWideningExponent;
         p1.treeReuse = g_e1McabTreeReuse;
+        p1.transpositionGraph = g_e1McabTranspositionGraph;
         p1.clearTTPerMove = g_e1McabClearTTPerMove;
         p1.rootNoiseEnabled = g_e1McabRootNoiseEnabled;
         p1.rootNoiseAlpha = g_e1McabRootNoiseAlpha;
@@ -509,6 +512,7 @@ int playArenaGame(int engine1PlayerIdx, int timeMs, int randomPlies, std::mt1993
         p2.wideningCoefficient = g_e2McabWideningCoefficient;
         p2.wideningExponent = g_e2McabWideningExponent;
         p2.treeReuse = g_e2McabTreeReuse;
+        p2.transpositionGraph = g_e2McabTranspositionGraph;
         p2.clearTTPerMove = g_e2McabClearTTPerMove;
         p2.rootNoiseEnabled = g_e2McabRootNoiseEnabled;
         p2.rootNoiseAlpha = g_e2McabRootNoiseAlpha;
@@ -758,6 +762,8 @@ int main(int argc, char* argv[]) {
     double e2McabWideningExponent = mcab::resolve(E2_MCAB_WIDENING_EXPONENT_OVERRIDE, MCAB_PROD.wideningExponent);
     bool e1McabTreeReuse = mcab::resolve(E1_MCAB_TREE_REUSE_OVERRIDE, MCAB_PROD.treeReuse);
     bool e2McabTreeReuse = mcab::resolve(E2_MCAB_TREE_REUSE_OVERRIDE, MCAB_PROD.treeReuse);
+    bool e1McabTranspositionGraph = MCAB_PROD.transpositionGraph;
+    bool e2McabTranspositionGraph = MCAB_PROD.transpositionGraph;
     bool e1McabClearTTPerMove = mcab::resolve(E1_MCAB_CLEAR_TT_PER_MOVE_OVERRIDE, MCAB_PROD.clearTTPerMove);
     bool e2McabClearTTPerMove = mcab::resolve(E2_MCAB_CLEAR_TT_PER_MOVE_OVERRIDE, MCAB_PROD.clearTTPerMove);
     int e1McabMaxTreeDepth = mcab::resolve(E1_MCAB_MAX_TREE_DEPTH_OVERRIDE, MCAB_PROD.maxTreeDepth);
@@ -900,6 +906,12 @@ int main(int argc, char* argv[]) {
         else if (std::strcmp(argv[i], "--e2-mcab-root-select") == 0 && i + 1 < argc) e2McabRootSelect = parseRootSelectMode(argv[++i]);
         else if (std::strcmp(argv[i], "--e1-mcab-no-tree-reuse") == 0) e1McabTreeReuse = false;
         else if (std::strcmp(argv[i], "--e2-mcab-no-tree-reuse") == 0) e2McabTreeReuse = false;
+        else if (std::strcmp(argv[i], "--mcab-transposition-graph") == 0) e1McabTranspositionGraph = e2McabTranspositionGraph = true;
+        else if (std::strcmp(argv[i], "--no-mcab-transposition-graph") == 0) e1McabTranspositionGraph = e2McabTranspositionGraph = false;
+        else if (std::strcmp(argv[i], "--e1-mcab-transposition-graph") == 0) e1McabTranspositionGraph = true;
+        else if (std::strcmp(argv[i], "--e2-mcab-transposition-graph") == 0) e2McabTranspositionGraph = true;
+        else if (std::strcmp(argv[i], "--e1-no-mcab-transposition-graph") == 0) e1McabTranspositionGraph = false;
+        else if (std::strcmp(argv[i], "--e2-no-mcab-transposition-graph") == 0) e2McabTranspositionGraph = false;
         else if (std::strcmp(argv[i], "--e1-mcab-clear-tt-per-move") == 0) e1McabClearTTPerMove = true;
         else if (std::strcmp(argv[i], "--e2-mcab-clear-tt-per-move") == 0) e2McabClearTTPerMove = true;
         else if (std::strcmp(argv[i], "--e1-mcab-max-tree-depth") == 0 && i + 1 < argc) e1McabMaxTreeDepth = std::atoi(argv[++i]);
@@ -976,6 +988,8 @@ int main(int argc, char* argv[]) {
     g_e2McabWideningExponent = e2McabWideningExponent;
     g_e1McabTreeReuse = e1McabTreeReuse;
     g_e2McabTreeReuse = e2McabTreeReuse;
+    g_e1McabTranspositionGraph = e1McabTranspositionGraph;
+    g_e2McabTranspositionGraph = e2McabTranspositionGraph;
     g_e1McabClearTTPerMove = e1McabClearTTPerMove;
     g_e2McabClearTTPerMove = e2McabClearTTPerMove;
     g_e1McabMaxTreeDepth = e1McabMaxTreeDepth;
