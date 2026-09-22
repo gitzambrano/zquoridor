@@ -1,7 +1,7 @@
 @echo off
 REM build_bench.bat -- benchmarks de performance (nao fazem parte da
 REM suite de correcao, medem nos/s e profundidade).
-REM Origem dos comandos: readme.md, secao "6. Build & Comandos" ->
+REM Origem dos comandos: README.md, secao "6. Build & Comandos" ->
 REM "Core / benchmarks". -mavx2 -mfma adicionados explicitamente alem
 REM de -march=native porque a maquina alvo tem AVX2 garantido (mesmo
 REM criterio usado no build Windows do Zchezz) -- redundante com
