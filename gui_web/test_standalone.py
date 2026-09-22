@@ -6,7 +6,7 @@ import sys
 import time
 from pathlib import Path
 
-from playwright.sync_api import sync_playwright
+from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeoutError
 
 HERE = Path(__file__).parent
 
@@ -24,9 +24,22 @@ def main():
         # The standalone file:// bundle boots the embedded WASM asynchronously.
         # A fixed delay is racy on CI; wait for the actual engine binding that
         # every interaction below depends on.
-        page.wait_for_function(
-            "() => window.__w && typeof window.__w.applyPawn === 'function'",
-            timeout=15000)
+        try:
+            page.wait_for_function(
+                "() => window.__w && typeof window.__w.applyPawn === 'function'",
+                timeout=15000)
+        except PlaywrightTimeoutError:
+            diag = page.evaluate("""() => ({
+              title: document.title,
+              status: document.getElementById('status')?.textContent || '',
+              moduleType: typeof ZquoridorModule,
+              wasmBytes: typeof __QR_WASM_BYTES__ !== 'undefined' ? __QR_WASM_BYTES__.byteLength : -1,
+              dataBytes: typeof __QR_DATA_BYTES__ !== 'undefined' ? __QR_DATA_BYTES__.byteLength : -1,
+              engineType: typeof window.__w
+            })""")
+            print("STANDALONE BOOT DIAG:", diag)
+            print("STANDALONE PAGE ERRORS:", errors[:10])
+            raise
 
         def check(name, cond):
             if not cond:
