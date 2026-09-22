@@ -10,7 +10,7 @@ artifacts and are deliberately not versioned.
 
 | Area | Current state |
 | --- | --- |
-| Release | Zquoridor 2.00 |
+| Release | Zquoridor 2.01 |
 | Search | Hybrid PUCT/MCGS graph search with alpha-beta support, transpositions, persistent tree reuse, repetition escape, and adaptive time management |
 | Pondering | Opponent-root pondering with subtree reuse; browser work runs in bounded Web Worker slices |
 | NNUE | `multipath_phase:512`: 504 sparse inputs, 512 SCReLU units, WL head `512 → 32 → 1`, policy head `512 → 209`, QAT/int8 |

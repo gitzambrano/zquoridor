@@ -214,7 +214,7 @@ int main(int argc, char** argv) {
         if (cmd.empty()) continue;
 
         if (cmd == "uci") {
-            std::cout << "id name Zquoridor 2.00\n";
+            std::cout << "id name Zquoridor 2.01\n";
             std::cout << "id author gitzambrano\n";
             std::cout << "uciok\n" << std::flush;
         } else if (cmd == "isready") {
