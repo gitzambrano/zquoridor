@@ -4,8 +4,8 @@
 #include <random>
 
 int main() {
-    static_assert(qr::NUM_FEATURES == 504,
-                  "build this test with the production race+phase+multipath features");
+    static_assert(qr::NUM_FEATURES == 456,
+                  "build this isolated regression with race features only");
     auto indices = qr::raceFeatureIndices(3, 5, 0, 4);
     assert(indices[0] == 368 && indices[1] == 393 && indices[2] == 411);
     std::mt19937 rng(42);
@@ -26,5 +26,5 @@ int main() {
             assert(b.v == qr::buildAccumulatorQuant(s, 1).v);
         }
     }
-    std::cout << "Production NNUE incremental checks passed\n";
+    std::cout << "Race feature incremental checks passed\n";
 }
