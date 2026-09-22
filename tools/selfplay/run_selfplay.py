@@ -55,11 +55,9 @@ CHEAP_TIME_MS    = 20
 # --- Modo de geração ---
 # "epsilon"    = modo antigo/original: fases de abertura por epsilon-greedy
 #                (ver OPENING_PLIES*/EPSILON_* abaixo).
-# "montecarlo" = modo novo: amostragem por temperatura (estilo AlphaZero)
-#                sobre a cabeça de política da NNUE, desde o lance 1 (ver
-#                MC_* abaixo). Mais rápido (mais partidas/minuto) porque a
-#                abertura não faz busca nenhuma, só forward pass da política
-#                -- ver nota completa em SelfPlayConfig::mcMode (selfplay.hpp).
+# "montecarlo" = AlphaZero-style temperature sampling over MCAB root visits.
+#                Each temperature ply keeps the normal search; the stored
+#                policy target remains the untempered root-visit distribution.
 # Os dois modos coexistem: os parâmetros de cada um ficam sempre disponíveis
 # abaixo e nenhum apaga o outro -- só o MODE escolhido é passado como flag
 # ativa (--mc-mode) pro binário nesta execução.
@@ -78,8 +76,7 @@ EPSILON_MIDGAME  = 0.01   # prob. de desvio no midgame: escolhe 2º ou 3º melho
                           # -- também usado como ruído residual do modo "montecarlo" após a janela de decaimento (ver MC_TEMP_DECAY_PLIES)
 
 # --- Temperatura Monte Carlo/AlphaZero (modo "montecarlo") ---
-# Softmax(logit da política / temperatura) sobre os lances  legais, em duas
-# fases sucessivas, sem busca nenhuma enquanto alguma delas estiver ativa:
+# Temperature sampling over normal MCAB root visits in two phases:
 #   fase 1 "óbvios"  [0..MC_OBVIOUS_PLIES)                -> temperatura fixa baixa
 #   fase 2 "opening" [MC_OBVIOUS_PLIES..+MC_TEMP_DECAY_PLIES) -> decai linearmente
 #                                                              de MC_TEMP_OPENING a MC_TEMP_END
@@ -88,10 +85,8 @@ EPSILON_MIDGAME  = 0.01   # prob. de desvio no midgame: escolhe 2º ou 3º melho
 MC_OBVIOUS_PLIES    = 6      # nº de lances iniciais (obvios no Quoridor) com temperatura fixa e baixa
 MC_TEMP_OBVIOUS      = 0.4  # temperatura da fase 1 (baixa -> quase argmax, pouca variancia de proposito)
 MC_TEMP_OPENING     = 0.8   # temperatura no inicio da fase 2 (<1 afia -- mais perto do argmax da politica)
-                             # 2026-08-25: era 1.00. Valores >1 achatam a softmax, entao o lance
-                             # amostrado fica em media PIOR que o argmax da propria politica -- e
-                             # esse lance vira o policyTarget gravado (selfplay.hpp:533), treinando
-                             # a cabeca de politica a imitar uma versao degradada de si mesma.
+                             # Values >1 explore plausible root-visit alternatives. The stored
+                             # policy target remains the untempered MCAB visit distribution.
 MC_TEMP_END         = 0.12   # temperatura ao fim da fase 2 (<1 afia -- quase argmax)
 MC_TEMP_DECAY_PLIES = 12     # nº de lances da fase 2 (logo apos MC_OBVIOUS_PLIES) sobre os quais a temperatura decai
  
@@ -324,9 +319,8 @@ def parse_args():
                     help=f"tempo dos plies baratos trajectory-only (padrao: {CHEAP_TIME_MS}ms)")
     p.add_argument("--mode", choices=["epsilon", "montecarlo"], default=MODE,
                     help=f"modo de geracao (padrao: {MODE}). 'epsilon' = fases de abertura "
-                         "epsilon-greedy (comportamento original). 'montecarlo' = amostragem "
-                         "por temperatura estilo AlphaZero sobre a politica da NNUE, desde o "
-                         "lance 1, sem busca na abertura (mais partidas/minuto).")
+                         "epsilon-greedy (comportamento original). 'montecarlo' samples the "
+                         "normal MCAB root-visit distribution with AlphaZero-style temperature.")
     p.add_argument("--opening-plies", type=int, default=OPENING_PLIES1)
     p.add_argument("--epsilon", type=float, default=EPSILON_OPENING1)
     p.add_argument("--opening-plies2", type=int, default=OPENING_PLIES2)

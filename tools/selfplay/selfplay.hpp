@@ -218,12 +218,9 @@ struct SelfPlayConfig {
     // os campos epsilon*/openingRandomPlies* acima seguem valendo quando
     // mcMode==false, que é o default -- nada do comportamento antigo muda).
     //
-    // Ideia (estilo AlphaZero "move temperature", não MCTS de verdade --
-    // este motor é alfa-beta, não tem árvore de visitas pra reamostrar):
-    // em vez de escolher entre "lance da busca" xor "lance uniformemente
-    // aleatório/2º-3º melhor" com uma moeda epsilon, os lances são
-    // sorteados de uma distribuição softmax sobre os logits da cabeça de
-    // política da NNUE (forwardPolicyQuant), em TRÊS fases sucessivas:
+    // AlphaZero-style root-visit temperature. Each temperature ply first
+    // runs the normal MCAB search, then samples its root visit distribution.
+    // The stored policy target remains the raw, untempered root distribution.
     //
     //   1) "óbvios" (ply 0..mcObviousPlies-1): temperatura BAIXA e
     //      constante (mcTemperatureObvious) -- os 2-3 primeiros lances do
@@ -243,19 +240,12 @@ struct SelfPlayConfig {
     //      pós-abertura das duas partidas é gerado do mesmo jeito; só a
     //      ABERTURA muda de mecanismo entre os dois modos.
     //
-    // Por que isso é mais rápido (mais partidas/minuto) que o modo antigo:
-    // a amostragem por temperatura (fases 1 e 2) usa só o forward da
-    // cabeça de política sobre o accumulator QUE JÁ é construído para o
-    // campo evalNNUE (nenhum custo extra de acumulador) -- nenhuma busca
-    // (nem completa nem rasa) acontece nesses lances, ao contrário do modo
-    // antigo, que roda busca rasa depth=2 sobre TODOS os lances legais
-    // sempre que cai no ramo epsilon2/epsilonMidgame por sorte "não
-    // totalmente aleatória". Isso aproxima o custo da abertura ao de um
-    // único forward pass por lance em vez de dezenas de buscas rasas.
+    // Temperature changes only the selected move. Search budget, value
+    // evaluation, and recorded visit counts remain the production settings.
     bool mcMode = false;              // false (default) = modo antigo, epsilon-greedy. true = modo Monte Carlo/temperatura.
     int    mcObviousPlies       = 3;    // fase 1: nº de lances iniciais (a partir do ply 0) com temperatura fixa baixa (lances "óbvios" do Quoridor)
     double mcTemperatureObvious = 0.15; // temperatura da fase 1 (baixa -> quase argmax, pouca variância nos lances óbvios)
-    double mcTemperatureOpening = 1.35; // temperatura no início da fase 2 (ply mcObviousPlies; >1 achata a softmax -> mais uniforme/exploratório que os logits crus)
+    double mcTemperatureOpening = 1.35; // Phase-2 root-visit temperature; >1 adds exploration.
     double mcTemperatureEnd     = 0.12; // temperatura ao final da fase 2 (<1 afia a softmax -> quase argmax)
     int    mcTempDecayPlies     = 20;   // nº de lances da fase 2 (logo após mcObviousPlies) sobre os quais a temperatura decai linearmente de mcTemperatureOpening a mcTemperatureEnd
     // epsilonMidgame (campo antigo, acima) é reaproveitado como ruído
@@ -367,6 +357,43 @@ inline Move sampleMoveByPolicyTemperature(const std::array<float, POLICY_OUT>& p
     return moves[nMoves - 1];  // fallback de arredondamento de ponto flutuante (r ligeiramente > sum)
 }
 
+// Sample a root move from the MCAB visit distribution. The self-play policy
+// target remains the untempered visit distribution stored below.
+template <typename RootNode>
+inline Move sampleMoveByVisitTemperature(const RootNode& root, double temperature,
+                                         std::mt19937_64& rng) {
+    constexpr double MIN_TEMP = 1e-3;
+    const size_t nMoves = std::min(root.moves.size(), root.N.size());
+    if (nMoves == 0) return Move::pawn(0);
+
+    const double inverseTemperature = 1.0 / std::max(temperature, MIN_TEMP);
+    std::array<double, POLICY_OUT> logWeights{};
+    double maxLogWeight = -std::numeric_limits<double>::infinity();
+    for (size_t i = 0; i < nMoves; ++i) {
+        const double visits = static_cast<double>(root.N[i]);
+        if (!(visits > 0.0) || !std::isfinite(visits)) continue;
+        logWeights[i] = std::log(visits) * inverseTemperature;
+        maxLogWeight = std::max(maxLogWeight, logWeights[i]);
+    }
+    if (!std::isfinite(maxLogWeight)) return root.moves[0];
+
+    double sum = 0.0;
+    for (size_t i = 0; i < nMoves; ++i) {
+        const double visits = static_cast<double>(root.N[i]);
+        if (!(visits > 0.0) || !std::isfinite(visits)) continue;
+        logWeights[i] = std::exp(logWeights[i] - maxLogWeight);
+        sum += logWeights[i];
+    }
+    std::uniform_real_distribution<double> pick(0.0, sum);
+    const double target = pick(rng);
+    double cumulative = 0.0;
+    for (size_t i = 0; i < nMoves; ++i) {
+        cumulative += logWeights[i];
+        if (target <= cumulative) return root.moves[i];
+    }
+    return root.moves[nMoves - 1];
+}
+
 // Escolhe o 2º ou 3º melhor lance (empate: 50/50) via busca rasa depth=2
 // sobre todos os lances legais -- mesmo mecanismo usado pelo ramo
 // epsilonMidgame do modo antigo (fatorado aqui pra ser reaproveitado
@@ -476,20 +503,12 @@ inline std::vector<TrainingSample> playOneGame(Negamax& engine0, Negamax& engine
         // ao contrário do antigo searchScore que só existia pra virar alvo
         // auxiliar de treino.
         double evalWhiteProb;
-        // policyOut só é preenchido (forwardPolicyQuant) quando o modo
-        // Monte Carlo de fato precisa dele neste ply -- nos demais casos
-        // (modo antigo, ou MC já além das fases 1+2) o forward extra da
-        // cabeça de política seria custo desperdiçado.
-        std::array<float, POLICY_OUT> policyOut{};
         int mcTemperatureWindow = cfg.mcObviousPlies + cfg.mcTempDecayPlies;
         bool mcTemperaturePly = cfg.mcMode && ply < mcTemperatureWindow;
         {
             AccumulatorQuant accMover = buildAccumulatorQuant(s, s.turn);
             double probMoverWins = (double)nnueWinProbQuant(accMover);
             evalWhiteProb = (s.turn == 0) ? probMoverWins : (1.0 - probMoverWins);
-            if (mcTemperaturePly) {
-                forwardPolicyQuant(accMover, policyOut);
-            }
         }
 
         // Playout-cap bookkeeping. In legacy mode every ply is still
@@ -530,7 +549,13 @@ inline std::vector<TrainingSample> playOneGame(Negamax& engine0, Negamax& engine
                     temperature = cfg.mcTemperatureOpening +
                         frac * (cfg.mcTemperatureEnd - cfg.mcTemperatureOpening);
                 }
-                chosen = sampleMoveByPolicyTemperature(policyOut, moves, s.turn, temperature, rng);
+                // Run the usual MCAB search. Then sample from the root
+                // visits. This matches the AlphaZero self-play convention.
+                chosen = searchedMove(true);
+                const auto* rootNode = mcabRunner.search.rootNodeForInspection();
+                if (rootNode && rootNode->expanded && rootNode->state.hash == s.hash) {
+                    chosen = sampleMoveByVisitTemperature(*rootNode, temperature, rng);
+                }
             } else if (unif(rng) < cfg.epsilonMidgame) {
                 // Mesmo ruído residual do modo antigo, reaproveitado aqui
                 // pra manter alguma variedade depois que a temperatura já

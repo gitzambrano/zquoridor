@@ -1,6 +1,6 @@
 # Zquoridor: project state, results, and roadmap
 
-Last reviewed: 2026-09-21. This is the single canonical project document.
+Last reviewed: 2026-09-22. This is the single canonical project document.
 It answers four questions in order: what is in production, what has already
 been measured, what is running now, and what happens next. Raw datasets,
 self-play shards, logs, opponent checkouts, and transient checkpoints are local
@@ -117,6 +117,12 @@ local `contact-4m-50ms` V3 corpus with the selected executable and weights:
 - default mix: 2,500,000 central states and 1,500,000 broad states;
 - balanced minimum coverage across required opening families;
 - aligned metadata sidecars, manifests, deduplication, and safe resume.
+
+After the corpus reaches 5,000,000 admitted states, the next self-play phase
+uses a low-to-high-to-low temperature schedule over MCAB root visits. The
+generator records the untempered visit distribution as the policy target.
+This keeps search supervision for the policy head while the temperature adds
+plausible opening variation.
 
 The local `progress.json` beside that corpus is the source of truth. Never run
 a second controller against the same output directory.
