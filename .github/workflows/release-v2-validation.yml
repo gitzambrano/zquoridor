@@ -145,8 +145,8 @@ jobs:
             git diff --exit-code --               gui_web/zquoridor.js gui_web/zquoridor.wasm gui_web/zquoridor.data               gui_web/zquoridor.html index.html
           fi
 
-      - name: Commit verified WebAssembly on release branch
-        if: github.ref == 'refs/heads/release/v2.00'
+      - name: Commit verified WebAssembly bundle
+        if: github.ref == 'refs/heads/release/v2.00' || github.ref == 'refs/heads/main'
         shell: bash
         run: |
           set -euo pipefail
@@ -157,8 +157,8 @@ jobs:
           if git diff --cached --quiet; then
             echo "WASM bundle already matches sources."
           else
-            git commit -m "release: rebuild 2.00 WebAssembly"
-            git push origin HEAD:release/v2.00
+            git commit -m "release: rebuild verified 2.00 WebAssembly [skip ci]"
+            git push origin HEAD:"${GITHUB_REF_NAME}"
           fi
 
   tag:
