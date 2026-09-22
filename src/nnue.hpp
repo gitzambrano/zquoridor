@@ -979,7 +979,7 @@ inline bool loadWeightsQuant(const std::string& path) { return weightsQuant().lo
 inline bool nnueWeightsLoaded() { return weightsQuant().loaded; }
 
 // Caminho padrão dos pesos quantizados, relativo à raiz do repositório
-// (mesma convenção usada em readme.md/training/quantize_nnue.py e no
+// (mesma convenção usada em README.md/training/quantize_nnue.py e no
 // nome do arquivo publicado por training/train_nnue.py). Usado por
 // selfplay_main.cpp/arena.cpp/engine_wasm.cpp como default quando o
 // caminho não é passado explicitamente -- NNUE é o default dos
