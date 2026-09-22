@@ -379,7 +379,12 @@ def main():
                     "({flipped: window.__qb.flipped, focus:"
                     " document.activeElement ? document.activeElement.tagName : null,"
                     " over: gameOver, think: engineThinking})"))
-            page.evaluate("window.__qb.flipped=false")
+            # Restore orientation through the production flip path. Directly
+            # mutating QBoard.flipped leaves legalWall in the previous display
+            # coordinate system and creates an impossible internal state.
+            page.evaluate("doFlip()")
+            page.wait_for_timeout(150)
+            check("flip restores board", page.evaluate("window.__qb.flipped") is False)
             page.click("#btnPaths")
             page.wait_for_timeout(150)
             check("paths overlay drawn", page.evaluate(
