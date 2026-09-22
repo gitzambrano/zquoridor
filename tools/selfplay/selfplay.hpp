@@ -76,7 +76,7 @@ struct TrainingSample {
     int8_t   wallsLeftOpp;  // muros restantes do adversário (escalar -- não precisa de espelho)
     // Avaliação da própria NNUE (2026-08, substitui o antigo searchScore
     // heurístico -- ver nota "Avaliação: o que cada estágio usa" em
-    // status.md/CLAUDE.md). uint16_t em [0, EV_SCALE], escala fixa de
+    // docs/status.md/CLAUDE.md). uint16_t em [0, EV_SCALE], escala fixa de
     // EV_SCALE = 65535: 0 = vitória certa das PRETAS, EV_SCALE = vitória
     // certa das BRANCAS -- perspectiva ABSOLUTA de cor (não do mover, ao
     // contrário de gameResult abaixo), pra poder ser lida sem precisar de
