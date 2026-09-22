@@ -1,10 +1,10 @@
-# Zquoridor 2.00
+# Zquoridor 2.02
 
 Zquoridor is a high-performance engine for two-player Quoridor on the standard 9×9 board with 10 walls per player.
 
 The production engine uses **hybrid MCTS with alpha-beta**. A PUCT/MCGS search graph is guided by an NNUE value-and-policy network, while alpha-beta remains integrated for tactical and endgame search and is also available as a standalone search mode. The engine includes transposition reuse, persistent search trees, opponent-root pondering, repetition handling, fast wall-legality checks, a self-play/training toolchain, benchmark arenas, and a WebAssembly browser interface.
 
-**Current release: 2.00**
+**Current release: 2.02**
 
 Play in the browser: https://gitzambrano.github.io/zquoridor/
 
@@ -38,7 +38,7 @@ The main production defaults live in `src/mcab.hpp` and `src/search.hpp`.
 
 ## NNUE
 
-Version 2.00 uses the production **multipath + phase** network:
+Version 2.02 uses the production **multipath + phase** network:
 
 - **504 sparse input features**
 - **512-neuron SCReLU hidden layer**
@@ -241,6 +241,13 @@ Browser tests live in `gui_web/` and use Playwright for real-browser validation.
 | `data/` | Production weights and data assets |
 | `checkpoints/` | Versioned model checkpoints and manifests |
 | `results/` | Recorded experiment and benchmark results |
+
+## Version 2.02 changelog
+
+- Added an exact root win-in-1 fast path: when a legal pawn move wins immediately, the engine returns it before MCAB, alpha-beta endgame work, policy evaluation, or tree expansion.
+- Preserved the exact no-wall pawn-race solver and MCAB equivalence validation paths.
+- Fixed the browser acceptance test so board flip state is restored through the production path before direct wall-gesture testing.
+- Revalidated native search, WebAssembly, browser interaction, and release packaging.
 
 ## Version 2.00 changelog
 
