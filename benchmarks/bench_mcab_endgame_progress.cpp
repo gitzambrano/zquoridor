@@ -6,7 +6,7 @@
 // against 29, 0 wandering positions against 5. Therefore the wandering
 // reported in benchmarks/repro_wander.cpp is NOT a general property of the
 // AvgBlend backup. MinimaxHard also loses the arena badly (0 wins in 60
-// games, approximately -585 Elo at 200ms). Read status.md before you change
+// games, approximately -585 Elo at 200ms). Read docs/status.md before you change
 // McabParams::backupMode.
 //
 // Corpus: random legal playouts from initialState() with a seeded RNG,
