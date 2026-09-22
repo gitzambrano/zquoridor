@@ -6,11 +6,23 @@
 4. Comprehensive statistical breakdown of central vs wall openings and White vs Black performance.
 """
 import argparse
+import json
 import subprocess
 import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+
+# Edit this block for the normal full gate. CLI options override these values.
+CONFIG = {
+    "candidate_exe": None,
+    "candidate_nnue": None,
+    "suite_name": "candidate-suite",
+    "workers": 6,
+    "skip_claustro": False,
+    "skip_titanium": False,
+    "dry_run": True,
+}
 
 
 def run_cmd(cmd: list[str]):
@@ -18,15 +30,27 @@ def run_cmd(cmd: list[str]):
     subprocess.run(cmd, check=True, cwd=ROOT)
 
 
-def main():
+def main(argv=None):
     parser = argparse.ArgumentParser(description="Run complete 600g Claustro + 200g Titanium battery.")
-    parser.add_argument("--candidate-exe", required=True, help="Path to candidate executable")
-    parser.add_argument("--candidate-nnue", required=True, help="Path to candidate quantized weights (.bin)")
-    parser.add_argument("--suite-name", required=True, help="Folder name for benchmark outputs")
-    parser.add_argument("--workers", type=int, default=6, help="Number of concurrent game workers (default: 6)")
-    parser.add_argument("--skip-claustro", action="store_true", help="Skip Claustrophobia 600g")
-    parser.add_argument("--skip-titanium", action="store_true", help="Skip Titanium 200g")
-    args = parser.parse_args()
+    for key, value in CONFIG.items():
+        flag = "--" + key.replace("_", "-")
+        if isinstance(value, bool):
+            parser.add_argument(flag, action=argparse.BooleanOptionalAction, default=None)
+        elif value is None:
+            parser.add_argument(flag, default=None)
+        else:
+            parser.add_argument(flag, type=type(value), default=None)
+    parsed = parser.parse_args(argv)
+    values = dict(CONFIG)
+    for key, value in vars(parsed).items():
+        if value is not None:
+            values[key] = value
+    if values["dry_run"]:
+        print(json.dumps(values, indent=2, default=str), flush=True)
+        return 0
+    if not values["candidate_exe"] or not values["candidate_nnue"]:
+        raise ValueError("candidate_exe and candidate_nnue are required in CONFIG or CLI")
+    args = argparse.Namespace(**values)
 
     exe = Path(args.candidate_exe).resolve()
     nnue = Path(args.candidate_nnue).resolve()
@@ -100,4 +124,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

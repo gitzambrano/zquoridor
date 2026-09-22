@@ -47,7 +47,7 @@ import numpy as np
 # substituído por `nnue_eval` (uint16, avaliação da PRÓPRIA NNUE, escala
 # fixa 0..65535 == probabilidade 0.0..1.0 de vitória das BRANCAS --
 # perspectiva ABSOLUTA de cor, não do mover; ver nota completa em
-# TrainingSample::evalNNUE em selfplay.hpp e a tabela em docs/status.md/
+# TrainingSample::evalNNUE in selfplay.hpp and the table in docs/plan.md/
 # CLAUDE.md "Avaliação: o que cada estágio usa"). Mesmo offset/tamanho (2
 # bytes) do campo antigo -- arquivos .bin gravados ANTES desta mudança
 # continuam lidos sem erro, só que o conteúdo desse campo ainda é a

@@ -215,7 +215,7 @@ struct McabParams {
     // partidas). Vale a ressalva de faixa: isso foi medido a 200ms; o híbrido
     // roda a ~1/9 dos nós/s do AB puro, e em controles de tempo bem mais
     // curtos a troca deve inverter. Ver a nota "Hybrid MCTS + alpha-beta" em
-    // docs/status.md antes de assumir que vale para o seu controle de tempo.
+    // docs/plan.md before changing time-control behavior.
     bool enabled = true;
     int nodeBudget = 20000;              // 0/1 = modo equivalência, Seção 6
     // A fixed node budget is useful for deterministic benchmarks and
@@ -302,7 +302,7 @@ struct McabParams {
     // Q values of the root moves land within 0.02 of each other, and
     // `MaxVisits` picks whichever branch PUCT happened to visit more. The
     // engine then shuffles its pawn sideways in a won race. See
-    // benchmarks/repro_wander.cpp for the position, and docs/status.md.
+    // benchmarks/repro_wander.cpp for the position, and docs/plan.md.
     //
     // When the SIDE TO MOVE at the root holds at most
     // endgameMoverWallThreshold walls, every leaf gets a real alpha-beta
@@ -326,7 +326,7 @@ struct McabParams {
     //
     // A negative threshold turns the rule off. Do NOT raise the threshold
     // toward 10: that makes the rule global, which is the leafDepth >= 1
-    // setting docs/status.md already rejected at approximately -250 Elo.
+    // setting; docs/plan.md records that it was rejected at approximately -250 Elo.
     int endgameMoverWallThreshold = 0;
     int endgameLeafDepth = 2;
 };
@@ -1298,7 +1298,7 @@ private:
     // ramo: +1 ply a cada 4x visitas (log_4), saturando em leafDepthMax.
     // Ramos que o PUCT insiste em revisitar ganham avaliação mais profunda
     // sem encarecer a cauda de ramos visitados 1x. FATOR NÃO CALIBRADO --
-    // ver docs/status.md; default de `adaptiveLeafDepth` é false.
+    // see docs/plan.md; `adaptiveLeafDepth` defaults to false.
     int effectiveLeafDepth(int branchVisits) const {
         if (endgameLeafActive) return params.endgameLeafDepth;
         if (!params.adaptiveLeafDepth) return params.leafDepth;

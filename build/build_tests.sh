@@ -15,67 +15,73 @@ mkdir -p "$BIN"
 
 FLAGS=(-O2 -std=c++17)
 
-echo "[1/20] test_rules_sanity"
+echo "[1/22] test_rules_sanity"
 g++ "${FLAGS[@]}" -I"$SRC" -o "$BIN/test_rules_sanity" "$TESTS/test_rules_sanity.cpp"
 
-echo "[2/20] test_search_staging"
+echo "[2/22] test_search_staging"
 g++ "${FLAGS[@]}" -I"$SRC" -o "$BIN/test_search_staging" "$TESTS/test_search_staging.cpp"
 
-echo "[3/20] test_move_ordering"
+echo "[3/22] test_move_ordering"
 g++ "${FLAGS[@]}" -I"$SRC" -o "$BIN/test_move_ordering" "$TESTS/test_move_ordering.cpp"
 
-echo "[4/20] test_endgame_race"
+echo "[4/22] test_endgame_race"
 g++ "${FLAGS[@]}" -I"$SRC" -o "$BIN/test_endgame_race" "$TESTS/test_endgame_race.cpp"
 
-echo "[5/20] test_lmr_pvs"
+echo "[5/22] test_lmr_pvs"
 g++ "${FLAGS[@]}" -I"$SRC" -o "$BIN/test_lmr_pvs" "$TESTS/test_lmr_pvs.cpp"
 
-echo "[6/20] nnue_verify  (paridade C++ vs Python, precisa -pthread)"
+echo "[6/22] nnue_verify  (paridade C++ vs Python, precisa -pthread)"
 g++ "${FLAGS[@]}" -pthread -I"$SRC" -o "$BIN/nnue_verify" "$TESTS/nnue_verify.cpp"
 
-echo "[7/20] nnue_incremental_check  (acumulador incremental vs rebuild do zero)"
+echo "[7/22] nnue_incremental_check  (acumulador incremental vs rebuild do zero)"
 g++ "${FLAGS[@]}" -pthread -I"$SRC" -o "$BIN/nnue_incremental_check" "$TESTS/nnue_incremental_check.cpp"
 
-echo "[8/20] nnue_sign_check  (sanidade de sinal/perspectiva do NNUE vs evalSimple)"
+echo "[8/22] nnue_sign_check  (sanidade de sinal/perspectiva do NNUE vs evalSimple)"
 g++ "${FLAGS[@]}" -pthread -I"$SRC" -o "$BIN/nnue_sign_check" "$TESTS/nnue_sign_check.cpp"
 
 # [9..12] Híbrido MCαβ (plan-hybrid-mc-ab.md). Não precisam de -I extra:
 # os .cpp incluem "../src/mcab.hpp" relativo a si mesmos.
-echo "[9/20] test_search_leaf_smoke  (Fase 0: searchLeaf/resetOrderingState)"
+echo "[9/22] test_search_leaf_smoke  (Fase 0: searchLeaf/resetOrderingState)"
 g++ "${FLAGS[@]}" -I"$SRC" -o "$BIN/test_search_leaf_smoke" "$TESTS/test_search_leaf_smoke.cpp"
 
-echo "[10/20] test_mcab_core  (scoreToQ, budget do pool, sinal do backup, modo equivalência)"
+echo "[10/22] test_mcab_core  (scoreToQ, budget do pool, sinal do backup, modo equivalência)"
 g++ "${FLAGS[@]}" -I"$SRC" -o "$BIN/test_mcab_core" "$TESTS/test_mcab_core.cpp"
 
-echo "[11/20] test_mcab_dispatch  (SFINAE: refs antigas sem searchLeaf caem no AB puro)"
+echo "[11/22] test_mcab_dispatch  (SFINAE: refs antigas sem searchLeaf caem no AB puro)"
 g++ "${FLAGS[@]}" -I"$SRC" -o "$BIN/test_mcab_dispatch" "$TESTS/test_mcab_dispatch.cpp"
 
-echo "[12/20] test_mcab_phase9  (reuso de árvore, ruído Dirichlet, leaf depth adaptativa, teto de tempo)"
+echo "[12/22] test_mcab_phase9  (reuso de árvore, ruído Dirichlet, leaf depth adaptativa, teto de tempo)"
 g++ "${FLAGS[@]}" -I"$SRC" -o "$BIN/test_mcab_phase9" "$TESTS/test_mcab_phase9.cpp"
 
-echo "[13/20] test_wall_qextension  (inv/qsendgame-ext: caps de quiescência variáveis)"
+echo "[13/22] test_wall_qextension  (inv/qsendgame-ext: caps de quiescência variáveis)"
 g++ "${FLAGS[@]}" -I"$SRC" -o "$BIN/test_wall_qextension" "$TESTS/test_wall_qextension.cpp"
 
-echo "[14/20] test_policy_ab  (inv/ab-policy: defaults bit-exatos, acordo B/C/D)"
+echo "[14/22] test_policy_ab  (inv/ab-policy: defaults bit-exatos, acordo B/C/D)"
 g++ "${FLAGS[@]}" -I"$SRC" -o "$BIN/test_policy_ab" "$TESTS/test_policy_ab.cpp"
 
-echo "[15/20] test_contempt_repetition  (inv/contempt-wandering: sinais de empate, tie-break, semântica de repetição)"
+echo "[15/22] test_contempt_repetition  (inv/contempt-wandering: sinais de empate, tie-break, semântica de repetição)"
 g++ "${FLAGS[@]}" -I"$SRC" -o "$BIN/test_contempt_repetition" "$TESTS/test_contempt_repetition.cpp"
 
-echo "[16/20] test_endgame_race_fuzz  (inv/race-fuzz: oráculo independente + otimalidade de raiz + budget/cache/degenerados)"
+echo "[16/22] test_endgame_race_fuzz  (inv/race-fuzz: oráculo independente + otimalidade de raiz + budget/cache/degenerados)"
 g++ "${FLAGS[@]}" -I"$SRC" -o "$BIN/test_endgame_race_fuzz" "$TESTS/test_endgame_race_fuzz.cpp"
 
-echo "[17/20] test_mcab_endgame_leaf  (inv/endgame-wander: folha AB de fim de jogo)"
+echo "[17/22] test_mcab_endgame_leaf  (inv/endgame-wander: folha AB de fim de jogo)"
 g++ "${FLAGS[@]}" -I"$SRC" -o "$BIN/test_mcab_endgame_leaf" "$TESTS/test_mcab_endgame_leaf.cpp"
 
-echo "[18/20] test_notation  (QFEN round-trip, navegação de histórico, análise, editor -- inclui gui_web/engine_wasm.cpp)"
+echo "[18/22] test_notation  (QFEN round-trip, navegação de histórico, análise, editor -- inclui gui_web/engine_wasm.cpp)"
 g++ "${FLAGS[@]}" -I"$SRC" -o "$BIN/test_notation" "$TESTS/test_notation.cpp"
 
-echo "[19/20] test_nnue_race  (race features and incremental accumulator)"
+echo "[19/22] test_nnue_race  (race features and incremental accumulator)"
 g++ "${FLAGS[@]}" -DZQ_NNUE_RACE_FEATURES=1 -DZQ_NNUE_PHASE_FEATURES=0 -DZQ_NNUE_MULTIPATH_FEATURES=0 -I"$SRC" -o "$BIN/test_nnue_race" "$TESTS/test_nnue_race.cpp"
 
-echo "[20/20] test_time_manager"
+echo "[20/22] test_time_manager"
 g++ "${FLAGS[@]}" -I"$SRC" -o "$BIN/test_time_manager" "$TESTS/test_time_manager.cpp"
+
+echo "[21/22] test_selfplay_seed_positions"
+g++ "${FLAGS[@]}" -I"$SRC" -o "$BIN/test_selfplay_seed_positions" "$TESTS/test_selfplay_seed_positions.cpp"
+
+echo "[22/22] test_selfplay_metadata"
+g++ "${FLAGS[@]}" -pthread -I"$SRC" -o "$BIN/test_selfplay_metadata" "$TESTS/test_selfplay_metadata.cpp"
 
 echo
 echo "OK -- binários em $BIN"

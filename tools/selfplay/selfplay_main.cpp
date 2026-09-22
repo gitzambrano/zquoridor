@@ -131,6 +131,7 @@ static void printUsage(const char* prog) {
         "  --chunk-games N    partidas por arquivo .bin (default 2000)\n"
         "  --depth N           profundidade maxima da busca (default 40)\n"
         "  --time-ms N         orcamento de tempo por lance em ms (default 100)\n"
+        "  --positions PATH    start games from zquoridor.position.v1 JSONL snapshots\n"
         "  --playout-cap       liga datagen cheap/full: so buscas completas viram amostras\n"
         "  --full-search-prob F fracao de buscas reais completas/gravadas (default 1.0)\n"
         "  --cheap-time-ms N   tempo dos plies baratos, trajectory-only (default 20ms)\n"
@@ -223,6 +224,9 @@ static void printUsage(const char* prog) {
         "                      permite retomar sem sobrescrever shards existentes.\n"
         "  --out PATH          arquivo/template de saida (obrigatorio).\n"
         "                      Use {shard:03d} para chunks: data/selfplay_{shard:03d}.bin\n"
+        "  --meta-out PATH     aligned TrainingMetaV1 sidecar output.\n"
+        "                      Use {shard:03d} for chunked output.\n"
+        "  --meta-source-class N  sidecar source class in the range 0 to 255\n"
         "\n"
         " PARAMETROS DE BUSCA (search.hpp) -- sem nenhum destes, vale producao:\n"
         "%s",
@@ -240,6 +244,8 @@ int main(int argc, char** argv) {
     int totalGames  = 2000;
     int chunkGames  = 2000;
     int startShard  = 0;
+    std::string positionsPath;
+    std::string metaOutTemplate;
 
     for (int i = 1; i < argc; i++) {
         std::string a = argv[i];
@@ -254,6 +260,7 @@ int main(int argc, char** argv) {
         else if (a == "--chunk-games")     chunkGames                = std::atoi(next("--chunk-games").c_str());
         else if (a == "--depth")           cfg.maxDepth              = std::atoi(next("--depth").c_str());
         else if (a == "--time-ms")         cfg.timeBudgetMs          = std::atoi(next("--time-ms").c_str());
+        else if (a == "--positions")       positionsPath             = next("--positions");
         else if (a == "--playout-cap")      cfg.playoutCapEnabled     = true;
         else if (a == "--full-search-prob") cfg.fullSearchProb        = std::atof(next("--full-search-prob").c_str());
         else if (a == "--cheap-time-ms")    cfg.cheapTimeBudgetMs     = std::atoi(next("--cheap-time-ms").c_str());
@@ -305,6 +312,18 @@ int main(int argc, char** argv) {
         else if (a == "--seed")            cfg.seed                  = (unsigned)std::atol(next("--seed").c_str());
         else if (a == "--start-shard")     startShard                = std::atoi(next("--start-shard").c_str());
         else if (a == "--out")           outTemplate         = next("--out");
+        else if (a == "--meta-out")      metaOutTemplate      = next("--meta-out");
+        else if (a == "--meta-source-class") {
+            const std::string raw = next("--meta-source-class");
+            char* end = nullptr;
+            const long value = std::strtol(raw.c_str(), &end, 10);
+            if (end == raw.c_str() || *end != '\0' || value < 0 || value > 255) {
+                std::fprintf(stderr,
+                    "error: --meta-source-class must be an integer from 0 to 255\n");
+                return 1;
+            }
+            cfg.metadataSourceClass = (uint8_t)value;
+        }
         else if (a == "-h" || a == "--help") { printUsage(argv[0]); return 0; }
         // Parametros de busca de search.hpp (contempt, LMR, CAT, quiescencia,
         // ...). Consome a flag e seu valor quando reconhece; senao devolve
@@ -321,6 +340,14 @@ int main(int argc, char** argv) {
         std::fprintf(stderr, "erro: --out e obrigatorio\n");
         printUsage(argv[0]);
         return 1;
+    }
+    if (!positionsPath.empty()) {
+        std::string seedError;
+        cfg.startPositions = loadSelfPlaySeeds(positionsPath, seedError);
+        if (!seedError.empty()) {
+            std::fprintf(stderr, "error: %s\n", seedError.c_str());
+            return 1;
+        }
     }
     if (chunkGames <= 0) {
         std::fprintf(stderr, "erro: --chunk-games deve ser > 0\n");
@@ -382,6 +409,12 @@ int main(int argc, char** argv) {
 
     bool multiChunk = (outTemplate.find("{shard:03d}") != std::string::npos);
     int nChunks = multiChunk ? (totalGames + chunkGames - 1) / chunkGames : 1;
+    if (nChunks > 1 && !metaOutTemplate.empty()
+        && metaOutTemplate.find("{shard:03d}") == std::string::npos) {
+        std::fprintf(stderr,
+            "error: --meta-out must contain {shard:03d} when the run has multiple chunks\n");
+        return 1;
+    }
     int nThreads = cfg.numThreads > 0
                    ? cfg.numThreads
                    : (int)std::max(1u, std::thread::hardware_concurrency());
@@ -430,8 +463,16 @@ int main(int argc, char** argv) {
         std::printf("MCTS hibrido: DESLIGADO -- alpha-beta puro (o default e ligado; --no-mcab foi passado, ou a NNUE nao carregou)\n");
     }
     std::printf("threads: %d | corte de seguranca: %d lances/partida\n", nThreads, cfg.maxPlies);
+    if (!cfg.startPositions.empty()) {
+        std::printf("seed positions: %zu from %s\n",
+                    cfg.startPositions.size(), positionsPath.c_str());
+    }
     std::printf("TT: %s\n", cfg.sharedTT ? "compartilhada entre as 2 cores (default)" : "separada por cor (--separate-tt)");
-    std::printf("registro: %zu bytes/posicao (packed)\n\n", sizeof(TrainingSample));
+    std::printf("registro: %zu bytes/posicao (packed)\n", sizeof(TrainingSample));
+    if (!metaOutTemplate.empty()) {
+        std::printf("metadata: %zu bytes/record (aligned sidecar)\n", sizeof(TrainingMetaV1));
+    }
+    std::printf("\n");
 
     auto wallT0 = std::chrono::steady_clock::now();
     uint64_t totalPositions = 0;
@@ -445,6 +486,12 @@ int main(int argc, char** argv) {
         int gamesThisChunk  = std::min(chunkGames, totalGames - chunk * chunkGames);
         cfg.numGames        = gamesThisChunk;
         std::string outPath = multiChunk ? formatShardPath(outTemplate, shardIdx) : outTemplate;
+        cfg.metadataOutputPath = metaOutTemplate.empty()
+            ? std::string()
+            : (metaOutTemplate.find("{shard:03d}") != std::string::npos
+                ? formatShardPath(metaOutTemplate, shardIdx)
+                : metaOutTemplate);
+        cfg.metadataGameIdBase = (uint64_t)(unsigned)shardIdx * (uint64_t)(unsigned)chunkGames;
 
         std::printf("--- chunk %d/%d | %d partidas -> %s ---\n",
                     chunk + 1, nChunks, gamesThisChunk, outPath.c_str());
@@ -467,7 +514,14 @@ int main(int argc, char** argv) {
             }
         });
 
-        runSelfPlay(cfg, outPath, stats);
+        try {
+            runSelfPlay(cfg, outPath, stats);
+        } catch (const std::exception& error) {
+            chunkDone = true;
+            progress.join();
+            std::fprintf(stderr, "error: %s\n", error.what());
+            return 1;
+        }
         chunkDone = true;
         progress.join();
 

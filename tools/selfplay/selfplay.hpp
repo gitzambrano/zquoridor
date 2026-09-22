@@ -34,10 +34,14 @@
 #include <mutex>
 #include <atomic>
 #include <algorithm>
+#include <limits>
 #include <string>
 #include <memory>
+#include <stdexcept>
 #include "rules.hpp"
 #include "search.hpp"
+#include "seed_positions.hpp"
+#include "selfplay_metadata.hpp"
 // Modulo hibrido MCTS+alpha-beta (MCab, plan-hybrid-mc-ab.md, Fase 6) -- fica
 // FORA da arvore versionada-por-ref (Secao 4.4 do plano): e sempre a versao
 // do HEAD atual de tools/, igual a este proprio arquivo. Caminho relativo a
@@ -76,7 +80,7 @@ struct TrainingSample {
     int8_t   wallsLeftOpp;  // muros restantes do adversário (escalar -- não precisa de espelho)
     // Avaliação da própria NNUE (2026-08, substitui o antigo searchScore
     // heurístico -- ver nota "Avaliação: o que cada estágio usa" em
-    // docs/status.md/CLAUDE.md). uint16_t em [0, EV_SCALE], escala fixa de
+    // docs/plan.md/CLAUDE.md). uint16_t in [0, EV_SCALE], with a fixed
     // EV_SCALE = 65535: 0 = vitória certa das PRETAS, EV_SCALE = vitória
     // certa das BRANCAS -- perspectiva ABSOLUTA de cor (não do mover, ao
     // contrário de gameResult abaixo), pra poder ser lida sem precisar de
@@ -155,6 +159,10 @@ struct SelfPlayConfig {
     int maxPlies = 300;           // corte de segurança (partidas que não terminam são descartadas)
     unsigned seed = 1;
     int numThreads = 0;           // 0 = usar hardware_concurrency()
+    // Optional nonterminal positions used as game roots. The CLI loads these
+    // from zquoridor.position.v1 JSONL through --positions. An empty vector
+    // preserves standard self-play from the initial position.
+    std::vector<SelfPlaySeed> startPositions;
     // true (default) = as duas cores dividem uma única engine/TT dentro da
     // mesma partida (mais rápido -- metade da memória de TT por thread, e
     // aproveita transposições encontradas pelo lado oposto; é o padrão
@@ -279,6 +287,11 @@ struct SelfPlayConfig {
     double fullSearchProb = 1.0;
     int cheapTimeBudgetMs = 20;
 
+    // Optional aligned sidecar for TrainingSample records.
+    std::string metadataOutputPath;
+    uint8_t metadataSourceClass = 0;
+    uint64_t metadataGameIdBase = 0;
+
     // Overrides dos parâmetros de busca de search.hpp (contempt, LMR, CAT,
     // quiescência, escala da política na ordenação...). Todo campo vazio por
     // default => applySearchTuning é um no-op e cada engine fica no valor de
@@ -391,14 +404,23 @@ inline Move chooseShallowRunnerUp(Negamax& engine, const State& s, const MoveLis
 // não terminar dentro de maxPlies -- evita rótulo de resultado incorreto.
 inline std::vector<TrainingSample> playOneGame(Negamax& engine0, Negamax& engine1, std::mt19937_64& rng,
                                                 const SelfPlayConfig& cfg, uint64_t& nodesOut,
-                                                SelfPlayStats& stats) {
-    State s = initialState();
+                                                SelfPlayStats& stats,
+                                                const SelfPlaySeed* start = nullptr,
+                                                std::vector<TrainingMetaV1>* metadataOut = nullptr,
+                                                uint64_t gameId = 0) {
+    State s = start ? start->state : initialState();
     std::vector<TrainingSample> samples;
     samples.reserve(cfg.maxPlies);
+    std::vector<TrainingMetaV1> metadata;
+    std::vector<uint16_t> samplePlies;
+    if (metadataOut) {
+        metadata.reserve(cfg.maxPlies);
+        samplePlies.reserve(cfg.maxPlies);
+    }
     std::uniform_real_distribution<double> unif(0.0, 1.0);
     nodesOut = 0;
     int ply = 0;
-    RepetitionTable reptbl;
+    RepetitionTable reptbl = start ? start->repetition : RepetitionTable{};
     bool isDraw = false;
 
     // MCab (Fase 6 do plano): UMA instância de McabRunner por PARTIDA (não
@@ -550,6 +572,23 @@ inline std::vector<TrainingSample> playOneGame(Negamax& engine0, Negamax& engine
             }
         }
 
+        // Tree reuse and graph search must never be allowed to apply a move
+        // that is not legal in the current root. Treat such a stale result as
+        // a teacher miss and continue with a legal fallback instead of
+        // corrupting the state (for example, decrementing walls below zero).
+        bool chosenLegal = false;
+        for (const Move& legal : moves) {
+            if (legal == chosen) {
+                chosenLegal = true;
+                break;
+            }
+        }
+        if (!chosenLegal) {
+            chosen = moves[0];
+            recordSample = false;
+            if (cfg.playoutCapEnabled) stats.samplesSkipped++;
+        }
+
         if (!recordSample && cfg.playoutCapEnabled) stats.samplesSkipped++;
 
         if (recordSample) {
@@ -613,18 +652,59 @@ inline std::vector<TrainingSample> playOneGame(Negamax& engine0, Negamax& engine
             rec.oppCatTotal = (int16_t)oppSum;
         }
         samples.push_back(rec);
+        if (metadataOut) {
+            float rootValue = std::numeric_limits<float>::quiet_NaN();
+            uint8_t qualityFlags = TRAINING_META_ROOT_VALUE_MISSING;
+            if (cfg.mcabParams.enabled) {
+                const auto* rootNode = mcabRunner.search.rootNodeForInspection();
+                if (rootNode && rootNode->expanded && rootNode->state.hash == s.hash) {
+                    double weighted = 0.0;
+                    double totalVisits = 0.0;
+                    for (size_t i = 0; i < rootNode->N.size(); ++i) {
+                        if (rootNode->N[i] <= 0.0f) continue;
+                        const float q = (cfg.mcabParams.backupMode == mcab::BackupMode::AvgBlend)
+                            ? rootNode->W[i] / rootNode->N[i]
+                            : rootNode->W[i];
+                        if (!std::isfinite(q)) continue;
+                        weighted += (double)rootNode->N[i] * (double)q;
+                        totalVisits += (double)rootNode->N[i];
+                    }
+                    if (totalVisits > 0.0) {
+                        rootValue = (float)std::max(0.0, std::min(1.0,
+                            weighted / totalVisits));
+                    }
+                    if (std::isfinite(rootValue)) {
+                        qualityFlags = TRAINING_META_ROOT_VALUE_VALID;
+                    }
+                }
+            }
+            metadata.push_back(makeTrainingMeta(gameId, rootValue,
+                                                cfg.metadataSourceClass, qualityFlags));
+            samplePlies.push_back((uint16_t)std::min(ply, (int)UINT16_MAX));
+        }
         }
 
         reptbl.push(s.hash, chosen.isWall);
         s = applyMove(s, chosen);
     }
 
+    const int gameStartPly = start ? start->repetition.size : 0;
+    const int terminalPly = gameStartPly + ply;
     if (isDraw) {
         // Empate por repetição: resultado = 0
         for (size_t i = 0; i < samples.size(); i++) {
             samples[i].gameResult = 0;
         }
         stats.gamesDrawn++;
+        if (metadataOut) {
+            for (size_t i = 0; i < metadata.size(); ++i) {
+                const int absoluteSamplePly = gameStartPly + (int)samplePlies[i];
+                metadata[i].pliesToEnd = (uint16_t)std::min(
+                    std::max(0, terminalPly - absoluteSamplePly), (int)UINT16_MAX);
+                metadata[i].gameLength = (uint16_t)std::min(terminalPly, (int)UINT16_MAX);
+            }
+            *metadataOut = std::move(metadata);
+        }
         return samples;
     }
 
@@ -637,6 +717,15 @@ inline std::vector<TrainingSample> playOneGame(Negamax& engine0, Negamax& engine
     for (size_t i = 0; i < samples.size(); i++) {
         int moverOfSample = (int)samples[i].mover;
         samples[i].gameResult = (w == moverOfSample) ? 1 : -1;
+    }
+    if (metadataOut) {
+        for (size_t i = 0; i < metadata.size(); ++i) {
+            const int absoluteSamplePly = gameStartPly + (int)samplePlies[i];
+            metadata[i].pliesToEnd = (uint16_t)std::min(
+                std::max(0, terminalPly - absoluteSamplePly), (int)UINT16_MAX);
+            metadata[i].gameLength = (uint16_t)std::min(terminalPly, (int)UINT16_MAX);
+        }
+        *metadataOut = std::move(metadata);
     }
     return samples;
 }
@@ -703,9 +792,26 @@ inline void runSelfPlay(const SelfPlayConfig& cfg, const std::string& outputPath
         std::exit(1);
     }
 
+    FILE* metaFile = nullptr;
+    if (!cfg.metadataOutputPath.empty()) {
+        metaFile = std::fopen(cfg.metadataOutputPath.c_str(), "wb");
+        if (!metaFile) {
+            std::fprintf(stderr, "erro: nao foi possivel abrir '%s' para escrita\n",
+                         cfg.metadataOutputPath.c_str());
+            throw std::runtime_error("self-play metadata output open failed");
+        }
+    }
     FILE* f = std::fopen(outputPath.c_str(), "wb");
-    if (!f) { std::fprintf(stderr, "erro: nao foi possivel abrir '%s' para escrita\n", outputPath.c_str()); return; }
+    if (!f) {
+        std::fprintf(stderr, "erro: nao foi possivel abrir '%s' para escrita\n", outputPath.c_str());
+        if (metaFile) {
+            std::fclose(metaFile);
+            std::remove(cfg.metadataOutputPath.c_str());
+        }
+        throw std::runtime_error("self-play V3 output open failed");
+    }
     std::mutex fileMutex;
+    std::atomic<bool> writeFailed{false};
 
     std::atomic<int> nextGame{0};
     int totalGames = cfg.numGames;
@@ -749,6 +855,7 @@ inline void runSelfPlay(const SelfPlayConfig& cfg, const std::string& outputPath
 
         std::mt19937_64 rng(cfg.seed + 1000003ull * (unsigned)threadIdx);
         for (;;) {
+            if (writeFailed.load()) break;
             int g = nextGame.fetch_add(1);
             if (g >= totalGames) break;
             uint64_t nodes = 0;
@@ -760,21 +867,50 @@ inline void runSelfPlay(const SelfPlayConfig& cfg, const std::string& outputPath
             // aumento progressivo de empates conforme a TT se enche.
             engine0.clearTT();
             if (!cfg.sharedTT) engine1.clearTT();  // se compartilhada, já foi limpa acima (mesmo objeto)
-            auto samples = playOneGame(engine0, engine1, rng, cfg, nodes, stats);
+            const SelfPlaySeed* start = nullptr;
+            if (!cfg.startPositions.empty()) {
+                const uint64_t mixed = (uint64_t)cfg.seed
+                    + (uint64_t)(unsigned)g * 0x9E3779B97F4A7C15ull;
+                start = &cfg.startPositions[(size_t)(mixed % cfg.startPositions.size())];
+            }
+            std::vector<TrainingMetaV1> metadata;
+            auto samples = playOneGame(engine0, engine1, rng, cfg, nodes, stats, start,
+                                       metaFile ? &metadata : nullptr,
+                                       cfg.metadataGameIdBase + (uint64_t)(unsigned)g);
             stats.totalNodes += nodes;
             if (samples.empty()) { stats.gamesDiscarded++; stats.gamesPlayed++; continue; }
             {
                 std::lock_guard<std::mutex> lock(fileMutex);
+                if (metaFile && metadata.size() != samples.size()) {
+                    std::fprintf(stderr,
+                                 "[selfplay] ERRO: metadata desalinhada (%zu de %zu amostras)\n",
+                                 metadata.size(), samples.size());
+                    writeFailed = true;
+                    continue;
+                }
                 size_t written = std::fwrite(samples.data(), sizeof(TrainingSample), samples.size(), f);
                 if (written != samples.size()) {
                     std::fprintf(stderr, "[selfplay] ERRO: fwrite escreveu %zu de %zu amostras\n",
                                  written, samples.size());
+                    writeFailed = true;
+                }
+                if (metaFile && !writeFailed.load()) {
+                    size_t metaWritten = std::fwrite(metadata.data(), sizeof(TrainingMetaV1),
+                                                     metadata.size(), metaFile);
+                    if (metaWritten != metadata.size()) {
+                        std::fprintf(stderr,
+                                     "[selfplay] ERRO: fwrite escreveu %zu de %zu metadados\n",
+                                     metaWritten, metadata.size());
+                        writeFailed = true;
+                    }
                 }
                 // fflush garante que os dados chegam ao SO antes de continuar
                 // -- em particular, o último jogo do chunk não fica em buffer
                 // quando o processo encerra logo depois do ultimo fwrite.
                 std::fflush(f);
+                if (metaFile) std::fflush(metaFile);
             }
+            if (writeFailed.load()) break;
             stats.positionsWritten += samples.size();
             stats.gamesPlayed++;
         }
@@ -784,6 +920,10 @@ inline void runSelfPlay(const SelfPlayConfig& cfg, const std::string& outputPath
     for (int t = 0; t < nThreads; t++) pool.emplace_back(worker, t);
     for (auto& th : pool) th.join();
     std::fclose(f);
+    if (metaFile) std::fclose(metaFile);
+    if (writeFailed.load()) {
+        throw std::runtime_error("self-play output write failed");
+    }
 }
 
 } // namespace qr

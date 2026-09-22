@@ -439,7 +439,7 @@ inline int featOppWallsLeft(int bucket) { return WALLS_LEFT_FEAT_BASE + WALLS_LE
 // evalNNUE em selfplay.hpp) -- esse valor, junto do gameResult real, é o
 // que agora alimenta o alvo de treino da cabeça WL (WL_mod = WL*k +
 // EV*(1-k), k por fonte de dado, ver DATA_SOURCES_DEFAULT em
-// train_nnue.py). Ver a tabela em docs/status.md ("Avaliação: o que cada
+// train_nnue.py). See the table in docs/plan.md ("Evaluation: what each
 // estágio usa") para o mapa completo de quem consome o quê.
 struct NNUEWeights {
     // camada 1 (acumulador): pesos por feature esparsa -> HIDDEN
