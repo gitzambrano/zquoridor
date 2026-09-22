@@ -2069,7 +2069,7 @@ function exportImageModal() {
 // -- plan principle "degrade silently".
 const ANW = {
   wk: null, ready: false, failed: false,
-  pending: new Map(), nextId: 1,
+  pending: new Map(), nextId: 1, lastError: '',
   fail(msg) {
     this.failed = true;
     this.ready = false;
@@ -2118,11 +2118,15 @@ const ANW = {
     if (!this.ok() || !this.ready) return false;
     const id = this.nextId++;
     this.pending.set(id, res => {
+      // A request-level replay/search error is recoverable. The next request
+      // carries the complete move history, so the persistent worker can
+      // resynchronize. Only worker onerror/fatal tears the worker down.
       if (res && res.type === 'error') {
-        if (!this.failed) this.fail(res.msg || 'engine worker search failed');
+        this.lastError = res.msg || 'engine worker search failed';
         cb(null);
         return;
       }
+      this.lastError = '';
       cb(res);
     });
     this.wk.postMessage({ id, cmd: 'bestmove', moves: req.moves,
