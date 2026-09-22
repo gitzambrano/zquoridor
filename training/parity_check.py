@@ -10,7 +10,7 @@ o pipeline export -> load -> forward em C++ está numericamente correto.
 CABEÇA AUXILIAR REMOVIDA (2026-08): `value` já foi duas cabeças
 independentes (value_wl/value_aux); a auxiliar (imitação MSE da
 heurística evalSimple) foi removida de nnue.hpp/train_nnue.py por virar
-peso morto -- ver a tabela em status.md/CLAUDE.md ("Avaliação: o que cada
+peso morto -- ver a tabela em docs/status.md/CLAUDE.md ("Avaliação: o que cada
 estágio usa"). Este script computa e imprime só value_wl agora.
 
 ALINHADO COM NNUE.HPP (354 features, 2026-08): este script ficou para
