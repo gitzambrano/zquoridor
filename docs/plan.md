@@ -128,7 +128,12 @@ Benchmark válido exige mesmas aberturas, cores invertidas, seed igual e
 ### Protocolo de Cirurgia de Rede (Warm-Start)
 Nas campanhas históricas de expansão de entradas (ex: 456 -> 480, 588, 612), os pesos $456 \\times 512$ do checkpoint então usado como baseline (`race512-cr200k-champion`) são copiados diretamente e as novas colunas são inicializadas com **exatamente 0**. Isso assegura que no passo inicial o modelo apresente divergência matemática absolutamente zero em relação à campeã, aprendendo as novas interações de forma suave durante o recozimento térmico de 60 épocas.
 
-## 4. Redes já treinadas: settings, dados e TODO
+## 4. Histórico de redes treinadas
+
+> Esta seção preserva resultados históricos, não o inventário físico do Git.
+> Checkpoints superados foram removidos do `main` em 2026-09-21. Os pesos
+> canônicos de produção estão em `data/nnue/`; somente dois conjuntos de
+> experimento permanecem versionados, conforme a seção abaixo.
 
 Há dois tipos de treino, executados separadamente. O treino **direct** usa
 somente o dataset direct de 2M e produz um checkpoint novo. O **fine-tune**
@@ -151,7 +156,7 @@ passam pela verificação incremental antes da arena.
 | `race:512-policy-tactical` | 0,74580 | concluído | policy-scope 245k | foco tático: +40.5 Elo em center rush (37.88%), 67.5% vs main, 55.0% vs Titanium |
 | `race:512-weakness-ft` | 1,14938 | concluído | 80k fraquezas | fine-tune cosine annealing: 38.64% (+44 Elo) em center rush vs Claustrophobia |
 | `race:512-cr200k-policy` | 0,69945 | concluído | policy 255k CR | treino dedicado de policy: KL caiu 28% (0.1015 -> 0.0734), 95.37% sinal em Center Rush |
-| `race:512-cr200k-champion` | 0,69542 | concluído | heads 255k CR | **CAMPEÃ ATUAL**: 63.0% (+92.5 Elo) em 600g vs Titanium, 81.25% (+254.7 Elo) vs main, 46.25% vs Claustrophobia |
+| `race:512-cr200k-champion` | 0,69542 | concluído | heads 255k CR | **campeã daquela campanha**: 63.0% (+92.5 Elo) em 600g vs Titanium, 81.25% (+254.7 Elo) vs main, 46.25% vs Claustrophobia |
 
 Fine-tune atual usa `data/teaching/historical2m-search10-conservative/dataset.npz`:
 2.001.868 posições, 90% replay direto e 10% search (25% ZQuoridor, 75%
@@ -294,34 +299,30 @@ Assim, as seis redes direct foram comparáveis entre si: mesmas posições,
 mesmos alvos e mesmo schedule. As redes derivadas são continuações a partir
 dos respectivos checkpoints, com datasets especializados e learning rates menores.
 
-### Onde está a configuração de cada rede
+### Artefatos de rede versionados
 
-Em cada pasta de experimento, `config.json` é a configuração de treino,
-`student.architecture.json` é a arquitetura exportada, `train_report.json`
-registra épocas/loss/schedule, `student.bin` é o peso float, `student_int8.bin`
-é o peso QAT usado pelo engine, e `incremental_check.exe` é a verificação de
-paridade do acumulador. O executável da arena é `zquoridor.exe`.
+O `main` não é mais um arquivo permanente de todos os checkpoints já
+treinados. Os resultados históricos permanecem neste documento, mas os
+binários superados foram removidos.
 
-| Rede/campanha | Pasta real | Arquivo de dados usado |
+| Rede | Estado | Artefato versionado |
 |---|---|---|
-| `base:256` direct | `results/experiments/historical2m-base256-anneal-s20260916/` | `data/teaching/replay-historical-2m-cuda/dataset.npz` |
-| `race:256` direct | `results/experiments/historical2m-race256-anneal-s20260916/` | mesmo `replay-historical-2m-cuda/dataset.npz` |
-| `base:384` direct | `results/experiments/historical2m-base384-s20260916/` | mesmo dataset direct de 2M |
-| `race:384` direct | `results/experiments/historical2m-race384-s20260916/` | mesmo dataset direct de 2M |
-| `base:512` direct | `results/experiments/historical2m-base512-anneal-s20260917/` | mesmo dataset direct de 2M |
-| `race:512` direct | `results/experiments/historical2m-race512-anneal-s20260917/` | mesmo dataset direct de 2M |
-| `race512-search10-ft` | `results/experiments/race512-search10-ft-s20260917/` | `data/teaching/historical2m-search10-conservative/dataset.npz` + checkpoint `race:512` |
-| `base512-search10-ft` | `results/experiments/base512-search10-ft-s20260917/` | mesmo dataset misto + checkpoint `base:512` |
-| `race512-multitier-champion` | `results/experiments/race512-multitier-champion/` | `data/teaching/multitier-final-dataset/dataset.npz` + checkpoint `race512-search10-ft` |
-| `race512-policy-tactical` | `results/experiments/race512-policy-tactical/` | `data/teaching/policy-tactical-245k/dataset.npz` + checkpoint `multitier-champion` |
-| `race512-weakness-ft` | `results/experiments/race512-weakness-ft/` | `data/teaching/weakness-80k/dataset.npz` + checkpoint `multitier-champion` |
-| `race512-cr200k-policy` | `results/experiments/race512-cr200k-policy/` | `data/teaching/center-rush-200k-priority/dataset.npz` + checkpoint `multitier-champion` |
-| `race512-cr200k-champion` | `results/experiments/race512-cr200k-champion/` | `data/teaching/center-rush-200k-priority/dataset.npz` + checkpoint `race512-cr200k-policy` |
+| `multipath_phase:512` (504→512) | **produção v2.00** | `results/experiments/multipath-phase512-searchboost-100ep/` |
+| `margin_regime:512` (588→512) | candidato de pesquisa treinado mais rico ainda não promovido | `results/experiments/margin_regime512-weakness-cr60ep/` |
 
-Os nomes das pastas `*-anneal-*` identificam as campanhas direct com schedule
-de annealing. Os nomes `*-search10-ft-*` identificam fine-tuning com 10% de
-search. Para reproduzir uma rede, ler primeiro `config.json` e o manifesto do
-dataset; não inferir a receita apenas pelo nome da pasta.
+Os pesos usados efetivamente pelo engine de produção ficam em
+`data/nnue/nnue_weights.bin` e `data/nnue/nnue_weights_int8.bin`; o
+diretório de experimento da `multipath_phase:512` é mantido apenas como
+proveniência reproduzível do treinamento.
+
+A arquitetura planejada `multipath_phase_contact:512` (858 entradas) é mais
+rica no desenho, mas **ainda não possui checkpoint treinado versionado**. Ela
+permanece como arquitetura/roadmap e só deverá entrar em
+`results/experiments/` quando existir um treinamento válido para comparar.
+
+Datasets e self-play citados nas campanhas históricas são artefatos locais
+ignorados pelo Git. Consulte `docs/datasets.md` para o catálogo e a política
+de armazenamento.
 
 ### Comandos e manifestos de geração
 
@@ -402,7 +403,7 @@ Configuração: 100 pares (200 jogos), 200 ms por lance, `openings_confirmation_
 - Elo: -3,5 (IC 95% bootstrap: 44,00% a 54,75%, Elo [-41,9, +33,1])
 - Jogos válidos: 200/200 (0 falhas, média de 79,1 plies, `strength_claim_ready=true`)
 
-Conclusão: O confronto direto entre as duas finalistas é um empate estatístico exato (49,5% vs 50,5%). Como a `race512-search10-ft` superou a `base512-search10-ft` por ampla margem contra adversários externos (49,0% vs 43,0% contra Claustrophobia, +6,0 p.p.), a **`race512-search10-ft` é declarada a finalista e campeã definitiva entre as arquiteturas candidatas**.
+Conclusão: O confronto direto entre as duas finalistas é um empate estatístico exato (49,5% vs 50,5%). Como a `race512-search10-ft` superou a `base512-search10-ft` por ampla margem contra adversários externos (49,0% vs 43,0% contra Claustrophobia, +6,0 p.p.), a **`race512-search10-ft` foi a finalista daquela rodada histórica**; ela foi posteriormente superada e não é a rede de produção da versão 2.00.
 
 ## 8. Big picture e roadmap restante
 
@@ -423,7 +424,7 @@ Conclusão: `base512-search10-ft` superou Titanium com significância estatísti
    - `main-vs-external`: concluído 400/400 (Titanium 56,50%, Claustrophobia 37,75%).
    - `summary.json` final gerado e verificado.
 
-Conclusão: `race512-search10-ft` é a melhor rede geral até o momento (+6 p.p. vs Claustrophobia sobre `base512`, empatada contra Titanium e main).
+Conclusão histórica daquela rodada: `race512-search10-ft` foi a melhor rede geral naquele momento (+6 p.p. vs Claustrophobia sobre `base512`, empatada contra Titanium e main).
 
 ### Gate B.1 — Match direto e busca pelo >50% contra Claustrophobia
 
