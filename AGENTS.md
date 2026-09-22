@@ -33,6 +33,19 @@ The engine core is header-only under `src/`:
 
 Production NNUE layout: 504 sparse inputs, 512 hidden units, WL head `512→32→1`, policy head `512→209`, QAT/int8 inference.
 
+## Artifact retention
+
+Large generated datasets are local artifacts and stay out of Git: self-play
+corpora, teaching datasets, training checkpoints, raw benchmark outputs, and
+external bots are covered by `.gitignore`.
+
+Production NNUE weights live in `data/nnue/`. Versioned network experiments
+under `results/experiments/` are intentionally limited to the production
+provenance checkpoint and one current richer research checkpoint. Remove
+superseded network binaries instead of building a permanent archive in the
+working tree; historical results belong in `docs/status.md` and
+`docs/plan.md`.
+
 ## Build
 
 Native binaries are individual C++17 translation units. Use the scripts in `build/`.
