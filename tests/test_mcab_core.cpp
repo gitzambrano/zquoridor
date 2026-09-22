@@ -128,13 +128,12 @@ void testPoolBudget() {
 }
 
 // ---------------------------------------------------------------------
-// 2) Backup propaga o sinal corretamente: numa posição a 1 lance do fim
-//    de jogo, o lance vencedor (do jogador na vez) tem que ser o
-//    escolhido -- se o sinal estivesse invertido em algum nível do
-//    backup, o MCAB escolheria um lance qualquer (ou o pior) em vez do
-//    vencedor imediato.
+// 2) Vitória imediata na raiz: uma posição a 1 lance do fim deve retornar
+//    antes de qualquer simulação MCAB/folha AB. Além da correção do lance,
+//    trava a regressão de latência que fazia o engine continuar pensando
+//    mesmo depois de uma vitória terminal já estar disponível.
 // ---------------------------------------------------------------------
-void testBackupSignTrivialWin() {
+void testImmediateWinFastPath() {
     Negamax eng;
     eng.setEvalMode(Negamax::EvalMode::NNUE);
 
@@ -165,15 +164,19 @@ void testBackupSignTrivialWin() {
     Move chosen = mcab.chooseMoveMCAB(eng, root, 40, 5000, stats, hist, &mstats);
 
     bool chosenIsWinning = (!chosen.isWall && chosen.a == cellIdx(8, 4));
-    printf("[testBackupSignTrivialWin] lance escolhido: %s dest=%d (esperado dest=%d)\n",
-           chosen.isWall ? "muro" : "peao", chosen.isWall ? -1 : chosen.a, cellIdx(8, 4));
-    assert(chosenIsWinning && "MCAB não escolheu o lance vencedor imediato -- sinal do backup pode estar invertido");
-    printf("[testBackupSignTrivialWin] OK\n");
+    printf("[testImmediateWinFastPath] lance escolhido: %s dest=%d (esperado dest=%d), sims=%lld nodes=%lld\n",
+           chosen.isWall ? "muro" : "peao", chosen.isWall ? -1 : chosen.a, cellIdx(8, 4),
+           mstats.simulations, mstats.nodesExpanded);
+    assert(chosenIsWinning && "fast-path não escolheu o lance vencedor imediato");
+    assert(mstats.simulations == 0 && "vitória imediata ainda entrou no loop MCAB");
+    assert(mstats.nodesExpanded == 0 && "vitória imediata ainda expandiu nós");
+    assert(mcab.poolSize() == 0 && "vitória imediata ainda construiu árvore");
+    printf("[testImmediateWinFastPath] OK\n");
 }
 
 // Variante com turn=1 (jogador 1 na vez, goal = row 0) -- garante que o
 // teste acima não passa só por coincidência de qual player é "turn 0".
-void testBackupSignTrivialWinOtherPlayer() {
+void testImmediateWinFastPathOtherPlayer() {
     Negamax eng;
     eng.setEvalMode(Negamax::EvalMode::NNUE);
 
@@ -200,10 +203,44 @@ void testBackupSignTrivialWinOtherPlayer() {
     Move chosen = mcab.chooseMoveMCAB(eng, root, 40, 5000, stats, hist, &mstats);
 
     bool chosenIsWinning = (!chosen.isWall && chosen.a == cellIdx(0, 4));
-    printf("[testBackupSignTrivialWinOtherPlayer] lance escolhido: %s dest=%d (esperado dest=%d)\n",
-           chosen.isWall ? "muro" : "peao", chosen.isWall ? -1 : chosen.a, cellIdx(0, 4));
-    assert(chosenIsWinning && "MCAB não escolheu o lance vencedor imediato (jogador 1) -- sinal do backup pode estar invertido");
-    printf("[testBackupSignTrivialWinOtherPlayer] OK\n");
+    printf("[testImmediateWinFastPathOtherPlayer] lance escolhido: %s dest=%d (esperado dest=%d), sims=%lld nodes=%lld\n",
+           chosen.isWall ? "muro" : "peao", chosen.isWall ? -1 : chosen.a, cellIdx(0, 4),
+           mstats.simulations, mstats.nodesExpanded);
+    assert(chosenIsWinning && "fast-path não escolheu o lance vencedor imediato (jogador 1)");
+    assert(mstats.simulations == 0 && mstats.nodesExpanded == 0);
+    assert(mcab.poolSize() == 0);
+    printf("[testImmediateWinFastPathOtherPlayer] OK\n");
+}
+
+void testImmediateWinNoFalsePositive() {
+    Negamax eng;
+    eng.setEvalMode(Negamax::EvalMode::NNUE);
+
+    // Jogador 0 ainda está a dois passos do gol; não existe vitória em 1.
+    State root = buildState(/*p0row=*/6, /*p0col=*/4, /*p1row=*/2, /*p1col=*/0, /*turn=*/0);
+    MoveList moves = legalMoves(root);
+    for (const auto& m : moves) {
+        if (m.isWall) continue;
+        State ns = applyMove(root, m);
+        assert(winner(ns) != 0 && "posição de controle ganhou em 1 por engano");
+    }
+
+    Mcab mcab;
+    mcab.params.nodeBudget = 40;
+    mcab.params.leafDepth = 0;
+    mcab.params.treeReuse = true;
+
+    SearchStats stats;
+    RepetitionTable hist;
+    mcab::McabStats mstats;
+    (void)mcab.chooseMoveMCAB(eng, root, 40, 0, stats, hist, &mstats);
+
+    printf("[testImmediateWinNoFalsePositive] sims=%lld nodes=%lld pool=%zu\n",
+           mstats.simulations, mstats.nodesExpanded, mcab.poolSize());
+    assert(mstats.simulations > 0 && "fast-path disparou ou search não rodou numa posição sem vitória em 1");
+    assert(mstats.nodesExpanded > 0);
+    assert(mcab.poolSize() > 0);
+    printf("[testImmediateWinNoFalsePositive] OK\n");
 }
 
 // ---------------------------------------------------------------------
@@ -269,7 +306,10 @@ void testEmptyHandedDelegation() {
     Negamax eng;
     eng.setEvalMode(Negamax::EvalMode::NNUE);
 
-    State root = buildState(7, 4, 1, 4, 0, /*walls0=*/0, /*walls1=*/0);
+    // Não use uma posição com mate-in-1 aqui: esse caso agora retorna pelo
+    // fast-path anterior ao solver. A dois passos do gol, a chamada deve
+    // continuar chegando ao solver exato de mãos vazias.
+    State root = buildState(6, 4, 3, 0, 0, /*walls0=*/0, /*walls1=*/0);
 
     Mcab mcab;
     mcab.params.nodeBudget = 200;
@@ -280,10 +320,9 @@ void testEmptyHandedDelegation() {
     mcab::McabStats mstats;
     Move chosen = mcab.chooseMoveMCAB(eng, root, 40, 5000, stats, hist, &mstats);
 
-    bool chosenIsWinning = (!chosen.isWall && chosen.a == cellIdx(8, 4));
-    printf("[testEmptyHandedDelegation] lance escolhido: dest=%d (esperado dest=%d), poolSize=%zu\n",
-           chosen.isWall ? -1 : chosen.a, cellIdx(8, 4), mcab.poolSize());
-    assert(chosenIsWinning);
+    printf("[testEmptyHandedDelegation] lance escolhido: %s dest=%d, poolSize=%zu\n",
+           chosen.isWall ? "muro" : "peao", chosen.isWall ? -1 : chosen.a, mcab.poolSize());
+    assert(!chosen.isWall && "final sem muros só deve gerar lance de peão");
     // Delegou pra chooseMove() -- não deveria ter tocado no pool do MCAB
     // (fica vazio, já que o atalho retorna antes do passo 3).
     assert(mcab.poolSize() == 0);
@@ -419,8 +458,9 @@ int main() {
     testAdaptiveTimeFactor();
     testAutomaticNodeBudget();
     testPoolBudget();
-    testBackupSignTrivialWin();
-    testBackupSignTrivialWinOtherPlayer();
+    testImmediateWinFastPath();
+    testImmediateWinFastPathOtherPlayer();
+    testImmediateWinNoFalsePositive();
     testEquivModeSign();
     testEmptyHandedDelegation();
     testMctsPathCacheWired();
