@@ -1,0 +1,110 @@
+name: Adaptive repeat escape gate
+
+on:
+  push:
+    branches: ["exp/adaptive-repeat-escape-v1"]
+    paths:
+      - ".github/workflows/adaptive-repeat-escape-gate.yml"
+
+permissions:
+  contents: read
+
+env:
+  PYTHONUNBUFFERED: "1"
+  NO_TABLEBASES: "1"
+  WEIGHTS: data/nnue/nnue_weights_int8.bin
+  OPENINGS: tools/external/openings_confirmation_v1.jsonl
+  SEED: "2026092217"
+
+jobs:
+  fixed:
+    name: fixed ${{ matrix.tc }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {tc: "50ms", ms: 50}
+          - {tc: "100ms", ms: 100}
+          - {tc: "200ms", ms: 200}
+          - {tc: "500ms", ms: 500}
+          - {tc: "1000ms", ms: 1000}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.11"}
+      - name: Build
+        run: g++ -O3 -DNDEBUG -std=c++17 -march=native -pthread -Isrc tools/external/zquoridor_uci.cpp -o /tmp/zq
+      - name: 200-game adaptive vs current-behavior baseline
+        run: |
+          python tools/ahead_finalists_ab.py --binary /tmp/zq --weights "$WEIGHTS" --openings "$OPENINGS" \
+            --pairs 100 --workers 4 --seed "$SEED" --move-time-ms ${{ matrix.ms }} --max-plies 240 \
+            --baseline-arg=--no-adaptive-repeat-escape \
+            --bootstrap 30000 --output result-adaptive-${{ matrix.tc }}.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: adaptive-repeat-${{ matrix.tc }}-${{ github.run_id }}
+          path: result-adaptive-${{ matrix.tc }}.json
+
+  realclock:
+    name: clock ${{ matrix.tc }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 355
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {tc: "30p0", base: 30000, inc: 0}
+          - {tc: "60p1", base: 60000, inc: 1000}
+          - {tc: "180p2", base: 180000, inc: 2000}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.11"}
+      - name: Build
+        run: g++ -O3 -DNDEBUG -std=c++17 -march=native -pthread -Isrc tools/external/zquoridor_uci.cpp -o /tmp/zq
+      - name: 200-game adaptive vs current-behavior baseline
+        run: |
+          python tools/ahead_finalists_ab.py --binary /tmp/zq --weights "$WEIGHTS" --openings "$OPENINGS" \
+            --pairs 100 --workers 4 --seed "$SEED" --base-ms ${{ matrix.base }} --inc-ms ${{ matrix.inc }} --max-plies 240 \
+            --baseline-arg=--no-adaptive-repeat-escape \
+            --bootstrap 30000 --output result-adaptive-${{ matrix.tc }}.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: adaptive-repeat-${{ matrix.tc }}-${{ github.run_id }}
+          path: result-adaptive-${{ matrix.tc }}.json
+
+  claustro200:
+    name: claustrophobia 200ms ${{ matrix.mode }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 300
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {mode: adaptive, extra: ""}
+          - {mode: baseline, extra: "--zq-arg=--no-adaptive-repeat-escape"}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.11"}
+      - name: Runtime and build
+        run: |
+          python -m pip install --disable-pip-version-check numpy
+          python -m pip install --disable-pip-version-check torch --index-url https://download.pytorch.org/whl/cpu
+          g++ -O3 -DNDEBUG -std=c++17 -march=native -pthread -Isrc tools/external/zquoridor_uci.cpp -o /tmp/zq
+      - name: 200 games vs Claustrophobia
+        run: |
+          python tools/run_benchmark.py --opponents claustrophobia --pairs 100 --workers 2 --seed "$SEED" \
+            --openings "$OPENINGS" --output results/${{ matrix.mode }} --zq-executable /tmp/zq --nnue "$WEIGHTS" \
+            ${{ matrix.extra }} --zq-move-time-ms 200 --claustrophobia-move-time-ms 200 \
+            --claustrophobia-max-sims 4096 --claustrophobia-cpuct 1.5 --claustrophobia-device cpu \
+            --bootstrap 30000 --max-plies 240 --no-resume --auto-setup
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: adaptive-repeat-claustro-${{ matrix.mode }}-${{ github.run_id }}
+          path: results/**
