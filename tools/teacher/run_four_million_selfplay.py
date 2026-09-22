@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import gc
 import hashlib
 import json
 import math
@@ -310,24 +311,34 @@ def _validate_pair(v3_path: Path, meta_path: Path) -> list[bytes]:
     metadata = np.memmap(meta_path, dtype=META_DTYPE, mode="r")
     try:
         keys: list[bytes] = []
-        for row, meta in zip(v3, metadata):
+        for row_index, (row, meta) in enumerate(zip(v3, metadata)):
             action = int(row["policy_target"])
             if action >= POLICY_DIM:
-                raise ValueError("the shard has an illegal policy target")
+                raise ValueError(f"the shard has an illegal policy target at record {row_index}")
             for index, probability in zip(row["policy_top_idx"], row["policy_top_prob"]):
                 if int(probability) and int(index) >= POLICY_DIM:
-                    raise ValueError("the shard has an illegal policy index")
+                    raise ValueError(f"the shard has an illegal policy index at record {row_index}")
             if not (int(meta["flags"]) & QUALITY_MISSING_ROOT_VALUE) and not np.isfinite(meta["root"]):
-                raise ValueError("the metadata root value is not finite")
+                raise ValueError(f"the metadata root value is not finite at record {row_index}")
             if int(meta["length"]) and int(meta["plies"]) > int(meta["length"]):
-                raise ValueError("the metadata terminal distance exceeds the game length")
+                raise ValueError(f"the metadata terminal distance exceeds the game length at record {row_index}")
             keys.append(UniqueStateStore.canonical_key(row))
         return keys
     finally:
         # Windows keeps the mapped file open until the memmap object is
         # released. Release both views before quarantine moves the shard.
+        # NumPy memmap owns a Windows file mapping.  ``del`` alone is not
+        # sufficient when validation raises inside the loop: the mapping can
+        # survive until the next GC cycle and make quarantine fail with
+        # WinError 32.  Close the underlying mmap explicitly, then collect
+        # any wrapper objects before the caller moves the files.
+        for mapped in (metadata, v3):
+            mmap_obj = getattr(mapped, "_mmap", None)
+            if mmap_obj is not None:
+                mmap_obj.close()
         del metadata
         del v3
+        gc.collect()
 
 
 def _quarantine(out_dir: Path, paths: Iterable[Path]) -> None:
@@ -341,7 +352,18 @@ def _quarantine(out_dir: Path, paths: Iterable[Path]) -> None:
         while destination.exists():
             destination = quarantine / f"{path.stem}.{suffix}{path.suffix}"
             suffix += 1
-        shutil.move(str(path), str(destination))
+        last_error: OSError | None = None
+        for attempt in range(8):
+            try:
+                shutil.move(str(path), str(destination))
+                last_error = None
+                break
+            except PermissionError as error:
+                last_error = error
+                gc.collect()
+                time.sleep(0.10 * (attempt + 1))
+        if last_error is not None:
+            raise last_error
 
 
 def _manifest_counts(accepted_shards: Iterable[Mapping[str, object]]) -> TargetCounts:
@@ -918,9 +940,20 @@ def run_controller(args: argparse.Namespace) -> int:
                     raise RuntimeError(f"self-play shard {index} failed with exit code {return_code}")
                 try:
                     keys = _validate_pair(stage_v3, stage_meta)
-                except (OSError, ValueError):
+                except (OSError, ValueError) as error:
                     _quarantine(out_dir, (stage_v3, stage_meta))
-                    raise
+                    manifest.setdefault("rejected_shards", []).append({
+                        "index": index,
+                        "attempt": attempt,
+                        "reason": str(error),
+                        "v3": stage_v3.name,
+                        "meta": stage_meta.name,
+                    })
+                    _atomic_json(out_dir / "manifest.json", manifest)
+                    attempt += 1
+                    _write_progress(out_dir, counts, index, attempt, "running",
+                                    counters=store_counters)
+                    continue
                 final_v3, final_meta = _accepted_paths(out_dir, index)
                 selected_keys = _write_new_records(stage_v3, stage_meta, keys, store, capacity, final_v3, final_meta)
                 if not selected_keys:
