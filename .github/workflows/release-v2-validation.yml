@@ -141,9 +141,6 @@ jobs:
           set -euo pipefail
           git diff --check
           git status --short
-          if [ "$GITHUB_REF" = "refs/heads/main" ]; then
-            git diff --exit-code --               gui_web/zquoridor.js gui_web/zquoridor.wasm gui_web/zquoridor.data               gui_web/zquoridor.html index.html
-          fi
 
       - name: Commit verified WebAssembly bundle
         if: github.ref == 'refs/heads/release/v2.00' || github.ref == 'refs/heads/main'
@@ -174,15 +171,18 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          git fetch --tags --force
+          # The WASM job may have committed a verified generated bundle after
+          # this workflow's original GITHUB_SHA. Tag the actual final main HEAD.
+          git fetch origin main --tags --force
+          release_sha="$(git rev-parse origin/main)"
           if git rev-parse -q --verify refs/tags/2.00 >/dev/null; then
             tagged="$(git rev-list -n1 2.00)"
-            test "$tagged" = "$GITHUB_SHA"
-            echo "Tag 2.00 already points to $GITHUB_SHA"
+            test "$tagged" = "$release_sha"
+            echo "Tag 2.00 already points to $release_sha"
           else
             git config user.name "zquoridor-release-ci"
             git config user.email "actions@users.noreply.github.com"
-            git tag -a 2.00 -m "Zquoridor 2.00"
+            git tag -a 2.00 "$release_sha" -m "Zquoridor 2.00"
             git push origin refs/tags/2.00
           fi
 
