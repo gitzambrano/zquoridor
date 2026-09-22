@@ -1,4 +1,4 @@
-# Zquoridor 2.00
+# Zquoridor 2.01
 
 **[Play Zquoridor in your browser](https://gitzambrano.github.io/zquoridor/)**
 
