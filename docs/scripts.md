@@ -41,6 +41,43 @@ campaigns.
 | Complete campaign | `training/run_campaign.py` | configuration, data and optional teaching | data, candidates and arenas | Generic orchestration for a reproducible experiment. |
 | Historical all-in-one cycle | `training/strong_cycle.py` | generation settings | self-play, replay, training and arena output | Legacy orchestration. Do not use for a new campaign until it is migrated to the same `CONFIG` contract. |
 
+## Self-play transitions and provenance
+
+The balanced controller accepts any positive `time_ms`. Its historical filename
+does not restrict corpus size. Set targets and thread reservations in `CONFIG`.
+Each new accepted shard records its command and SHA-256 hashes of the generator
+and weights. Historical shards without these fields retain their original records.
+
+Set `visit_temperature_after` and `visit_temperature_exe` to switch generators
+at the first shard boundary after the unique-state threshold. Both executables
+must match the same weights. `visit_temperature_args` controls the phase schedule.
+The default schedule uses root visits and disables residual epsilon moves.
+
+Create `stop.request` in the corpus directory to stop an updated controller
+after its current shard transaction. Remove the request before resuming.
+An older process does not acquire this behavior from a source edit.
+Do not terminate a controller during shard admission or launch a second controller.
+
+## Stored-search replay
+
+Use `training/prepare_replay.py --mode stored_search` to consume V3 visits and
+aligned 20-byte metadata. Configure `source`, `out_dir`, and `max_positions`
+in `CONFIG`, or override these fields through CLI options.
+Managed corpora use only accepted manifest entries. This mode filters missing
+root values and zero-visit rows without modifying the source files.
+
+The value target is `(1-alpha)*(2*root-1) + alpha*gamma**plies*result`.
+Set `stored_outcome_weight` for alpha and `stored_gamma` for gamma.
+The policy target is the stored, renormalized top-eight visit distribution.
+This format does not retain the full root distribution or Action-Q targets.
+
+The sampler deduplicates states and separates game IDs between train and
+validation. It shuffles shards with a reproducible seed and limits the sample
+count. This is a bounded sample, not a globally uniform sample or an export of
+the strongest reference in `states.sqlite`. Audit source proportions before
+training and use a frozen corpus for reproducible datasets.
+Use a new output directory when the input or configuration changes.
+
 ## Folder map
 
 | Folder | Contents | Operational status |

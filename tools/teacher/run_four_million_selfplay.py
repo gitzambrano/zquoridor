@@ -45,16 +45,23 @@ CONFIG = {
     "out": "data/selfplay_canonical_v3/contact-4m-50ms",
     "exe": "bin/selfplay_phase_mcgs075.exe",
     "exe_arg": [],
+    # Optional mode transition. The replacement executable must match the weights.
+    "visit_temperature_after": 5_000_000,
+    "visit_temperature_exe": "bin/selfplay_phase_workflow_v2.exe",
+    "visit_temperature_args": ["--mc-mode", "--mc-obvious-plies", "3",
+                               "--mc-temp-obvious", "0.15", "--mc-temp-opening", "1.35",
+                               "--mc-temp-end", "0.12", "--mc-temp-decay-plies", "20",
+                               "--epsilon-midgame", "0", "--mcab"],
     "weights": "results/experiments/multipath-phase512-searchboost-100ep/student_int8.bin",
     "central_schedule": "data/selfplay_canonical_v3/contact-4m-50ms/schedules/central_positions.jsonl",
     "broad_schedule": "data/selfplay_canonical_v3/contact-4m-50ms/schedules/broad_positions.jsonl",
     "weakness_corpus": [],
-    "total_target": DEFAULT_TOTAL_TARGET, "central_target": DEFAULT_CENTRAL_TARGET,
-    "broad_target": DEFAULT_BROAD_TARGET, "family_floor": DEFAULT_FAMILY_FLOOR,
+    "total_target": 8_516_655, "central_target": 6_016_655,
+    "broad_target": 2_500_000, "family_floor": DEFAULT_FAMILY_FLOOR,
     "games_per_shard": 512, "seed_rows_per_shard": 10_000, "time_ms": 50,
     "max_plies": 140, "seed": 20260921, "fine_tune_pid": None,
-    "threads_during_fine_tune": 10, "threads_after_fine_tune": 12,
-    "fine_tune_threads": 4, "cpu_thread_limit": 16, "reliability": 2.0,
+    "threads_during_fine_tune": 14, "threads_after_fine_tune": 14,
+    "fine_tune_threads": 0, "cpu_thread_limit": 16, "reliability": 2.0,
     "dry_run": True,
 }
 META_DTYPE = np.dtype([
@@ -792,10 +799,39 @@ def _game_entries(v3_path: Path, meta_path: Path, seed_id: int,
     return [by_game[game_id] for game_id in sorted(by_game)]
 
 
+def generation_args(args: argparse.Namespace, total: int) -> argparse.Namespace:
+    """Select the generator at a shard boundary from durable unique counts."""
+    selected = argparse.Namespace(**vars(args))
+    threshold = getattr(args, "visit_temperature_after", None)
+    if threshold is not None and total >= threshold:
+        selected.exe = Path(args.visit_temperature_exe)
+        selected.exe_arg = [*args.exe_arg, *args.visit_temperature_args]
+    return selected
+
+
+def generator_provenance(args: argparse.Namespace) -> dict:
+    """Record the exact executable and weights for each accepted shard."""
+    result = {"exe_arg": list(args.exe_arg)}
+    for name in ("exe", "weights"):
+        path = Path(getattr(args, name)).resolve()
+        digest = hashlib.sha256()
+        with path.open("rb") as stream:
+            for block in iter(lambda: stream.read(1024 * 1024), b""):
+                digest.update(block)
+        result[name] = {"path": str(path), "sha256": digest.hexdigest()}
+    return result
+
+
 def _validate_args(args: argparse.Namespace) -> None:
     """Validate controller targets and CPU reservations before generation."""
-    if args.time_ms != 50:
-        raise ValueError("the four-million controller requires 50 ms per move")
+    if args.time_ms < 1:
+        raise ValueError("the move budget must be positive")
+    threshold = getattr(args, "visit_temperature_after", None)
+    if threshold is not None:
+        if threshold < 0 or not getattr(args, "visit_temperature_exe", None):
+            raise ValueError("the visit-temperature transition requires a threshold and executable")
+        if not Path(args.visit_temperature_exe).is_file():
+            raise FileNotFoundError(args.visit_temperature_exe)
     if args.total_target < 1 or args.central_target < 1 or args.broad_target < 1:
         raise ValueError("the corpus targets must be positive")
     if args.family_floor < 0 or args.games_per_shard < 1 or args.seed_rows_per_shard < 1:
@@ -878,6 +914,13 @@ def run_controller(args: argparse.Namespace) -> int:
                 broad_target=args.broad_target,
                 family_floor=args.family_floor,
             ):
+                # A request never interrupts a child or a shard transaction.
+                if (out_dir / "stop.request").exists():
+                    _write_progress(out_dir, counts, index, attempt, "stopped",
+                                    counters=store_counters)
+                    return 0
+                selected_args = generation_args(args, counts.total)
+                provenance = generator_provenance(selected_args)
                 source, family = select_next_pool(
                     counts,
                     total_target=args.total_target,
@@ -907,12 +950,13 @@ def run_controller(args: argparse.Namespace) -> int:
                     cpu_thread_limit=args.cpu_thread_limit,
                 )
                 stage_v3, stage_meta = _stage_paths(out_dir, index, attempt)
-                command = _command(args, stage_v3, stage_meta, seeds, index, attempt, source, family, threads)
+                command = _command(selected_args, stage_v3, stage_meta, seeds, index, attempt, source, family, threads)
                 launch_intent = {
                     "launch_id": uuid.uuid4().hex,
                     "index": index,
                     "attempt": attempt,
                     "command": command,
+                    "generator": provenance,
                     "v3": str(stage_v3.relative_to(out_dir)),
                     "meta": str(stage_meta.relative_to(out_dir)),
                     "seed_file": str(seeds.relative_to(out_dir)),
@@ -977,6 +1021,8 @@ def run_controller(args: argparse.Namespace) -> int:
                 seed_id = args.seed + index * 999_983 + attempt * 7_919
                 games = _game_entries(final_v3, final_meta, seed_id, args.max_plies)
                 accepted_entry = {
+                    "command": command,
+                    "generator": provenance,
                     "index": index,
                     "v3": final_v3.name,
                     "meta": final_meta.name,
@@ -1057,6 +1103,12 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--exe", type=Path, default=CONFIG["exe"], help="Architecture-matched self-play executable.")
     parser.add_argument("--exe-arg", action="append", default=CONFIG["exe_arg"],
                         help="Argument that follows the self-play executable. Repeat this option.")
+    parser.add_argument("--visit-temperature-after", type=int, default=CONFIG["visit_temperature_after"],
+                        help="Switch modes after this many admitted unique states, between shards.")
+    parser.add_argument("--visit-temperature-exe", type=Path, default=CONFIG["visit_temperature_exe"],
+                        help="Executable with root-visit sampling and the same NNUE architecture.")
+    parser.add_argument("--visit-temperature-arg", action="append", dest="visit_temperature_args",
+                        help="Replace the phase arguments. Repeat with --visit-temperature-arg=VALUE for flags.")
     parser.add_argument("--weights", type=Path, default=CONFIG["weights"], help="Architecture-matched quantized NNUE weights.")
     parser.add_argument("--central-schedule", type=Path, default=CONFIG["central_schedule"], help="Central schedule JSONL file.")
     parser.add_argument("--broad-schedule", type=Path, default=CONFIG["broad_schedule"], help="Broad schedule JSONL file.")
@@ -1080,7 +1132,10 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
                         help="Reliability for generated records.")
     parser.add_argument("--dry-run", action=argparse.BooleanOptionalAction,
                         default=CONFIG["dry_run"], help="Print the resolved configuration and exit.")
-    return parser.parse_args(argv)
+    args = parser.parse_args(argv)
+    if args.visit_temperature_args is None:
+        args.visit_temperature_args = list(CONFIG["visit_temperature_args"])
+    return args
 
 
 def main(argv: Sequence[str] | None = None) -> int:

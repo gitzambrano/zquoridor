@@ -38,6 +38,14 @@ openings, fixed **200 ms per move**, and record failures separately from draws.
 | Production `multipath_phase:512` | Titanium, Center Rush | 46.0% | 100 games | known weakness |
 | Production without/with pondering | Claustrophobia | 51.0% / 51.5% | 100 games each | no significant external conclusion |
 | Pondering candidate | same engine without pondering | 63.125% | 400 paired games | internal configuration gain from subtree reuse |
+| `multipath_phase_contact:512` | production `multipath_phase:512` searchboost checkpoint | 47.25% | 200 paired games | contact candidate did not win the H2H screen |
+| `multipath_phase_contact:512` | Claustrophobia | 50.25% | 600 games | full-suite screening; no strength claim |
+| `multipath_phase_contact:512` | Titanium, Center Rush | 49.0% | 100 games | full-suite screening; no strength claim |
+| `multipath_phase:512` reliable-search FT | production searchboost checkpoint | 45.5% | 200 paired games | reliable-search FT did not win the H2H screen |
+| `multipath_phase:512` reliable-search FT | Claustrophobia | 48.58% | 600 games | full-suite screening; no strength claim |
+| `multipath_phase:512` reliable-search FT | Titanium, normal book | 68.5% | 100 games | positive screening result; needs paired confirmation |
+| `multipath_phase:512` reliable-search FT | Titanium, Center Rush | 47.0% | 100 games | Center Rush remains unresolved |
+| `multipath_phase:512` with MCGS075 | Claustrophobia | 53.875% | 400 games | Stage A result; search setting is not an NNUE claim |
 
 The production candidate failed the recorded Claustrophobia family gate. The
 lowest observed family was `reed_rear_wall`; Center Rush also remains a high
@@ -64,8 +72,8 @@ the network was never trained.
 | `multipath:512` | 480 / 512 | multipath campaign | — | 51.08% Claustrophobia, 600 games | historical first positive Claustrophobia result |
 | `margin_regime:512` | 588 / 512 | weakness/Center Rush campaign | — | 49.0% Claustrophobia, 600 games | versioned research checkpoint; benchmark only if rerun is justified |
 | **production `multipath_phase:512`** | **504 / 512** | 11.065M weakness-boosted data, QAT, 100 epochs | — | rows above | **production** |
-| `multipath_phase_contact:512` | 858 / 512 | 11.378M local data, warm start, QAT, 160 epochs | 0.95217* | no arena yet | local candidate; parity and paired arena pending |
-| `multipath_phase:512` reliable-search FT | 504 / 512 | 313,344 selected search/rollout samples, QAT, 40 epochs | 1.16198* | no arena retained | local unpromoted fine-tune |
+| `multipath_phase_contact:512` | 858 / 512 | 11.378M local data, warm start, QAT, 160 epochs | 0.95217* | 47.25% H2H; 50.25% Claustrophobia; 49.0% Center Rush | local candidate; no promotion-level gain |
+| `multipath_phase:512` reliable-search FT | 504 / 512 | 313,344 selected search/rollout samples, QAT, 40 epochs | 1.16198* | 45.5% H2H; 48.58% Claustrophobia; 68.5% Titanium; 47.0% Center Rush | local unpromoted fine-tune |
 
 \* Do not compare these losses across different datasets, weighting schemes, or
 fine-tune stages.
@@ -110,22 +118,33 @@ versioned; the rest are intentionally local.
 ## 5. Work running now
 
 `tools/teacher/run_four_million_selfplay.py` is the generic controller for the
-local `contact-4m-50ms` V3 corpus with the selected executable and weights:
+local `contact-4m-50ms` V3 corpus with the selected executable and weights.
+The audit snapshot contains 4,329,982 unique states, approximately 55% central.
+Preserve these states and correct the composition through subsequent shards:
 
 - 50 ms per move and configurable self-play threads;
-- default target: 4,000,000 admitted unique states;
-- default mix: 2,500,000 central states and 1,500,000 broad states;
+- final target: 10,000,000 admitted unique states;
+- planned final mix: approximately 75% main Stage A data and 25% contact data;
+- planned state mix: approximately 75% central states and 25% broad states;
 - balanced minimum coverage across required opening families;
 - aligned metadata sidecars, manifests, deduplication, and safe resume.
 
 After the corpus reaches 5,000,000 admitted states, the next self-play phase
 uses a low-to-high-to-low temperature schedule over MCAB root visits. The
-generator records the untempered visit distribution as the policy target.
+generator records the untempered top-eight visits, renormalized as the policy target.
 This keeps search supervision for the policy head while the temperature adds
 plausible opening variation.
 
 The local `progress.json` beside that corpus is the source of truth. Never run
 a second controller against the same output directory.
+The current baseline phase stops at 8,516,655 unique states. Then the contact
+phase completes the final targets. Audit producer shares from unique-state
+references before that transition. Raw shard row counts include duplicates.
+
+The corrected generators honor full and cheap search budgets on temperature
+plies. They label policy and root value only after a search on that ply.
+The updated controller records generator hashes and supports a threshold-based
+transition. These source changes do not alter the already-running process.
 
 ## 6. Promotion protocol
 
@@ -141,19 +160,26 @@ a second controller against the same output directory.
 
 ## 7. Roadmap
 
-1. Finish and audit the active balanced self-play corpus.
-2. Convert selected new V3 states through replay/teaching; retain broad data as
-   an anchor and use expensive search labels for disagreement, corridor, and
-   tactical positions.
-3. Run parity, then fixed-200 ms screening for the contact candidate against
-   production. Do not alter search settings in that comparison.
-4. If it screens positively, confirm it against production, Titanium, and
-   Claustrophobia with fresh paired openings and family breakdowns.
-5. Use losses from those matches to choose the next teaching slice. Priorities
-   are `reed_rear_wall`, Center Rush, wall-poor corridors, and wandering-like
-   positions.
-6. Revisit `margin_regime` or a search-only fine-tune only when there is a
-   specific weakness hypothesis and a reproducible configuration.
+1. Finish and audit the active corpus at 10,000,000 unique states. Preserve all
+   existing data. Use corrected visit-temperature generation for the final
+   five million states. Start experimental training only after this audit.
+2. Train the main and contact paths on the same data mixture. Blend root and
+   result targets with a measured discount. Keep genuine search-policy labels
+   separate from replay labels.
+   Use the generic stored-search replay mode after the corpus audit. Retain
+   a broad anchor and cap critical-source weights. Report sample counts and
+   effective weight per source, policy KL, value loss, and family holdouts.
+3. Use an explicit cosine weight-decay schedule to its minimum, warm up the
+   learning rate, retain a sufficient QAT tail, and set patience for the full
+   80 to 160 epoch schedule. Compare the same recipe and dataset.
+4. Run parity and holdout checks, then fixed-200 ms screening. Keep search
+   settings unchanged in the comparison.
+5. Require paired evidence against production, Titanium, and Claustrophobia.
+   Require a point score above 60% in each of the five Claustrophobia families
+   at 200 ms before promotion. Use four 3+2 games only to check clock safety.
+6. Test low-cost cached BFS and local wall geometry before adding a network
+   architecture. Do not add a network without a specific weakness hypothesis
+   and a reproducible configuration.
 
 ## 8. Durable lessons
 
@@ -163,6 +189,9 @@ a second controller against the same output directory.
   positions. Blind self-distillation can reinforce wandering.
 - Cached BFS features and local wall geometry are cheap to evaluate, but an
   architecture is only useful if the paired arena shows a gain.
+- Neither contact nor reliable-search FT demonstrated a promotion-level gain.
+- The active corpus is below the 10M target. The 5M root-visit schedule is a
+  planned transition, not a completed result.
 - Keep raw data and transient artifacts local. Version source, reproducible
   provenance, concise results, and the current roadmap.
 

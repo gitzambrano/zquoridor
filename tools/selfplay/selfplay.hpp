@@ -141,7 +141,7 @@ struct TrainingSample {
     int16_t  ownCatTotal;   // soma do calor de corredor do mover (perspectiva própria, já natural -- sem espelho a fazer: é escalar)
     int16_t  oppCatTotal;   // soma do calor de corredor do oponente
     uint16_t policyTopIdx[8];   // top-8 policy indices by MCAB root visits, mirrored
-    uint16_t policyTopProb[8];  // top-8 visit probabilities, normalized to sum 65535
+    uint16_t policyTopProb[8];  // truncated top-8 visits, renormalized to sum 65535
 };
 #pragma pack(pop)
 static_assert(sizeof(TrainingSample) == 64,
@@ -369,9 +369,11 @@ inline Move sampleMoveByVisitTemperature(const RootNode& root, double temperatur
     const double inverseTemperature = 1.0 / std::max(temperature, MIN_TEMP);
     std::array<double, POLICY_OUT> logWeights{};
     double maxLogWeight = -std::numeric_limits<double>::infinity();
+    size_t fallback = 0;
     for (size_t i = 0; i < nMoves; ++i) {
         const double visits = static_cast<double>(root.N[i]);
         if (!(visits > 0.0) || !std::isfinite(visits)) continue;
+        fallback = i;
         logWeights[i] = std::log(visits) * inverseTemperature;
         maxLogWeight = std::max(maxLogWeight, logWeights[i]);
     }
@@ -380,7 +382,10 @@ inline Move sampleMoveByVisitTemperature(const RootNode& root, double temperatur
     double sum = 0.0;
     for (size_t i = 0; i < nMoves; ++i) {
         const double visits = static_cast<double>(root.N[i]);
-        if (!(visits > 0.0) || !std::isfinite(visits)) continue;
+        if (!(visits > 0.0) || !std::isfinite(visits)) {
+            logWeights[i] = 0.0;
+            continue;
+        }
         logWeights[i] = std::exp(logWeights[i] - maxLogWeight);
         sum += logWeights[i];
     }
@@ -388,10 +393,11 @@ inline Move sampleMoveByVisitTemperature(const RootNode& root, double temperatur
     const double target = pick(rng);
     double cumulative = 0.0;
     for (size_t i = 0; i < nMoves; ++i) {
+        if (logWeights[i] == 0.0) continue;
         cumulative += logWeights[i];
         if (target <= cumulative) return root.moves[i];
     }
-    return root.moves[nMoves - 1];
+    return root.moves[fallback];
 }
 
 // Escolhe o 2º ou 3º melhor lance (empate: 50/50) via busca rasa depth=2
@@ -515,8 +521,10 @@ inline std::vector<TrainingSample> playOneGame(Negamax& engine0, Negamax& engine
         // recorded exactly as before. In playout-cap mode only a full real
         // search may set recordSample=true.
         bool recordSample = !cfg.playoutCapEnabled;
+        bool searchedThisPly = false;
 
         auto searchedMove = [&](bool fullSearch) {
+            searchedThisPly = true;
             SearchStats st;
             int budgetMs = fullSearch ? cfg.timeBudgetMs : cfg.cheapTimeBudgetMs;
             if (budgetMs <= 0) budgetMs = cfg.timeBudgetMs;
@@ -551,7 +559,12 @@ inline std::vector<TrainingSample> playOneGame(Negamax& engine0, Negamax& engine
                 }
                 // Run the usual MCAB search. Then sample from the root
                 // visits. This matches the AlphaZero self-play convention.
-                chosen = searchedMove(true);
+                // Under a playout cap, the configured full/cheap split also
+                // applies to temperature plies; only full searches are
+                // retained as training samples.
+                bool fullSearch = !cfg.playoutCapEnabled || (unif(rng) < cfg.fullSearchProb);
+                chosen = searchedMove(fullSearch);
+                recordSample = !cfg.playoutCapEnabled || fullSearch;
                 const auto* rootNode = mcabRunner.search.rootNodeForInspection();
                 if (rootNode && rootNode->expanded && rootNode->state.hash == s.hash) {
                     chosen = sampleMoveByVisitTemperature(*rootNode, temperature, rng);
@@ -611,7 +624,6 @@ inline std::vector<TrainingSample> playOneGame(Negamax& engine0, Negamax& engine
         if (!chosenLegal) {
             chosen = moves[0];
             recordSample = false;
-            if (cfg.playoutCapEnabled) stats.samplesSkipped++;
         }
 
         if (!recordSample && cfg.playoutCapEnabled) stats.samplesSkipped++;
@@ -641,7 +653,7 @@ inline std::vector<TrainingSample> playOneGame(Negamax& engine0, Negamax& engine
         // no-wall fallback plies from the visit-policy loss.
         if (cfg.mcabParams.enabled) {
             const auto* rootNode = mcabRunner.search.rootNodeForInspection();
-            if (rootNode && rootNode->expanded && rootNode->state.hash == s.hash) {
+            if (searchedThisPly && rootNode && rootNode->expanded && rootNode->state.hash == s.hash) {
                 struct VisitEdge { size_t edge; float visits; };
                 std::vector<VisitEdge> ranked;
                 size_t nm = std::min(rootNode->moves.size(), rootNode->N.size());
@@ -650,6 +662,9 @@ inline std::vector<TrainingSample> playOneGame(Negamax& engine0, Negamax& engine
                     if (rootNode->N[i] > 0.f) ranked.push_back({i, rootNode->N[i]});
                 std::stable_sort(ranked.begin(), ranked.end(),
                     [](const VisitEdge& a, const VisitEdge& b) { return a.visits > b.visits; });
+                // V3 stores only the top eight visits. Renormalize over this
+                // truncated set so the fixed-width probabilities still sum
+                // to 65535; they are not the full-root distribution.
                 if (ranked.size() > 8) ranked.resize(8);
                 double sumVisits = 0.0;
                 for (const auto& e : ranked) sumVisits += (double)e.visits;
@@ -682,7 +697,7 @@ inline std::vector<TrainingSample> playOneGame(Negamax& engine0, Negamax& engine
             uint8_t qualityFlags = TRAINING_META_ROOT_VALUE_MISSING;
             if (cfg.mcabParams.enabled) {
                 const auto* rootNode = mcabRunner.search.rootNodeForInspection();
-                if (rootNode && rootNode->expanded && rootNode->state.hash == s.hash) {
+                if (searchedThisPly && rootNode && rootNode->expanded && rootNode->state.hash == s.hash) {
                     double weighted = 0.0;
                     double totalVisits = 0.0;
                     for (size_t i = 0; i < rootNode->N.size(); ++i) {

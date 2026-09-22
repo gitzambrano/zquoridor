@@ -3,8 +3,10 @@
 
 Input:
     ``data/selfplay_canonical_v3/<generation>/selfplay_*.bin`` (64-byte V3
-    records), plus the old
-    NNUE weights and the pinned Claustrophobia checkpoint.
+    records), plus the old NNUE weights and the pinned Claustrophobia
+    checkpoint. With ``--mode stored_search``, each V3 shard must instead
+    have an aligned 20-byte ``.meta`` sidecar; stored MCAB visits and root
+    values are consumed directly and no teacher inference runs.
 
 Output:
     ``<out-dir>/dataset.npz`` with train/validation splits and blended policy
@@ -15,6 +17,13 @@ Output:
 The configuration block is the default; every field can be overridden with a
 matching CLI option.  Use a new output directory when inputs or settings
 change.
+
+The default ``--mode inference`` behavior is unchanged.  Stored replay uses
+``--stored-gamma`` for symmetric terminal-result discount and
+``--stored-outcome-weight`` to blend it with the signed root value. It
+deduplicates canonical states and assigns game IDs to train or validation.
+The stored mode shuffles shard order before its bounded scan.
+The resulting sample is reproducible but is not globally uniform.
 """
 from __future__ import annotations
 import argparse
@@ -29,6 +38,7 @@ import torch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
+sys.path.insert(0, str(ROOT / "training"))
 sys.path.insert(0, str(ROOT / "training/teachers"))
 from read_selfplay import _detect_format
 from student_model import Student, encode_features
@@ -52,8 +62,66 @@ CONFIG = {
     "claustro_value_weight": 0.25,
     "outcome_weight": 0.0,
     "resume": True,
+    # Legacy inference remains the default.  stored_search consumes aligned
+    # V3/.meta pairs and never invokes either teacher.
+    "mode": "inference",
+    "stored_gamma": 0.99,
+    "stored_outcome_weight": 0.5,
 }
 STATE_FIELDS = ("own_pawn", "opp_pawn", "walls_h", "walls_v", "walls_left_own", "walls_left_opp")
+POLICY_DIM = 209
+# Names match the controller's public META_DTYPE while the packed layout
+# matches TrainingMetaV1 exactly.
+META_DTYPE = np.dtype([("game", "<u8"), ("root", "<f4"),
+                       ("plies", "<u2"), ("length", "<u2"),
+                       ("source", "u1"), ("flags", "u1"),
+                       ("reserved", "<u2")])
+METADATA_DTYPE = META_DTYPE
+META_ROOT_MISSING = 1
+META_ROOT_VALID = 2
+
+
+def normalize_visits(indices, visits) -> np.ndarray:
+    """Expand a V3 top-eight visit distribution into a dense policy target."""
+    result = np.zeros(POLICY_DIM, dtype=np.float32)
+    indices = np.asarray(indices)
+    visits = np.asarray(visits, dtype=np.float64)
+    if indices.shape != visits.shape or indices.ndim != 1:
+        raise ValueError("stored visits and indices must be one-dimensional and aligned")
+    positive = visits > 0
+    if (not np.isfinite(visits).all() or np.any(visits < 0)
+            or np.any(indices[positive] < 0) or np.any(indices[positive] >= POLICY_DIM)):
+        raise ValueError("stored visits must be finite, non-negative, and use legal policy indices")
+    total = float(visits.sum())
+    if total <= 0:
+        raise ValueError("stored visits must contain positive mass")
+    for index, visit in zip(indices, visits):
+        if visit > 0:
+            result[int(index)] += float(visit)
+    result /= total
+    return result
+
+
+def stored_value_target(root_value: float, terminal_result: int, remaining_plies: int,
+                        gamma: float, outcome_weight: float = 0.5) -> float:
+    """Blend signed root search value with discounted terminal evidence."""
+    root = float(root_value)
+    if not math.isfinite(root) or not 0.0 <= root <= 1.0:
+        raise ValueError("stored root value must be finite and in [0,1]")
+    if int(terminal_result) != terminal_result or int(terminal_result) not in (-1, 0, 1):
+        raise ValueError("stored terminal result must be -1, 0, or 1")
+    plies = int(remaining_plies)
+    if plies != remaining_plies or plies < 0:
+        raise ValueError("stored remaining plies must be a non-negative integer")
+    gamma = float(gamma)
+    if not math.isfinite(gamma) or not 0.0 <= gamma <= 1.0:
+        raise ValueError("stored gamma must be finite and in [0,1]")
+    alpha = float(outcome_weight)
+    if not math.isfinite(alpha) or not 0.0 <= alpha <= 1.0:
+        raise ValueError("stored outcome weight must be finite and in [0,1]")
+    root_signed = 2.0 * root - 1.0
+    return float(np.clip((1.0 - alpha) * root_signed
+                         + alpha * (gamma ** plies) * int(terminal_result), -1.0, 1.0))
 
 
 def legal_wall_topology(walls_h: int, walls_v: int, own_pawn: int, opp_pawn: int) -> bool:
@@ -193,6 +261,122 @@ def sample_states(config, blocked=()):
     return arrays, dict(shards=provenance, skipped_legacy_shards=skipped, samples=len(rows))
 
 
+def sample_stored_states(config, blocked=()):
+    """Load V3 states and aligned TrainingMetaV1 sidecars as whole-game groups."""
+    source_root = Path(config["source"])
+    manifest_path = source_root / "manifest.json"
+    if manifest_path.exists():
+        try:
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            entries = manifest.get("accepted_shards")
+            if not isinstance(entries, list):
+                raise ValueError("managed self-play manifest has no accepted_shards list")
+            files = []
+            for entry in entries:
+                if not isinstance(entry, dict) or not isinstance(entry.get("v3"), str):
+                    raise ValueError("managed self-play manifest has an invalid accepted shard")
+                path = (source_root / entry["v3"]).resolve()
+                if source_root.resolve() not in path.parents:
+                    raise ValueError("managed self-play manifest shard leaves source directory")
+                files.append(path)
+        except json.JSONDecodeError as error:
+            raise ValueError(f"invalid managed self-play manifest: {manifest_path}") from error
+    else:
+        # Flat/generic sources have no controller staging tree. Managed
+        # corpora always take the manifest branch above.
+        files = sorted(source_root.glob("*.bin"))
+    if not files:
+        raise ValueError("stored_search requires at least one V3 .bin shard")
+    rng = np.random.default_rng(config["seed"])
+    rng.shuffle(files)
+    groups = {}
+    provenance = []
+    seen = set(blocked)
+    accepted = 0
+    skipped_missing = 0
+    skipped_no_visits = 0
+    stop = False
+    for path in files:
+        dtype, size = _detect_format(path)
+        if size != 64:
+            raise ValueError(f"stored_search requires V3 64-byte shards: {path}")
+        meta_path = path.with_suffix(".meta")
+        if not meta_path.exists():
+            raise ValueError(f"stored_search metadata sidecar is missing: {meta_path}")
+        if meta_path.stat().st_size % META_DTYPE.itemsize:
+            raise ValueError(f"stored_search metadata sidecar is not 20-byte aligned: {meta_path}")
+        data = np.memmap(path, dtype=dtype, mode="r")
+        metadata = np.memmap(meta_path, dtype=META_DTYPE, mode="r")
+        if len(data) != len(metadata):
+            raise ValueError(f"stored_search shard and metadata counts differ: {path}")
+        path_sha = sha(path)
+        meta_sha = sha(meta_path)
+        provenance.append(dict(path=str(path.resolve()), meta=str(meta_path.resolve()),
+                               sha256=path_sha, meta_sha256=meta_sha, record_bytes=size))
+        for index, (row, meta) in enumerate(zip(data, metadata)):
+            flags = int(meta["flags"])
+            root = float(meta["root"])
+            if flags & META_ROOT_MISSING:
+                skipped_missing += 1
+                continue
+            if not math.isfinite(root) or not 0 <= root <= 1:
+                raise ValueError(f"stored_search root value is missing or invalid at {path}:{index}")
+            if not flags & META_ROOT_VALID:
+                raise ValueError(f"stored_search root value is unflagged at {path}:{index}")
+            if int(meta["length"]) and int(meta["plies"]) > int(meta["length"]):
+                raise ValueError(f"stored_search terminal distance exceeds game length at {path}:{index}")
+            key = tuple(int(row[name]) for name in STATE_FIELDS)
+            if key in seen or not legal_wall_topology(row["walls_h"], row["walls_v"], row["own_pawn"], row["opp_pawn"]):
+                continue
+            visits = np.asarray(row["policy_top_prob"], dtype=np.float64)
+            if not np.any(visits > 0):
+                skipped_no_visits += 1
+                continue
+            # Validate now, before any expensive downstream work.
+            normalize_visits(row["policy_top_idx"], visits)
+            seen.add(key)
+            game = int(meta["game"])
+            groups.setdefault(game, []).append((row.copy(), meta.copy(), index, path))
+            accepted += 1
+            if accepted >= config["max_positions"] and len(groups) >= 2:
+                stop = True
+                break
+        del metadata, data
+        if stop:
+            break
+    if len(groups) < 2:
+        raise ValueError("stored_search requires at least two independent game groups")
+    game_ids = np.asarray(list(groups), dtype=np.uint64)
+    rng.shuffle(game_ids)
+    n_val = max(1, min(len(game_ids) - 1, round(len(game_ids) * config["val_fraction"])))
+    val_games = set(int(x) for x in game_ids[:n_val])
+    rows, splits = [], []
+    for game in game_ids:
+        for row, meta, index, path in groups[int(game)]:
+            rows.append((row, meta, index, path))
+            splits.append(int(game) in val_games)
+    if len(rows) > config["max_positions"]:
+        order = rng.permutation(len(rows))[:config["max_positions"]]
+        rows = [rows[int(i)] for i in order]
+        splits = [splits[int(i)] for i in order]
+    if not any(splits) or all(splits):
+        raise ValueError("stored_search split must contain train and validation games")
+    names = (*STATE_FIELDS, "own_dist", "opp_dist", "game_result")
+    file_hashes = {path: item["sha256"] for path, item in zip(files, provenance)}
+    arrays = {name: np.asarray([int(item[0][name]) for item in rows], dtype=np.uint64 if name in ("walls_h", "walls_v") else np.int64)
+              for name in names}
+    arrays.update(id=np.asarray([hashlib.sha256(f"{file_hashes[path]}:{index}".encode()).hexdigest()[:24] for _, _, index, path in rows], dtype="S24"),
+                  group_id=np.asarray([str(int(meta["game"])) for _, meta, _, _ in rows], dtype="S64"),
+                  is_val=np.asarray(splits, dtype=bool),
+                  stored_root=np.asarray([float(meta["root"]) for _, meta, _, _ in rows], dtype=np.float32),
+                  stored_plies=np.asarray([int(meta["plies"]) for _, meta, _, _ in rows], dtype=np.int32),
+                  source_class=np.asarray([int(meta["source"]) for _, meta, _, _ in rows], dtype=np.uint8),
+                  policy_top_idx=np.asarray([item[0]["policy_top_idx"] for item in rows], dtype=np.uint16),
+                  policy_top_prob=np.asarray([item[0]["policy_top_prob"] for item in rows], dtype=np.uint16))
+    return arrays, dict(shards=provenance, samples=len(rows), games=len(groups), stored_search=True,
+                        skipped_missing_root=skipped_missing, skipped_zero_visits=skipped_no_visits)
+
+
 def raw_positions(data, start, stop):
     return [dict(id=data["id"][i].decode(), side_to_move=0,
                  history=["@state", *(str(int(data[key][i])) for key in STATE_FIELDS)])
@@ -200,6 +384,13 @@ def raw_positions(data, start, stop):
 
 
 def run(config):
+    if config.get("mode", "inference") not in ("inference", "stored_search"):
+        raise ValueError("mode must be 'inference' or 'stored_search'")
+    if config.get("mode") == "stored_search":
+        if not math.isfinite(float(config["stored_gamma"])) or not 0.0 <= float(config["stored_gamma"]) <= 1.0:
+            raise ValueError("stored_gamma must be finite and in [0,1]")
+        if not math.isfinite(float(config["stored_outcome_weight"])) or not 0.0 <= float(config["stored_outcome_weight"]) <= 1.0:
+            raise ValueError("stored_outcome_weight must be finite and in [0,1]")
     for key in ("max_positions", "batch_size", "chunk_size"):
         if config[key] <= 0:
             raise ValueError(f"{key} must be positive")
@@ -222,6 +413,27 @@ def run(config):
     blocked_data = encode_states([{"history": list(h)} for h in histories],
                                 _tool("teacher_encode_state", "tools/teacher/encode_state.cpp"))
     blocked = {tuple(int(blocked_data[k][i]) for k in STATE_FIELDS) for i in range(len(histories))}
+    if config.get("mode") == "stored_search":
+        data, provenance = sample_stored_states(config, blocked)
+        n = len(data["id"])
+        data["policy"] = np.asarray([normalize_visits(data["policy_top_idx"][i], data["policy_top_prob"][i]) for i in range(n)], dtype=np.float32)
+        data["value"] = np.asarray([stored_value_target(data["stored_root"][i], data["game_result"][i], data["stored_plies"][i], config["stored_gamma"], config["stored_outcome_weight"]) for i in range(n)], dtype=np.float32)
+        data["weight"] = np.ones(n, np.float32)
+        identity = dict(provenance=provenance, code_sha256=sha(__file__))
+        manifest = dict(fingerprint=hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest(),
+                        code_sha256=identity["code_sha256"],
+                        config={k: v for k, v in config.items() if k != "resume"}, provenance=provenance,
+                        complete=True, dataset=str((folder / "dataset.npz").resolve()),
+                        train_samples=int((~data["is_val"]).sum()), val_samples=int(data["is_val"].sum()))
+        manifest_path = folder / "replay_manifest.json"
+        if manifest_path.exists():
+            previous = json.loads(manifest_path.read_text(encoding="utf-8"))
+            if previous.get("fingerprint") != manifest["fingerprint"] or previous.get("config") != manifest["config"]:
+                raise ValueError("stored replay inputs or settings changed; use a new out_dir")
+        np.savez(folder / "dataset.npz", **data)
+        manifest["dataset_sha256"] = sha(folder / "dataset.npz")
+        manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+        return manifest
     data, provenance = sample_states(config, blocked)
     bots = ensure_bot("claustrophobia")
     identity = dict(config={k:v for k,v in config.items() if k != "resume"}, provenance=provenance,

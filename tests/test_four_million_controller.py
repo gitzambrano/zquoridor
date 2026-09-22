@@ -499,3 +499,52 @@ def test_direct_script_help_uses_the_repository_import_path():
 
     assert completed.returncode == 0
     assert "--central-schedule" in completed.stdout
+
+
+def test_visit_transition_uses_durable_count_without_mutating_base_args():
+    from tools.teacher.run_four_million_selfplay import generation_args, parse_args
+    args = parse_args(["--exe", "legacy.exe", "--visit-temperature-after", "5000000",
+                       "--visit-temperature-exe", "visits.exe"])
+    assert str(generation_args(args, 4999999).exe) == "legacy.exe"
+    selected = generation_args(args, 5000000)
+    assert str(selected.exe) == "visits.exe"
+    assert "--mc-mode" in selected.exe_arg
+    assert selected.weights == args.weights
+    assert str(args.exe) == "legacy.exe"
+    assert args.exe_arg == []
+
+
+def test_generator_provenance_distinguishes_weights(tmp_path):
+    from tools.teacher.run_four_million_selfplay import generator_provenance, parse_args
+    exe = tmp_path / "engine"
+    weights = tmp_path / "weights"
+    exe.write_bytes(b"engine")
+    weights.write_bytes(b"one")
+    args = parse_args(["--exe", str(exe), "--weights", str(weights)])
+    first = generator_provenance(args)
+    weights.write_bytes(b"two")
+    second = generator_provenance(args)
+    assert first["weights"]["sha256"] != second["weights"]["sha256"]
+    assert first["exe"] == second["exe"]
+
+
+def test_stop_request_preserves_data_and_launches_no_child(tmp_path, monkeypatch):
+    from tools.teacher.run_four_million_selfplay import parse_args
+    central = tmp_path / "central.jsonl"
+    broad = tmp_path / "broad.jsonl"
+    _write_schedule(central)
+    broad.write_text(json.dumps({"history": ["e2"]}) + "\n", encoding="utf-8")
+    weights = tmp_path / "weights.bin"
+    weights.write_bytes(b"weights")
+    out = tmp_path / "campaign"
+    out.mkdir()
+    (out / "stop.request").write_text("pause", encoding="utf-8")
+    args = parse_args(["--out", str(out), "--exe", sys.executable,
+                       "--weights", str(weights), "--central-schedule", str(central),
+                       "--broad-schedule", str(broad)])
+    def forbidden(*args, **kwargs):
+        pytest.fail("A stop request must prevent the next generator launch")
+    monkeypatch.setattr(subprocess, "Popen", forbidden)
+    assert run_controller(args) == 0
+    assert json.loads((out / "progress.json").read_text())["status"] == "stopped"
+    assert (out / "stop.request").exists()
