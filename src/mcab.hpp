@@ -676,6 +676,28 @@ public:
         McabStats localStats;
         McabStats& mstats = outStats ? *outStats : localStats;
         mstats = McabStats{};
+
+        // Exact root fast-path: if a legal pawn move wins immediately, there
+        // is nothing for MCAB, the endgame alpha-beta leaf rule, or the
+        // empty-handed race solver to improve. Return the terminal move before
+        // any policy pass, TT work, tree allocation, or time-budget loop.
+        // Keep nodeBudget<=1 equivalence mode untouched: that path exists
+        // specifically to validate MCAB-vs-AB integration in tests/benches.
+        //
+        // mcabEnumerateCandidates() is deliberately used instead of
+        // legalMoves(): on the production rules path it gets pawn moves
+        // directly and only enumerates cheap wall slots. Walls are skipped
+        // before applyMove(), so this remains an exact pawn-only test.
+        if (!equivMode() && winner(root) == -1) {
+            MoveListT immediateCandidates;
+            mcabEnumerateCandidates<MoveT>(root, root.turn, immediateCandidates, 0);
+            for (const MoveT& mv : immediateCandidates) {
+                if (mcabIsWall(mv, 0)) continue;
+                StateT child = applyMove(root, mv);
+                if (winner(child) == root.turn) return mv;
+            }
+        }
+
         if (params.evalCache) {
             if (policyEvalCache.empty()) policyEvalCache.resize(kEvalCacheEntries);
             if (valueEvalCache.empty()) valueEvalCache.resize(kEvalCacheEntries);
