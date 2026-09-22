@@ -21,7 +21,12 @@ def main():
         reqs = []
         page.on("request", lambda r: reqs.append(r.url) if not r.url.startswith("file://") else None)
         page.goto(url)
-        page.wait_for_timeout(3000)
+        # The standalone file:// bundle boots the embedded WASM asynchronously.
+        # A fixed delay is racy on CI; wait for the actual engine binding that
+        # every interaction below depends on.
+        page.wait_for_function(
+            "() => window.__w && typeof window.__w.applyPawn === 'function'",
+            timeout=15000)
 
         def check(name, cond):
             if not cond:
