@@ -66,6 +66,38 @@ void testAdaptiveTimeFactor() {
     printf("[testAdaptiveTimeFactor] volatile/uncertain/normal/stable classification OK\n");
 }
 
+
+// ---------------------------------------------------------------------
+// Time-control-aware repetition escape tuning. Keep the baseline in the
+// unproven middle/long-clock regimes and only activate measured variants.
+// ---------------------------------------------------------------------
+void testAdaptiveGraphRepeatEscape() {
+    mcab::McabParams p;
+
+    auto t = mcab::resolveGraphRepeatEscape(p, 50);
+    assert(std::abs(t.minQ - 0.60) < 1e-12 && std::abs(t.maxQLoss - 0.01) < 1e-12);
+    t = mcab::resolveGraphRepeatEscape(p, 500);
+    assert(std::abs(t.minQ - 0.60) < 1e-12 && std::abs(t.maxQLoss - 0.01) < 1e-12);
+    t = mcab::resolveGraphRepeatEscape(p, 700);
+    assert(std::abs(t.minQ - 0.50) < 1e-12 && std::abs(t.maxQLoss - 0.01) < 1e-12);
+    t = mcab::resolveGraphRepeatEscape(p, 1000);
+    assert(std::abs(t.minQ - 0.50) < 1e-12 && std::abs(t.maxQLoss - 0.02) < 1e-12);
+
+    p.adaptiveTime = true;
+    p.adaptiveOptimumMs = 1000; // representative 30+0 optimum
+    t = mcab::resolveGraphRepeatEscape(p, 3000);
+    assert(std::abs(t.minQ - 0.50) < 1e-12 && std::abs(t.maxQLoss - 0.02) < 1e-12);
+    p.adaptiveOptimumMs = 3000; // representative 60+1 optimum
+    t = mcab::resolveGraphRepeatEscape(p, 9000);
+    assert(std::abs(t.minQ - 0.50) < 1e-12 && std::abs(t.maxQLoss - 0.01) < 1e-12);
+
+    p.adaptiveGraphRepeatEscape = false;
+    p.adaptiveTime = false;
+    t = mcab::resolveGraphRepeatEscape(p, 200);
+    assert(std::abs(t.minQ - 0.50) < 1e-12 && std::abs(t.maxQLoss - 0.01) < 1e-12);
+    printf("[testAdaptiveGraphRepeatEscape] regime mapping OK\n");
+}
+
 // ---------------------------------------------------------------------
 // Automatic node guardrail follows move time but preserves the 200 ms era
 // floor. Explicit fixed-node mode remains unchanged.
@@ -456,6 +488,7 @@ void testProgressiveWidening() {
 int main() {
     testScoreToQMatchesWinProb();
     testAdaptiveTimeFactor();
+    testAdaptiveGraphRepeatEscape();
     testAutomaticNodeBudget();
     testPoolBudget();
     testImmediateWinFastPath();
