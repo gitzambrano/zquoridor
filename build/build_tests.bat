@@ -2,7 +2,7 @@
 REM build_tests.bat -- suite de correcao (regras, staging, move ordering,
 REM solver de final "maos vazias", paridade NNUE C++ vs Python). Sem
 REM -march=native/AVX2: sao testes de corretude/precisao numerica, nao de
-REM performance -- mesmo criterio do readme.md.
+REM performance -- mesmo criterio do README.md.
 setlocal
 
 where g++ >nul 2>nul
