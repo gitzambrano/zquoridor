@@ -264,6 +264,11 @@ class OutputLock:
                 import fcntl
 
                 fcntl.flock(self._handle.fileno(), fcntl.LOCK_UN)
+        except OSError:
+            # Windows may release an msvcrt region automatically when the
+            # process exits.  Do not replace the real controller error with
+            # a secondary unlock failure during shutdown.
+            pass
         finally:
             self._handle.close()
             self._handle = None
