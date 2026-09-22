@@ -271,6 +271,13 @@ struct McabParams {
     bool graphRootRepeatEscape = true;
     double graphRepeatEscapeMinQ = 0.50;
     double graphRepeatEscapeMaxQLoss = 0.01;
+    // Time-control-aware root repetition conversion. The conservative default
+    // remains 0.50/0.01 outside regimes that passed A/B screens:
+    //   fixed <= 500 ms: q60 (0.60/0.01)
+    //   fixed >= 900 ms: loose02 (0.50/0.02)
+    //   real-clock optimum <= 1500 ms: loose02
+    // The 501..899 ms gap and longer real clocks deliberately keep baseline.
+    bool adaptiveGraphRepeatEscape = true;
     bool clearTTPerMove = false;
     // Separate bounded policy/value inference caches; experimental opt-in.
     bool evalCache = true;
@@ -330,6 +337,37 @@ struct McabParams {
     int endgameMoverWallThreshold = 0;
     int endgameLeafDepth = 2;
 };
+
+struct GraphRepeatEscapeTuning {
+    double minQ = 0.50;
+    double maxQLoss = 0.01;
+};
+
+inline GraphRepeatEscapeTuning resolveGraphRepeatEscape(
+        const McabParams& params, int timeBudgetMs) {
+    GraphRepeatEscapeTuning out{
+        params.graphRepeatEscapeMinQ,
+        params.graphRepeatEscapeMaxQLoss
+    };
+    if (!params.adaptiveGraphRepeatEscape) return out;
+
+    if (params.adaptiveTime) {
+        if (params.adaptiveOptimumMs > 0 && params.adaptiveOptimumMs <= 1500) {
+            out.minQ = 0.50;
+            out.maxQLoss = 0.02;
+        }
+        return out;
+    }
+
+    if (timeBudgetMs > 0 && timeBudgetMs <= 500) {
+        out.minQ = 0.60;
+        out.maxQLoss = 0.01;
+    } else if (timeBudgetMs >= 900) {
+        out.minQ = 0.50;
+        out.maxQLoss = 0.02;
+    }
+    return out;
+}
 
 inline int effectiveNodeBudget(const McabParams& params, int timeBudgetMs) {
     int budget = std::max(1, params.nodeBudget);
@@ -934,8 +972,10 @@ public:
             }
         }
 
-        // Passo 6 (Seção 5): escolhe o lance final na raiz.
-        MoveT best = pickRootMove(pool[0]);
+        // Passo 6 (Seção 5): escolhe o lance final na raiz. Resolve the
+        // repetition-conversion guard from this move's actual time regime.
+        const auto repeatTuning = resolveGraphRepeatEscape(params, timeBudgetMs);
+        MoveT best = pickRootMove(pool[0], repeatTuning.minQ, repeatTuning.maxQLoss);
 
         // Passo 7 (Seção 5): com reuso ligado, o pool inteiro fica de pé
         // para a próxima chamada (a compactação acontece lá, quando a nova
@@ -1916,7 +1956,7 @@ private:
     // ---------------------------------------------------------------
     // Seção 5 passo 6 -- escolha do lance final na raiz.
     // ---------------------------------------------------------------
-    MoveT pickRootMove(const NodeT& r) const {
+    MoveT pickRootMove(const NodeT& r, double repeatMinQ, double repeatMaxQLoss) const {
         size_t nm = (size_t)std::min(r.activeMoves, (int)r.moves.size());
         assert(nm > 0 && "raiz não-terminal sem lances legais -- não deveria ocorrer em Quoridor");
         if (nm == 0) return MoveT{};
@@ -1950,11 +1990,11 @@ private:
             // Repetition is a legitimate defensive resource. If the engine
             // does not already evaluate the repeating move above draw-ish,
             // preserve it instead of forcing a potentially losing conversion.
-            if (bestQ <= params.graphRepeatEscapeMinQ)
+            if (bestQ <= repeatMinQ)
                 return r.moves[best];
 
             const double floorQ =
-                bestQ - std::max(0.0, params.graphRepeatEscapeMaxQLoss);
+                bestQ - std::max(0.0, repeatMaxQLoss);
             int escape = -1;
             for (size_t i = 0; i < nm; ++i) {
                 if (i == best || r.N[i] <= 0.f || repeatsHistory(i) || qOf(i) < floorQ)
