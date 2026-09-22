@@ -1,0 +1,53 @@
+name: Prune obsolete network artifacts
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/prune-network-artifacts.yml"
+
+permissions:
+  contents: write
+
+jobs:
+  prune:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Keep only production provenance and richest trained candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git rm -r --ignore-unmatch results/campaign-smoke results/campaign-verified
+
+          if [ -d results/experiments ]; then
+            for d in results/experiments/*; do
+              [ -e "$d" ] || continue
+              case "$d" in
+                results/experiments/multipath-phase512-searchboost-100ep|\
+                results/experiments/margin_regime512-weakness-cr60ep)
+                  echo "KEEP $d"
+                  ;;
+                *)
+                  git rm -r --ignore-unmatch "$d"
+                  ;;
+              esac
+            done
+          fi
+
+          git rm --ignore-unmatch .github/workflows/prune-network-artifacts.yml
+
+          git config user.name "zquoridor-maintenance"
+          git config user.email "actions@users.noreply.github.com"
+
+          if git diff --cached --quiet; then
+            echo "Nothing to prune."
+            exit 0
+          fi
+
+          git commit -m "chore: retain only current NNUE artifacts"
+          git push origin HEAD:main
