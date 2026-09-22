@@ -681,12 +681,14 @@ public:
         // is nothing for MCAB, the endgame alpha-beta leaf rule, or the
         // empty-handed race solver to improve. Return the terminal move before
         // any policy pass, TT work, tree allocation, or time-budget loop.
+        // Keep nodeBudget<=1 equivalence mode untouched: that path exists
+        // specifically to validate MCAB-vs-AB integration in tests/benches.
         //
         // mcabEnumerateCandidates() is deliberately used instead of
         // legalMoves(): on the production rules path it gets pawn moves
         // directly and only enumerates cheap wall slots. Walls are skipped
         // before applyMove(), so this remains an exact pawn-only test.
-        if (winner(root) == -1) {
+        if (!equivMode() && winner(root) == -1) {
             MoveListT immediateCandidates;
             mcabEnumerateCandidates<MoveT>(root, root.turn, immediateCandidates, 0);
             for (const MoveT& mv : immediateCandidates) {
