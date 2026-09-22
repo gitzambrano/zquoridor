@@ -261,7 +261,7 @@ POLICY_OPENING_PLIES_DEFAULT = 26
 # a cabeca WL fica flat na corrida de peoes -- ela aprendeu a prever QUEM
 # ganha, nunca QUAO RAPIDO. Medido em benchmarks/diag_wander.cpp: 0.137,
 # 0.153, 0.191 e 0.281 para distancias 5, 4, 3 e 2. Ver a nota "MCTS endgame
-# wandering" em status.md.
+# wandering" em docs/status.md.
 #
 # O gamma desconta o alvo pelo numero de lances que ainda faltam:
 #
@@ -352,7 +352,7 @@ class QuoridorNNUE(nn.Module):
     -- desde que TrainingSample passou a gravar a avaliacao da propria rede
     (evalNNUE, ver read_selfplay.py/selfplay.hpp) em vez do score
     heuristico, ela virou peso morto (nunca foi consumida pela busca em
-    nnue.hpp). Ver a tabela em status.md/CLAUDE.md ("Avaliacao: o que cada
+    nnue.hpp). Ver a tabela em docs/status.md/CLAUDE.md ("Avaliacao: o que cada
     estagio usa") pro mapa completo."""
 
     def __init__(self):
