@@ -40,7 +40,7 @@ jobs:
           test ! -e status.md
           test ! -e plano-zquoridor.md
           test ! -e data/datasets.md
-          if git grep -nE 'plano-zquoridor\.md|data/datasets\.md|\breadme\.md\b' -- .; then
+          if git grep -nE 'plano-zquoridor\.md|data/datasets\.md|\breadme\.md\b' -- . ':!.github/workflows/release-v2-validation.yml'; then
             echo "stale documentation path found" >&2
             exit 1
           fi
