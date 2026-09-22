@@ -31,6 +31,16 @@ relearn by experiment.
 - **Protocol**: `tools/external/zquoridor_uci.cpp` exposes the UCI-style text
   protocol plus `ponder movetime <ms>` and an interactive `help` command.
 
+- **Versioned network artifacts**: the repository intentionally keeps only two
+  experiment checkpoints under `results/experiments/`:
+  `multipath-phase512-searchboost-100ep` as the provenance checkpoint for the
+  production `multipath_phase:512` network, and
+  `margin_regime512-weakness-cr60ep` as the richest **trained** unpromoted
+  checkpoint currently available (588 inputs). The planned
+  `multipath_phase_contact:512` / 858-input design remains source/roadmap only;
+  no trained checkpoint for it is versioned yet. Older model binaries are
+  removed from the working tree while their measured results remain documented.
+
 - **Search**: hybrid PUCT MCTS (`src/mcab.hpp`), default in all tools.
   Leaves are direct `nnueEvalInt` (`leafDepth=0`), except in a wall-poor
   endgame: `endgameMoverWallThreshold=0` gives alpha-beta leaves of 2 plies
