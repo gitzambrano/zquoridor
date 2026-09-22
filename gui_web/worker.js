@@ -215,12 +215,18 @@ self.onmessage = ev => {
 function bootModule(opts) {
   ZquoridorModule(opts || {}).then(m => {
     M = m;
-    liveMoves = [];
     let nnue = false;
     try {
       nnue = !!withCStr('/data/nnue/nnue_weights_int8.bin',
                         p => m._qr_load_nnue_weights(p));
     } catch (e) {}
+
+    // Initialize the live game explicitly. qr_new_game() also builds the
+    // legal-move list, repetition history, scratch state and clears the
+    // persistent MCAB tree. Without it, the first bestmove replay can see an
+    // empty legal-move list even though liveMoves itself is empty.
+    m._qr_new_game();
+    liveMoves = [];
     postMessage({ type: 'ready', nnue });
   }).catch(e => postMessage({ type: 'fatal', msg: String(e) }));
 }
