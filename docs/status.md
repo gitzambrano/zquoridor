@@ -42,7 +42,7 @@ relearn by experiment.
   `ZQ_NNUE_MULTIPATH_FEATURES = 1`, `ZQ_NNUE_PHASE_FEATURES = 1`,
   `ZQ_NNUE_HIDDEN = 512`),
   WL head `512->32->1`, policy head `512->209`. QAT with fixed `QA=255`, `QB=64`.
-- **Experimental Architectures**:
+- **Historical architecture evaluations and follow-ups**:
   - `multipath:512` (`src/nnue.hpp`, opt-in via `-DZQ_NNUE_MULTIPATH_FEATURES=1`):
     `480 -> 512` SCReLU accumulator adding 24 multi-path and pawn collision features
     (0 extra BFS: 8 directional unblocked exits, 8 exit count buckets, 8 pawn collision features).
@@ -50,7 +50,7 @@ relearn by experiment.
   - `margin_regime:512` (`src/nnue.hpp`, opt-in via `-DZQ_NNUE_MARGIN_REGIME_FEATURES=1`):
     `588 -> 512` SCReLU accumulator adding 132 distance margin $\times$ wall regime interaction features.
     **600-game match vs Claustrophobia GPU: 49.00% (-6.95 Elo)**.
-  - `multipath_phase:512` (active experiment, started 2026-09-20):
+  - `multipath_phase:512` (promotion campaign, started 2026-09-20; promoted to production in v2.00):
     `504 -> 512` SCReLU accumulator combining the 24 multipath features and 24 phase features.
     The phase block adds no BFS and keeps the value and policy heads unchanged. The warm start remaps
     the existing multipath columns and initializes only the phase columns to zero. Training uses the
@@ -107,14 +107,14 @@ relearn by experiment.
   Replaying the failing shard 14 (512 games, 10 threads, 50 ms/move) changed
   the result from a crash at 509/512 to exit 0 with 512/512 games and 13,995
   positions. The accepted self-play shards were preserved.
-- **Performance baseline (2026-09-20)**:
-  - `race512-cr200k-champion` (Production baseline on `main`):
+- **Historical performance baseline (2026-09-20)**:
+  - `race512-cr200k-champion` (production baseline at that date; superseded by `multipath_phase:512` in v2.00):
     - vs Titanium: **63.0% (+92.5 Elo)** in official 600-game match (378W / 0D / 222L).
     - vs `main` (Gen 5): **81.25% (+254.7 Elo)** in direct screening (32W / 1D / 7L).
     - vs Claustrophobia: **47.92% (-14.5 Elo)** in 600-game match on GPU (141W white / 140W black).
 - Center-Rush Tactical Suite: **37.12% (+35 Elo)** against Claustrophobia (`pawn_jump` at 62.5%, `front_wall` at 47.2%).
 
-### Main synchronization and baseline promotion (2026-09-21)
+### Main synchronization history (2026-09-21)
 
 - Local `main` now includes the MCGS Q-correction promotion through `fb110ab`.
 - The synchronized search includes the MCAB transposition DAG, adaptive real-clock budgeting, and bounded hot-node retention.
@@ -123,7 +123,7 @@ relearn by experiment.
 - Default native and WASM builds use the 504-feature layout.
 - C++ and Python parity checks agree on the fixed test position.
 - The MCGS promotion is active in the production search path.
-- A 400-game Claustrophobia check remains an external experiment. Its result does not change the selected weights automatically.
+- The 400-game external check recorded here belongs to the synchronization campaign; it does not redefine the v2.00 production weights.
   - `multipath:512` (Experimental Champion):
     - vs Claustrophobia GPU (600g): **51.08% (+7.53 Elo)** (306.5 / 600, 95% CI: [47.50%, 54.58%]).
     - Claustrophobia Central Openings: **46.62% (34.5 / 74)** (up from 31.8% baseline).
