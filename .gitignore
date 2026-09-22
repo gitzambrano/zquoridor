@@ -60,7 +60,14 @@ data_policy_ab.*
 data_wall_qext.*
 data/camping_survey.csv
 
-# Local teaching and benchmark artifacts
+# Local teaching, self-play and benchmark datasets stay outside Git.
+# Their layout and provenance are documented under docs/.
+benchmark_results/
+data/teaching/
+
+# Network experiment artifacts are intentionally allowed in Git when they are
+# part of the small retained model set (production provenance + active research).
+# Do not accumulate superseded checkpoints here.
 results/**
 !results/**/
 !results/**/student.bin
@@ -69,6 +76,5 @@ results/**
 !results/**/config.json
 !results/**/train_report.json
 !results/**/build_manifest.json
-benchmark_results/
-data/teaching/
+
 .pytest_cache/
