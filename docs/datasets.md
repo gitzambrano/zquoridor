@@ -4,6 +4,20 @@ Atualizado em 2026-09-20. Este documento descreve detalhadamente cada dataset ge
 
 ---
 
+## Política de armazenamento no Git
+
+Os datasets grandes são **artefatos locais e não são versionados**. O
+`.gitignore` cobre `data/selfplay/`, `data/selfplay_canonical_v3/`,
+`data/teaching/`, `data/checkpoints/` e `benchmark_results/`. Este
+catálogo documenta a origem, o formato e os caminhos esperados para permitir
+reprodução, mas os arquivos de milhões de posições permanecem fora do
+repositório.
+
+Os pesos de produção ficam em `data/nnue/`. Checkpoints experimentais podem
+ser versionados em `results/experiments/`, mas o `main` mantém apenas um
+conjunto mínimo: a proveniência da rede de produção e o candidato de pesquisa
+mais rico ainda não promovido.
+
 ## 1. Contrato e Formato Canônico dos Dados
 
 Todos os datasets consolidados no projeto residem em formato `.npz` compactado (`float32`/`int32`/`uint8`), estruturados com as seguintes chaves padrão:
