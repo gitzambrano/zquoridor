@@ -92,7 +92,12 @@ def main() -> int:
                     return False
                 return True
 
-            check("first human/engine cycle", play_human_pawn())
+            first_ok = play_human_pawn()
+            if not first_ok:
+                print("worker diagnostic:", page.evaluate(
+                    "() => ({ready:ANW.ready, failed:ANW.failed, lastError:ANW.lastError || '', status:document.querySelector('#status')?.textContent || ''})"
+                ))
+            check("first human/engine cycle", first_ok)
             check("worker still healthy after first reply",
                   page.evaluate("ANW.ready && !ANW.failed"))
 
@@ -121,7 +126,12 @@ def main() -> int:
             page.keyboard.press("Escape")
             page.wait_for_timeout(80)
 
-            check("second human/engine cycle", play_human_pawn())
+            second_ok = play_human_pawn()
+            if not second_ok:
+                print("worker diagnostic:", page.evaluate(
+                    "() => ({ready:ANW.ready, failed:ANW.failed, lastError:ANW.lastError || '', status:document.querySelector('#status')?.textContent || ''})"
+                ))
+            check("second human/engine cycle", second_ok)
             check("worker still healthy after second reply",
                   page.evaluate("ANW.ready && !ANW.failed"))
 
