@@ -367,7 +367,10 @@ def main():
                     " over: gameOver, ply: window.__w.plyCount(),"
                     " focus: document.activeElement ?"
                     " document.activeElement.tagName : null})"))
-            page.wait_for_timeout(2400)
+            page.wait_for_function(
+                "() => !engineThinking && window.__w.turn() === humanSide && atLiveEnd()",
+                timeout=20000)
+            check("human can act before gesture tests", page.evaluate("humanCanAct()"))
 
             # flip board + paths toggle
             page.keyboard.press("f")
