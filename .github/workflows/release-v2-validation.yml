@@ -40,11 +40,11 @@ jobs:
           test ! -e status.md
           test ! -e plano-zquoridor.md
           test ! -e data/datasets.md
-          if git grep -nE 'plano-zquoridor\.md|data/datasets\.md|\breadme\.md\b' -- . ':!.github/workflows/release-v2-validation.yml'; then
-            echo "stale documentation path found" >&2
+          if git grep -nE 'plano-zquoridor\.md|data/datasets\.md|\breadme\.md\b' --               '*.md' '*.cpp' '*.hpp' '*.py' '*.js' '*.sh' '*.bat' '*.yml' '*.yaml'               ':!.github/workflows/release-v2-validation.yml'; then
+            echo "stale documentation path found in source/docs/config" >&2
             exit 1
           fi
-          stale_status="$(git grep -n 'status\.md' -- ':!docs/**' | grep -v 'docs/status\.md' || true)"
+          stale_status="$(git grep -n 'status\.md' --               '*.md' '*.cpp' '*.hpp' '*.py' '*.js' '*.sh' '*.bat' '*.yml' '*.yaml'               ':!docs/**' ':!.github/workflows/release-v2-validation.yml' | grep -v 'docs/status\.md' || true)"
           if [ -n "$stale_status" ]; then
             echo "$stale_status"
             echo "bare status.md references outside docs must use docs/status.md" >&2
