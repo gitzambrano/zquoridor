@@ -40,6 +40,7 @@ CONFIG = {
     "bootstrap": 20000,
     "required_opening_categories": [],
     "category_score_threshold": 60.0,
+    "dry_run": False,
 }
 
 if str(ROOT) not in sys.path:
@@ -77,6 +78,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--resume", action=argparse.BooleanOptionalAction, default=None)
     parser.add_argument("--retry-failed", action=argparse.BooleanOptionalAction, default=None)
     parser.add_argument("--auto-setup", action=argparse.BooleanOptionalAction, default=None)
+    parser.add_argument("--dry-run", action=argparse.BooleanOptionalAction, default=None)
     return parser
 
 
@@ -395,6 +397,9 @@ def run(config: dict) -> dict:
 def main(argv: list[str] | None = None) -> int:
     try:
         config = resolve_config(build_parser().parse_args(argv))
+        if config["dry_run"]:
+            print(json.dumps(config, indent=2, default=str), flush=True)
+            return 0
         report = run(config)
         return 1 if any(s["failed_games"] for s in report["summaries"].values()) else 0
     except (OSError, ValueError, RuntimeError, subprocess.CalledProcessError, json.JSONDecodeError) as exc:

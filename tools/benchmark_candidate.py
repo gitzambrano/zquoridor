@@ -33,6 +33,7 @@ CONFIG = {
     "resume": True,
     "auto_setup": True,
     "bootstrap": 20000,
+    "dry_run": False,
 }
 
 
@@ -149,7 +150,15 @@ def run(config: dict) -> dict:
 
 def main(argv: list[str] | None = None) -> int:
     try:
-        run(resolve_config(build_parser().parse_args(argv)))
+        args = build_parser().parse_args(argv)
+        config = dict(CONFIG)
+        for key, value in vars(args).items():
+            if value is not None:
+                config[key] = value
+        if config["dry_run"]:
+            print(json.dumps(config, indent=2, default=str), flush=True)
+            return 0
+        run(resolve_config(args))
         return 0
     except (OSError, ValueError, RuntimeError, json.JSONDecodeError) as error:
         print(f"candidate benchmark error: {error}", file=sys.stderr)

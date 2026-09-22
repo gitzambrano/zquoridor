@@ -1,14 +1,14 @@
 # Zquoridor
 
-Use `AGENTS.md` as the canonical repository instructions.
+Follow `AGENTS.md` as the canonical repository guidance.
 
-Key references:
+Use these references:
 
-- `README.md` — external overview and user instructions.
-- `docs/status.md` — technical status and measured results.
-- `docs/plan.md` — roadmap.
-- `docs/datasets.md` — dataset catalog.
-- `skills/writing-rules/SKILL.md` — canonical technical writing rules.
-- `.claude/skills/writing-rules/SKILL.md` — Claude entry point.
+- `README.md` for the stable external overview.
+- `docs/plan.md` for production state, measurements, and roadmap.
+- `docs/scripts.md` for generic runners and pipeline contracts.
+- `docs/datasets.md` for the local ignored dataset inventory.
+- `skills/writing-rules/SKILL.md` for project prose.
 
-The production engine is hybrid MCTS/MCGS with alpha-beta support and a 504-input → 512-hidden NNUE. Browser search and pondering stay in the Web Worker; do not move blocking search work onto the UI thread.
+Keep browser search and pondering in the bounded Web Worker. Do not move long
+blocking searches onto the UI thread.

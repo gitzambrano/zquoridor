@@ -16,7 +16,7 @@
 //
 // WHAT IT SHOWS. The hybrid at production settings answers f6, g6, f6, g6
 // and holds its own distance at 5 for six moves. Pure alpha-beta wanders
-// too, but less. See docs/status.md, section "MCTS endgame wandering", for the
+// too, but less. See docs/plan.md, section "MCTS endgame wandering", for the
 // measured cause.
 //
 // Build (performance profile):

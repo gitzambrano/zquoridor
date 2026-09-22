@@ -6,7 +6,10 @@ import numpy as np
 import torch
 from torch import nn
 from torch.nn import functional as F
-from quantize_nnue import quantize, write_quantized
+try:
+    from .quantize_nnue import quantize, write_quantized
+except ImportError:  # Direct execution from the training directory.
+    from quantize_nnue import quantize, write_quantized
 
 FEATURES = {
     "base": 354,
@@ -16,6 +19,7 @@ FEATURES = {
     "phase": 480,
     "margin_phase": 612,
     "multipath_phase": 504,
+    "multipath_phase_contact": 858,
 }
 LAYOUT = ("w1", "b1", "wv1_wl", "bv1_wl", "wv2_wl", "bv2_wl", "wp", "bp")
 
@@ -58,7 +62,7 @@ def encode_features(data, indices, architecture="base"):
     x = dense_features(data, indices)
     if architecture == "base":
         return x
-    if architecture not in ("race", "multipath", "margin_regime", "phase", "margin_phase", "multipath_phase"):
+    if architecture not in ("race", "multipath", "margin_regime", "phase", "margin_phase", "multipath_phase", "multipath_phase_contact"):
         raise ValueError(f"unknown architecture: {architecture}")
     n = len(indices)
     extra = np.zeros((n, 102), dtype=np.float32)
@@ -87,7 +91,7 @@ def encode_features(data, indices, architecture="base"):
         if architecture == "margin_regime":
             return x
 
-    if architecture in ("phase", "margin_phase", "multipath_phase"):
+    if architecture in ("phase", "margin_phase", "multipath_phase", "multipath_phase_contact"):
         ph = np.zeros((n, 24), dtype=np.float32)
         total_w = ow + pw
         phase_bucket = np.zeros(n, dtype=np.int64)
@@ -99,7 +103,7 @@ def encode_features(data, indices, architecture="base"):
         ph[rows, phase_bucket] = 1.0
         ph[rows, 6 + race * 6 + phase_bucket] = 1.0
         x = np.concatenate((x, ph), axis=1)
-        if architecture != "multipath_phase":
+        if architecture not in ("multipath_phase", "multipath_phase_contact"):
             return x
 
     # multipath: 24 additional cheap features (zero extra BFS)
@@ -161,7 +165,53 @@ def encode_features(data, indices, architecture="base"):
     mp[rows, 22] = (abs_dc == 1).astype(np.float32)
     mp[rows, 23] = (abs_dc >= 2).astype(np.float32)
 
-    return np.concatenate((x, mp), axis=1)
+    x = np.concatenate((x, mp), axis=1)
+    if architecture != "multipath_phase_contact":
+        return x
+
+    contact = np.zeros((n, 354), dtype=np.float32)
+    contact[rows, (dr + 8) * 17 + dc + 8] = 1.0
+
+    def edge_mask(cell):
+        mask = np.zeros(n, dtype=np.int64)
+        for direction in range(4):
+            is_open = (_ORTH_NEIGHBORS[cell, direction] >= 0) & (
+                ((walls_h & _EDGE_H_MASKS[cell, direction]) |
+                 (walls_v & _EDGE_V_MASKS[cell, direction])) == 0)
+            mask |= (~is_open).astype(np.int64) << direction
+        return mask
+
+    own_mask = edge_mask(own_pawn)
+    opp_mask = edge_mask(opp_pawn)
+    contact[rows, 289 + own_mask] = 1.0
+    contact[rows, 305 + opp_mask] = 1.0
+
+    adjacent_dir = np.full(n, -1, dtype=np.int64)
+    adjacent_dir[(dr == -1) & (dc == 0)] = 0
+    adjacent_dir[(dr == 1) & (dc == 0)] = 1
+    adjacent_dir[(dr == 0) & (dc == -1)] = 2
+    adjacent_dir[(dr == 0) & (dc == 1)] = 3
+    option = np.zeros(n, dtype=np.int64)
+    for direction in range(4):
+        selected = adjacent_dir == direction
+        if not selected.any():
+            continue
+        straight = (_ORTH_NEIGHBORS[opp_pawn, direction] >= 0) & (
+            ((walls_h & _EDGE_H_MASKS[opp_pawn, direction]) |
+             (walls_v & _EDGE_V_MASKS[opp_pawn, direction])) == 0)
+        perpendicular = (2, 3) if direction < 2 else (0, 1)
+        left = (_ORTH_NEIGHBORS[opp_pawn, perpendicular[0]] >= 0) & (
+            ((walls_h & _EDGE_H_MASKS[opp_pawn, perpendicular[0]]) |
+             (walls_v & _EDGE_V_MASKS[opp_pawn, perpendicular[0]])) == 0)
+        right = (_ORTH_NEIGHBORS[opp_pawn, perpendicular[1]] >= 0) & (
+            ((walls_h & _EDGE_H_MASKS[opp_pawn, perpendicular[1]]) |
+             (walls_v & _EDGE_V_MASKS[opp_pawn, perpendicular[1]])) == 0)
+        mask = straight.astype(np.int64)
+        mask |= ((~straight) & left).astype(np.int64) << 1
+        mask |= ((~straight) & right).astype(np.int64) << 2
+        option[selected] = 1 + direction * 8 + mask[selected]
+    contact[rows, 321 + option] = 1.0
+    return np.concatenate((x, contact), axis=1)
 
 
 def _round_ste(x, scale):
@@ -205,6 +255,9 @@ class Student(nn.Module):
         for param in self.parameters():
             param.zero_()
         if self.architecture == "multipath_phase" and old.architecture == "multipath":
+            self.fc1.weight[:old.hidden, :456].copy_(old.fc1.weight[:, :456])
+            self.fc1.weight[:old.hidden, 480:504].copy_(old.fc1.weight[:, 456:480])
+        elif self.architecture == "multipath_phase_contact" and old.architecture == "multipath":
             self.fc1.weight[:old.hidden, :456].copy_(old.fc1.weight[:, :456])
             self.fc1.weight[:old.hidden, 480:504].copy_(old.fc1.weight[:, 456:480])
         else:
@@ -271,10 +324,11 @@ def export(model, path):
     manifest = dict(schema="zquoridor.student.v1", architecture=model.architecture,
                     features=FEATURES[model.architecture], hidden=model.hidden, value_hidden=32,
                     policy_out=209, qa=255, qb=64, qat=model.qat,
-                    cpp_flags=[f"-DZQ_NNUE_RACE_FEATURES={int(model.architecture in ('race', 'multipath', 'margin_regime', 'phase', 'margin_phase', 'multipath_phase'))}",
-                               f"-DZQ_NNUE_MULTIPATH_FEATURES={int(model.architecture in ('multipath', 'multipath_phase'))}",
+                    cpp_flags=[f"-DZQ_NNUE_RACE_FEATURES={int(model.architecture in ('race', 'multipath', 'margin_regime', 'phase', 'margin_phase', 'multipath_phase', 'multipath_phase_contact'))}",
+                               f"-DZQ_NNUE_MULTIPATH_FEATURES={int(model.architecture in ('multipath', 'multipath_phase', 'multipath_phase_contact'))}",
                                f"-DZQ_NNUE_MARGIN_REGIME_FEATURES={int(model.architecture in ('margin_regime', 'margin_phase'))}",
-                               f"-DZQ_NNUE_PHASE_FEATURES={int(model.architecture in ('phase', 'margin_phase', 'multipath_phase'))}",
+                               f"-DZQ_NNUE_PHASE_FEATURES={int(model.architecture in ('phase', 'margin_phase', 'multipath_phase', 'multipath_phase_contact'))}",
+                               f"-DZQ_NNUE_CONTACT_FEATURES={int(model.architecture == 'multipath_phase_contact')}",
                                f"-DZQ_NNUE_HIDDEN={model.hidden}"],
                     float_sha256=hashlib.sha256(path.read_bytes()).hexdigest(),
                     int8_sha256=hashlib.sha256(quant_path.read_bytes()).hexdigest())

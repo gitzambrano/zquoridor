@@ -65,16 +65,36 @@ data/camping_survey.csv
 benchmark_results/
 data/teaching/
 
-# Network experiment artifacts are intentionally allowed in Git when they are
-# part of the small retained model set (production provenance + active research).
-# Do not accumulate superseded checkpoints here.
+# Keep only the two intentionally retained provenance checkpoints. All other
+# experiment outputs are local artifacts, including partial and candidate runs.
 results/**
-!results/**/
-!results/**/student.bin
-!results/**/student_int8.bin
-!results/**/student.architecture.json
-!results/**/config.json
-!results/**/train_report.json
-!results/**/build_manifest.json
+!results/
+!results/experiments/
+!results/experiments/multipath-phase512-searchboost-100ep/
+!results/experiments/multipath-phase512-searchboost-100ep/student.bin
+!results/experiments/multipath-phase512-searchboost-100ep/student_int8.bin
+!results/experiments/multipath-phase512-searchboost-100ep/student.architecture.json
+!results/experiments/multipath-phase512-searchboost-100ep/config.json
+!results/experiments/multipath-phase512-searchboost-100ep/train_report.json
+!results/experiments/multipath-phase512-searchboost-100ep/build_manifest.json
+!results/experiments/margin_regime512-weakness-cr60ep/student.bin
+!results/experiments/margin_regime512-weakness-cr60ep/student_int8.bin
+!results/experiments/margin_regime512-weakness-cr60ep/student.architecture.json
+!results/experiments/margin_regime512-weakness-cr60ep/config.json
+!results/experiments/margin_regime512-weakness-cr60ep/train_report.json
+!results/experiments/margin_regime512-weakness-cr60ep/build_manifest.json
+!results/experiments/margin_regime512-weakness-cr60ep/
+!results/experiments/margin_regime512-weakness-cr60ep/student.bin
+!results/experiments/margin_regime512-weakness-cr60ep/student_int8.bin
+!results/experiments/margin_regime512-weakness-cr60ep/student.architecture.json
+!results/experiments/margin_regime512-weakness-cr60ep/config.json
+!results/experiments/margin_regime512-weakness-cr60ep/train_report.json
+!results/experiments/margin_regime512-weakness-cr60ep/build_manifest.json
 
 .pytest_cache/
+# Internal agent workflow state; never version project documentation here.
+.superpowers/
+docs/superpowers/
+docs/datasets.md
+# One-off local launchers are not project runners.
+tools/teacher/launch_synced_contact_after_phase.ps1

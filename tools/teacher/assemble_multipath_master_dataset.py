@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import gc
+import hashlib
 import json
 from pathlib import Path
 import zipfile
@@ -58,7 +59,13 @@ def inspect_source(name: str, path: Path, scale: float) -> tuple[dict, np.ndarra
 
         if "group_id" in s and len(s["group_id"]) == n:
             raw_groups = s["group_id"]
-            groups = np.array([f"{name}:" + (g.decode('utf-8') if isinstance(g, bytes) else str(g)) for g in raw_groups], dtype="S64")
+            def group_key(raw):
+                text = raw.decode('utf-8', errors='replace') if isinstance(raw, bytes) else str(raw)
+                value = f"{name}:{text}"
+                if len(value.encode('utf-8')) <= 63:
+                    return value
+                return f"{name}:{hashlib.sha256(value.encode('utf-8')).hexdigest()}"
+            groups = np.array([group_key(g) for g in raw_groups], dtype="S64")
         else:
             groups = np.array([f"{name}:val_{i // 500}" if val[i] else f"{name}:train_{i // 500}" for i in range(n)], dtype="S64")
 

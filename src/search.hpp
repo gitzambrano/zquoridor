@@ -325,7 +325,7 @@ public:
     // erro do oponente).
     //
     // Default TRUE desde 2026-08-23 (investigacao inv/contempt-wandering,
-    // ver docs/status.md): so reordena filhos com valor EXATAMENTE igual
+    // see docs/plan.md): only reorder children with exactly equal value
     // (valores de jogo e scores reportados ficam bit a bit identicos),
     // corta os lances para tras do lado perdedor de 47% para ~27% dos
     // lances na fase de final sem muros, e mediu Elo -12 +-60 vs default

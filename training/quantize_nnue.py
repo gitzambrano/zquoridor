@@ -22,7 +22,7 @@ CABEÇA AUXILIAR REMOVIDA (2026-08): existia uma segunda cabeça de valor
 scaffolding pra treino enquanto o self-play não vinha da própria NNUE.
 Virou peso morto quando TrainingSample passou a gravar a avaliação da
 própria NNUE (evalNNUE) em vez do score heurístico -- ver a tabela em
-docs/status.md/CLAUDE.md ("Avaliação: o que cada estágio usa"). `load_float_
+docs/plan.md/CLAUDE.md ("Evaluation: what each stage uses"). `load_float_
 weights` abaixo aceita os DOIS tamanhos de arquivo (com e sem o bloco da
 cabeça auxiliar), detectando por tamanho em bytes -- um .bin float32
 exportado antes desta mudança continua sendo quantizável aqui sem editar

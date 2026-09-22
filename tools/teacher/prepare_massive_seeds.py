@@ -8,19 +8,36 @@ Combines:
 """
 from __future__ import annotations
 
+import argparse
 import json
 from pathlib import Path
 import numpy as np
 
 ROOT = Path(__file__).resolve().parents[2]
 
+# Edit this block for any compatible weakness and opening sources.
+CONFIG = {
+    "mined_file": str(ROOT / "data/teaching/mined_weaknesses_all.jsonl"),
+    "center_rush_file": str(ROOT / "tools/external/openings_center_rush_v1.jsonl"),
+    "out_file": str(ROOT / "data/teaching/massive_seeds_3500.jsonl"),
+    "seed": 20260919,
+    "max_seeds": 3500,
+}
 
-def main():
-    out_file = ROOT / "data/teaching/massive_seeds_3500.jsonl"
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--mined-file", default=CONFIG["mined_file"])
+    parser.add_argument("--center-rush-file", default=CONFIG["center_rush_file"])
+    parser.add_argument("--out-file", default=CONFIG["out_file"])
+    parser.add_argument("--seed", type=int, default=CONFIG["seed"])
+    parser.add_argument("--max-seeds", type=int, default=CONFIG["max_seeds"])
+    args = parser.parse_args(argv)
+    out_file = Path(args.out_file)
     out_file.parent.mkdir(parents=True, exist_ok=True)
 
-    mined_file = ROOT / "data/teaching/mined_weaknesses_all.jsonl"
-    cr_file = ROOT / "tools/external/openings_center_rush_v1.jsonl"
+    mined_file = Path(args.mined_file)
+    cr_file = Path(args.center_rush_file)
 
     seeds = []
     seen_histories = set()
@@ -75,12 +92,12 @@ def main():
         elif opp == "titanium":
             titanium_candidates.append(r)
 
-    rng = np.random.default_rng(20260919)
+    rng = np.random.default_rng(args.seed)
     rng.shuffle(claustro_candidates)
     rng.shuffle(titanium_candidates)
 
-    target_claustro = 1750
-    target_titanium = 1750
+    target_claustro = args.max_seeds // 2
+    target_titanium = args.max_seeds - target_claustro
 
     added_cl = 0
     for r in claustro_candidates:
@@ -103,6 +120,7 @@ def main():
                 break
 
     print(f"Added {added_cl} Claustrophobia loss seeds and {added_ti} Titanium loss seeds.")
+    seeds = seeds[:args.max_seeds]
     print(f"Total unique seeds assembled: {len(seeds)}")
 
     with open(out_file, "w", encoding="utf-8") as fh:

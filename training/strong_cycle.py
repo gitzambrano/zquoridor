@@ -52,6 +52,29 @@ DEFAULT_WL_GAMMA = 0.990
 DEFAULT_LR = 2e-5
 DEFAULT_EPOCHS = 100
 
+# Edit this block for a reusable search-driven training cycle. CLI options
+# override individual values for one invocation.
+CONFIG = {
+    "generation": DEFAULT_GENERATION,
+    "games": DEFAULT_GAMES,
+    "chunk_games": 3000,
+    "time_ms": DEFAULT_TIME_MS,
+    "threads": DEFAULT_THREADS,
+    "epsilon_midgame": 0.01,
+    "focus_copies": DEFAULT_FOCUS_COPIES,
+    "focus_max_fraction": 0.10,
+    "epochs": DEFAULT_EPOCHS,
+    "lr": DEFAULT_LR,
+    "wl_gamma": DEFAULT_WL_GAMMA,
+    "arena_games": DEFAULT_ARENA_GAMES,
+    "arena_time_ms": DEFAULT_ARENA_TIME_MS,
+    "arena_threads": 14,
+    "arena_random_plies": 4,
+    "reuse_selfplay": False,
+    "skip_train": False,
+    "promote": False,
+}
+
 ELO_RE = re.compile(
     r"Diferenca Elo Engine 1 vs 2\s*:\s*([+-]?\d+(?:\.\d+)?)\s*"
     r"\(Margem\s*[±+\-]?\s*(\d+(?:\.\d+)?)\)"
@@ -381,28 +404,29 @@ def promote(candidate_f32: Path, candidate_q8: Path) -> None:
     print("candidate promoted to data/nnue")
 
 
-def parse_args():
+def parse_args(argv=None):
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument("--generation", default=DEFAULT_GENERATION)
-    p.add_argument("--games", type=int, default=DEFAULT_GAMES)
-    p.add_argument("--chunk-games", type=int, default=3000)
-    p.add_argument("--time-ms", type=int, default=DEFAULT_TIME_MS)
-    p.add_argument("--threads", type=int, default=DEFAULT_THREADS)
-    p.add_argument("--epsilon-midgame", type=float, default=0.01)
-    p.add_argument("--focus-copies", type=int, default=DEFAULT_FOCUS_COPIES)
-    p.add_argument("--focus-max-fraction", type=float, default=0.10)
-    p.add_argument("--epochs", type=int, default=DEFAULT_EPOCHS)
-    p.add_argument("--lr", type=float, default=DEFAULT_LR)
-    p.add_argument("--wl-gamma", type=float, default=DEFAULT_WL_GAMMA)
-    p.add_argument("--arena-games", type=int, default=DEFAULT_ARENA_GAMES)
-    p.add_argument("--arena-time-ms", type=int, default=DEFAULT_ARENA_TIME_MS)
-    p.add_argument("--arena-threads", type=int, default=14)
-    p.add_argument("--arena-random-plies", type=int, default=4)
-    p.add_argument("--reuse-selfplay", action="store_true")
-    p.add_argument("--skip-train", action="store_true")
+    p.add_argument("--generation", default=CONFIG["generation"])
+    p.add_argument("--games", type=int, default=CONFIG["games"])
+    p.add_argument("--chunk-games", type=int, default=CONFIG["chunk_games"])
+    p.add_argument("--time-ms", type=int, default=CONFIG["time_ms"])
+    p.add_argument("--threads", type=int, default=CONFIG["threads"])
+    p.add_argument("--epsilon-midgame", type=float, default=CONFIG["epsilon_midgame"])
+    p.add_argument("--focus-copies", type=int, default=CONFIG["focus_copies"])
+    p.add_argument("--focus-max-fraction", type=float, default=CONFIG["focus_max_fraction"])
+    p.add_argument("--epochs", type=int, default=CONFIG["epochs"])
+    p.add_argument("--lr", type=float, default=CONFIG["lr"])
+    p.add_argument("--wl-gamma", type=float, default=CONFIG["wl_gamma"])
+    p.add_argument("--arena-games", type=int, default=CONFIG["arena_games"])
+    p.add_argument("--arena-time-ms", type=int, default=CONFIG["arena_time_ms"])
+    p.add_argument("--arena-threads", type=int, default=CONFIG["arena_threads"])
+    p.add_argument("--arena-random-plies", type=int, default=CONFIG["arena_random_plies"])
+    p.add_argument("--reuse-selfplay", action=argparse.BooleanOptionalAction, default=CONFIG["reuse_selfplay"])
+    p.add_argument("--skip-train", action=argparse.BooleanOptionalAction, default=CONFIG["skip_train"])
     p.add_argument(
         "--promote",
-        action="store_true",
+        action=argparse.BooleanOptionalAction,
+        default=CONFIG["promote"],
         help="copy the candidate to data/nnue only if the lower 95 percent Elo bound is positive",
     )
     return p.parse_args()
@@ -421,8 +445,8 @@ def validate_args(args) -> None:
         raise SystemExit("--wl-gamma must be in (0, 1]")
 
 
-def main() -> int:
-    args = parse_args()
+def main(argv=None) -> int:
+    args = parse_args(argv)
     validate_args(args)
 
     champion_f32, champion_q8 = snapshot_champion(args.generation)

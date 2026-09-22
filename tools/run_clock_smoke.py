@@ -15,22 +15,36 @@ if str(ROOT) not in sys.path:
 from tools.external import local_arena  # noqa: E402
 
 
+# Edit this block for a safe local smoke test. CLI options override these values.
+CONFIG = {
+    "candidate_exe": None,
+    "candidate_nnue": None,
+    "baseline_exe": None,
+    "baseline_nnue": None,
+    "openings": str(ROOT / "tools" / "external" / "openings_screen_v1.jsonl"),
+    "output": str(ROOT / "benchmark_results" / "clock_smoke"),
+    "pairs": 2,
+    "seed": 20260920,
+    "base_ms": 180_000,
+    "increment_ms": 2_000,
+    "move_overhead_ms": 20,
+    "startup_timeout_s": 120.0,
+    "move_timeout_s": 30.0,
+    "max_plies": 240,
+    "dry_run": True,
+}
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--candidate-exe", required=True)
-    parser.add_argument("--candidate-nnue", required=True)
-    parser.add_argument("--baseline-exe", required=True)
-    parser.add_argument("--baseline-nnue", required=True)
-    parser.add_argument("--openings", required=True)
-    parser.add_argument("--output", required=True)
-    parser.add_argument("--pairs", type=int, default=2)
-    parser.add_argument("--seed", type=int, default=20260920)
-    parser.add_argument("--base-ms", type=int, default=180_000)
-    parser.add_argument("--increment-ms", type=int, default=2_000)
-    parser.add_argument("--move-overhead-ms", type=int, default=20)
-    parser.add_argument("--startup-timeout-s", type=float, default=120.0)
-    parser.add_argument("--move-timeout-s", type=float, default=30.0)
-    parser.add_argument("--max-plies", type=int, default=240)
+    for key, value in CONFIG.items():
+        flag = "--" + key.replace("_", "-")
+        if isinstance(value, bool):
+            parser.add_argument(flag, action=argparse.BooleanOptionalAction, default=None)
+        elif value is None:
+            parser.add_argument(flag, default=None)
+        else:
+            parser.add_argument(flag, type=type(value), default=None)
     return parser
 
 
@@ -145,7 +159,19 @@ def run(args: argparse.Namespace) -> dict:
 
 def main(argv: list[str] | None = None) -> int:
     try:
-        report = run(build_parser().parse_args(argv))
+        parsed = build_parser().parse_args(argv)
+        config = dict(CONFIG)
+        for key, value in vars(parsed).items():
+            if value is not None:
+                config[key] = value
+        if config["dry_run"]:
+            print(json.dumps(config, indent=2, default=str), flush=True)
+            return 0
+        missing = [key for key in ("candidate_exe", "candidate_nnue", "baseline_exe", "baseline_nnue")
+                   if not config[key]]
+        if missing:
+            raise ValueError("missing required configuration: " + ", ".join(missing))
+        report = run(argparse.Namespace(**config))
         return 0 if report["healthy"] else 1
     except (OSError, ValueError, json.JSONDecodeError) as exc:
         print(f"clock smoke error: {exc}", file=sys.stderr)

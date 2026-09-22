@@ -114,7 +114,7 @@ void testProductionDefault() {
     mcab::McabParams prod;
     assert(prod.endgameMoverWallThreshold == 0 &&
            "the endgame leaf rule must stay at threshold 0 in production -- "
-           "raising it makes the rule fire in the midgame, which docs/status.md "
+           "raising it makes the rule fire in the midgame, which docs/plan.md "
            "rejected at approximately -250 Elo");
     assert(prod.endgameLeafDepth == 2 &&
            "production endgame leaf depth is 2 plies");
