@@ -434,16 +434,12 @@ def main():
             page.wait_for_timeout(2600)
 
             # confirm-walls mode: pending ghost + Enter commits.
-            # First guarantee: human to move, cursor at live end.
-            page.evaluate("""() => {
-              const W = window.__w;
-              for (let p = Math.min(W.cursor(), W.plyCount()); p >= 0; p--) {
-                W.scratchFromPly(p);
-                if (W.scrTurn() === humanSide) { W.truncateHistory(p); break; }
-              }
-              gameOver = false;
-            }""")
-            page.wait_for_timeout(400)
+            # Isolate this acceptance check from the M3 move/engine reply.
+            # A real new game guarantees a live human turn, fresh wall stock,
+            # refreshed dock state, and no stale display coordinates.
+            page.evaluate("newGame()")
+            page.wait_for_function("() => humanCanAct()", timeout=5000)
+            check("human can act before confirm wall", page.evaluate("humanCanAct()"))
             page.evaluate("S.confirmWalls = true")
             n1 = page.evaluate("window.__w.plyCount()")
             armed = page.evaluate("(function(){ armWall(1); return forcedO === 1; })()")
