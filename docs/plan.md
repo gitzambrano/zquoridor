@@ -1,6 +1,6 @@
 # Plano ZQuoridor — Documento Canônico e Painel Operacional
 
-Atualizado em 2026-09-19. Este é o DOCUMENTO CANÔNICO oficial de planejamento,
+Atualizado em 2026-09-21. Este é o DOCUMENTO CANÔNICO oficial de planejamento,
 registro histórico (passado antigo e recente), status operacional e catálogo
 completo de TO-DO do projeto ZQuoridor. Todas as metas, decisões arquiteturais,
 taxonomias de fraqueza e especificações de dataset convergem para este arquivo.
@@ -9,7 +9,7 @@ arquivos de configuração indicados.
 
 ### Leitura rápida para um agente novo
 
-1. **Dados:** use o caminho completo do dataset indicado na tabela da rede e em `data/datasets.md`. Não misture `dataset.npz` de pastas diferentes pelo nome.
+1. **Dados:** use o caminho completo do dataset indicado na tabela da rede e em `docs/datasets.md`. Não misture `dataset.npz` de pastas diferentes pelo nome.
 2. **Treino:** leia `config.json`, `student.architecture.json` e `train_report.json`. O `student_int8.bin` é o peso carregado pelo engine.
 3. **Teste:** use `200 ms` por lance, o mesmo livro, seed e cores. Consulte `summary.json`; loss não é medida de força.
 4. **Estado:** `concluído` tem artefato e relatório; `em execução` tem processo vivo e arquivos parciais; `TODO` ainda não produziu resultado.
@@ -24,58 +24,31 @@ arquivos de configuração indicados.
 ---
 
 ### Onde Estamos (Status Atual)
-- **Baseline de Produção Oficial**: `race512-cr200k-champion` promovida e homologada como rede padrão do `main`:
-  - **vs Titanium**: **63,0% (+92,5 Elo)** em match oficial de 600 jogos (378W / 0D / 222L) — recorde histórico absoluto.
-  - **vs `main` (anterior)**: **81,25% (+254,7 Elo)** em triagem direta (32W / 1D / 7L).
-  - **vs Claustrophobia**: **47,92% (-14,5 Elo)** em match de 600 jogos a 200 ms na GPU (IC 95%: [44,33%, 51,50%], alcançando +10,4 Elo).
-  - **Paridade de Cores Restaurada**: 141W de Brancas (47,0%) e 140W de Pretas (46,7%), eliminando o colapso histórico do segundo jogador.
-  - **Suite Tático Center Rush (66 jogos vs Claustrophobia GPU MCTS)**:
-    - **Resultado Geral**: **31,8%** (20W / 2D / 44L / 66 jogos).
-    - **De Pretas (Jogador 1)**: **51,5%** (16W / 2D / 15L) — superando a Claustrophobia GPU jogando como segundo jogador!
-    - **De Brancas (Jogador 0)**: 12,1% (4W / 0D / 29L) — vulnerabilidade crítica quando atacada reativamente em abertura central.
-    - **Por Categoria Tática**:
-      - `pawn_jump`: **50,0%** (4W / 0D / 4L / 8 jogos) — equilíbrio total no combate corpo a corpo.
-      - `front_wall`: **33,3%** (5W / 2D / 11L / 18 jogos).
-      - `sidestep_flank`: **33,3%** (4W / 0D / 8L / 12 jogos).
-      - `vertical_channel`: **33,3%** (4W / 0D / 8L / 12 jogos).
-      - `reed_rear_wall`: **18,8%** (3W / 0D / 13L / 16 jogos) — ponto mais fraco em contenção traseira.
-  - **Pesos e Código Canônicos**: Pesos em `data/nnue/nnue_weights.bin` (f32) e `data/nnue/nnue_weights_int8.bin` (int8), C++ padrão com `ZQ_NNUE_RACE_FEATURES = 1` e `ZQ_NNUE_HIDDEN = 512`, WASM e web GUI 100% atualizados.
 
-- **Frente de Dados e Mineração de Crise**:
-  - **10.030 Estados Críticos Minerados** (`data/teaching/loss-center-seeds/positions.jsonl`): 5.952 estados de derrotas contra Claustrophobia, 4.295 de derrotas contra Titanium e 198 do catálogo Center Rush.
-  - **Geração de Rollouts Sintéticos**: Em execução multithread (`bin/generate_rollouts.exe` sobre 1.000 sementes com profundidade e ramificação top-K, >27.000 CPU segundos).
+- **Release atual**: **Zquoridor 2.00**.
+- **Search de produção**: MCTS/MCGS híbrido guiado por PUCT e NNUE, com
+  transposições em grafo, reutilização persistente da árvore, Q-correction
+  entre transposições, escape conservador de repetição na raiz, orçamento
+  adaptativo de relógio e suporte alpha-beta para casos táticos/endgame.
+- **Pondering**: opponent-root pondering faz parte da configuração de produção.
+  O adaptador textual expõe `ponder movetime <ms>`; no navegador, o trabalho
+  ocorre apenas no Web Worker, em fatias curtas e canceláveis.
+- **NNUE de produção**: `multipath_phase:512`,
+  **504 entradas esparsas → 512 SCReLU**, cabeça WL `512→32→1` e cabeça
+  de política `512→209`, com inferência QAT/int8.
+- **Pesos canônicos**: `data/nnue/nnue_weights.bin` e
+  `data/nnue/nnue_weights_int8.bin`.
+- **Interface externa**: protocolo textual estilo UCI com `help`, relógio
+  real, `go movetime`, `go wtime/btime` e pondering.
+- **WebAssembly**: o bundle de produção usa a mesma arquitetura de 504 entradas
+  e mantém engine play e pondering fora da thread principal.
+- **Documentação canônica**: `README.md` para usuários externos;
+  `docs/status.md` para o estado técnico; este arquivo para roadmap e
+  histórico; `docs/datasets.md` para o catálogo de dados.
 
-- **Nova Campeã Homologada (`multipath:512` — 480 entradas, 60 épocas de Annealing)**:
-  - **vs Claustrophobia (GPU, 600 jogos)**: **51,08% (+7,53 Elo)** — **PRIMEIRA VITÓRIA HISTÓRICA DO PROJETO CONTRA A CLAUSTROPHOBIA GPU!**
-    - Supera a campeã anterior (47,92%) em **+22,0 Elo**.
-    - Brancas: **152,0 / 300 (50,7%)** | Pretas: **154,5 / 300 (51,5%)**.
-    - Aberturas de Muro/Laterais: **272,0 / 526 (51,71%)**.
-    - Aberturas Centrais/Peão: **34,5 / 74 (46,62%)** (salto de +15 pontos percentuais vs baseline anterior).
-    - Status estatístico: **Strength claim ready: true** (IC 95%: [47,50%, 54,58%]).
-  - **vs Titanium (100 jogos normais)**: **64,0% (+99,95 Elo)** (35W Brancas / 29W Pretas).
-  - **vs Titanium (100 jogos Center Rush)**: **45,0% (-34,86 Elo)** (Pretas dominando com 72,0% de vitórias; Brancas em 18,0%).
-  - **Zero Custo de BFS**: Validação incremental em C++ com 100% de paridade (0 divergências em 4.758 posições).
-
-- **Rede Experimental Avaliada (`margin_regime:512` — 588 entradas)**:
-  - 132 features de interação direta: $\Delta d \in [-16..16] \times 4$ regimes de esgotamento de muros.
-  - Treinamento de 60 épocas com QAT concluído: `best_val_loss = 0.7308`, `policy_kl = 0.1983`, `value_mae = 0.2060`.
-  - Paridade incremental em C++ verificada: 0 divergências em 4.758 posições.
-  - **Bateria Oficial de 800 Jogos Concluída (com 6 workers paralelos)**:
-    - **vs Claustrophobia (GPU, 600 jogos)**: **49,00% (294,0 / 600)** (-6,95 Elo).
-      - Aberturas Centrais/Peão: **43,92% (32,5 / 74)** (Brancas: 35,1% | Pretas: 52,7%).
-      - Aberturas de Muro: **49,71% (261,5 / 526)** (Brancas: 51,9% | Pretas: 47,5%).
-      - Brancas: 149,5 / 300 (49,8%) | Pretas: 144,5 / 300 (48,2%).
-    - **vs Titanium (100 jogos normais)**: **65,00% (65,0 / 100)** (+107,5 Elo).
-    - **vs Titanium (100 jogos Center Rush)**: **47,00% (47,0 / 100)** (-20,9 Elo) (Pretas: 70,0% | Brancas: 24,0%).
-  - **Conclusão Arquitetural**: A rede `margin_regime` é competitiva, mas fica atrás da `multipath:512` por **14,5 Elo** contra a Claustrophobia (49,0% vs 51,08%) e por **2,7%** nas aberturas centrais. A multiplicidade e resiliência topológica de rotas da `multipath` provou ser uma heurística mais informativa para a rede do que a matriz cartesiana distância $\times$ regime de muros.
-
-- **Status dos Rollouts de Crise (`generate_rollouts.exe`)**:
-  - Em execução com **8 threads** em background sobre 1.000 sementes críticas (6 rollouts/semente, MCAB com 128 nós por lance, busca profunda até 120 plies).
-  - Mais de 293.600 CPU segundos consumidos (~10,2h de parede), atingindo aproximadamente **~95% de conclusão**.
-  - O dataset resultante fornecerá alvos ricos de política (visitas) e valor descontado TD($\lambda$) para o fine-tuning cirúrgico da defesa de Brancas em aberturas centrais.
-
-- **Infraestrutura de Benchmark Paralelo**:
-  - `tools/run_full_candidate_suite.py` e `tools/run_benchmark.py` parametrizados com `--workers 6` como padrão. O tempo total de execução dos 800 jogos caiu de ~3 horas para ~25 minutos na máquina local com total isolamento e persistência dos dados.
+> Os blocos abaixo preservam histórico de campanhas, benchmarks e decisões.
+> Quando houver conflito entre uma afirmação histórica e o estado atual,
+> prevalecem o bloco acima e `docs/status.md`.
 
 ### Protocolo Mandatório para os Próximos Treinamentos
 1. **Mínimo de 60 Épocas com Recozimento Térmico (Annealing)**: Treinamentos não podem ser interrompidos prematuramente; devem cumprir $\ge 60$ épocas com decaimento suave de learning rate (cosine schedule até $2\cdot 10^{-7}$) para garantir assentamento profundo dos pesos quantizados (QAT).
@@ -90,13 +63,21 @@ arquivos de configuração indicados.
    Filtra ruído e purifica a distribuição de probabilidade para lances decisivos.
 
 ### Para Onde Vamos (Próximos Passos Imediatos)
-1. **Fine-Tuning Focal da Campeã (`multipath:512`) na Defesa de Brancas**:
-   - A `multipath:512` é a líder isolada do projeto contra Claustrophobia GPU (51,08% / +7,5 Elo).
-   - O calcanhar de aquiles identificado é a defesa de Brancas contra Center Rush (18% vs Titanium, 35% vs Claustrophobia).
-   - Executar fine-tuning com os rollouts de crise de `task-6945` e learning rate recozido (`1.5e-5 → 1e-7`) para elevar o score de Brancas para >50%.
-2. **Treinar Próximas Variações Arquiteturais**:
-   - `phase:512` (480 inputs: estoque de muros e fase).
-   - `multipath_phase:512` (combinação de multiplicidade de rotas + fase do jogo).
+
+1. **Fechar os gates restantes de search em 3+2 e contra adversários externos**,
+   especialmente as variantes de time management/LC0 que ainda não possuem
+   evidência suficiente para promoção.
+2. **Gerar self-play Gen 6 com o search atual**, incluindo a distribuição de
+   visitas da raiz como alvo de política, antes de novo ciclo amplo de tuning.
+3. **Executar tuning controlado de MCAB/search somente após o novo dataset**,
+   preservando sempre H2H pareado contra baseline congelada e benchmarks
+   externos.
+4. **Continuar trabalho estrutural de eficiência** apenas quando houver ganho
+   medido de força ou de throughput útil, sem promover por nodes/s isoladamente.
+5. **Manter native/WASM/browser sincronizados**: qualquer mudança de search,
+   NNUE ou pondering deve passar pelos testes de protocolo, paridade, build
+   WebAssembly e regressão em navegador real.
+
 
 ---
 
@@ -112,7 +93,7 @@ histórico + selfplay -> contrato V3 -> replay/teaching -> datasets mistos
 -> promoção somente com intervalo favorável
 ```
 
-O novo baseline oficial de produção é **`race512-cr200k-champion`**, formalmente promovido para `data/nnue/nnue_weights_int8.bin` e incorporado como arquitetura padrão em `src/nnue.hpp`.
+O baseline oficial de produção da versão 2.00 é **`multipath_phase:512`** (504 entradas, 512 unidades SCReLU), carregado de `data/nnue/nnue_weights_int8.bin` e configurado em `src/nnue.hpp`. `race512-cr200k-champion` permanece documentado abaixo como um marco histórico da linhagem de redes.
 
 ## 2. Contrato de dados e benchmark
 
@@ -138,14 +119,14 @@ Benchmark válido exige mesmas aberturas, cores invertidas, seed igual e
 | ID | Entradas | Descrição e Features Extras | Custo BFS | Estado |
 |---|---:|---|---|---|
 | `base` | 354 | Peões (81+81), muros (64+64), distâncias (21+21), reservas (11+11) | 0 extra | baseline histórico |
-| `race` | 456 | `base` + margem BFS [-16..16] (33) + saldo muros (21) + corrida × reservas (48) | 0 extra | **baseline oficial de produção (`race512-cr200k-champion`)** |
+| `race` | 456 | `base` + margem BFS [-16..16] (33) + saldo muros (21) + corrida × reservas (48) | 0 extra | baseline histórico (`race512-cr200k-champion`) |
 | `multipath` | 480 | `race` + 8 saídas direcionais unblocked + 8 grau de saída (gargalos) + 8 geometria de contato/pulo | 0 extra | **implementada & validada (0 divergências incremental)** |
 | `margin_regime` | 588 | `race` + 132 interação margem $\Delta d \in [-16..16] \times 4$ regimes de esgotamento de muros | 0 extra | **implementada & validada (0 divergências incremental)** |
 | `phase` | 480 | `race` + 6 buckets estoque total de muros + 18 corrida $\times$ fase | 0 extra | **implementada & validada (0 divergências incremental)** |
 | `margin_phase` | 612 | `race` + 132 `margin_regime` + 24 `phase` (interação completa corrida $\times$ muros $\times$ fase) | 0 extra | **implementada & validada (0 divergências incremental)** |
 
 ### Protocolo de Cirurgia de Rede (Warm-Start)
-Para todas as redes experimentais com expansão de entradas (ex: 456 -> 480, 588, 612), os pesos $456 \times 512$ da campeã de produção (`race512-cr200k-champion`) são copiados diretamente e as novas colunas são inicializadas com **exatamente 0**. Isso assegura que no passo inicial o modelo apresente divergência matemática absolutamente zero em relação à campeã, aprendendo as novas interações de forma suave durante o recozimento térmico de 60 épocas.
+Nas campanhas históricas de expansão de entradas (ex: 456 -> 480, 588, 612), os pesos $456 \\times 512$ do checkpoint então usado como baseline (`race512-cr200k-champion`) são copiados diretamente e as novas colunas são inicializadas com **exatamente 0**. Isso assegura que no passo inicial o modelo apresente divergência matemática absolutamente zero em relação à campeã, aprendendo as novas interações de forma suave durante o recozimento térmico de 60 épocas.
 
 ## 4. Redes já treinadas: settings, dados e TODO
 
@@ -629,7 +610,7 @@ encerrado.
 A hierarquia comprovada das redes candidatas até o momento:
 1. **Baseline inicial**: `race512-search10-ft` (58,5% vs main, 57,5% vs Titanium, 49,0% vs Claustrophobia).
 2. **Campeã de larga escala (5-Tier)**: `race512-multitier-champion` (54,8% vs main, 57,0% vs Titanium, 49,67% em 600g vs Claustrophobia, 51,5% h2h sobre search10).
-3. **CAMPEÃ ATUAL ABSOLUTA**: `race512-cr200k-champion` (63,0% em 600g vs Titanium [+92,5 Elo, recorde histórico do projeto], 81,25% vs main [+254,7 Elo], 46,25% vs Claustrophobia em triagem [+53,4 Elo acima do main], 37,12% no suite tático Center-Rush [+35 Elo]).
+3. **MARCO HISTÓRICO DE REDE**: `race512-cr200k-champion` (63,0% em 600g vs Titanium [+92,5 Elo, recorde histórico do projeto], 81,25% vs main [+254,7 Elo], 46,25% vs Claustrophobia em triagem [+53,4 Elo acima do main], 37,12% no suite tático Center-Rush [+35 Elo]).
 
 A promoção oficial para os pesos padrão de produção (`data/nnue/nnue_weights.bin` e `data/nnue/nnue_weights_int8.bin`) foi **CONCLUÍDA**, com `race:512` homologada como arquitetura default do motor em `src/nnue.hpp` e no bundle WASM.
 
@@ -759,7 +740,7 @@ Com base no diagnóstico de que as aberturas de avanço central e esgotamento pr
    - Placar: **281 vitórias, 13 empates, 306 derrotas -> 47,92% de aproveitamento (-14,5 Elo)**.
    - **Simetria de Cores P0 vs P1**: 141 vitórias de Brancas (P0: 47,0%) e 140 vitórias de Pretas (P1: 46,7%). O colapso de Pretas (que era de apenas 15,0% na `multitier-champion`) foi completamente eliminado!
    - Intervalo de Confiança Bootstrap 95%: [44,33%, 51,50%] (Elo: [-39,55, +10,43]).
-   - **Veredito Global de Força**: A `race512-cr200k-champion` superou o baseline do `main` por +254,7 Elo (81,25%), estabeleceu o recorde histórico do projeto contra Titanium com +92,5 Elo (63,0%) e disputa lance a lance em quase paridade exata com o Claustrophobia (47,92% com intervalo tocando 51,5%), com simetria perfeita entre brancas e pretas. Está homologada como a melhor rede geral do projeto.
+   - **Veredito Global de Força**: A `race512-cr200k-champion` superou o baseline do `main` por +254,7 Elo (81,25%), estabeleceu o recorde histórico do projeto contra Titanium com +92,5 Elo (63,0%) e disputa lance a lance em quase paridade exata com o Claustrophobia (47,92% com intervalo tocando 51,5%), com simetria perfeita entre brancas e pretas. Naquela campanha, foi homologada como a melhor rede geral do projeto; posteriormente foi substituída pela arquitetura de produção `multipath_phase:512` da versão 2.00.
 
 ---
 
