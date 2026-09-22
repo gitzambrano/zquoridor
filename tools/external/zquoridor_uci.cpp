@@ -79,6 +79,7 @@ struct Options {
     bool disableTreeReuse = false;
     bool graphQCorrection = true;
     double graphLeafMix = 0.75;
+    bool adaptiveRepeatEscape = true;
     int wideningInitialMoves = -1;
     double wideningCoefficient = -1.0;
     double wideningExponent = -1.0;
@@ -121,6 +122,7 @@ static Options parseArgs(int argc, char** argv) {
         else if (a == "--graph-qcorr") o.graphQCorrection = true;
         else if (a == "--no-graph-qcorr") o.graphQCorrection = false;
         else if (a == "--graph-leaf-mix") o.graphLeafMix = std::atof(need("--graph-leaf-mix"));
+        else if (a == "--no-adaptive-repeat-escape") o.adaptiveRepeatEscape = false;
         else if (a == "--widening-initial") o.wideningInitialMoves = std::atoi(need("--widening-initial"));
         else if (a == "--widening-coeff") o.wideningCoefficient = std::atof(need("--widening-coeff"));
         else if (a == "--widening-exp") o.wideningExponent = std::atof(need("--widening-exp"));
@@ -173,6 +175,7 @@ int main(int argc, char** argv) {
     if (opt.disableTreeReuse) params.treeReuse = false;
     params.graphQCorrection = opt.graphQCorrection;
     params.graphLeafMix = std::clamp(opt.graphLeafMix, 0.0, 1.0);
+    params.adaptiveGraphRepeatEscape = opt.adaptiveRepeatEscape;
     if (opt.wideningInitialMoves >= 0) params.wideningInitialMoves = opt.wideningInitialMoves;
     if (opt.wideningCoefficient > 0.0) params.wideningCoefficient = opt.wideningCoefficient;
     if (opt.wideningExponent > 0.0) params.wideningExponent = opt.wideningExponent;
