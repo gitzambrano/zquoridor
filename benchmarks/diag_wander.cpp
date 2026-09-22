@@ -10,7 +10,7 @@
 // prior of 0.73. The value head is wrong and reports approximately -300 for
 // a won race. The Q values of all root moves land within 0.02 of each other,
 // and their order is inverted against the truth, so MaxVisits picks a
-// shuffle. See status.md, section "MCTS endgame wandering".
+// shuffle. See docs/status.md, section "MCTS endgame wandering".
 //
 // Build (performance profile):
 //   g++ -O3 -std=c++17 -march=native [-mavx2 -mfma] -Isrc \
