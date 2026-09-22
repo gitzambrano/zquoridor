@@ -97,7 +97,7 @@ g++ %FLAGS% -I"%SRC%" -o "%BIN%\test_notation.exe" "%TESTE%\test_notation.cpp"
 if errorlevel 1 goto :erro
 
 echo [19/20] test_nnue_race.exe  (features de corrida e acumulador incremental)
-g++ %FLAGS% -DZQ_NNUE_RACE_FEATURES=1 -I"%SRC%" -o "%BIN%\test_nnue_race.exe" "%TESTE%\test_nnue_race.cpp"
+g++ %FLAGS% -DZQ_NNUE_RACE_FEATURES=1 -DZQ_NNUE_PHASE_FEATURES=0 -DZQ_NNUE_MULTIPATH_FEATURES=0 -I"%SRC%" -o "%BIN%\test_nnue_race.exe" "%TESTE%\test_nnue_race.cpp"
 if errorlevel 1 goto :erro
 
 echo [20/20] test_time_manager.exe
