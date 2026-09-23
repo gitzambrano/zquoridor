@@ -1,0 +1,38 @@
+name: v2.02 browser gesture check
+
+on:
+  push:
+    branches:
+      - release/v2.02
+    paths:
+      - "gui_web/**"
+      - ".github/workflows/v202-browser-gesture-check.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  browser:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - uses: emscripten-core/setup-emsdk@v16
+        with:
+          version: latest
+      - name: Build WebAssembly
+        run: |
+          chmod +x build/build_wasm.sh
+          ./build/build_wasm.sh
+      - name: Install browser runtime
+        run: |
+          python -m pip install --disable-pip-version-check playwright
+          python -m playwright install --with-deps chromium
+      - name: Run browser acceptance
+        working-directory: gui_web
+        run: |
+          python test_browser_full.py
+          python test_standalone.py

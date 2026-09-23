@@ -1,4 +1,4 @@
-# Zquoridor 2.01
+# Zquoridor 2.02
 
 **[Play Zquoridor in your browser](https://gitzambrano.github.io/zquoridor/)**
 
@@ -82,6 +82,14 @@ and NNUE parity. Browser tests live in `gui_web/` and use Playwright.
 | `gui_web/` | Browser UI, worker, WASM binding, browser tests |
 | `docs/` | Technical status, roadmap, and operational guides |
 | `data/` | Production weights and local data assets |
+
+## Release 2.02
+
+- The engine returns an immediate winning pawn move before any search work.
+- The exact no-wall pawn-race solver and the MCAB equivalence checks are
+  unchanged.
+- The browser acceptance tests restore the board orientation through the
+  production path before the wall-gesture checks.
 
 ## Documentation
 

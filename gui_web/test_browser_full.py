@@ -367,7 +367,10 @@ def main():
                     " over: gameOver, ply: window.__w.plyCount(),"
                     " focus: document.activeElement ?"
                     " document.activeElement.tagName : null})"))
-            page.wait_for_timeout(2400)
+            page.wait_for_function(
+                "() => !engineThinking && window.__w.turn() === humanSide && atLiveEnd()",
+                timeout=20000)
+            check("human can act before gesture tests", page.evaluate("humanCanAct()"))
 
             # flip board + paths toggle
             page.keyboard.press("f")
@@ -379,21 +382,50 @@ def main():
                     "({flipped: window.__qb.flipped, focus:"
                     " document.activeElement ? document.activeElement.tagName : null,"
                     " over: gameOver, think: engineThinking})"))
-            page.evaluate("window.__qb.flipped=false")
+            # Restore orientation through the production flip path. Directly
+            # mutating QBoard.flipped leaves legalWall in the previous display
+            # coordinate system and creates an impossible internal state.
+            page.evaluate("doFlip()")
+            page.wait_for_timeout(150)
+            check("flip restores board", page.evaluate("window.__qb.flipped") is False)
             page.click("#btnPaths")
             page.wait_for_timeout(150)
             check("paths overlay drawn", page.evaluate(
                 "Array.isArray(window.__qb.paths) && window.__qb.paths.length === 2"))
             page.click("#btnPaths")
 
-            # M3 direct board gesture: press near anchor, clear horizontal drag
+            # M3 direct board gesture. Pick an actually legal wall in the
+            # current position instead of assuming a fixed centre slot survived
+            # the engine reply. Sweep inside the same wall anchor so the test
+            # exercises gesture orientation without drifting into a neighbour.
             n0 = page.evaluate("window.__w.plyCount()")
-            pt = anchor_pt(0, 4, 4)
-            page.mouse.move(pt["x"], pt["y"])
-            page.mouse.down()
-            page.mouse.move(pt["x"] + 60, pt["y"], steps=8)
-            page.mouse.up()
-            page.wait_for_timeout(600)
+            m3wall = page.evaluate("""() => {
+              const W = window.__w, B = window.__qb;
+              let best = null;
+              for (let i = 0; i < W.moveCount(); i++) {
+                if (!W.mvIsWall(i)) continue;
+                const eo = W.mvA(i), er = W.mvB(i), ec = W.mvC(i);
+                const [o,r,c] = B.engWallToDisp(eo, er, ec);
+                const d = Math.abs(r - 3.5) + Math.abs(c - 3.5);
+                if (!best || d < best.d) best = {eo, er, ec, o, r, c, d};
+              }
+              return best;
+            }""")
+            check("M3 has legal wall target", m3wall is not None)
+            if m3wall is not None:
+                pt = anchor_pt(m3wall["eo"], m3wall["er"], m3wall["ec"])
+                cell = page.evaluate("window.__qb.C")
+                a, b = 0.34 * cell, 0.08 * cell
+                if m3wall["o"] == 0:
+                    page.mouse.move(pt["x"] - a, pt["y"])
+                    page.mouse.down()
+                    page.mouse.move(pt["x"] - b, pt["y"], steps=8)
+                else:
+                    page.mouse.move(pt["x"], pt["y"] - a)
+                    page.mouse.down()
+                    page.mouse.move(pt["x"], pt["y"] - b, steps=8)
+                page.mouse.up()
+                page.wait_for_timeout(600)
             m3 = page.evaluate("window.__w.plyCount()") > n0
             check("M3 direct gesture wall", m3)
             if not m3:
@@ -402,16 +434,12 @@ def main():
             page.wait_for_timeout(2600)
 
             # confirm-walls mode: pending ghost + Enter commits.
-            # First guarantee: human to move, cursor at live end.
-            page.evaluate("""() => {
-              const W = window.__w;
-              for (let p = Math.min(W.cursor(), W.plyCount()); p >= 0; p--) {
-                W.scratchFromPly(p);
-                if (W.scrTurn() === humanSide) { W.truncateHistory(p); break; }
-              }
-              gameOver = false;
-            }""")
-            page.wait_for_timeout(400)
+            # Isolate this acceptance check from the M3 move/engine reply.
+            # A real new game guarantees a live human turn, fresh wall stock,
+            # refreshed dock state, and no stale display coordinates.
+            page.evaluate("newGame()")
+            page.wait_for_function("() => humanCanAct()", timeout=5000)
+            check("human can act before confirm wall", page.evaluate("humanCanAct()"))
             page.evaluate("S.confirmWalls = true")
             n1 = page.evaluate("window.__w.plyCount()")
             armed = page.evaluate("(function(){ armWall(1); return forcedO === 1; })()")

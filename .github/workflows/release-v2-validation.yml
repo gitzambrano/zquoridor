@@ -1,9 +1,9 @@
-name: Release 2.01 validation
+name: Release 2.02 validation
 
 on:
   push:
     branches:
-      - release/v2.01
+      - release/v2.02
       - main
 
 permissions:
@@ -33,14 +33,21 @@ jobs:
           test -f AGENTS.md
           test -f CLAUDE.md
           test -f docs/README.md
+          test -f docs/status.md
           test -f docs/plan.md
-          test -f docs/scripts.md
+          test -f docs/datasets.md
           test ! -e readme.md
           test ! -e status.md
           test ! -e plano-zquoridor.md
           test ! -e data/datasets.md
           if git grep -nE 'plano-zquoridor\.md|data/datasets\.md|\breadme\.md\b' --               '*.md' '*.cpp' '*.hpp' '*.py' '*.js' '*.sh' '*.bat' '*.yml' '*.yaml'               ':!.github/workflows/release-v2-validation.yml'; then
             echo "stale documentation path found in source/docs/config" >&2
+            exit 1
+          fi
+          stale_status="$(git grep -n 'status\.md' --               '*.md' '*.cpp' '*.hpp' '*.py' '*.js' '*.sh' '*.bat' '*.yml' '*.yaml'               ':!docs/**' ':!.github/workflows/release-v2-validation.yml' | grep -v 'docs/status\.md' || true)"
+          if [ -n "$stale_status" ]; then
+            echo "$stale_status"
+            echo "bare status.md references outside docs must use docs/status.md" >&2
             exit 1
           fi
           git diff --check
@@ -136,7 +143,7 @@ jobs:
           git status --short
 
       - name: Commit verified WebAssembly bundle
-        if: github.ref == 'refs/heads/release/v2.01' || github.ref == 'refs/heads/main'
+        if: github.ref == 'refs/heads/release/v2.02' || github.ref == 'refs/heads/main'
         shell: bash
         run: |
           set -euo pipefail
@@ -147,7 +154,7 @@ jobs:
           if git diff --cached --quiet; then
             echo "WASM bundle already matches sources."
           else
-            git commit -m "release: rebuild verified 2.01 WebAssembly [skip ci]"
+            git commit -m "release: rebuild verified 2.02 WebAssembly [skip ci]"
             git push origin HEAD:"${GITHUB_REF_NAME}"
           fi
 
@@ -160,7 +167,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - name: Create version 2.01 tag
+      - name: Create version 2.02 tag
         shell: bash
         run: |
           set -euo pipefail
@@ -168,19 +175,19 @@ jobs:
           # this workflow's original GITHUB_SHA. Tag the actual final main HEAD.
           git fetch origin main --tags --force
           release_sha="$(git rev-parse origin/main)"
-          if git rev-parse -q --verify refs/tags/2.01 >/dev/null; then
-            tagged="$(git rev-list -n1 2.01)"
+          if git rev-parse -q --verify refs/tags/2.02 >/dev/null; then
+            tagged="$(git rev-list -n1 2.02)"
             test "$tagged" = "$release_sha"
-            echo "Tag 2.01 already points to $release_sha"
+            echo "Tag 2.02 already points to $release_sha"
           else
             git config user.name "zquoridor-release-ci"
             git config user.email "actions@users.noreply.github.com"
-            git tag -a 2.01 "$release_sha" -m "Zquoridor 2.01"
-            git push origin refs/tags/2.01
+            git tag -a 2.02 "$release_sha" -m "Zquoridor 2.02"
+            git push origin refs/tags/2.02
           fi
 
       - name: Remove temporary release branch
         shell: bash
         run: |
           set -euo pipefail
-          git push origin --delete release/v2.01 || true
+          git push origin --delete release/v2.02 || true
