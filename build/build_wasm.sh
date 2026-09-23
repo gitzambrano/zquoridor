@@ -77,5 +77,5 @@ em++ -O3 -std=c++17 -msimd128 \
 
 python3 build_standalone.py
 
-echo "OK: WASM e bundles atualizados (gui_web/zquoridor.html e root index.html para GitHub Pages)"
-echo "Commite e suba: git add index.html gui_web/zquoridor.html && git push"
+echo "OK: WASM e bundles atualizados (gui_web/zquoridor.html e docs/index.html para GitHub Pages)"
+echo "Commite e suba: git add docs/index.html gui_web/zquoridor.html && git push"

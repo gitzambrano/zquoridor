@@ -77,7 +77,7 @@ def main():
     app_path = HERE / "app.js"
     board_path = HERE / "board.js"
     out_path = HERE / "zquoridor.html"
-    root_out_path = HERE.parent / "index.html"
+    docs_out_path = HERE.parent / "docs" / "index.html"
 
     for p in (wasm_path, loader_path, html_path, app_path, board_path):
         if not p.exists():
@@ -175,9 +175,9 @@ def main():
 
     out = html_no_scripts.replace("<!--INLINE_SCRIPTS-->", inline)
     out_path.write_text(out, encoding="utf-8")
-    root_out_path.write_text(out, encoding="utf-8")
+    docs_out_path.write_text(out, encoding="utf-8")
     print(f"OK: {out_path} ({out_path.stat().st_size / 1024:.0f} KB)")
-    print(f"OK: {root_out_path} ({root_out_path.stat().st_size / 1024:.0f} KB)")
+    print(f"OK: {docs_out_path} ({docs_out_path.stat().st_size / 1024:.0f} KB)")
 
 
 if __name__ == "__main__":

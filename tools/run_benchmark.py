@@ -21,7 +21,7 @@ CONFIG = {
     "workers": 1,
     "seed": 20260914,
     "openings": str(ROOT / "tools" / "external" / "openings_titanium.jsonl"),
-    "output": str(ROOT / "benchmark_results" / "local"),
+    "output": str(ROOT / "results" / "benchmarks" / "local"),
     "resume": True,
     "retry_failed": True,
     "auto_setup": True,

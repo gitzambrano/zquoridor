@@ -137,12 +137,12 @@ def main() -> int:
     parser.add_argument(
         "--claustro-games",
         type=Path,
-        default=ROOT / "benchmark_results/race512-cr200k-champion-claustrophobia-600g/games.jsonl",
+        default=ROOT / "results/benchmarks/race512-cr200k-champion-claustrophobia-600g/games.jsonl",
     )
     parser.add_argument(
         "--titanium-games",
         type=Path,
-        default=ROOT / "benchmark_results/race512-cr200k-champion-titanium-600g/games.jsonl",
+        default=ROOT / "results/benchmarks/race512-cr200k-champion-titanium-600g/games.jsonl",
     )
     parser.add_argument(
         "--center-openings",

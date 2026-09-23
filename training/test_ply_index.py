@@ -64,7 +64,7 @@ def test_synthetic():
     check(list(rem) == [2, 1, 0, 3, 2, 1, 0], f"plies_remaining esperado, obtido {list(rem)}")
 
 
-def test_real_shard(path):
+def _check_real_shard(path):
     print(f"\nshard real: {os.path.basename(path)}")
     arr = load_selfplay(path, quiet=True)
     ply = ply_index(arr)
@@ -121,7 +121,7 @@ def main():
         if not shards:
             print(f"\nAVISO: nenhum .bin em {SHARD_DIR} -- so o teste sintetico rodou.")
         for name in shards[:3]:
-            test_real_shard(os.path.join(SHARD_DIR, name))
+            _check_real_shard(os.path.join(SHARD_DIR, name))
 
     print()
     if failures:

@@ -54,7 +54,7 @@ def main(argv=None):
 
     exe = Path(args.candidate_exe).resolve()
     nnue = Path(args.candidate_nnue).resolve()
-    base_out = ROOT / "benchmark_results" / args.suite_name
+    base_out = ROOT / "results" / "benchmarks" / args.suite_name
 
     claustro_out = base_out / "claustro_600g"
     titanium_norm_out = base_out / "titanium_100g_normal"

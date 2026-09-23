@@ -27,9 +27,9 @@ campaigns.
 | Goal | Canonical runner | Input | Output | Notes |
 | --- | --- | --- | --- | --- |
 | Install external opponents | `tools/setup_bots.py` | pinned revisions | `external_bots/` | Run once or after a clean clone. |
-| Benchmark production or one candidate | `tools/run_benchmark.py` | executable, NNUE, opening book | `benchmark_results/` | Fixed move time, paired colours and shared openings are mandatory. |
-| Full candidate gate | `tools/run_full_candidate_suite.py` | a built candidate | `benchmark_results/` | Uses one generic suite configuration and optional phase skips. |
-| Clock safety smoke | `tools/run_clock_smoke.py` | two UCI engines and openings | `benchmark_results/` | Defaults to a safe dry run; set paths in `CONFIG` to execute. |
+| Benchmark production or one candidate | `tools/run_benchmark.py` | executable, NNUE, opening book | `results/benchmarks/` | Fixed move time, paired colours and shared openings are mandatory. |
+| Full candidate gate | `tools/run_full_candidate_suite.py` | a built candidate | `results/benchmarks/` | Uses one generic suite configuration and optional phase skips. |
+| Clock safety smoke | `tools/run_clock_smoke.py` | two UCI engines and openings | `results/benchmarks/` | Defaults to a safe dry run; set paths in `CONFIG` to execute. |
 | Ordinary self-play | `tools/selfplay/run_selfplay.py` | architecture-matched self-play executable | `data/selfplay_canonical_v3/` | The simple, configurable shard generator. |
 | Balanced, resumable self-play | `tools/teacher/run_four_million_selfplay.py` | central/broad seed schedules and matching executable/NNUE | a V3 corpus with metadata sidecars | Active controller. It deduplicates states, resumes safely, and exposes its configuration block at the top of the file. |
 | Build a seed schedule | `tools/teacher/build_selfplay_seed_schedule.py` | JSONL snapshots/openings | central and broad JSONL schedules | Internal stage used by the balanced controller. |

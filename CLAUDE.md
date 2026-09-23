@@ -8,7 +8,7 @@ Use these references:
 - `docs/plan.md` for production state, measurements, and roadmap.
 - `docs/scripts.md` for generic runners and pipeline contracts.
 - `docs/datasets.md` for the local ignored dataset inventory.
-- `skills/writing-rules/SKILL.md` for project prose.
+- `.agents/skills/writing-rules/SKILL.md` for project prose.
 
 Keep browser search and pondering in the bounded Web Worker. Do not move long
 blocking searches onto the UI thread.

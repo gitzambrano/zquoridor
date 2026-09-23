@@ -63,7 +63,7 @@ data/camping_survey.csv
 
 # Local teaching, self-play and benchmark datasets stay outside Git.
 # Their layout and provenance are documented under docs/.
-benchmark_results/
+results/benchmarks/
 data/teaching/
 
 # Keep only the two intentionally retained provenance checkpoints. All other

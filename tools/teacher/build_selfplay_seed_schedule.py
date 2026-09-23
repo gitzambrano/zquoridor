@@ -588,7 +588,7 @@ def discover_source_rows(source_paths: Sequence[Path] | None = None) -> tuple[li
         if path.exists():
             rows.extend(_opening_rows(path, broad=True))
             used.append(str(path.resolve()))
-    benchmark_root = ROOT / "benchmark_results"
+    benchmark_root = ROOT / "results/benchmarks"
     for path in sorted(benchmark_root.glob("**/games.jsonl")):
         rows.extend(_benchmark_rows(path, categories))
         used.append(str(path.resolve()))

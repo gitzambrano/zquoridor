@@ -16,7 +16,7 @@ Usage (from the repository root):
 
     python3 gui_web/extract_wasm_from_bundle.py [bundle.html]
 
-Default bundle is index.html at the repository root.
+Default bundle is docs/index.html.
 """
 import base64
 import pathlib
@@ -28,7 +28,7 @@ BLOBS = (("zquoridor.wasm", "__QR_WASM_BYTES__"), ("zquoridor.data", "__QR_DATA_
 
 
 def main():
-    bundle = pathlib.Path(sys.argv[1]) if len(sys.argv) > 1 else HERE.parent / "index.html"
+    bundle = pathlib.Path(sys.argv[1]) if len(sys.argv) > 1 else HERE.parent / "docs" / "index.html"
     if not bundle.exists():
         sys.exit(f"bundle not found: {bundle}")
     html = bundle.read_text(encoding="utf-8")

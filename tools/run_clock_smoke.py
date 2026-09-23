@@ -22,7 +22,7 @@ CONFIG = {
     "baseline_exe": None,
     "baseline_nnue": None,
     "openings": str(ROOT / "tools" / "external" / "openings_screen_v1.jsonl"),
-    "output": str(ROOT / "benchmark_results" / "clock_smoke"),
+    "output": str(ROOT / "results" / "benchmarks" / "clock_smoke"),
     "pairs": 2,
     "seed": 20260920,
     "base_ms": 180_000,

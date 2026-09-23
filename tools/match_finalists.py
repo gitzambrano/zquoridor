@@ -27,7 +27,7 @@ CONFIG = {
     "workers": 2,
     "seed": 20260920,
     "openings": str(ROOT / "tools" / "external" / "openings_confirmation_v1.jsonl"),
-    "output": str(ROOT / "benchmark_results" / "finalists-h2h-race512-vs-base512-200ms"),
+    "output": str(ROOT / "results" / "benchmarks" / "finalists-h2h-race512-vs-base512-200ms"),
     "bootstrap": 20000,
 }
 

@@ -167,7 +167,7 @@ def mine_positions(
 
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--benchmarks", type=Path, default=ROOT / "benchmark_results")
+    parser.add_argument("--benchmarks", type=Path, default=ROOT / "results/benchmarks")
     parser.add_argument("--out", type=Path, default=ROOT / "data/teaching/weakness-mining-35k/positions.jsonl")
     parser.add_argument("--max-positions", type=int, default=35000)
     parser.add_argument("--val-fraction", type=float, default=0.15)
