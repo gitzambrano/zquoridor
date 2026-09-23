@@ -1,6 +1,6 @@
 # Zquoridor: project state, results, and roadmap
 
-Last reviewed: 2026-09-22. This is the single canonical project document.
+Last reviewed: 2026-09-23. This is the single canonical project document.
 It answers four questions in order: what is in production, what has already
 been measured, what is running now, and what happens next. Raw datasets,
 self-play shards, logs, opponent checkouts, and transient checkpoints are local
@@ -88,10 +88,38 @@ fine-tune stages.
 | `margin_regime` | distance-margin by wall-depletion regime | no extra BFS | tests regime-specific race evaluation |
 | `multipath_phase` | multipath plus phase | no extra BFS | current production compromise |
 | `multipath_phase_contact` | exact pawn displacement, local edge masks, jump/diagonal options | local wall tests only; no extra BFS | richer contact/corridor model for wandering and blocking positions |
+| `multipath_phase_bucketed` | `multipath_phase` inputs; 6 value heads selected by total remaining walls; each head `512 → 32 → 32 → 1` | value evaluation 5% slower in isolation | separates wall-fight and race evaluation |
+| `multipath_phase_deep` | `multipath_phase` inputs; one head `512 → 32 → 32 → 1` | value evaluation 3% slower in isolation | ablation: second layer without buckets |
+
+The value-head buckets use the same wall boundaries as the `phase` features:
+0, 1 to 2, 3 to 5, 6 to 9, 10 to 14, and 15 or more walls.
 
 Expanded architectures warm-start by copying compatible columns and setting new
 columns to zero, preserving the old function at epoch zero. Python and C++
 feature parity is required before any arena run.
+
+### Long-clock search study (180+2)
+
+This study is separate from the fixed-200 ms promotion protocol. It does not
+replace that protocol.
+
+- The historical 180+2 score against Claustrophobia rose from 14.5% before
+  native clock support to 29.75% with real-clock budgeting and 34.25% with
+  adaptive budgeting. It reached approximately 41% to 42.5% after the DAG,
+  MCGS, and repetition work. The current engine stays in that band.
+- Search scaling, 200 games per configuration: 32 nodes/ms with a 640k ceiling
+  scored 39.0% (-77.7 Elo). The best point was 96 nodes/ms with a 1.28M
+  ceiling at 46.0% (-27.9 Elo). The paired bootstrap interval still crosses the
+  threshold. Therefore, this configuration is a candidate, not a result.
+  128 nodes/ms with a 2.56M ceiling did not improve the point estimate.
+- Search architecture, 100 games per configuration: without tree reuse, the
+  score fell to 37.0%. FPU 0.2 (27.5%), MaxQ root selection (40.5%), and Gumbel
+  root filtering (39.0% for M=32, 16.5% for M=16) are rejected. Progressive
+  widening scored 49.0% against a 48.0% same-run baseline. This is a weak
+  signal only.
+- These settled results stay closed: pondering (400-game confirmation), FPU 0.1
+  and MaxVisitsThenQ (neutral or worse), and the AB root prefilter (large
+  negative Elo).
 
 ## 4. Data and teaching already completed
 
@@ -146,6 +174,33 @@ plies. They label policy and root value only after a search on that ply.
 The updated controller records generator hashes and supports a threshold-based
 transition. These source changes do not alter the already-running process.
 
+### NNUE candidate code (not trained)
+
+The code for horizontal mirror augmentation and phase-bucketed value heads is
+complete. No network uses it yet.
+
+- Mirror augmentation: `training/mirror_augmentation.py` flips each training
+  sample left to right with probability 0.5. The trainer flips the raw state and
+  the policy, and then recomputes all features. Validation is not flipped. Set
+  `mirror_h` in the `run_experiment.py` `CONFIG`.
+- Mirror verification: `tests/test_mirror_engine.cpp` checked 39,759 positions
+  and 1,080,437 legal moves. Path lengths, legal move sets, and successor states
+  match under reflection.
+- Value heads: the architecture name selects the head. `src/nnue.hpp` reads
+  `ZQ_NNUE_VALUE_BUCKETS` (1 or 6) and `ZQ_NNUE_VALUE_DEPTH` (1 or 2). The
+  defaults (1 and 1) keep the production weight format unchanged.
+- Warm start: the second layer starts as the identity matrix. Therefore, the
+  float network is equal to the parent network at epoch zero. A warm-started
+  `multipath_phase` export is byte-identical to the production int8 file.
+- Parity: in 9,152 positions and all six buckets, the C++ int8 value matches
+  the Python int8 value within 2.4e-7. The QAT value matches the C++ int8 value
+  within 5e-10. The incremental accumulator matches a full rebuild.
+- Speed: search throughput was measured with warm-started weights, 9 positions,
+  1 s per position, and 3 alternating runs. The ratios to production are 1.06
+  (deep) and 0.98 (6 buckets). The run-to-run spread is approximately 12%.
+  Therefore, no speed loss is measurable. An earlier report of 82.9% did not
+  use equal weights.
+
 ## 6. Promotion protocol
 
 1. Build the exact candidate executable and verify native/Python feature parity.
@@ -160,24 +215,36 @@ transition. These source changes do not alter the already-running process.
 
 ## 7. Roadmap
 
-1. Finish and audit the active corpus at 10,000,000 unique states. Preserve all
+1. Confirm the long-clock search candidate now. This step does not need the
+   corpus. Compare 96 nodes/ms with a 1.28M ceiling, alone and with
+   progressive widening, against the frozen production baseline and
+   Claustrophobia with paired openings. The candidate must also keep the
+   fixed-200 ms production gate.
+2. Finish and audit the active corpus at 10,000,000 unique states. Preserve all
    existing data. Use corrected visit-temperature generation for the final
    five million states. Start experimental training only after this audit.
-2. Train the main and contact paths on the same data mixture. Blend root and
-   result targets with a measured discount. Keep genuine search-policy labels
-   separate from replay labels.
-   Use the generic stored-search replay mode after the corpus audit. Retain
-   a broad anchor and cap critical-source weights. Report sample counts and
-   effective weight per source, policy KL, value loss, and family holdouts.
-3. Use an explicit cosine weight-decay schedule to its minimum, warm up the
+3. Train three arms on the same data and the same recipe:
+   - A (control): `multipath_phase`, no mirror;
+   - B: `multipath_phase` with mirror augmentation;
+   - C: `multipath_phase_bucketed` with mirror augmentation.
+
+   Compare B with A, and then C with B. Train `multipath_phase_deep` only if C
+   wins, to find the source of the gain. Postpone the contact variant, because
+   contact lost its H2H screen.
+4. Blend root and result targets with a measured discount. Keep genuine
+   search-policy labels separate from replay labels. Use the generic
+   stored-search replay mode. Retain a broad anchor and cap critical-source
+   weights. Report sample counts, effective weight per source, policy KL,
+   value loss, value error per bucket, and family holdouts.
+5. Use an explicit cosine weight-decay schedule to its minimum, warm up the
    learning rate, retain a sufficient QAT tail, and set patience for the full
-   80 to 160 epoch schedule. Compare the same recipe and dataset.
-4. Run parity and holdout checks, then fixed-200 ms screening. Keep search
+   80 to 160 epoch schedule.
+6. Run parity and holdout checks, then fixed-200 ms screening. Keep search
    settings unchanged in the comparison.
-5. Require paired evidence against production, Titanium, and Claustrophobia.
+7. Require paired evidence against production, Titanium, and Claustrophobia.
    Require a point score above 60% in each of the five Claustrophobia families
    at 200 ms before promotion. Use four 3+2 games only to check clock safety.
-6. Test low-cost cached BFS and local wall geometry before adding a network
+8. Test low-cost cached BFS and local wall geometry before adding a network
    architecture. Do not add a network without a specific weakness hypothesis
    and a reproducible configuration.
 
@@ -190,6 +257,8 @@ transition. These source changes do not alter the already-running process.
 - Cached BFS features and local wall geometry are cheap to evaluate, but an
   architecture is only useful if the paired arena shows a gain.
 - Neither contact nor reliable-search FT demonstrated a promotion-level gain.
+- At 180+2, a larger node budget raised the score from 39.0% to 46.0%. No
+  network change produced a comparable screening gain.
 - The active corpus is below the 10M target. The 5M root-visit schedule is a
   planned transition, not a completed result.
 - Keep raw data and transient artifacts local. Version source, reproducible
@@ -200,35 +269,3 @@ transition. These source changes do not alter the already-running process.
 See [scripts.md](scripts.md) for the canonical runners, internal stages, and
 input/output contracts. `docs/datasets.md` remains local-only and must not be
 added to Git.
-
-
-### 2026-09-23 long-clock search study
-
-The 180+2 historical campaign and the follow-up search screens establish a
-separate long-clock result. They do not replace the fixed-200-ms promotion
-protocol.
-
-- Historical 180+2 progression versus Claustrophobia improved from 14.5% before
-  native clock support to 29.75% with real-clock budgeting, 34.25% with adaptive
-  budgeting, and approximately 41-42.5% after DAG/MCGS/repetition work. The
-  current engine remained in that same statistical band; the immediate-win
-  fast path showed no measurable strength regression.
-- Search-scaling screen, 200 games/configuration: production-style
-  32 nodes/ms with a 640k ceiling scored 39.0% (-77.7 Elo); the best directional
-  point was 96 nodes/ms with a 1.28M ceiling at 46.0% (-27.9 Elo). The paired
-  bootstrap interval still crossed the promotion threshold, so this is a
-  candidate, not a result to ship. Raising both knobs further to 128/2.56M did
-  not improve the point estimate.
-- Architecture screen, 100 games/configuration: disabling tree reuse fell to
-  37.0%, confirming that reuse is important at long clocks. FPU 0.2 (27.5%),
-  MaxQ root selection (40.5%), and simple Gumbel root filtering (39.0% for
-  M=32; 16.5% for M=16) were rejected. Progressive widening scored 49.0%
-  against a 48.0% same-run baseline and remains only a weak directional signal.
-- Previously settled experiments were not reopened: pondering already has a
-  400-game confirmation; FPU 0.1 and MaxVisitsThenQ were previously neutral or
-  worse; AB root prefilter was already rejected by large negative Elo results.
-
-Next long-clock confirmation gate: compare 96 nodes/ms / 1.28M alone and the
-same scaling plus progressive widening against the same frozen production
-baseline and Claustrophobia with paired openings. No candidate is promoted
-unless it also preserves the fixed-200-ms production gate.

@@ -83,8 +83,11 @@ g++ "${FLAGS[@]}" -I"$SRC" -o "$BIN/test_selfplay_seed_positions" "$TESTS/test_s
 echo "[22/23] test_selfplay_metadata"
 g++ "${FLAGS[@]}" -pthread -I"$SRC" -o "$BIN/test_selfplay_metadata" "$TESTS/test_selfplay_metadata.cpp"
 
-echo "[23/23] test_selfplay_visit_temperature"
+echo "[23/24] test_selfplay_visit_temperature"
 g++ "${FLAGS[@]}" -pthread -I"$SRC" -I"$ROOT/tools/selfplay" -o "$BIN/test_selfplay_visit_temperature" "$TESTS/test_selfplay_visit_temperature.cpp"
+
+echo "[24/24] test_mirror_engine"
+g++ "${FLAGS[@]}" -I"$SRC" -o "$BIN/test_mirror_engine" "$TESTS/test_mirror_engine.cpp"
 
 echo
 echo "OK -- binários em $BIN"

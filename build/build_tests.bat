@@ -112,8 +112,12 @@ echo [22/23] test_selfplay_metadata.exe
 g++ %FLAGS% -pthread -I"%SRC%" -o "%BIN%\test_selfplay_metadata.exe" "%TESTE%\test_selfplay_metadata.cpp"
 if errorlevel 1 goto :erro
 
-echo [23/23] test_selfplay_visit_temperature.exe
+echo [23/24] test_selfplay_visit_temperature.exe
 g++ %FLAGS% -pthread -I"%SRC%" -I"%ROOT%\tools\selfplay" -o "%BIN%\test_selfplay_visit_temperature.exe" "%TESTE%\test_selfplay_visit_temperature.cpp"
+if errorlevel 1 goto :erro
+
+echo [24/24] test_mirror_engine.exe
+g++ %FLAGS% -I"%SRC%" -o "%BIN%\test_mirror_engine.exe" "%TESTE%\test_mirror_engine.cpp"
 if errorlevel 1 goto :erro
 
 echo.

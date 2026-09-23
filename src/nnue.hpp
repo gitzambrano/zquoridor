@@ -86,6 +86,34 @@ inline int wallsLeftBucket(int n) {
 #ifndef ZQ_NNUE_HIDDEN
 #define ZQ_NNUE_HIDDEN 512
 #endif
+#ifndef ZQ_NNUE_VALUE_BUCKETS
+#define ZQ_NNUE_VALUE_BUCKETS 1
+#endif
+#ifndef ZQ_NNUE_VALUE_DEPTH
+#define ZQ_NNUE_VALUE_DEPTH 1
+#endif
+constexpr int VALUE_BUCKETS = ZQ_NNUE_VALUE_BUCKETS;
+constexpr int VALUE_DEPTH = ZQ_NNUE_VALUE_DEPTH;
+static_assert(VALUE_BUCKETS == 1 || VALUE_BUCKETS == 6,
+              "VALUE_BUCKETS must be 1 or 6");
+static_assert(VALUE_DEPTH == 1 || VALUE_DEPTH == 2,
+              "VALUE_DEPTH must be 1 or 2");
+
+// Value-head bucket by total remaining walls. The boundaries match
+// phaseFeatureIndices and get_phase_bucket in training/student_model.py.
+inline int getPhaseBucket(int totalWalls) {
+#if ZQ_NNUE_VALUE_BUCKETS == 6
+    if (totalWalls <= 0) return 0;
+    if (totalWalls <= 2) return 1;
+    if (totalWalls <= 5) return 2;
+    if (totalWalls <= 9) return 3;
+    if (totalWalls <= 14) return 4;
+    return 5;
+#else
+    (void)totalWalls;
+    return 0;
+#endif
+}
 constexpr int BASE_FEATURES = N * N + N * N + WS * WS * 2 + 2 * DIST_BUCKETS + 2 * WALLS_LEFT_BUCKETS;
 constexpr int RACE_EXTRA_FEATURES = 102;
 constexpr int MARGIN_REGIME_EXTRA_FEATURES = 132;
@@ -445,11 +473,27 @@ struct NNUEWeights {
     // camada 1 (acumulador): pesos por feature esparsa -> HIDDEN
     std::vector<std::array<float, HIDDEN>> w1;   // [NUM_FEATURES][HIDDEN]
     std::array<float, HIDDEN> b1{};
+
+#if ZQ_NNUE_VALUE_BUCKETS == 1 && ZQ_NNUE_VALUE_DEPTH == 1
     // cabeça de RESULTADO (WL): HIDDEN -> 32 -> 1 (logit único, sem empate)
     std::array<std::array<float, 32>, HIDDEN> wv1_wl;
     std::array<float, 32> bv1_wl{};
     std::array<float, 32> wv2_wl{};
     float bv2_wl = 0.f;
+#elif ZQ_NNUE_VALUE_DEPTH == 2
+    std::array<std::array<std::array<float, 32>, HIDDEN>, VALUE_BUCKETS> wv1_wl;
+    std::array<std::array<float, 32>, VALUE_BUCKETS> bv1_wl{};
+    std::array<std::array<std::array<float, 32>, 32>, VALUE_BUCKETS> wv2_wl;
+    std::array<std::array<float, 32>, VALUE_BUCKETS> bv2_wl{};
+    std::array<std::array<float, 32>, VALUE_BUCKETS> wv3_wl;
+    std::array<float, VALUE_BUCKETS> bv3_wl{};
+#else
+    std::array<std::array<std::array<float, 32>, HIDDEN>, VALUE_BUCKETS> wv1_wl;
+    std::array<std::array<float, 32>, VALUE_BUCKETS> bv1_wl{};
+    std::array<std::array<float, 32>, VALUE_BUCKETS> wv2_wl;
+    std::array<float, VALUE_BUCKETS> bv2_wl{};
+#endif
+
     // cabeça de política: HIDDEN -> POLICY_OUT
     std::vector<std::array<float, HIDDEN>> wp;   // [POLICY_OUT][HIDDEN] (transposto p/ dot direto)
     std::vector<float> bp;                        // [POLICY_OUT]
@@ -462,24 +506,35 @@ struct NNUEWeights {
         w1.assign(NUM_FEATURES, {});
         for (auto& row : w1) for (auto& v : row) v = d1(rng);
         for (auto& v : b1) v = 0.f;
+
+#if ZQ_NNUE_VALUE_BUCKETS == 1 && ZQ_NNUE_VALUE_DEPTH == 1
         for (auto& row : wv1_wl) for (auto& v : row) v = d1(rng);
+        for (auto& v : bv1_wl) v = 0.f;
         for (auto& v : wv2_wl) v = d1(rng);
+        bv2_wl = 0.f;
+#elif ZQ_NNUE_VALUE_DEPTH == 2
+        for (int b = 0; b < VALUE_BUCKETS; ++b) {
+            for (auto& row : wv1_wl[b]) for (auto& v : row) v = d1(rng);
+            for (auto& v : bv1_wl[b]) v = 0.f;
+            for (auto& row : wv2_wl[b]) for (auto& v : row) v = d1(rng);
+            for (auto& v : bv2_wl[b]) v = 0.f;
+            for (auto& v : wv3_wl[b]) v = d1(rng);
+            bv3_wl[b] = 0.f;
+        }
+#else
+        for (int b = 0; b < VALUE_BUCKETS; ++b) {
+            for (auto& row : wv1_wl[b]) for (auto& v : row) v = d1(rng);
+            for (auto& v : bv1_wl[b]) v = 0.f;
+            for (auto& v : wv2_wl[b]) v = d1(rng);
+            bv2_wl[b] = 0.f;
+        }
+#endif
+
         wp.assign(POLICY_OUT, {});
         for (auto& row : wp) for (auto& v : row) v = d1(rng);
         bp.assign(POLICY_OUT, 0.f);
     }
 
-    // Carrega pesos treinados (training/train_nnue.py) de um arquivo
-    // binário cru de floats, na MESMA ordem em que os campos aparecem nesta
-    // struct: w1 (NUM_FEATURES x256), b1 (256), wv1_wl (256x32), bv1_wl (32),
-    // wv2_wl (32), bv2_wl (1), wp (209x256), bp (209). Cada bloco é lido
-    // linha a linha (mesma ordem de laço usada no export Python), sem
-    // cabeçalho. LAYOUT MUDOU 2026-08 (cabeça auxiliar removida) -- pesos
-    // exportados antes dessa mudança (com o bloco wv1_aux/bv1_aux/wv2_aux/
-    // bv2_aux no meio do arquivo) não são compatíveis aqui; isso só afeta
-    // este loadFromFile (usado por ferramentas C++ tipo nnue_verify) --
-    // train_nnue.py's --init-from lida com o formato antigo sozinho (ver
-    // nota em _load_raw_weights lá).
     bool loadFromFile(const std::string& path) {
         FILE* f = std::fopen(path.c_str(), "rb");
         if (!f) return false;
@@ -487,10 +542,30 @@ struct NNUEWeights {
         w1.assign(NUM_FEATURES, {});
         for (auto& row : w1) ok = ok && std::fread(row.data(), sizeof(float), HIDDEN, f) == (size_t)HIDDEN;
         ok = ok && std::fread(b1.data(), sizeof(float), HIDDEN, f) == (size_t)HIDDEN;
+
+#if ZQ_NNUE_VALUE_BUCKETS == 1 && ZQ_NNUE_VALUE_DEPTH == 1
         for (auto& row : wv1_wl) ok = ok && std::fread(row.data(), sizeof(float), 32, f) == 32;
         ok = ok && std::fread(bv1_wl.data(), sizeof(float), 32, f) == 32;
         ok = ok && std::fread(wv2_wl.data(), sizeof(float), 32, f) == 32;
         ok = ok && std::fread(&bv2_wl, sizeof(float), 1, f) == 1;
+#elif ZQ_NNUE_VALUE_DEPTH == 2
+        for (int b = 0; b < VALUE_BUCKETS; ++b) {
+            for (auto& row : wv1_wl[b]) ok = ok && std::fread(row.data(), sizeof(float), 32, f) == 32;
+            ok = ok && std::fread(bv1_wl[b].data(), sizeof(float), 32, f) == 32;
+            for (auto& row : wv2_wl[b]) ok = ok && std::fread(row.data(), sizeof(float), 32, f) == 32;
+            ok = ok && std::fread(bv2_wl[b].data(), sizeof(float), 32, f) == 32;
+            ok = ok && std::fread(wv3_wl[b].data(), sizeof(float), 32, f) == 32;
+            ok = ok && std::fread(&bv3_wl[b], sizeof(float), 1, f) == 1;
+        }
+#else
+        for (int b = 0; b < VALUE_BUCKETS; ++b) {
+            for (auto& row : wv1_wl[b]) ok = ok && std::fread(row.data(), sizeof(float), 32, f) == 32;
+            ok = ok && std::fread(bv1_wl[b].data(), sizeof(float), 32, f) == 32;
+            for (auto& row : wv2_wl[b]) ok = ok && std::fread(row.data(), sizeof(float), 32, f) == 32;
+            ok = ok && std::fread(&bv2_wl[b], sizeof(float), 1, f) == 1;
+        }
+#endif
+
         wp.assign(POLICY_OUT, {});
         for (auto& row : wp) ok = ok && std::fread(row.data(), sizeof(float), HIDDEN, f) == (size_t)HIDDEN;
         bp.assign(POLICY_OUT, 0.f);
@@ -499,18 +574,35 @@ struct NNUEWeights {
         return ok;
     }
 
-    // Grava no mesmo layout que loadFromFile espera (usado só em testes/
-    // ferramentas C++; o export "de verdade" sai direto do PyTorch em
-    // training/train_nnue.py, que já escreve exatamente esse layout).
     bool saveToFile(const std::string& path) const {
         FILE* f = std::fopen(path.c_str(), "wb");
         if (!f) return false;
         for (auto& row : w1) std::fwrite(row.data(), sizeof(float), HIDDEN, f);
         std::fwrite(b1.data(), sizeof(float), HIDDEN, f);
+
+#if ZQ_NNUE_VALUE_BUCKETS == 1 && ZQ_NNUE_VALUE_DEPTH == 1
         for (auto& row : wv1_wl) std::fwrite(row.data(), sizeof(float), 32, f);
         std::fwrite(bv1_wl.data(), sizeof(float), 32, f);
         std::fwrite(wv2_wl.data(), sizeof(float), 32, f);
         std::fwrite(&bv2_wl, sizeof(float), 1, f);
+#elif ZQ_NNUE_VALUE_DEPTH == 2
+        for (int b = 0; b < VALUE_BUCKETS; ++b) {
+            for (auto& row : wv1_wl[b]) std::fwrite(row.data(), sizeof(float), 32, f);
+            std::fwrite(bv1_wl[b].data(), sizeof(float), 32, f);
+            for (auto& row : wv2_wl[b]) std::fwrite(row.data(), sizeof(float), 32, f);
+            std::fwrite(bv2_wl[b].data(), sizeof(float), 32, f);
+            std::fwrite(wv3_wl[b].data(), sizeof(float), 32, f);
+            std::fwrite(&bv3_wl[b], sizeof(float), 1, f);
+        }
+#else
+        for (int b = 0; b < VALUE_BUCKETS; ++b) {
+            for (auto& row : wv1_wl[b]) std::fwrite(row.data(), sizeof(float), 32, f);
+            std::fwrite(bv1_wl[b].data(), sizeof(float), 32, f);
+            for (auto& row : wv2_wl[b]) std::fwrite(row.data(), sizeof(float), 32, f);
+            std::fwrite(&bv2_wl[b], sizeof(float), 1, f);
+        }
+#endif
+
         for (auto& row : wp) std::fwrite(row.data(), sizeof(float), HIDDEN, f);
         std::fwrite(bp.data(), sizeof(float), POLICY_OUT, f);
         std::fclose(f);
@@ -642,9 +734,14 @@ inline float clippedRelu(float x) {
 // imitação de evalSimple foi removida 2026-08 -- ver nota em NNUEWeights
 // acima); é o logit de resultado (WL, sem empate) que a busca consome via
 // nnueEvalInt.
-inline float forwardValueWL(const Accumulator& acc) {
+inline float forwardValueWL(const Accumulator& acc, int bucket = -1) {
+    if (bucket < 0) {
+        bucket = getPhaseBucket(acc.ownWallsLeftBucket + acc.oppWallsLeftBucket);
+    }
     std::array<float, 32> h{};
     auto& W = weights();
+#if ZQ_NNUE_VALUE_BUCKETS == 1 && ZQ_NNUE_VALUE_DEPTH == 1
+    (void)bucket;
     for (int i = 0; i < HIDDEN; i++) {
         float a = screlu(acc.v[i]);
         for (int j = 0; j < 32; j++) h[j] += a * W.wv1_wl[i][j];
@@ -655,6 +752,34 @@ inline float forwardValueWL(const Accumulator& acc) {
         out += hj * W.wv2_wl[j];
     }
     return out;
+#elif ZQ_NNUE_VALUE_DEPTH == 2
+    for (int i = 0; i < HIDDEN; i++) {
+        float a = screlu(acc.v[i]);
+        for (int j = 0; j < 32; j++) h[j] += a * W.wv1_wl[bucket][i][j];
+    }
+    std::array<float, 32> h2{};
+    for (int j = 0; j < 32; j++) {
+        float hj = clippedRelu(h[j] + W.bv1_wl[bucket][j]);
+        for (int k = 0; k < 32; k++) h2[k] += hj * W.wv2_wl[bucket][j][k];
+    }
+    float out = W.bv3_wl[bucket];
+    for (int k = 0; k < 32; k++) {
+        float hk = clippedRelu(h2[k] + W.bv2_wl[bucket][k]);
+        out += hk * W.wv3_wl[bucket][k];
+    }
+    return out;
+#else
+    for (int i = 0; i < HIDDEN; i++) {
+        float a = screlu(acc.v[i]);
+        for (int j = 0; j < 32; j++) h[j] += a * W.wv1_wl[bucket][i][j];
+    }
+    float out = W.bv2_wl[bucket];
+    for (int j = 0; j < 32; j++) {
+        float hj = clippedRelu(h[j] + W.bv1_wl[bucket][j]);
+        out += hj * W.wv2_wl[bucket][j];
+    }
+    return out;
+#endif
 }
 
 inline void forwardPolicy(const Accumulator& acc, std::array<float, POLICY_OUT>& out) {
@@ -865,12 +990,26 @@ struct NNUEWeightsQuant {
     std::vector<std::array<int16_t, HIDDEN>> w1;  // [NUM_FEATURES][HIDDEN], escala QA
     std::array<int16_t, HIDDEN> b1{};              // escala QA
 
+#if ZQ_NNUE_VALUE_BUCKETS == 1 && ZQ_NNUE_VALUE_DEPTH == 1
     // cabeça de RESULTADO (WL) -- única cabeça de valor (cabeça auxiliar
     // de imitação de evalSimple removida 2026-08, ver nota em NNUEWeights)
     std::array<std::array<int8_t, 32>, HIDDEN> wv1_wl{}; // escala QB
     std::array<int32_t, 32> bv1_wl{};                      // escala QA*QB
     std::array<int8_t, 32> wv2_wl{};                       // escala QB
     int32_t bv2_wl = 0;                                    // escala QA*QB*QB
+#elif ZQ_NNUE_VALUE_DEPTH == 2
+    std::array<std::array<std::array<int8_t, 32>, HIDDEN>, VALUE_BUCKETS> wv1_wl{};
+    std::array<std::array<int32_t, 32>, VALUE_BUCKETS> bv1_wl{};
+    std::array<std::array<std::array<int8_t, 32>, 32>, VALUE_BUCKETS> wv2_wl{};
+    std::array<std::array<int32_t, 32>, VALUE_BUCKETS> bv2_wl{};
+    std::array<std::array<int8_t, 32>, VALUE_BUCKETS> wv3_wl{};
+    std::array<int32_t, VALUE_BUCKETS> bv3_wl{};
+#else
+    std::array<std::array<std::array<int8_t, 32>, HIDDEN>, VALUE_BUCKETS> wv1_wl{};
+    std::array<std::array<int32_t, 32>, VALUE_BUCKETS> bv1_wl{};
+    std::array<std::array<int8_t, 32>, VALUE_BUCKETS> wv2_wl{};
+    std::array<int32_t, VALUE_BUCKETS> bv2_wl{};
+#endif
 
     std::vector<std::array<int8_t, HIDDEN>> wp;   // [POLICY_OUT][HIDDEN], escala QB
     std::vector<int32_t> bp;                       // escala QA*QB
@@ -918,14 +1057,33 @@ struct NNUEWeightsQuant {
         std::fseek(f, 0, SEEK_END);
         long actualBytes = std::ftell(f);
         std::fseek(f, 0, SEEK_SET);
+
+#if ZQ_NNUE_VALUE_BUCKETS == 1 && ZQ_NNUE_VALUE_DEPTH == 1
+        long valueHeadBytes = (long)HIDDEN * 32 * sizeof(int8_t)
+                            + 32 * sizeof(int32_t)
+                            + 32 * sizeof(int8_t)
+                            + sizeof(int32_t);
+#elif ZQ_NNUE_VALUE_DEPTH == 2
+        long valueHeadBytes = (long)VALUE_BUCKETS * (
+                              (long)HIDDEN * 32 * sizeof(int8_t)
+                            + 32 * sizeof(int32_t)
+                            + 32 * 32 * sizeof(int8_t)
+                            + 32 * sizeof(int32_t)
+                            + 32 * sizeof(int8_t)
+                            + sizeof(int32_t));
+#else
+        long valueHeadBytes = (long)VALUE_BUCKETS * (
+                              (long)HIDDEN * 32 * sizeof(int8_t)
+                            + 32 * sizeof(int32_t)
+                            + 32 * sizeof(int8_t)
+                            + sizeof(int32_t));
+#endif
+
         long expectedBytes =
             (long)sizeof(int32_t) * 2                                  // QA, QB
             + (long)NUM_FEATURES * HIDDEN * sizeof(int16_t)            // w1
             + (long)HIDDEN * sizeof(int16_t)                           // b1
-            + (long)HIDDEN * 32 * sizeof(int8_t)                       // wv1_wl
-            + 32 * sizeof(int32_t)                                     // bv1_wl
-            + 32 * sizeof(int8_t)                                      // wv2_wl
-            + sizeof(int32_t)                                          // bv2_wl
+            + valueHeadBytes
             + (long)POLICY_OUT * HIDDEN * sizeof(int8_t)               // wp
             + (long)POLICY_OUT * sizeof(int32_t);                      // bp
         if (actualBytes != expectedBytes) {
@@ -947,10 +1105,28 @@ struct NNUEWeightsQuant {
         for (auto& row : w1) ok = ok && std::fread(row.data(), sizeof(int16_t), HIDDEN, f) == (size_t)HIDDEN;
         ok = ok && std::fread(b1.data(), sizeof(int16_t), HIDDEN, f) == (size_t)HIDDEN;
 
+#if ZQ_NNUE_VALUE_BUCKETS == 1 && ZQ_NNUE_VALUE_DEPTH == 1
         for (auto& row : wv1_wl) ok = ok && std::fread(row.data(), sizeof(int8_t), 32, f) == 32;
         ok = ok && std::fread(bv1_wl.data(), sizeof(int32_t), 32, f) == 32;
         ok = ok && std::fread(wv2_wl.data(), sizeof(int8_t), 32, f) == 32;
         ok = ok && std::fread(&bv2_wl, sizeof(int32_t), 1, f) == 1;
+#elif ZQ_NNUE_VALUE_DEPTH == 2
+        for (int b = 0; b < VALUE_BUCKETS; ++b) {
+            for (auto& row : wv1_wl[b]) ok = ok && std::fread(row.data(), sizeof(int8_t), 32, f) == 32;
+            ok = ok && std::fread(bv1_wl[b].data(), sizeof(int32_t), 32, f) == 32;
+            for (auto& row : wv2_wl[b]) ok = ok && std::fread(row.data(), sizeof(int8_t), 32, f) == 32;
+            ok = ok && std::fread(bv2_wl[b].data(), sizeof(int32_t), 32, f) == 32;
+            ok = ok && std::fread(wv3_wl[b].data(), sizeof(int8_t), 32, f) == 32;
+            ok = ok && std::fread(&bv3_wl[b], sizeof(int32_t), 1, f) == 1;
+        }
+#else
+        for (int b = 0; b < VALUE_BUCKETS; ++b) {
+            for (auto& row : wv1_wl[b]) ok = ok && std::fread(row.data(), sizeof(int8_t), 32, f) == 32;
+            ok = ok && std::fread(bv1_wl[b].data(), sizeof(int32_t), 32, f) == 32;
+            for (auto& row : wv2_wl[b]) ok = ok && std::fread(row.data(), sizeof(int8_t), 32, f) == 32;
+            ok = ok && std::fread(&bv2_wl[b], sizeof(int32_t), 1, f) == 1;
+        }
+#endif
 
         wp.assign(POLICY_OUT, {});
         for (auto& row : wp) ok = ok && std::fread(row.data(), sizeof(int8_t), HIDDEN, f) == (size_t)HIDDEN;
@@ -1205,13 +1381,66 @@ inline float forwardValueHeadQuant(const AccumulatorQuant& acc,
     return (float)((double)out / (double)denom);
 }
 
-// forwardValueWLQuant é a única cabeça de valor quantizada -- a busca a
-// consome via nnueEvalInt (a cabeça auxiliar de imitação de evalSimple foi
-// removida 2026-08, ver nota em NNUEWeights).
-inline float forwardValueWLQuant(const AccumulatorQuant& acc) {
+#if ZQ_NNUE_VALUE_BUCKETS == 1 && ZQ_NNUE_VALUE_DEPTH == 1
+inline float forwardValueWLQuant(const AccumulatorQuant& acc, int bucket = -1) {
+    (void)bucket;
     auto& W = weightsQuant();
     return forwardValueHeadQuant(acc, W.wv1_wl, W.bv1_wl, W.wv2_wl, W.bv2_wl);
 }
+#elif ZQ_NNUE_VALUE_DEPTH == 2
+inline float forwardValueWLQuant(const AccumulatorQuant& acc, int bucket = -1) {
+    if (bucket < 0) {
+        bucket = getPhaseBucket(acc.ownWallsLeftBucket + acc.oppWallsLeftBucket);
+    }
+    auto& W = weightsQuant();
+    alignas(32) std::array<uint8_t, HIDDEN> a;
+    for (int i = 0; i < HIDDEN; i++) a[i] = screluQuant(acc.v[i], W.QA);
+
+    std::array<int32_t, 32> h1{};
+    const int8_t* wv1f = &W.wv1_wl[bucket][0][0];
+    for (int i = 0; i < HIDDEN; i++) {
+        const int32_t ai = a[i];
+        const int8_t* row = wv1f + (size_t)i * 32;
+        for (int j = 0; j < 32; j++) h1[j] += ai * (int32_t)row[j];
+    }
+    const int64_t QAQB = (int64_t)W.QA * (int64_t)W.QB;
+    alignas(32) std::array<uint8_t, 32> h1_q{};
+    for (int j = 0; j < 32; j++) {
+        int64_t hv = (int64_t)h1[j] + (int64_t)W.bv1_wl[bucket][j];
+        if (hv < 0) hv = 0;
+        if (hv > QAQB) hv = QAQB;
+        h1_q[j] = (uint8_t)(hv / W.QB);
+    }
+
+    std::array<int32_t, 32> h2{};
+    const int8_t* wv2f = &W.wv2_wl[bucket][0][0];
+    for (int j = 0; j < 32; j++) {
+        const int32_t hj = h1_q[j];
+        const int8_t* row = wv2f + (size_t)j * 32;
+        for (int k = 0; k < 32; k++) h2[k] += hj * (int32_t)row[k];
+    }
+    std::array<int32_t, 32> h2_clamped{};
+    for (int k = 0; k < 32; k++) {
+        int64_t hv = (int64_t)h2[k] + (int64_t)W.bv2_wl[bucket][k];
+        if (hv < 0) hv = 0;
+        if (hv > QAQB) hv = QAQB;
+        h2_clamped[k] = (int32_t)hv;
+    }
+
+    int64_t out = W.bv3_wl[bucket];
+    for (int k = 0; k < 32; k++) out += (int64_t)h2_clamped[k] * (int64_t)W.wv3_wl[bucket][k];
+    int64_t denom = QAQB * (int64_t)W.QB;
+    return (float)((double)out / (double)denom);
+}
+#else
+inline float forwardValueWLQuant(const AccumulatorQuant& acc, int bucket = -1) {
+    if (bucket < 0) {
+        bucket = getPhaseBucket(acc.ownWallsLeftBucket + acc.oppWallsLeftBucket);
+    }
+    auto& W = weightsQuant();
+    return forwardValueHeadQuant(acc, W.wv1_wl[bucket], W.bv1_wl[bucket], W.wv2_wl[bucket], W.bv2_wl[bucket]);
+}
+#endif
 
 // Probabilidade (sigmoid do logit WL) de que `side` (perspectiva passada a
 // buildAccumulatorQuant) vença a partir desta posição -- usada por

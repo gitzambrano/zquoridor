@@ -36,6 +36,7 @@ dequantização aqui usam `trunc_div` (baseada em np.trunc/np.fix), não
 Uso:
     python3 parity_check.py ../data/nnue/nnue_weights.bin [../data/nnue/nnue_weights_int8.bin]
 """
+import os
 import sys
 import numpy as np
 
@@ -117,24 +118,61 @@ def dist_bucket(dist):
     return min(max(dist, 0), DIST_BUCKETS - 1)
 
 
+def get_phase_bucket(total_walls, buckets=6):
+    if buckets == 6:
+        if total_walls <= 0: return 0
+        if total_walls <= 2: return 1
+        if total_walls <= 5: return 2
+        if total_walls <= 9: return 3
+        if total_walls <= 14: return 4
+        return 5
+    return 0
+
+
 def load_weights(path):
+    actual_floats = os.path.getsize(path) // 4
+    base_floats = NUM_FEATURES * HIDDEN + HIDDEN + POLICY_OUT * HIDDEN + POLICY_OUT
+    head_floats_total = actual_floats - base_floats
+
+    value_buckets, value_depth = 1, 1
+    found = False
+    for b in (1, 6):
+        for d in (1, 2):
+            hf = b * (17505 if d == 2 else 16449)
+            if hf == head_floats_total:
+                value_buckets, value_depth = b, d
+                found = True
+                break
+        if found:
+            break
+
     with open(path, "rb") as f:
         w1 = np.fromfile(f, dtype="<f4", count=NUM_FEATURES * HIDDEN).reshape(NUM_FEATURES, HIDDEN)
         b1 = np.fromfile(f, dtype="<f4", count=HIDDEN)
+        d = dict(w1=w1, b1=b1, value_buckets=value_buckets, value_depth=value_depth)
+        if value_buckets == 1 and value_depth == 1:
+            d["wv1_wl"] = np.fromfile(f, dtype="<f4", count=HIDDEN * 32).reshape(HIDDEN, 32)
+            d["bv1_wl"] = np.fromfile(f, dtype="<f4", count=32)
+            d["wv2_wl"] = np.fromfile(f, dtype="<f4", count=32)
+            d["bv2_wl"] = np.fromfile(f, dtype="<f4", count=1)[0]
+        else:
+            for b in range(value_buckets):
+                d[f"wv1_wl_{b}"] = np.fromfile(f, dtype="<f4", count=HIDDEN * 32).reshape(HIDDEN, 32)
+                d[f"bv1_wl_{b}"] = np.fromfile(f, dtype="<f4", count=32)
+                if value_depth == 2:
+                    d[f"wv2_wl_{b}"] = np.fromfile(f, dtype="<f4", count=32 * 32).reshape(32, 32)
+                    d[f"bv2_wl_{b}"] = np.fromfile(f, dtype="<f4", count=32)
+                    d[f"wv3_wl_{b}"] = np.fromfile(f, dtype="<f4", count=32)
+                    d[f"bv3_wl_{b}"] = np.fromfile(f, dtype="<f4", count=1)[0]
+                else:
+                    d[f"wv2_wl_{b}"] = np.fromfile(f, dtype="<f4", count=32)
+                    d[f"bv2_wl_{b}"] = np.fromfile(f, dtype="<f4", count=1)[0]
 
-        def read_head():
-            wv1 = np.fromfile(f, dtype="<f4", count=HIDDEN * 32).reshape(HIDDEN, 32)
-            bv1 = np.fromfile(f, dtype="<f4", count=32)
-            wv2 = np.fromfile(f, dtype="<f4", count=32)
-            bv2 = np.fromfile(f, dtype="<f4", count=1)[0]
-            return wv1, bv1, wv2, bv2
-
-        wv1_wl, bv1_wl, wv2_wl, bv2_wl = read_head()
         wp = np.fromfile(f, dtype="<f4", count=POLICY_OUT * HIDDEN).reshape(POLICY_OUT, HIDDEN)
         bp = np.fromfile(f, dtype="<f4", count=POLICY_OUT)
-    return dict(w1=w1, b1=b1,
-                wv1_wl=wv1_wl, bv1_wl=bv1_wl, wv2_wl=wv2_wl, bv2_wl=bv2_wl,
-                wp=wp, bp=bp)
+        d["wp"] = wp
+        d["bp"] = bp
+    return d
 
 
 def load_weights_quant(path):
@@ -144,19 +182,46 @@ def load_weights_quant(path):
         w1 = np.fromfile(f, dtype="<i2", count=NUM_FEATURES * HIDDEN).reshape(NUM_FEATURES, HIDDEN).astype(np.int64)
         b1 = np.fromfile(f, dtype="<i2", count=HIDDEN).astype(np.int64)
 
-        def read_head_quant():
-            wv1 = np.fromfile(f, dtype="<i1", count=HIDDEN * 32).reshape(HIDDEN, 32).astype(np.int64)
-            bv1 = np.fromfile(f, dtype="<i4", count=32).astype(np.int64)
-            wv2 = np.fromfile(f, dtype="<i1", count=32).astype(np.int64)
-            bv2 = int(np.fromfile(f, dtype="<i4", count=1)[0])
-            return wv1, bv1, wv2, bv2
+        actual_bytes = os.path.getsize(path)
+        base_bytes = 4 + 4 + NUM_FEATURES * HIDDEN * 2 + HIDDEN * 2 + POLICY_OUT * HIDDEN * 1 + POLICY_OUT * 4
+        head_bytes_total = actual_bytes - base_bytes
 
-        wv1_wl, bv1_wl, wv2_wl, bv2_wl = read_head_quant()
+        value_buckets, value_depth = 1, 1
+        found = False
+        for b in (1, 6):
+            for d in (1, 2):
+                hb = b * (17700 if d == 2 else 16548)
+                if hb == head_bytes_total:
+                    value_buckets, value_depth = b, d
+                    found = True
+                    break
+            if found:
+                break
+
+        d = dict(QA=qa, QB=qb, w1=w1, b1=b1, value_buckets=value_buckets, value_depth=value_depth)
+        if value_buckets == 1 and value_depth == 1:
+            d["wv1_wl"] = np.fromfile(f, dtype="<i1", count=HIDDEN * 32).reshape(HIDDEN, 32).astype(np.int64)
+            d["bv1_wl"] = np.fromfile(f, dtype="<i4", count=32).astype(np.int64)
+            d["wv2_wl"] = np.fromfile(f, dtype="<i1", count=32).astype(np.int64)
+            d["bv2_wl"] = int(np.fromfile(f, dtype="<i4", count=1)[0])
+        else:
+            for b in range(value_buckets):
+                d[f"wv1_wl_{b}"] = np.fromfile(f, dtype="<i1", count=HIDDEN * 32).reshape(HIDDEN, 32).astype(np.int64)
+                d[f"bv1_wl_{b}"] = np.fromfile(f, dtype="<i4", count=32).astype(np.int64)
+                if value_depth == 2:
+                    d[f"wv2_wl_{b}"] = np.fromfile(f, dtype="<i1", count=32 * 32).reshape(32, 32).astype(np.int64)
+                    d[f"bv2_wl_{b}"] = np.fromfile(f, dtype="<i4", count=32).astype(np.int64)
+                    d[f"wv3_wl_{b}"] = np.fromfile(f, dtype="<i1", count=32).astype(np.int64)
+                    d[f"bv3_wl_{b}"] = int(np.fromfile(f, dtype="<i4", count=1)[0])
+                else:
+                    d[f"wv2_wl_{b}"] = np.fromfile(f, dtype="<i1", count=32).astype(np.int64)
+                    d[f"bv2_wl_{b}"] = int(np.fromfile(f, dtype="<i4", count=1)[0])
+
         wp = np.fromfile(f, dtype="<i1", count=POLICY_OUT * HIDDEN).reshape(POLICY_OUT, HIDDEN).astype(np.int64)
         bp = np.fromfile(f, dtype="<i4", count=POLICY_OUT).astype(np.int64)
-    return dict(QA=qa, QB=qb, w1=w1, b1=b1,
-                wv1_wl=wv1_wl, bv1_wl=bv1_wl, wv2_wl=wv2_wl, bv2_wl=bv2_wl,
-                wp=wp, bp=bp)
+        d["wp"] = wp
+        d["bp"] = bp
+    return d
 
 
 def screlu(x):
@@ -243,35 +308,49 @@ def build_active_features(own_pawn, opp_pawn, walls_h_bits, walls_v_bits,
         own_walls_left, opp_walls_left)).tolist()
 
 
-def forward_head(a, weights, prefix):
+def forward_head(a, weights, prefix, bucket=0):
     """Cabeça de valor (float32, só WL desde a remoção da cabeça auxiliar
     em 2026-08) -- mesma lógica de forwardValueWL em nnue.hpp."""
-    h = a @ weights[f"wv1_{prefix}"]
-    hj = clipped_relu(h + weights[f"bv1_{prefix}"])
-    return weights[f"bv2_{prefix}"] + float(hj @ weights[f"wv2_{prefix}"])
+    suf = f"_{bucket}" if f"wv1_{prefix}_{bucket}" in weights else ""
+    h = a @ weights[f"wv1_{prefix}{suf}"]
+    hj = clipped_relu(h + weights[f"bv1_{prefix}{suf}"])
+    if f"wv3_{prefix}{suf}" in weights:
+        h2 = hj @ weights[f"wv2_{prefix}{suf}"]
+        hk = clipped_relu(h2 + weights[f"bv2_{prefix}{suf}"])
+        return weights[f"bv3_{prefix}{suf}"] + float(hk @ weights[f"wv3_{prefix}{suf}"])
+    return weights[f"bv2_{prefix}{suf}"] + float(hj @ weights[f"wv2_{prefix}{suf}"])
 
 
-def forward(weights, x):
+def forward(weights, x, total_walls=20):
     acc = x @ weights["w1"] + weights["b1"]           # (256,)
     a = screlu(acc)
-    value_wl = forward_head(a, weights, "wl")
+    bucket = get_phase_bucket(total_walls, weights.get("value_buckets", 1))
+    value_wl = forward_head(a, weights, "wl", bucket=bucket)
     policy = a @ weights["wp"].T + weights["bp"]         # (209,)
     return value_wl, policy
 
 
-def forward_head_quant(a, W, prefix, QA, QB):
+def forward_head_quant(a, W, prefix, QA, QB, bucket=0):
     """Cabeça de valor quantizada (só WL desde a remoção da cabeça
     auxiliar em 2026-08) -- mesma lógica de forwardValueWLQuant em
     nnue.hpp."""
-    h = a @ W[f"wv1_{prefix}"].astype(np.int64)          # (32,), escala QA*QB
-    h_total = h + W[f"bv1_{prefix}"]
+    suf = f"_{bucket}" if f"wv1_{prefix}_{bucket}" in W else ""
+    h = a @ W[f"wv1_{prefix}{suf}"].astype(np.int64)          # (32,), escala QA*QB
+    h_total = h + W[f"bv1_{prefix}{suf}"]
     QAQB = QA * QB
     hj = np.clip(h_total, 0, QAQB)
-    out = W[f"bv2_{prefix}"] + int(hj @ W[f"wv2_{prefix}"])
+    if f"wv3_{prefix}{suf}" in W:
+        h1_q = hj // QB
+        h2 = h1_q @ W[f"wv2_{prefix}{suf}"].astype(np.int64)
+        h2_total = h2 + W[f"bv2_{prefix}{suf}"]
+        hk = np.clip(h2_total, 0, QAQB)
+        out = W[f"bv3_{prefix}{suf}"] + int(hk @ W[f"wv3_{prefix}{suf}"])
+        return float(final_descale(out, QAQB * QB))
+    out = W[f"bv2_{prefix}{suf}"] + int(hj @ W[f"wv2_{prefix}{suf}"])
     return float(final_descale(out, QAQB * QB))
 
 
-def forward_quant(W, active_feats):
+def forward_quant(W, active_feats, total_walls=20):
     QA, QB = W["QA"], W["QB"]
     acc = W["b1"].copy()
     for f in active_feats:
@@ -282,7 +361,8 @@ def forward_quant(W, active_feats):
     c = np.clip(acc, 0, QA)
     a = (c.astype(np.int64) ** 2) // QA   # divisor e dividendo não-negativos: // == trunc aqui
 
-    value_wl = forward_head_quant(a, W, "wl", QA, QB)
+    bucket = get_phase_bucket(total_walls, W.get("value_buckets", 1))
+    value_wl = forward_head_quant(a, W, "wl", QA, QB, bucket=bucket)
 
     QAQB = QA * QB
     policy_raw = a @ W["wp"].astype(np.int64).T + W["bp"]  # (209,), escala QA*QB

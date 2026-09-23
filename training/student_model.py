@@ -20,8 +20,43 @@ FEATURES = {
     "margin_phase": 612,
     "multipath_phase": 504,
     "multipath_phase_contact": 858,
+    "multipath_phase_bucketed": 504,
+    "multipath_phase_deep": 504,
+    "multipath_phase_contact_bucketed": 858,
+}
+ARCH_CONFIGS = {
+    "base": {"buckets": 1, "depth": 1, "base_feature": "base"},
+    "race": {"buckets": 1, "depth": 1, "base_feature": "race"},
+    "multipath": {"buckets": 1, "depth": 1, "base_feature": "multipath"},
+    "margin_regime": {"buckets": 1, "depth": 1, "base_feature": "margin_regime"},
+    "phase": {"buckets": 1, "depth": 1, "base_feature": "phase"},
+    "margin_phase": {"buckets": 1, "depth": 1, "base_feature": "margin_phase"},
+    "multipath_phase": {"buckets": 1, "depth": 1, "base_feature": "multipath_phase"},
+    "multipath_phase_contact": {"buckets": 1, "depth": 1, "base_feature": "multipath_phase_contact"},
+    "multipath_phase_bucketed": {"buckets": 6, "depth": 2, "base_feature": "multipath_phase"},
+    "multipath_phase_deep": {"buckets": 1, "depth": 2, "base_feature": "multipath_phase"},
+    "multipath_phase_contact_bucketed": {"buckets": 6, "depth": 2, "base_feature": "multipath_phase_contact"},
 }
 LAYOUT = ("w1", "b1", "wv1_wl", "bv1_wl", "wv2_wl", "bv2_wl", "wp", "bp")
+
+
+# Value-head bucket for 0 to 20 remaining walls. The boundaries match the
+# phase features and getPhaseBucket in nnue.hpp.
+_PHASE_BUCKET = np.array([0, 1, 1, 2, 2, 2, 3, 3, 3, 3, 4, 4, 4, 4, 4] + [5] * 6, dtype=np.int64)
+
+
+def get_phase_bucket(total_w, num_buckets=6):
+    """Return the value-head bucket for the total remaining walls."""
+    if num_buckets not in (1, 6):
+        raise ValueError("value heads support 1 or 6 buckets")
+    if isinstance(total_w, torch.Tensor):
+        if num_buckets == 1:
+            return torch.zeros_like(total_w, dtype=torch.int64)
+        return torch.as_tensor(_PHASE_BUCKET, device=total_w.device)[total_w.long().clamp(0, 20)]
+    total_w = np.asarray(total_w, dtype=np.int64)
+    if num_buckets == 1:
+        return np.zeros_like(total_w)
+    return _PHASE_BUCKET[np.clip(total_w, 0, 20)]
 
 
 def _make_edge_tables():
@@ -58,6 +93,8 @@ _ORTH_NEIGHBORS, _EDGE_H_MASKS, _EDGE_V_MASKS = _make_edge_tables()
 
 
 def encode_features(data, indices, architecture="base"):
+    if architecture in ARCH_CONFIGS:
+        architecture = ARCH_CONFIGS[architecture]["base_feature"]
     from train_teacher_policy import dense_features
     x = dense_features(data, indices)
     if architecture == "base":
@@ -220,33 +257,90 @@ def _round_ste(x, scale):
 
 
 class Student(nn.Module):
-    def __init__(self, architecture="base", hidden=256, qat=False):
+    def __init__(self, architecture="base", hidden=256, qat=False,
+                 value_buckets=None, value_depth=None):
         super().__init__()
         if architecture not in FEATURES or hidden not in (128, 256, 384, 512):
             raise ValueError(f"architecture must be one of {list(FEATURES.keys())}; hidden must be 128/256/384/512")
-        self.architecture, self.hidden, self.qat = architecture, hidden, qat
+        cfg = ARCH_CONFIGS.get(architecture, {"buckets": 1, "depth": 1})
+        self.architecture = architecture
+        self.hidden = hidden
+        self.qat = qat
+        self.value_buckets = int(value_buckets if value_buckets is not None else cfg["buckets"])
+        self.value_depth = int(value_depth if value_depth is not None else cfg["depth"])
+
         self.fc1 = nn.Linear(FEATURES[architecture], hidden)
-        self.value1_wl = nn.Linear(hidden, 32)
-        self.value2_wl = nn.Linear(32, 1)
         self.policy = nn.Linear(hidden, 209)
 
-    def forward(self, x):
-        if not self.qat:
+        self.value1_heads = nn.ModuleList([nn.Linear(hidden, 32) for _ in range(self.value_buckets)])
+        if self.value_depth == 2:
+            self.value2_heads = nn.ModuleList([nn.Linear(32, 32) for _ in range(self.value_buckets)])
+            self.value3_heads = nn.ModuleList([nn.Linear(32, 1) for _ in range(self.value_buckets)])
+        else:
+            self.value2_heads = nn.ModuleList([nn.Linear(32, 1) for _ in range(self.value_buckets)])
+            self.value3_heads = None
+
+        # Aliases for backwards compatibility with single-head code
+        self.value1_wl = self.value1_heads[0]
+        self.value2_wl = self.value2_heads[0]
+
+    def _extract_buckets(self, x):
+        # In dense_features, walls_left are at 332:343 (own) and 343:354 (opp)
+        own_w = x[:, 332:343].argmax(dim=-1)
+        opp_w = x[:, 343:354].argmax(dim=-1)
+        return get_phase_bucket(own_w + opp_w, self.value_buckets)
+
+    def forward(self, x, buckets=None):
+        if self.value_buckets > 1 and buckets is None:
+            buckets = self._extract_buckets(x)
+
+        if self.qat:
+            # Match the deployed integer scales, including the SCReLU truncation.
+            # Accumulate exact integer-valued floats before division. Summing
+            # dequantized rows can cross a truncation boundary from roundoff alone.
+            a_int = F.linear(x, _round_ste(self.fc1.weight * 255, 1),
+                             _round_ste(self.fc1.bias * 255, 1))
+            a_int = a_int.clamp(0, 255).square() / 255
+            a_int = a_int + (torch.floor(a_int) - a_int).detach()
+            a = a_int / 255
+            p = F.linear(a, _round_ste(self.policy.weight, 64), _round_ste(self.policy.bias, 255 * 64))
+        else:
             a = self.fc1(x).clamp(0, 1).square()
-            return self.value2_wl(self.value1_wl(a).clamp(0, 1)).squeeze(-1), self.policy(a)
-        # Match the deployed integer scales, including the SCReLU truncation.
-        # Accumulate exact integer-valued floats before division. Summing
-        # dequantized rows can cross a truncation boundary from roundoff alone.
-        a = F.linear(x, _round_ste(self.fc1.weight * 255, 1),
-                     _round_ste(self.fc1.bias * 255, 1))
-        a = a.clamp(0, 255).square() / 255
-        a = (a + (torch.floor(a) - a).detach()) / 255
-        h = F.linear(a, _round_ste(self.value1_wl.weight, 64),
-                     _round_ste(self.value1_wl.bias, 255 * 64)).clamp(0, 1)
-        v = F.linear(h, _round_ste(self.value2_wl.weight, 64),
-                     _round_ste(self.value2_wl.bias, 255 * 64 * 64)).squeeze(-1)
-        p = F.linear(a, _round_ste(self.policy.weight, 64), _round_ste(self.policy.bias, 255 * 64))
+            a_int = None
+            p = self.policy(a)
+
+        if self.value_buckets == 1:
+            return self._value_head(0, a, a_int), p
+        v = torch.zeros(x.shape[0], device=x.device, dtype=x.dtype)
+        for b in range(self.value_buckets):
+            mask = buckets == b
+            if mask.any():
+                v[mask] = self._value_head(b, a[mask], None if a_int is None else a_int[mask])
         return v, p
+
+    def _value_head(self, b, a, a_int):
+        """Return the value logit of head ``b``. ``a_int`` is set only for QAT."""
+        l1, l2 = self.value1_heads[b], self.value2_heads[b]
+        if a_int is None:
+            h1 = l1(a).clamp(0, 1)
+            if self.value_depth == 1:
+                return l2(h1).squeeze(-1)
+            return self.value3_heads[b](l2(h1).clamp(0, 1)).squeeze(-1)
+        if self.value_depth == 1:
+            h1 = F.linear(a, _round_ste(l1.weight, 64), _round_ste(l1.bias, 255 * 64)).clamp(0, 1)
+            return F.linear(h1, _round_ste(l2.weight, 64),
+                            _round_ste(l2.bias, 255 * 64 * 64)).squeeze(-1)
+        # Integer-valued floats follow forwardValueWLQuant: layer 1 at scale
+        # QA*QB, floor division by QB to scale QA, and layer 2 at scale QA*QB.
+        # A floor of a dequantized float can cross a boundary from roundoff.
+        l3 = self.value3_heads[b]
+        h1 = F.linear(a_int, _round_ste(l1.weight * 64, 1),
+                      _round_ste(l1.bias * 255 * 64, 1)).clamp(0, 255 * 64) / 64
+        h1 = h1 + (torch.floor(h1) - h1).detach()
+        h2 = F.linear(h1, _round_ste(l2.weight * 64, 1),
+                      _round_ste(l2.bias * 255 * 64, 1)).clamp(0, 255 * 64)
+        out = F.linear(h2, _round_ste(l3.weight * 64, 1), _round_ste(l3.bias * 255 * 64 * 64, 1))
+        return (out / (255 * 64 * 64)).squeeze(-1)
 
     @torch.no_grad()
     def warm_start(self, old):
@@ -257,30 +351,88 @@ class Student(nn.Module):
         if self.architecture == "multipath_phase" and old.architecture == "multipath":
             self.fc1.weight[:old.hidden, :456].copy_(old.fc1.weight[:, :456])
             self.fc1.weight[:old.hidden, 480:504].copy_(old.fc1.weight[:, 456:480])
-        elif self.architecture == "multipath_phase_contact" and old.architecture == "multipath":
+        elif self.architecture in ("multipath_phase_contact", "multipath_phase_contact_bucketed") and old.architecture == "multipath":
             self.fc1.weight[:old.hidden, :456].copy_(old.fc1.weight[:, :456])
             self.fc1.weight[:old.hidden, 480:504].copy_(old.fc1.weight[:, 456:480])
         else:
             self.fc1.weight[:old.hidden, :old.fc1.in_features].copy_(old.fc1.weight)
         self.fc1.bias[:old.hidden].copy_(old.fc1.bias)
-        self.value1_wl.weight[:, :old.hidden].copy_(old.value1_wl.weight)
-        self.value1_wl.bias.copy_(old.value1_wl.bias)
-        self.value2_wl.load_state_dict(old.value2_wl.state_dict())
         self.policy.weight[:, :old.hidden].copy_(old.policy.weight)
         self.policy.bias.copy_(old.policy.bias)
-        # New units need nonzero inputs to receive gradients; zero output
-        # columns preserve the original function until those columns train.
+
+        old_buckets = getattr(old, "value_buckets", 1)
+        old_depth = getattr(old, "value_depth", 1)
+
+        for b in range(self.value_buckets):
+            src_b = b if b < old_buckets else 0
+            if hasattr(old, "value1_heads"):
+                self.value1_heads[b].weight[:, :old.hidden].copy_(old.value1_heads[src_b].weight)
+                self.value1_heads[b].bias.copy_(old.value1_heads[src_b].bias)
+            else:
+                self.value1_heads[b].weight[:, :old.hidden].copy_(old.value1_wl.weight)
+                self.value1_heads[b].bias.copy_(old.value1_wl.bias)
+
+            if self.value_depth == 2:
+                if old_depth == 2 and hasattr(old, "value2_heads"):
+                    self.value2_heads[b].weight.copy_(old.value2_heads[src_b].weight)
+                    self.value2_heads[b].bias.copy_(old.value2_heads[src_b].bias)
+                    self.value3_heads[b].weight.copy_(old.value3_heads[src_b].weight)
+                    self.value3_heads[b].bias.copy_(old.value3_heads[src_b].bias)
+                else:
+                    # Identity 2nd layer: clipped_relu(I * h1 + 0) = h1, preserving function at epoch 0
+                    self.value2_heads[b].weight.copy_(torch.eye(32))
+                    self.value2_heads[b].bias.zero_()
+                    old_v2 = old.value2_heads[src_b] if hasattr(old, "value2_heads") else old.value2_wl
+                    self.value3_heads[b].weight.copy_(old_v2.weight)
+                    self.value3_heads[b].bias.copy_(old_v2.bias)
+            else:
+                old_v2 = old.value2_heads[src_b] if hasattr(old, "value2_heads") else old.value2_wl
+                self.value2_heads[b].weight.copy_(old_v2.weight)
+                self.value2_heads[b].bias.copy_(old_v2.bias)
+
         if self.hidden > old.hidden:
             nn.init.normal_(self.fc1.weight[old.hidden:], std=0.01)
             self.fc1.bias[old.hidden:].fill_(0.1)
 
+    def layout_keys(self):
+        keys = ["w1", "b1"]
+        if self.value_buckets == 1 and self.value_depth == 1:
+            keys.extend(["wv1_wl", "bv1_wl", "wv2_wl", "bv2_wl"])
+        elif self.value_depth == 2:
+            for b in range(self.value_buckets):
+                keys.extend([f"wv1_wl_{b}", f"bv1_wl_{b}", f"wv2_wl_{b}", f"bv2_wl_{b}", f"wv3_wl_{b}", f"bv3_wl_{b}"])
+        else:
+            for b in range(self.value_buckets):
+                keys.extend([f"wv1_wl_{b}", f"bv1_wl_{b}", f"wv2_wl_{b}", f"bv2_wl_{b}"])
+        keys.extend(["wp", "bp"])
+        return tuple(keys)
+
     def arrays(self):
         def a(t):
             return t.detach().cpu().numpy().astype("<f4")
-        return dict(w1=a(self.fc1.weight.T), b1=a(self.fc1.bias),
-                    wv1_wl=a(self.value1_wl.weight.T), bv1_wl=a(self.value1_wl.bias),
-                    wv2_wl=a(self.value2_wl.weight).reshape(32), bv2_wl=a(self.value2_wl.bias),
-                    wp=a(self.policy.weight), bp=a(self.policy.bias))
+        d = dict(w1=a(self.fc1.weight.T), b1=a(self.fc1.bias))
+        if self.value_buckets == 1 and self.value_depth == 1:
+            d["wv1_wl"] = a(self.value1_heads[0].weight.T)
+            d["bv1_wl"] = a(self.value1_heads[0].bias)
+            d["wv2_wl"] = a(self.value2_heads[0].weight).reshape(32)
+            d["bv2_wl"] = a(self.value2_heads[0].bias)
+        elif self.value_depth == 2:
+            for b in range(self.value_buckets):
+                d[f"wv1_wl_{b}"] = a(self.value1_heads[b].weight.T)
+                d[f"bv1_wl_{b}"] = a(self.value1_heads[b].bias)
+                d[f"wv2_wl_{b}"] = a(self.value2_heads[b].weight.T)
+                d[f"bv2_wl_{b}"] = a(self.value2_heads[b].bias)
+                d[f"wv3_wl_{b}"] = a(self.value3_heads[b].weight).reshape(32)
+                d[f"bv3_wl_{b}"] = a(self.value3_heads[b].bias)
+        else:
+            for b in range(self.value_buckets):
+                d[f"wv1_wl_{b}"] = a(self.value1_heads[b].weight.T)
+                d[f"bv1_wl_{b}"] = a(self.value1_heads[b].bias)
+                d[f"wv2_wl_{b}"] = a(self.value2_heads[b].weight).reshape(32)
+                d[f"bv2_wl_{b}"] = a(self.value2_heads[b].bias)
+        d["wp"] = a(self.policy.weight)
+        d["bp"] = a(self.policy.bias)
+        return d
 
     @torch.no_grad()
     def load_float(self, path):
@@ -289,32 +441,56 @@ class Student(nn.Module):
         sizes = [int(np.prod(shape)) for shape in shapes]
         if raw.size != sum(sizes) or not np.isfinite(raw).all():
             raise ValueError("weight size or values do not match the requested architecture")
-        parts, offset = [], 0
-        for shape, size in zip(shapes, sizes):
-            parts.append(torch.from_numpy(raw[offset:offset + size].copy().reshape(shape)))
+        parts, offset = {}, 0
+        for key, shape, size in zip(self.layout_keys(), shapes, sizes):
+            parts[key] = torch.from_numpy(raw[offset:offset + size].copy().reshape(shape))
             offset += size
-        for param, value in zip((self.fc1.weight, self.fc1.bias, self.value1_wl.weight,
-                                 self.value1_wl.bias, self.value2_wl.weight, self.value2_wl.bias,
-                                 self.policy.weight, self.policy.bias),
-                                (parts[0].T, parts[1], parts[2].T, parts[3], parts[4].reshape(1, 32),
-                                 parts[5], parts[6], parts[7])):
-            param.copy_(value)
+        self.fc1.weight.copy_(parts["w1"].T)
+        self.fc1.bias.copy_(parts["b1"])
+        self.policy.weight.copy_(parts["wp"])
+        self.policy.bias.copy_(parts["bp"])
+        if self.value_buckets == 1 and self.value_depth == 1:
+            self.value1_heads[0].weight.copy_(parts["wv1_wl"].T)
+            self.value1_heads[0].bias.copy_(parts["bv1_wl"])
+            self.value2_heads[0].weight.copy_(parts["wv2_wl"].reshape(1, 32))
+            self.value2_heads[0].bias.copy_(parts["bv2_wl"])
+        elif self.value_depth == 2:
+            for b in range(self.value_buckets):
+                self.value1_heads[b].weight.copy_(parts[f"wv1_wl_{b}"].T)
+                self.value1_heads[b].bias.copy_(parts[f"bv1_wl_{b}"])
+                self.value2_heads[b].weight.copy_(parts[f"wv2_wl_{b}"].T)
+                self.value2_heads[b].bias.copy_(parts[f"bv2_wl_{b}"])
+                self.value3_heads[b].weight.copy_(parts[f"wv3_wl_{b}"].reshape(1, 32))
+                self.value3_heads[b].bias.copy_(parts[f"bv3_wl_{b}"])
+        else:
+            for b in range(self.value_buckets):
+                self.value1_heads[b].weight.copy_(parts[f"wv1_wl_{b}"].T)
+                self.value1_heads[b].bias.copy_(parts[f"bv1_wl_{b}"])
+                self.value2_heads[b].weight.copy_(parts[f"wv2_wl_{b}"].reshape(1, 32))
+                self.value2_heads[b].bias.copy_(parts[f"bv2_wl_{b}"])
 
     @torch.no_grad()
     def clip_weights(self):
         self.fc1.weight.clamp_(-32767 / 255, 32767 / 255)
         self.fc1.bias.clamp_(-32767 / 255, 32767 / 255)
-        for layer in (self.value1_wl, self.value2_wl, self.policy):
-            layer.weight.clamp_(-127 / 64, 127 / 64)
+        self.policy.weight.clamp_(-127 / 64, 127 / 64)
+        for h in self.value1_heads:
+            h.weight.clamp_(-127 / 64, 127 / 64)
+        for h in self.value2_heads:
+            h.weight.clamp_(-127 / 64, 127 / 64)
+        if self.value3_heads is not None:
+            for h in self.value3_heads:
+                h.weight.clamp_(-127 / 64, 127 / 64)
 
 
 def export(model, path):
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     arrays = model.arrays()
+    layout = model.layout_keys()
     temp = path.with_suffix(path.suffix + ".tmp")
     with temp.open("wb") as output:
-        for key in LAYOUT:
+        for key in layout:
             output.write(np.ascontiguousarray(arrays[key], dtype="<f4").tobytes())
     temp.replace(path)
     quant_path = path.with_name(path.stem + "_int8.bin")
@@ -323,13 +499,16 @@ def export(model, path):
     temp.replace(quant_path)
     manifest = dict(schema="zquoridor.student.v1", architecture=model.architecture,
                     features=FEATURES[model.architecture], hidden=model.hidden, value_hidden=32,
+                    value_buckets=model.value_buckets, value_depth=model.value_depth,
                     policy_out=209, qa=255, qb=64, qat=model.qat,
-                    cpp_flags=[f"-DZQ_NNUE_RACE_FEATURES={int(model.architecture in ('race', 'multipath', 'margin_regime', 'phase', 'margin_phase', 'multipath_phase', 'multipath_phase_contact'))}",
-                               f"-DZQ_NNUE_MULTIPATH_FEATURES={int(model.architecture in ('multipath', 'multipath_phase', 'multipath_phase_contact'))}",
-                               f"-DZQ_NNUE_MARGIN_REGIME_FEATURES={int(model.architecture in ('margin_regime', 'margin_phase'))}",
-                               f"-DZQ_NNUE_PHASE_FEATURES={int(model.architecture in ('phase', 'margin_phase', 'multipath_phase', 'multipath_phase_contact'))}",
-                               f"-DZQ_NNUE_CONTACT_FEATURES={int(model.architecture == 'multipath_phase_contact')}",
-                               f"-DZQ_NNUE_HIDDEN={model.hidden}"],
+                    cpp_flags=[f"-DZQ_NNUE_RACE_FEATURES={int(model.architecture in ('race', 'multipath', 'margin_regime', 'phase', 'margin_phase', 'multipath_phase', 'multipath_phase_contact', 'multipath_phase_bucketed', 'multipath_phase_deep', 'multipath_phase_contact_bucketed'))}",
+                               f"-DZQ_NNUE_MULTIPATH_FEATURES={int('multipath' in model.architecture)}",
+                               f"-DZQ_NNUE_MARGIN_REGIME_FEATURES={int('margin_regime' in model.architecture or 'margin_phase' in model.architecture)}",
+                               f"-DZQ_NNUE_PHASE_FEATURES={int('phase' in model.architecture)}",
+                               f"-DZQ_NNUE_CONTACT_FEATURES={int('contact' in model.architecture)}",
+                               f"-DZQ_NNUE_HIDDEN={model.hidden}",
+                               f"-DZQ_NNUE_VALUE_BUCKETS={model.value_buckets}",
+                               f"-DZQ_NNUE_VALUE_DEPTH={model.value_depth}"],
                     float_sha256=hashlib.sha256(path.read_bytes()).hexdigest(),
                     int8_sha256=hashlib.sha256(quant_path.read_bytes()).hexdigest())
     path.with_suffix(".architecture.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")

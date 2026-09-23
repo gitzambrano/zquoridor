@@ -183,27 +183,57 @@ def quantize(W, qa=QA_DEFAULT, qb=QB_DEFAULT):
     (compute_qb_posthoc) -- só para pesos legados sem clipper."""
     if qb is None:
         qb = compute_qb_posthoc(W)
-    max_abs_heads = max(np.abs(W[k]).max() for k in ("wv1_wl", "wv2_wl", "wp"))
-    print(f"QA={qa}  QB={qb}  (max_abs entre wv1_wl/wv2_wl/wp = {max_abs_heads:.4f})")
 
     w1_q = quantize_int16_saturating(W["w1"], qa, "w1")
     b1_q = quantize_int16_saturating(W["b1"], qa, "b1")
 
-    def quantize_head(prefix):
-        wv1_q = quantize_int8_saturating(W[f"wv1_{prefix}"], qb, f"wv1_{prefix}")
-        bv1_q = np.round(W[f"bv1_{prefix}"] * qa * qb).astype(np.int32)
-        wv2_q = quantize_int8_saturating(W[f"wv2_{prefix}"], qb, f"wv2_{prefix}")
-        bv2_q = np.int32(round(float(np.asarray(W[f"bv2_{prefix}"]).item()) * qa * qb * qb))
-        return wv1_q, bv1_q, wv2_q, bv2_q
+    is_bucketed = "wv1_wl_0" in W
+    has_v3 = ("wv3_wl_0" in W) or ("wv3_wl" in W)
 
-    wv1_wl_q, bv1_wl_q, wv2_wl_q, bv2_wl_q = quantize_head("wl")
+    if not is_bucketed and not has_v3:
+        max_abs_heads = max(np.abs(W[k]).max() for k in ("wv1_wl", "wv2_wl", "wp"))
+        print(f"QA={qa}  QB={qb}  (max_abs entre wv1_wl/wv2_wl/wp = {max_abs_heads:.4f})")
 
-    wp_q = quantize_int8_saturating(W["wp"], qb, "wp")
-    bp_q = np.round(W["bp"] * qa * qb).astype(np.int32)
+        def quantize_head(prefix):
+            wv1_q = quantize_int8_saturating(W[f"wv1_{prefix}"], qb, f"wv1_{prefix}")
+            bv1_q = np.round(W[f"bv1_{prefix}"] * qa * qb).astype(np.int32)
+            wv2_q = quantize_int8_saturating(W[f"wv2_{prefix}"], qb, f"wv2_{prefix}")
+            bv2_q = np.int32(round(float(np.asarray(W[f"bv2_{prefix}"]).item()) * qa * qb * qb))
+            return wv1_q, bv1_q, wv2_q, bv2_q
 
-    return dict(QA=qa, QB=qb, w1=w1_q, b1=b1_q,
-                wv1_wl=wv1_wl_q, bv1_wl=bv1_wl_q, wv2_wl=wv2_wl_q, bv2_wl=bv2_wl_q,
-                wp=wp_q, bp=bp_q)
+        wv1_wl_q, bv1_wl_q, wv2_wl_q, bv2_wl_q = quantize_head("wl")
+
+        wp_q = quantize_int8_saturating(W["wp"], qb, "wp")
+        bp_q = np.round(W["bp"] * qa * qb).astype(np.int32)
+
+        return dict(QA=qa, QB=qb, w1=w1_q, b1=b1_q,
+                    wv1_wl=wv1_wl_q, bv1_wl=bv1_wl_q, wv2_wl=wv2_wl_q, bv2_wl=bv2_wl_q,
+                    wp=wp_q, bp=bp_q)
+
+    # Multi-bucket and/or 2-layer value head
+    b = 0
+    while f"wv1_wl_{b}" in W:
+        b += 1
+    value_buckets = b if is_bucketed else 1
+    value_depth = 2 if has_v3 else 1
+
+    Q = dict(QA=qa, QB=qb, w1=w1_q, b1=b1_q, value_buckets=value_buckets, value_depth=value_depth)
+    for b in range(value_buckets):
+        suf = f"_{b}" if is_bucketed else ""
+        Q[f"wv1_wl_{b}"] = quantize_int8_saturating(W[f"wv1_wl{suf}"], qb, f"wv1_wl_{b}")
+        Q[f"bv1_wl_{b}"] = np.round(W[f"bv1_wl{suf}"] * qa * qb).astype(np.int32)
+        if value_depth == 2:
+            Q[f"wv2_wl_{b}"] = quantize_int8_saturating(W[f"wv2_wl{suf}"], qb, f"wv2_wl_{b}")
+            Q[f"bv2_wl_{b}"] = np.round(W[f"bv2_wl{suf}"] * qa * qb).astype(np.int32)
+            Q[f"wv3_wl_{b}"] = quantize_int8_saturating(W[f"wv3_wl{suf}"], qb, f"wv3_wl_{b}")
+            Q[f"bv3_wl_{b}"] = np.int32(round(float(np.asarray(W[f"bv3_wl{suf}"]).item()) * qa * qb * qb))
+        else:
+            Q[f"wv2_wl_{b}"] = quantize_int8_saturating(W[f"wv2_wl{suf}"], qb, f"wv2_wl_{b}")
+            Q[f"bv2_wl_{b}"] = np.int32(round(float(np.asarray(W[f"bv2_wl{suf}"]).item()) * qa * qb * qb))
+
+    Q["wp"] = quantize_int8_saturating(W["wp"], qb, "wp")
+    Q["bp"] = np.round(W["bp"] * qa * qb).astype(np.int32)
+    return Q
 
 
 def write_quantized(Q, path):
@@ -215,10 +245,25 @@ def write_quantized(Q, path):
         f.write(np.array([Q["QB"]], dtype="<i4").tobytes())
         f.write(np.ascontiguousarray(Q["w1"]).astype("<i2").tobytes())
         f.write(np.ascontiguousarray(Q["b1"]).astype("<i2").tobytes())
-        f.write(np.ascontiguousarray(Q["wv1_wl"]).astype("<i1").tobytes())
-        f.write(np.ascontiguousarray(Q["bv1_wl"]).astype("<i4").tobytes())
-        f.write(np.ascontiguousarray(Q["wv2_wl"]).astype("<i1").tobytes())
-        f.write(np.array([Q["bv2_wl"]], dtype="<i4").tobytes())
+        if "wv1_wl" in Q:
+            f.write(np.ascontiguousarray(Q["wv1_wl"]).astype("<i1").tobytes())
+            f.write(np.ascontiguousarray(Q["bv1_wl"]).astype("<i4").tobytes())
+            f.write(np.ascontiguousarray(Q["wv2_wl"]).astype("<i1").tobytes())
+            f.write(np.array([Q["bv2_wl"]], dtype="<i4").tobytes())
+        else:
+            value_buckets = Q["value_buckets"]
+            value_depth = Q["value_depth"]
+            for b in range(value_buckets):
+                f.write(np.ascontiguousarray(Q[f"wv1_wl_{b}"]).astype("<i1").tobytes())
+                f.write(np.ascontiguousarray(Q[f"bv1_wl_{b}"]).astype("<i4").tobytes())
+                if value_depth == 2:
+                    f.write(np.ascontiguousarray(Q[f"wv2_wl_{b}"]).astype("<i1").tobytes())
+                    f.write(np.ascontiguousarray(Q[f"bv2_wl_{b}"]).astype("<i4").tobytes())
+                    f.write(np.ascontiguousarray(Q[f"wv3_wl_{b}"]).astype("<i1").tobytes())
+                    f.write(np.array([Q[f"bv3_wl_{b}"]], dtype="<i4").tobytes())
+                else:
+                    f.write(np.ascontiguousarray(Q[f"wv2_wl_{b}"]).astype("<i1").tobytes())
+                    f.write(np.array([Q[f"bv2_wl_{b}"]], dtype="<i4").tobytes())
         f.write(np.ascontiguousarray(Q["wp"]).astype("<i1").tobytes())
         f.write(np.ascontiguousarray(Q["bp"]).astype("<i4").tobytes())
 

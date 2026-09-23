@@ -23,9 +23,11 @@ import numpy as np
 import torch
 from torch.nn import functional as F
 try:
-    from .student_model import Student, encode_features, export
+    from .student_model import Student, encode_features, export, ARCH_CONFIGS
+    from .mirror_augmentation import stochastic_mirror_dict_h
 except ImportError:  # Direct execution from the training directory.
-    from student_model import Student, encode_features, export
+    from student_model import Student, encode_features, export, ARCH_CONFIGS
+    from mirror_augmentation import stochastic_mirror_dict_h
 
 ROOT = Path(__file__).resolve().parents[1]
 CONFIG = {
@@ -38,6 +40,7 @@ CONFIG = {
     "init_hidden": 256,
     "from_scratch": False,
     "qat": True,
+    "mirror_h": True,
     "epochs": 80,
     "batch_size": 256,
     "lr": 0.0001,
@@ -211,12 +214,27 @@ def _epoch(model, data, indices, config, device, optimizer=None, rng=None):
     model.train(optimizer is not None)
     order = rng.permutation(indices) if optimizer is not None else indices
     totals = np.zeros(4, dtype=np.float64)
+    mirror_h = config.get("mirror_h", True) and (optimizer is not None)
+    bucket_counts = np.zeros(model.value_buckets, dtype=np.int64) if model.value_buckets > 1 else None
+    bucket_mae_sums = np.zeros(model.value_buckets, dtype=np.float64) if model.value_buckets > 1 else None
+    bucket_weights = np.zeros(model.value_buckets, dtype=np.float64) if model.value_buckets > 1 else None
+
     for start in range(0, len(order), config["batch_size"]):
         idx = order[start:start + config["batch_size"]]
-        x = torch.from_numpy(encode_features(data, idx, config["architecture"])).to(device)
-        p = torch.as_tensor(data["policy"][idx].astype(np.float32), device=device)
-        v = torch.as_tensor(data["value"][idx].astype(np.float32), device=device)
-        w = torch.as_tensor(data["weight"][idx].astype(np.float32), device=device)
+        if mirror_h:
+            flip_mask = rng.random(len(idx)) < 0.5
+            batch_data = stochastic_mirror_dict_h(data, idx, flip_mask)
+            b_idx = np.arange(len(idx))
+            x = torch.from_numpy(encode_features(batch_data, b_idx, config["architecture"])).to(device)
+            p = torch.as_tensor(batch_data["policy"].astype(np.float32), device=device)
+            v = torch.as_tensor(batch_data["value"].astype(np.float32), device=device)
+            w = torch.as_tensor(batch_data["weight"].astype(np.float32), device=device)
+        else:
+            x = torch.from_numpy(encode_features(data, idx, config["architecture"])).to(device)
+            p = torch.as_tensor(data["policy"][idx].astype(np.float32), device=device)
+            v = torch.as_tensor(data["value"][idx].astype(np.float32), device=device)
+            w = torch.as_tensor(data["weight"][idx].astype(np.float32), device=device)
+
         with torch.set_grad_enabled(optimizer is not None):
             logits, policy = model(x)
             kl = (p * (p.clamp_min(1e-12).log() - F.log_softmax(policy, dim=1))).sum(1)
@@ -231,10 +249,30 @@ def _epoch(model, data, indices, config, device, optimizer=None, rng=None):
                 optimizer.step()
                 model.clip_weights()
         mass = w.sum().item()
+        val_diff = (2 * logits.sigmoid() - 1 - v).abs()
         totals += [loss.item() * mass, (kl * w).sum().item(),
-                   ((2 * logits.sigmoid() - 1 - v).abs() * w).sum().item(), mass]
-    return dict(loss=float(totals[0] / totals[3]), policy_kl=float(totals[1] / totals[3]),
-                value_mae=float(totals[2] / totals[3]))
+                   (val_diff * w).sum().item(), mass]
+
+        if model.value_buckets > 1 and optimizer is None:
+            b_indices = model._extract_buckets(x).cpu().numpy()
+            diff_np = val_diff.detach().cpu().numpy()
+            w_np = w.detach().cpu().numpy()
+            for b in range(model.value_buckets):
+                mask = (b_indices == b)
+                if mask.any():
+                    bucket_counts[b] += int(mask.sum())
+                    bucket_mae_sums[b] += float((diff_np[mask] * w_np[mask]).sum())
+                    bucket_weights[b] += float(w_np[mask].sum())
+
+    res = dict(loss=float(totals[0] / totals[3]), policy_kl=float(totals[1] / totals[3]),
+               value_mae=float(totals[2] / totals[3]))
+    if bucket_counts is not None:
+        res["bucket_counts"] = bucket_counts.tolist()
+        res["bucket_mae"] = [
+            float(bucket_mae_sums[b] / bucket_weights[b]) if bucket_weights[b] > 0 else 0.0
+            for b in range(model.value_buckets)
+        ]
+    return res
 
 
 def train(config):
@@ -358,12 +396,22 @@ def build_candidate(config):
     folder = _path(config["out_dir"])
     suffix = ".exe" if os.name == "nt" else ""
     exe = folder / ("zquoridor" + suffix)
-    flags = [f"-DZQ_NNUE_RACE_FEATURES={int(config['architecture'] in ('race', 'multipath', 'margin_regime', 'phase', 'margin_phase', 'multipath_phase', 'multipath_phase_contact'))}",
-             f"-DZQ_NNUE_MULTIPATH_FEATURES={int(config['architecture'] in ('multipath', 'multipath_phase', 'multipath_phase_contact'))}",
+    arch_cfg = ARCH_CONFIGS.get(config['architecture'], {})
+    val_buckets = arch_cfg.get('buckets', 1)
+    val_depth = arch_cfg.get('depth', 1)
+
+    flags = [f"-DZQ_NNUE_RACE_FEATURES={int(config['architecture'] in ('race', 'multipath', 'margin_regime', 'phase', 'margin_phase', 'multipath_phase', 'multipath_phase_contact', 'multipath_phase_bucketed', 'multipath_phase_deep', 'multipath_phase_contact_bucketed'))}",
+             f"-DZQ_NNUE_MULTIPATH_FEATURES={int(config['architecture'] in ('multipath', 'multipath_phase', 'multipath_phase_contact', 'multipath_phase_bucketed', 'multipath_phase_deep', 'multipath_phase_contact_bucketed'))}",
              f"-DZQ_NNUE_MARGIN_REGIME_FEATURES={int(config['architecture'] in ('margin_regime', 'margin_phase'))}",
-             f"-DZQ_NNUE_PHASE_FEATURES={int(config['architecture'] in ('phase', 'margin_phase', 'multipath_phase', 'multipath_phase_contact'))}",
-             f"-DZQ_NNUE_CONTACT_FEATURES={int(config['architecture'] == 'multipath_phase_contact')}",
+             f"-DZQ_NNUE_PHASE_FEATURES={int(config['architecture'] in ('phase', 'margin_phase', 'multipath_phase', 'multipath_phase_contact', 'multipath_phase_bucketed', 'multipath_phase_deep', 'multipath_phase_contact_bucketed'))}",
+             f"-DZQ_NNUE_CONTACT_FEATURES={int(config['architecture'] in ('multipath_phase_contact', 'multipath_phase_contact_bucketed'))}",
+             f"-DZQ_NNUE_VALUE_BUCKETS={val_buckets}",
+             f"-DZQ_NNUE_VALUE_DEPTH={val_depth}",
              f"-DZQ_NNUE_HIDDEN={config['hidden']}"]
+    arch_json = folder / "student.architecture.json"
+    if arch_json.exists():
+        manifest = json.loads(arch_json.read_text(encoding="utf-8"))
+        flags = manifest.get("cpp_flags", flags)
     build_inputs = dict(flags=flags, compiler=_hash(Path(compiler)),
         files={str(p.relative_to(ROOT)): _hash(p) for p in [ROOT/"tools/external/zquoridor_uci.cpp",
             ROOT/"tests/nnue_incremental_check.cpp", *sorted((ROOT/"src").glob("*.hpp"))]},
