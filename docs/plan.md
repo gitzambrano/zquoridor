@@ -200,3 +200,35 @@ transition. These source changes do not alter the already-running process.
 See [scripts.md](scripts.md) for the canonical runners, internal stages, and
 input/output contracts. `docs/datasets.md` remains local-only and must not be
 added to Git.
+
+
+### 2026-09-23 long-clock search study
+
+The 180+2 historical campaign and the follow-up search screens establish a
+separate long-clock result. They do not replace the fixed-200-ms promotion
+protocol.
+
+- Historical 180+2 progression versus Claustrophobia improved from 14.5% before
+  native clock support to 29.75% with real-clock budgeting, 34.25% with adaptive
+  budgeting, and approximately 41-42.5% after DAG/MCGS/repetition work. The
+  current engine remained in that same statistical band; the immediate-win
+  fast path showed no measurable strength regression.
+- Search-scaling screen, 200 games/configuration: production-style
+  32 nodes/ms with a 640k ceiling scored 39.0% (-77.7 Elo); the best directional
+  point was 96 nodes/ms with a 1.28M ceiling at 46.0% (-27.9 Elo). The paired
+  bootstrap interval still crossed the promotion threshold, so this is a
+  candidate, not a result to ship. Raising both knobs further to 128/2.56M did
+  not improve the point estimate.
+- Architecture screen, 100 games/configuration: disabling tree reuse fell to
+  37.0%, confirming that reuse is important at long clocks. FPU 0.2 (27.5%),
+  MaxQ root selection (40.5%), and simple Gumbel root filtering (39.0% for
+  M=32; 16.5% for M=16) were rejected. Progressive widening scored 49.0%
+  against a 48.0% same-run baseline and remains only a weak directional signal.
+- Previously settled experiments were not reopened: pondering already has a
+  400-game confirmation; FPU 0.1 and MaxVisitsThenQ were previously neutral or
+  worse; AB root prefilter was already rejected by large negative Elo results.
+
+Next long-clock confirmation gate: compare 96 nodes/ms / 1.28M alone and the
+same scaling plus progressive widening against the same frozen production
+baseline and Claustrophobia with paired openings. No candidate is promoted
+unless it also preserves the fixed-200-ms production gate.
