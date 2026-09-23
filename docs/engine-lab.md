@@ -1,8 +1,9 @@
 # Engine lab
 
-`main` carries one permanent experimental entry point: `.github/workflows/engine-lab.yml`.
-It is infrastructure only; it must not change engine strength or silently promote a candidate.
-Generation-specific workflows remain historical references, while new work should prefer the lab.
+The engine lab is the set of local tools for self-play, training, arenas, and
+external benchmarks. It must not change engine strength or promote a candidate.
+`main` carries no GitHub Actions workflows. Run every lab task on a local
+machine or on Colab.
 
 ## Stable identities
 
@@ -28,9 +29,8 @@ The four benchmark files under `tools/external/` are copied byte-for-byte from t
 Do not casually edit them: a harness change creates a new benchmark protocol and must be identified
 separately in reports.
 
-`tools/external/build_pinned_titanium.sh` rebuilds Titanium from the exact external SHA. Historical
-Actions artifacts remain useful caches, but the permanent lab does not depend on their retention period.
-The Gen8 fallback is likewise the versioned production checkpoint, not an expiring artifact.
+`tools/external/build_pinned_titanium.sh` rebuilds Titanium from the exact external SHA. The Gen8
+fallback is the versioned production checkpoint.
 
 `tools/external/analyze_paired_arena.py` is deliberately separate from the frozen harness. It groups the
 two color-swapped games of each opening and bootstraps those pairs as the independent units. Keep the
@@ -38,9 +38,9 @@ historical game-level interval for continuity, but prefer the pair-aware interva
 
 ## Lab modes
 
-The workflow is manually dispatchable in six modes.
+Each lab task maps to a local entry point.
 
-- `smoke`: syntax/build/core regression checks for permanent infrastructure.
+- `smoke`: `build/build_tests.bat` or `build/build_tests.sh`, then the pytest suite.
 - `selfplay`: generate self-play with `tools/selfplay/run_selfplay.py`.
 - `train`: run an arbitrary Python trainer path plus arbitrary arguments. This makes the orchestration
   independent of a particular neural architecture; the trainer owns its model and output format.
