@@ -77,6 +77,7 @@ the network was never trained.
 | `multipath_phase:512` Arm A | 504 / 512 | 4.26M stored-search, warm start, QAT, 20 epochs | 0.92044* | Val MAE 0.13108 | local control completed |
 | `multipath_phase:512` Arm B | 504 / 512 | 4.26M stored-search, mirror-h, warm start, QAT, 20 epochs | 0.95141* | Val MAE 0.13537 | local ablation completed |
 | `multipath_phase_bucketed:512` Arm C | 504 / 512 | 4.26M stored-search, 6 buckets, 2 layers, mirror-h, warm start, QAT, 20 epochs | 0.94987* | Val MAE 0.12874 (-29.8% MAE) | local candidate completed |
+| `multipath_phase_deep:512` Arm D | 504 / 512 | 4.26M stored-search, 1 head, 2 layers, mirror-h, warm start, QAT, 20 epochs | 0.95029* | Val MAE 0.12956 (-4.3% vs B) | local ablation completed |
 
 \* Do not compare these losses across different datasets, weighting schemes, or
 fine-tune stages. Stored replay deduplication aggregates duplicate canonical
