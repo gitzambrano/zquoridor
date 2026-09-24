@@ -18,6 +18,8 @@ gui_web/zquoridor.wasm
 data/selfplay/
 data/selfplay_canonical_v3/
 data/colab_upload/
+data/contact-selfplay-flat/
+data/runs/
 data/selfplay_*.bin
 data/arena/
 data/arena_*.bin

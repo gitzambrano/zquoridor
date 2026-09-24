@@ -17,6 +17,7 @@ def test_stored_value_bootstraps_terminal_result_with_remaining_ply_discount():
     assert stored_value_target(0.75, 1, 4, 0.5) == pytest.approx(0.28125)
     assert stored_value_target(0.75, -1, 4, 0.5) == pytest.approx(0.21875)
     assert stored_value_target(0.75, 0, 4, 0.5) == pytest.approx(0.25)
+    assert stored_value_target(0.75, 0.5, 4, 0.5) == pytest.approx(0.265625)
 
 
 def test_metadata_layout_is_the_packed_v1_sidecar():
@@ -113,3 +114,33 @@ def test_stored_replay_averages_duplicates_without_bias(tmp_path):
 
     assert data["value"][idx4] == pytest.approx(0.1)
     assert data["stored_root"][idx4] == pytest.approx(0.6)
+    assert data["game_result"][idx4] == pytest.approx(0.0)
+    assert data["game_result"].dtype == np.float32
+
+
+def test_sample_states_averages_duplicate_results(tmp_path):
+    from tools.teacher.selfplay_unique_store import V3_DTYPE
+    from prepare_replay import sample_states
+    rows1 = np.zeros(2, dtype=V3_DTYPE)
+    rows1["own_pawn"] = [4, 10]
+    rows1["opp_pawn"] = 76
+    rows1["walls_left_own"] = rows1["walls_left_opp"] = 10
+    rows1["own_dist"] = rows1["opp_dist"] = 8
+    rows1["game_result"] = [1, 0]
+
+    rows2 = np.zeros(2, dtype=V3_DTYPE)
+    rows2["own_pawn"] = [4, 20]
+    rows2["opp_pawn"] = 76
+    rows2["walls_left_own"] = rows2["walls_left_opp"] = 10
+    rows2["own_dist"] = rows2["opp_dist"] = 8
+    rows2["game_result"] = [-1, 1]
+
+    rows1.tofile(tmp_path / "shard1.bin")
+    rows2.tofile(tmp_path / "shard2.bin")
+
+    cfg = dict(CONFIG, source=str(tmp_path), max_positions=3, val_fraction=0.5)
+    data, report = sample_states(cfg)
+
+    idx4 = np.where(data["own_pawn"] == 4)[0][0]
+    assert data["game_result"][idx4] == pytest.approx(0.0)
+    assert data["game_result"].dtype == np.float32

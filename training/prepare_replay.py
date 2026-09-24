@@ -103,14 +103,15 @@ def normalize_visits(indices, visits) -> np.ndarray:
     return result
 
 
-def stored_value_target(root_value: float, terminal_result: int, remaining_plies: int,
+def stored_value_target(root_value: float, terminal_result: float, remaining_plies: int,
                         gamma: float, outcome_weight: float = 0.5) -> float:
     """Blend signed root search value with discounted terminal evidence."""
     root = float(root_value)
     if not math.isfinite(root) or not 0.0 <= root <= 1.0:
         raise ValueError("stored root value must be finite and in [0,1]")
-    if int(terminal_result) != terminal_result or int(terminal_result) not in (-1, 0, 1):
-        raise ValueError("stored terminal result must be -1, 0, or 1")
+    res = float(terminal_result)
+    if not math.isfinite(res) or not -1.0 <= res <= 1.0:
+        raise ValueError("stored terminal result must be finite and in [-1, 1]")
     plies = int(remaining_plies)
     if plies != remaining_plies or plies < 0:
         raise ValueError("stored remaining plies must be a non-negative integer")
@@ -122,7 +123,7 @@ def stored_value_target(root_value: float, terminal_result: int, remaining_plies
         raise ValueError("stored outcome weight must be finite and in [0,1]")
     root_signed = 2.0 * root - 1.0
     return float(np.clip((1.0 - alpha) * root_signed
-                         + alpha * (gamma ** plies) * int(terminal_result), -1.0, 1.0))
+                         + alpha * (gamma ** plies) * res, -1.0, 1.0))
 
 
 def legal_wall_topology(walls_h: int, walls_v: int, own_pawn: int, opp_pawn: int) -> bool:
@@ -190,6 +191,8 @@ def sample_states(config, blocked=()):
     quota = math.ceil(config["max_positions"] / len(valid))
     rows, ids, groups, splits, provenance = [], [], [], [], []
     seen = set(blocked)
+    unique_counts = {}
+    result_sums = {}
     for file_index, (path, dtype, size) in enumerate(valid):
         digest = sha(path)
         provenance.append(dict(path=str(path.resolve()), sha256=digest, record_bytes=size))
@@ -203,13 +206,20 @@ def sample_states(config, blocked=()):
         for index in candidates:
             row = data[index]
             key = tuple(int(row[name]) for name in STATE_FIELDS)
-            if (key in seen or row["own_pawn"] >= 72 or row["opp_pawn"] <= 8
+            if key in seen:
+                if key in unique_counts:
+                    unique_counts[key] += 1
+                    result_sums[key] += int(row["game_result"])
+                continue
+            if (row["own_pawn"] >= 72 or row["opp_pawn"] <= 8
                     or not (0 <= row["walls_left_own"] <= 10)
                     or not (0 <= row["walls_left_opp"] <= 10)
                     or not legal_wall_topology(row["walls_h"], row["walls_v"], row["own_pawn"], row["opp_pawn"])):
                 continue
             seen.add(key)
-            rows.append(tuple(int(row[name]) for name in (*STATE_FIELDS, "own_dist", "opp_dist", "game_result")))
+            unique_counts[key] = 1
+            result_sums[key] = int(row["game_result"])
+            rows.append(tuple(int(row[name]) for name in (*STATE_FIELDS, "own_dist", "opp_dist")))
             ids.append(hashlib.sha256(f"{digest}:{index}".encode()).hexdigest()[:24])
             groups.append(digest)
             splits.append(file_index < n_val)
@@ -233,13 +243,20 @@ def sample_states(config, blocked=()):
                 for index in rng.permutation(len(data)):
                     row = data[index]
                     key = tuple(int(row[name]) for name in STATE_FIELDS)
-                    if (key in seen or row["own_pawn"] >= 72 or row["opp_pawn"] <= 8
+                    if key in seen:
+                        if key in unique_counts:
+                            unique_counts[key] += 1
+                            result_sums[key] += int(row["game_result"])
+                        continue
+                    if (row["own_pawn"] >= 72 or row["opp_pawn"] <= 8
                             or not (0 <= row["walls_left_own"] <= 10)
                             or not (0 <= row["walls_left_opp"] <= 10)
                             or not legal_wall_topology(row["walls_h"], row["walls_v"], row["own_pawn"], row["opp_pawn"])):
                         continue
                     seen.add(key)
-                    rows.append(tuple(int(row[name]) for name in (*STATE_FIELDS, "own_dist", "opp_dist", "game_result")))
+                    unique_counts[key] = 1
+                    result_sums[key] = int(row["game_result"])
+                    rows.append(tuple(int(row[name]) for name in (*STATE_FIELDS, "own_dist", "opp_dist")))
                     ids.append(hashlib.sha256(f"{digest}:{index}".encode()).hexdigest()[:24])
                     groups.append(digest)
                     splits.append(validation)
@@ -254,10 +271,11 @@ def sample_states(config, blocked=()):
         raise ValueError(f"requested {config['max_positions']} positions but found only {len(rows)} distinct eligible samples")
     if len(rows) < 2 or not any(splits) or all(splits):
         raise ValueError("insufficient independent train/validation replay positions")
-    names = (*STATE_FIELDS, "own_dist", "opp_dist", "game_result")
+    names = (*STATE_FIELDS, "own_dist", "opp_dist")
     arrays = {name: np.asarray([r[i] for r in rows], dtype=np.uint64 if name in ("walls_h", "walls_v") else np.int64)
               for i, name in enumerate(names)}
-    arrays.update(id=np.asarray(ids, dtype="S24"), group_id=np.asarray(groups, dtype="S64"),
+    game_results = np.asarray([float(result_sums[tuple(r[:6])]) / unique_counts[tuple(r[:6])] for r in rows], dtype=np.float32)
+    arrays.update(game_result=game_results, id=np.asarray(ids, dtype="S24"), group_id=np.asarray(groups, dtype="S64"),
                   is_val=np.asarray(splits, dtype=bool))
     return arrays, dict(shards=provenance, skipped_legacy_shards=skipped, samples=len(rows))
 
@@ -401,7 +419,7 @@ def sample_stored_states(config, blocked=()):
     values = np.empty(n_samples, dtype=np.float32)
     stored_roots = np.empty(n_samples, dtype=np.float32)
     stored_plies = np.empty(n_samples, dtype=np.int32)
-    game_results = np.empty(n_samples, dtype=np.int64)
+    game_results = np.empty(n_samples, dtype=np.float32)
     policy_top_idx = np.zeros((n_samples, 8), dtype=np.uint16)
     policy_top_prob = np.zeros((n_samples, 8), dtype=np.uint16)
 
@@ -420,7 +438,7 @@ def sample_stored_states(config, blocked=()):
         values[i] = float(np.clip(rec["value_sum"] / cnt, -1.0, 1.0))
         stored_roots[i] = float(rec["root_sum"] / cnt)
         stored_plies[i] = int(round(rec["plies_sum"] / cnt))
-        game_results[i] = int(round(rec["result_sum"] / cnt))
+        game_results[i] = float(rec["result_sum"] / cnt)
 
     arrays = {name: np.asarray([int(rec["row"][name]) for rec in records],
                                dtype=np.uint64 if name in ("walls_h", "walls_v") else np.int64)

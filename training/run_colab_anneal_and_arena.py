@@ -318,8 +318,9 @@ def run_baseline_arena(config: dict):
             print(f"\nSkipping {name}: training report not found at {cand_dir}")
             continue
 
+        suffix = ".exe" if os.name == "nt" else ""
         cand_int8 = cand_dir / "student_int8.bin"
-        cand_exe = cand_dir / "zquoridor"
+        cand_exe = cand_dir / f"zquoridor{suffix}"
 
         # Ensure candidate binary is compiled
         if not cand_exe.exists() or not cand_int8.exists():
@@ -338,10 +339,18 @@ def run_baseline_arena(config: dict):
         out_arena = cand_dir / "arena_vs_baseline"
         summary_path = out_arena / "summary.json"
         if summary_path.exists():
-            print(f"\nAlready benchmarked: {name}")
             summary = json.loads(summary_path.read_text(encoding="utf-8"))
-            arena_results.append((name, summary))
-            continue
+            if summary.get("complete_pairs", 0) >= pairs:
+                print(f"\nAlready benchmarked: {name}")
+                arena_results.append((name, summary))
+                continue
+
+        # Copy candidate binary to local directory to guarantee execution permissions
+        local_cand_exe = ROOT / f"bin/local_benchmark/{cand_dir.name}_zquoridor{suffix}"
+        local_cand_exe.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(cand_exe, local_cand_exe)
+        if os.name != "nt":
+            os.chmod(local_cand_exe, 0o755)
 
         print(f"\nPlaying match: {name} vs Production Baseline ({pairs*2} games)...")
         manifest = local_arena.make_manifest(
@@ -357,7 +366,7 @@ def run_baseline_arena(config: dict):
         def play(index: int, opening: list[str], side: int) -> dict:
             return local_arena.play_game(
                 opponent="baseline", opening_index=index, opening=opening, zq_player=side,
-                zq_factory=lambda: local_arena.UciPlayer([str(cand_exe), "--nnue", str(cand_int8)], "candidate"),
+                zq_factory=lambda: local_arena.UciPlayer([str(local_cand_exe), "--nnue", str(cand_int8)], "candidate"),
                 opponent_factory=lambda: local_arena.UciPlayer([str(baseline_exe), "--nnue", str(baseline_weights)], "baseline"),
                 zq_budget=move_time_ms, opponent_budget=move_time_ms,
                 move_timeout_s=30.0, max_plies=240, run_id=manifest["run_id"],
@@ -380,8 +389,8 @@ def run_baseline_arena(config: dict):
         summary_path.write_text(json.dumps(summary, indent=2) + "\n", encoding="utf-8")
         arena_results.append((name, summary))
 
-        score_pct = summary.get("score_pct", 0.0)
-        elo = summary.get("elo", 0.0)
+        score_pct = summary.get("score_pct") or 0.0
+        elo = summary.get("elo") or 0.0
         bs = summary.get("paired_bootstrap_95") or {}
         ci_str = f"[{bs.get('elo_low', 0.0):+.1f}, {bs.get('elo_high', 0.0):+.1f}]" if bs else ""
         print(f"Result for {name}: Score {score_pct:.1f}% | Elo {elo:+.1f} {ci_str} in {elapsed:.1f}s")
@@ -395,8 +404,8 @@ def run_baseline_arena(config: dict):
     print("-" * len(header))
     for name, s in arena_results:
         g = s.get("included_games", s.get("recorded_games", 0))
-        score = s.get("score_pct", 0.0)
-        elo = s.get("elo", 0.0)
+        score = s.get("score_pct") or 0.0
+        elo = s.get("elo") or 0.0
         bs = s.get("paired_bootstrap_95") or {}
         elo_str = f"{elo:+.1f} [{bs.get('elo_low', 0.0):+.1f}, {bs.get('elo_high', 0.0):+.1f}]" if bs else f"{elo:+.1f}"
         print(f"{name:<35} | {g:<6} | {score:>6.1f}% | {elo_str:<20}")
