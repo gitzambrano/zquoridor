@@ -68,3 +68,48 @@ def test_zero_mass_unused_indices_and_invalid_visits():
         normalize_visits([209], [1])
     with pytest.raises(ValueError):
         normalize_visits([13], [float("nan")])
+
+
+def test_stored_replay_averages_duplicates_without_bias(tmp_path):
+    import json
+    from tools.teacher.selfplay_unique_store import V3_DTYPE
+    rows = np.zeros(3, dtype=V3_DTYPE)
+    rows["own_pawn"] = [4, 4, 10]
+    rows["opp_pawn"] = 76
+    rows["walls_left_own"] = rows["walls_left_opp"] = 10
+    rows["own_dist"] = rows["opp_dist"] = 8
+    rows["policy_top_idx"][0, 0] = 10
+    rows["policy_top_prob"][0, 0] = 65535
+    rows["game_result"][0] = 1
+    rows["policy_top_idx"][1, 0] = 20
+    rows["policy_top_prob"][1, 0] = 65535
+    rows["game_result"][1] = -1
+    rows["policy_top_idx"][2, 0] = 30
+    rows["policy_top_prob"][2, 0] = 65535
+    rows["game_result"][2] = 0
+
+    meta = np.zeros(3, dtype=METADATA_DTYPE)
+    meta["game"] = [1, 2, 3]
+    meta["flags"] = 2
+    meta["root"] = [0.8, 0.4, 0.5]
+    meta["plies"] = [0, 0, 0]
+    meta["length"] = [20, 20, 20]
+
+    rows.tofile(tmp_path / "shard.bin")
+    meta.tofile(tmp_path / "shard.meta")
+    (tmp_path / "manifest.json").write_text(json.dumps({"accepted_shards": [{"v3": "shard.bin"}]}))
+
+    cfg = dict(CONFIG, source=str(tmp_path), max_positions=10, stored_outcome_weight=0.5, stored_gamma=1.0)
+    data, report = sample_stored_states(cfg)
+
+    assert len(data["id"]) == 2
+    assert report["duplicates_merged"] == 1
+
+    idx4 = np.where(data["own_pawn"] == 4)[0][0]
+    assert data["duplicate_count"][idx4] == 2
+    assert data["policy"][idx4, 10] == pytest.approx(0.5)
+    assert data["policy"][idx4, 20] == pytest.approx(0.5)
+    assert data["policy"][idx4].sum() == pytest.approx(1.0)
+
+    assert data["value"][idx4] == pytest.approx(0.1)
+    assert data["stored_root"][idx4] == pytest.approx(0.6)

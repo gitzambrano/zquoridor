@@ -74,9 +74,16 @@ the network was never trained.
 | **production `multipath_phase:512`** | **504 / 512** | 11.065M weakness-boosted data, QAT, 100 epochs | — | rows above | **production** |
 | `multipath_phase_contact:512` | 858 / 512 | 11.378M local data, warm start, QAT, 160 epochs | 0.95217* | 47.25% H2H; 50.25% Claustrophobia; 49.0% Center Rush | local candidate; no promotion-level gain |
 | `multipath_phase:512` reliable-search FT | 504 / 512 | 313,344 selected search/rollout samples, QAT, 40 epochs | 1.16198* | 45.5% H2H; 48.58% Claustrophobia; 68.5% Titanium; 47.0% Center Rush | local unpromoted fine-tune |
+| `multipath_phase:512` Arm A | 504 / 512 | 4.26M stored-search, warm start, QAT, 20 epochs | 0.92044* | Val MAE 0.13108 | local control completed |
+| `multipath_phase:512` Arm B | 504 / 512 | 4.26M stored-search, mirror-h, warm start, QAT, 20 epochs | 0.95141* | Val MAE 0.13537 | local ablation completed |
+| `multipath_phase_bucketed:512` Arm C | 504 / 512 | 4.26M stored-search, 6 buckets, 2 layers, mirror-h, warm start, QAT, 20 epochs | 0.94987* | Val MAE 0.12874 (-29.8% MAE) | local candidate completed |
 
 \* Do not compare these losses across different datasets, weighting schemes, or
-fine-tune stages.
+fine-tune stages. Stored replay deduplication aggregates duplicate canonical
+states across games by averaging visit policies $\bar{\pi} = \frac{1}{K}\sum \pi_i$
+and blended value targets $\bar{V} = \frac{1}{K}\sum V_i$ to eliminate outcome
+selection bias.
+
 
 ## 3. Architecture facts
 
@@ -174,10 +181,25 @@ plies. They label policy and root value only after a search on that ply.
 The updated controller records generator hashes and supports a threshold-based
 transition. These source changes do not alter the already-running process.
 
-### NNUE candidate code (not trained)
+### NNUE experimental candidate training (active)
 
-The code for horizontal mirror augmentation and phase-bucketed value heads is
-complete. No network uses it yet.
+The three-arm study on 4,262,204 canonical stored-search samples (3,411,166 train,
+851,038 validation) warm-started from the production `multipath-phase512-searchboost-100ep`
+checkpoint is underway:
+
+- Arm A (Control): `multipath_phase` without mirror. 20 epochs completed.
+  Val loss: 0.92044, Policy KL: 0.62121, Value MAE: 0.13108.
+- Arm B (Ablation): `multipath_phase` with mirror augmentation. 20 epochs
+  in progress.
+- Arm C (Candidate): `multipath_phase_bucketed` with mirror augmentation.
+  20 epochs completed. Val loss: 0.94987, Policy KL: 0.64976, Value MAE:
+  0.12874 (-0.0545 MAE drop from baseline; Bucket 1: 0.1205, Bucket 2: 0.1427,
+  Bucket 3: 0.1443).
+- Stage 2 Annealing (Recozimento): A2, B2, and C2 fine-tuning runs starting
+  from the respective Arm A, B, and C checkpoints. Uses reduced learning rate
+  (`lr=1e-5`, `min_lr=1e-7`), slow trunk adaptation (`trunk_lr_scale=0.05`),
+  cosine annealing schedule, and QAT to test whether simulated annealing
+  improves holdout loss and int8 quantization stability.
 
 - Mirror augmentation: `training/mirror_augmentation.py` flips each training
   sample left to right with probability 0.5. The trainer flips the raw state and
@@ -223,14 +245,18 @@ complete. No network uses it yet.
 2. Finish and audit the active corpus at 10,000,000 unique states. Preserve all
    existing data. Use corrected visit-temperature generation for the final
    five million states. Start experimental training only after this audit.
-3. Train three arms on the same data and the same recipe:
+3. Train the experimental network matrix on the same data and recipe:
    - A (control): `multipath_phase`, no mirror;
-   - B: `multipath_phase` with mirror augmentation;
-   - C: `multipath_phase_bucketed` with mirror augmentation.
+   - B (ablation): `multipath_phase` with mirror augmentation;
+   - C (candidate): `multipath_phase_bucketed` (6 heads, 2-layer value) with mirror;
+   - D (ablation): `multipath_phase_deep` (1 head, 2-layer value) with mirror;
+   - E (candidate): `multipath_phase_contact_bucketed` (858 features, 6 heads, 2 layers) with mirror.
 
-   Compare B with A, and then C with B. Train `multipath_phase_deep` only if C
-   wins, to find the source of the gain. Postpone the contact variant, because
-   contact lost its H2H screen.
+   Follow each arm with a low-rate simulated annealing (recozimento) QAT pass:
+   - A2, B2, C2, D2, E2: warm-started from A, B, C, D, E checkpoints respectively;
+   - Reduced learning rate (peak `1e-5`, cosine decay to `1e-7`, 20 epochs);
+   - Constrained trunk updates (`trunk_lr_scale=0.05`);
+   - Test whether simulated annealing improves validation error and int8 stability.
 4. Blend root and result targets with a measured discount. Keep genuine
    search-policy labels separate from replay labels. Use the generic
    stored-search replay mode. Retain a broad anchor and cap critical-source

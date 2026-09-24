@@ -21,9 +21,10 @@ change.
 The default ``--mode inference`` behavior is unchanged.  Stored replay uses
 ``--stored-gamma`` for symmetric terminal-result discount and
 ``--stored-outcome-weight`` to blend it with the signed root value. It
-deduplicates canonical states and assigns game IDs to train or validation.
-The stored mode shuffles shard order before its bounded scan.
-The resulting sample is reproducible but is not globally uniform.
+aggregates duplicate canonical states across games by averaging their visit
+policies and blended value targets without selection bias. It assigns game IDs
+to train or validation. The stored mode shuffles shard order before its bounded
+scan. The resulting sample is reproducible but is not globally uniform.
 """
 from __future__ import annotations
 import argparse
@@ -291,11 +292,17 @@ def sample_stored_states(config, blocked=()):
     rng.shuffle(files)
     groups = {}
     provenance = []
-    seen = set(blocked)
+    blocked_keys = set(blocked)
+    unique_records = {}
     accepted = 0
     skipped_missing = 0
     skipped_no_visits = 0
+    duplicates_merged = 0
     stop = False
+
+    gamma = float(config.get("stored_gamma", 0.99))
+    outcome_weight = float(config.get("stored_outcome_weight", 0.5))
+
     for path in files:
         dtype, size = _detect_format(path)
         if size != 64:
@@ -326,17 +333,41 @@ def sample_stored_states(config, blocked=()):
             if int(meta["length"]) and int(meta["plies"]) > int(meta["length"]):
                 raise ValueError(f"stored_search terminal distance exceeds game length at {path}:{index}")
             key = tuple(int(row[name]) for name in STATE_FIELDS)
-            if key in seen or not legal_wall_topology(row["walls_h"], row["walls_v"], row["own_pawn"], row["opp_pawn"]):
+            if key in blocked_keys or not legal_wall_topology(row["walls_h"], row["walls_v"], row["own_pawn"], row["opp_pawn"]):
                 continue
             visits = np.asarray(row["policy_top_prob"], dtype=np.float64)
             if not np.any(visits > 0):
                 skipped_no_visits += 1
                 continue
-            # Validate now, before any expensive downstream work.
-            normalize_visits(row["policy_top_idx"], visits)
-            seen.add(key)
+            policy = normalize_visits(row["policy_top_idx"], visits)
+            val_target = stored_value_target(root, row["game_result"], meta["plies"], gamma, outcome_weight)
+
+            if key in unique_records:
+                rec = unique_records[key]
+                rec["count"] += 1
+                rec["policy_sum"] += policy
+                rec["value_sum"] += val_target
+                rec["root_sum"] += root
+                rec["plies_sum"] += int(meta["plies"])
+                rec["result_sum"] += int(row["game_result"])
+                duplicates_merged += 1
+                continue
+
+            rec = {
+                "row": row.copy(),
+                "meta": meta.copy(),
+                "index": index,
+                "path": path,
+                "count": 1,
+                "policy_sum": policy.astype(np.float64).copy(),
+                "value_sum": float(val_target),
+                "root_sum": float(root),
+                "plies_sum": int(meta["plies"]),
+                "result_sum": int(row["game_result"]),
+            }
+            unique_records[key] = rec
             game = int(meta["game"])
-            groups.setdefault(game, []).append((row.copy(), meta.copy(), index, path))
+            groups.setdefault(game, []).append(rec)
             accepted += 1
             if accepted >= config["max_positions"] and len(groups) >= 2:
                 stop = True
@@ -350,30 +381,68 @@ def sample_stored_states(config, blocked=()):
     rng.shuffle(game_ids)
     n_val = max(1, min(len(game_ids) - 1, round(len(game_ids) * config["val_fraction"])))
     val_games = set(int(x) for x in game_ids[:n_val])
-    rows, splits = [], []
+    records, splits = [], []
     for game in game_ids:
-        for row, meta, index, path in groups[int(game)]:
-            rows.append((row, meta, index, path))
+        for rec in groups[int(game)]:
+            records.append(rec)
             splits.append(int(game) in val_games)
-    if len(rows) > config["max_positions"]:
-        order = rng.permutation(len(rows))[:config["max_positions"]]
-        rows = [rows[int(i)] for i in order]
+    if len(records) > config["max_positions"]:
+        order = rng.permutation(len(records))[:config["max_positions"]]
+        records = [records[int(i)] for i in order]
         splits = [splits[int(i)] for i in order]
     if not any(splits) or all(splits):
         raise ValueError("stored_search split must contain train and validation games")
-    names = (*STATE_FIELDS, "own_dist", "opp_dist", "game_result")
+
+    n_samples = len(records)
+    names = (*STATE_FIELDS, "own_dist", "opp_dist")
     file_hashes = {path: item["sha256"] for path, item in zip(files, provenance)}
-    arrays = {name: np.asarray([int(item[0][name]) for item in rows], dtype=np.uint64 if name in ("walls_h", "walls_v") else np.int64)
+
+    policies = np.empty((n_samples, POLICY_DIM), dtype=np.float32)
+    values = np.empty(n_samples, dtype=np.float32)
+    stored_roots = np.empty(n_samples, dtype=np.float32)
+    stored_plies = np.empty(n_samples, dtype=np.int32)
+    game_results = np.empty(n_samples, dtype=np.int64)
+    policy_top_idx = np.zeros((n_samples, 8), dtype=np.uint16)
+    policy_top_prob = np.zeros((n_samples, 8), dtype=np.uint16)
+
+    for i, rec in enumerate(records):
+        cnt = rec["count"]
+        p_avg = (rec["policy_sum"] / cnt).astype(np.float32)
+        p_sum = float(p_avg.sum())
+        if p_sum > 0:
+            p_avg /= p_sum
+        policies[i] = p_avg
+
+        top8 = np.argsort(-p_avg)[:8]
+        policy_top_idx[i] = top8.astype(np.uint16)
+        policy_top_prob[i] = np.round(p_avg[top8] * 65535).astype(np.uint16)
+
+        values[i] = float(np.clip(rec["value_sum"] / cnt, -1.0, 1.0))
+        stored_roots[i] = float(rec["root_sum"] / cnt)
+        stored_plies[i] = int(round(rec["plies_sum"] / cnt))
+        game_results[i] = int(round(rec["result_sum"] / cnt))
+
+    arrays = {name: np.asarray([int(rec["row"][name]) for rec in records],
+                               dtype=np.uint64 if name in ("walls_h", "walls_v") else np.int64)
               for name in names}
-    arrays.update(id=np.asarray([hashlib.sha256(f"{file_hashes[path]}:{index}".encode()).hexdigest()[:24] for _, _, index, path in rows], dtype="S24"),
-                  group_id=np.asarray([str(int(meta["game"])) for _, meta, _, _ in rows], dtype="S64"),
-                  is_val=np.asarray(splits, dtype=bool),
-                  stored_root=np.asarray([float(meta["root"]) for _, meta, _, _ in rows], dtype=np.float32),
-                  stored_plies=np.asarray([int(meta["plies"]) for _, meta, _, _ in rows], dtype=np.int32),
-                  source_class=np.asarray([int(meta["source"]) for _, meta, _, _ in rows], dtype=np.uint8),
-                  policy_top_idx=np.asarray([item[0]["policy_top_idx"] for item in rows], dtype=np.uint16),
-                  policy_top_prob=np.asarray([item[0]["policy_top_prob"] for item in rows], dtype=np.uint16))
-    return arrays, dict(shards=provenance, samples=len(rows), games=len(groups), stored_search=True,
+    arrays.update(
+        game_result=game_results,
+        id=np.asarray([hashlib.sha256(f"{file_hashes[rec['path']]}:{rec['index']}".encode()).hexdigest()[:24]
+                       for rec in records], dtype="S24"),
+        group_id=np.asarray([str(int(rec["meta"]["game"])) for rec in records], dtype="S64"),
+        is_val=np.asarray(splits, dtype=bool),
+        policy=policies,
+        value=values,
+        weight=np.ones(n_samples, dtype=np.float32),
+        stored_root=stored_roots,
+        stored_plies=stored_plies,
+        source_class=np.asarray([int(rec["meta"]["source"]) for rec in records], dtype=np.uint8),
+        policy_top_idx=policy_top_idx,
+        policy_top_prob=policy_top_prob,
+        duplicate_count=np.asarray([rec["count"] for rec in records], dtype=np.int32),
+    )
+    return arrays, dict(shards=provenance, samples=n_samples, games=len(groups), stored_search=True,
+                        duplicates_merged=duplicates_merged,
                         skipped_missing_root=skipped_missing, skipped_zero_visits=skipped_no_visits)
 
 
@@ -416,9 +485,12 @@ def run(config):
     if config.get("mode") == "stored_search":
         data, provenance = sample_stored_states(config, blocked)
         n = len(data["id"])
-        data["policy"] = np.asarray([normalize_visits(data["policy_top_idx"][i], data["policy_top_prob"][i]) for i in range(n)], dtype=np.float32)
-        data["value"] = np.asarray([stored_value_target(data["stored_root"][i], data["game_result"][i], data["stored_plies"][i], config["stored_gamma"], config["stored_outcome_weight"]) for i in range(n)], dtype=np.float32)
-        data["weight"] = np.ones(n, np.float32)
+        if "policy" not in data:
+            data["policy"] = np.asarray([normalize_visits(data["policy_top_idx"][i], data["policy_top_prob"][i]) for i in range(n)], dtype=np.float32)
+        if "value" not in data:
+            data["value"] = np.asarray([stored_value_target(data["stored_root"][i], data["game_result"][i], data["stored_plies"][i], config["stored_gamma"], config["stored_outcome_weight"]) for i in range(n)], dtype=np.float32)
+        if "weight" not in data:
+            data["weight"] = np.ones(n, np.float32)
         identity = dict(provenance=provenance, code_sha256=sha(__file__))
         manifest = dict(fingerprint=hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest(),
                         code_sha256=identity["code_sha256"],
