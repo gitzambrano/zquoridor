@@ -295,3 +295,29 @@ checkpoint is underway:
 See [scripts.md](scripts.md) for the canonical runners, internal stages, and
 input/output contracts. `docs/datasets.md` remains local-only and must not be
 added to Git.
+
+
+#### 2026-09-23 long-clock finalist confirmation
+
+The 400-game confirmation gates refined the earlier screens:
+
+- Baseline vs Claustrophobia at 180+2: 141W/2D/257L, 35.50%, -103.7 Elo,
+  paired-bootstrap 95% [-136.0, -73.2].
+- Global 96 nodes/ms / 1.28M ceiling vs Claustrophobia: 169W/6D/225L,
+  43.00%, -49.0 Elo, 95% [-80.4, -18.3]. This confirms a large
+  opponent-specific improvement over the baseline point estimate.
+- The same global scaling lost head-to-head to the frozen baseline at 180+2:
+  179W/7D/212L over 396 included games, 45.83%, -29.0 Elo,
+  95% [-56.6, -1.8]. Therefore global 96/1.28M is rejected for promotion.
+- Adding global progressive widening did not solve the promotion gate:
+  42.21% vs Claustrophobia at 180+2; 49.88% H2H vs baseline at 180+2;
+  and 46.88% H2H at fixed 200 ms (-21.7 Elo point estimate,
+  95% [-50.7, +6.9]). Global PW remains off.
+
+Next experiment: preserve the production 32 nodes/ms / 640k guardrail for
+stable roots and unlock the proven 96 nodes/ms / 1.28M working set only when
+the existing adaptive root signal classifies a position as uncertain or
+volatile. Test volatile-only and uncertain-or-volatile escalation separately.
+The escalation must be disabled for fixed-movetime/self-play so the 200-ms
+production path remains bit-for-bit unchanged unless a dedicated test enables
+it. Promotion still requires gates versus both frozen main and Claustrophobia.
