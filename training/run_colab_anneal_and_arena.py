@@ -52,6 +52,7 @@ def ensure_baseline_executable(compiler="g++") -> Path:
     if exe.exists():
         return exe
     flags = [
+        "-DZQ_NNUE_RACE_FEATURES=1",
         "-DZQ_NNUE_MULTIPATH_FEATURES=1",
         "-DZQ_NNUE_PHASE_FEATURES=1",
         "-DZQ_NNUE_HIDDEN=512",
