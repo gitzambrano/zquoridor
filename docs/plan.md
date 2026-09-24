@@ -78,19 +78,19 @@ the network was never trained.
 | `multipath_phase:512` Arm B | 504 / 512 | 4.26M stored-search, mirror-h, warm start, QAT, 20 epochs | 0.95141* | Val MAE 0.13537 | local ablation completed |
 | `multipath_phase_bucketed:512` Arm C | 504 / 512 | 4.26M stored-search, 6 buckets, 2 layers, mirror-h, warm start, QAT, 20 epochs | 0.94987* | Val MAE 0.12874 (-29.8% MAE) | local candidate completed |
 | `multipath_phase_deep:512` Arm D | 504 / 512 | 4.26M stored-search, 1 head, 2 layers, mirror-h, warm start, QAT, 20 epochs | 0.95029* | Val MAE 0.12956 (-4.3% vs B) | local ablation completed |
-| `multipath_phase_contact_bucketed:512` Arm E | 858 / 512 | 4.26M stored-search, 6 buckets, 2 layers, mirror-h, warm start from C, QAT, 20 epochs | queued* | — | contact + bucketed candidate queued |
+| `multipath_phase_contact_bucketed:512` Arm E | 858 / 512 | 4.26M stored-search, 6 buckets, 2 layers, mirror-h, warm start from C, QAT, 20 epochs | in progress* | — | contact + bucketed candidate in progress |
 | `multipath_phase:512` Arm A2 | 504 / 512 | un-biased replay, warm start from A, QAT anneal, LR 1e-5 → 1e-7, 60 epochs | queued* | — | control annealing queued |
 | `multipath_phase:512` Arm B2 | 504 / 512 | un-biased replay, mirror-h, warm start from B, QAT anneal, LR 1e-5 → 1e-7, 60 epochs | queued* | — | ablation annealing queued |
 | `multipath_phase_bucketed:512` Arm C2 | 504 / 512 | un-biased replay, mirror-h, 6 buckets, 2 layers, warm start from C, QAT anneal, 60 epochs | queued* | — | candidate annealing queued |
 | `multipath_phase_deep:512` Arm D2 | 504 / 512 | un-biased replay, mirror-h, 1 head, 2 layers, warm start from D, QAT anneal, 60 epochs | queued* | — | deep ablation annealing queued |
 | `multipath_phase_contact_bucketed:512` Arm E2 | 858 / 512 | un-biased replay, mirror-h, 6 buckets, 2 layers, warm start from E, QAT anneal, 60 epochs | queued* | — | contact candidate annealing queued |
 
-\* Do not compare these losses across different datasets, weighting schemes, or
+* Do not compare these losses across different datasets, weighting schemes, or
 fine-tune stages. Stored replay deduplication aggregates duplicate canonical
 states across games by averaging visit policies $\bar{\pi} = \frac{1}{K}\sum \pi_i$
 and blended value targets $\bar{V} = \frac{1}{K}\sum V_i$ to eliminate outcome
 selection bias. All Version 2 annealing runs train for 60 epochs. Following
-training, each candidate model plays a 50-pair (100-game, 200 ms/move) arena match
+training, each candidate model plays a 150-pair (300-game, 200 ms/move) arena match
 directly on Colab against the production baseline (`nnue_weights_int8.bin`).
 
 
