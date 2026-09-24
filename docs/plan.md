@@ -74,12 +74,12 @@ the network was never trained.
 | **production `multipath_phase:512`** | **504 / 512** | 11.065M weakness-boosted data, QAT, 100 epochs | — | rows above | **production** |
 | `multipath_phase_contact:512` | 858 / 512 | 11.378M local data, warm start, QAT, 160 epochs | 0.95217* | 47.25% H2H; 50.25% Claustrophobia; 49.0% Center Rush | local candidate; no promotion-level gain |
 | `multipath_phase:512` reliable-search FT | 504 / 512 | 313,344 selected search/rollout samples, QAT, 40 epochs | 1.16198* | 45.5% H2H; 48.58% Claustrophobia; 68.5% Titanium; 47.0% Center Rush | local unpromoted fine-tune |
-| `multipath_phase:512` Arm A | 504 / 512 | 4.26M stored-search, warm start, QAT, 20 epochs | 0.92044* | Val MAE 0.13108 | local control completed |
-| `multipath_phase:512` Arm B | 504 / 512 | 4.26M stored-search, mirror-h, warm start, QAT, 20 epochs | 0.95141* | Val MAE 0.13537 | local ablation completed |
-| `multipath_phase_bucketed:512` Arm C | 504 / 512 | 4.26M stored-search, 6 buckets, 2 layers, mirror-h, warm start, QAT, 20 epochs | 0.94987* | Val MAE 0.12874 (-29.8% MAE) | local candidate completed |
-| `multipath_phase_deep:512` Arm D | 504 / 512 | 4.26M stored-search, 1 head, 2 layers, mirror-h, warm start, QAT, 20 epochs | 0.95029* | Val MAE 0.12956 (-4.3% vs B) | local ablation completed |
-| `multipath_phase_contact_bucketed:512` Arm E | 858 / 512 | 4.26M stored-search, 6 buckets, 2 layers, mirror-h, warm start from C, QAT, 20 epochs | in progress* | — | contact + bucketed candidate in progress |
-| `multipath_phase:512` Arm A2 | 504 / 512 | un-biased replay, warm start from A, QAT anneal, LR 1e-5 → 1e-7, 60 epochs | queued* | — | control annealing queued |
+| `multipath_phase:512` Arm A | 504 / 512 | 4.26M stored-search, warm start, QAT, 20 epochs | 0.92044* | 33.2% vs baseline (300 games, Elo -121.7) | local control completed |
+| `multipath_phase:512` Arm B | 504 / 512 | 4.26M stored-search, mirror-h, warm start, QAT, 20 epochs | 0.95141* | 30.3% vs baseline (300 games, Elo -144.4) | local ablation completed |
+| `multipath_phase_bucketed:512` Arm C | 504 / 512 | 4.26M stored-search, 6 buckets, 2 layers, mirror-h, warm start, QAT, 20 epochs | 0.94987* | 34.2% vs baseline (300 games, Elo -113.6) | local candidate completed |
+| `multipath_phase_deep:512` Arm D | 504 / 512 | 4.26M stored-search, 1 head, 2 layers, mirror-h, warm start, QAT, 20 epochs | 0.95029* | 34.8% vs baseline (300 games, Elo -108.8) | local ablation completed |
+| `multipath_phase_contact_bucketed:512` Arm E | 858 / 512 | 4.26M stored-search, 6 buckets, 2 layers, mirror-h, warm start from C, QAT, 20 epochs | 0.90771* | Val MAE 0.12023 | contact candidate completed, arena pending |
+| `multipath_phase:512` Arm A2 | 504 / 512 | un-biased replay, warm start from A, QAT anneal, LR 1e-5 → 1e-7, 60 epochs | in progress* | — | control annealing in progress |
 | `multipath_phase:512` Arm B2 | 504 / 512 | un-biased replay, mirror-h, warm start from B, QAT anneal, LR 1e-5 → 1e-7, 60 epochs | queued* | — | ablation annealing queued |
 | `multipath_phase_bucketed:512` Arm C2 | 504 / 512 | un-biased replay, mirror-h, 6 buckets, 2 layers, warm start from C, QAT anneal, 60 epochs | queued* | — | candidate annealing queued |
 | `multipath_phase_deep:512` Arm D2 | 504 / 512 | un-biased replay, mirror-h, 1 head, 2 layers, warm start from D, QAT anneal, 60 epochs | queued* | — | deep ablation annealing queued |
@@ -193,23 +193,31 @@ transition. These source changes do not alter the already-running process.
 
 ### NNUE experimental candidate training (active)
 
-The three-arm study on 4,262,204 canonical stored-search samples (3,411,166 train,
+The five-arm study on 4,262,204 canonical stored-search samples (3,411,166 train,
 851,038 validation) warm-started from the production `multipath-phase512-searchboost-100ep`
 checkpoint is underway:
 
 - Arm A (Control): `multipath_phase` without mirror. 20 epochs completed.
   Val loss: 0.92044, Policy KL: 0.62121, Value MAE: 0.13108.
-- Arm B (Ablation): `multipath_phase` with mirror augmentation. 20 epochs
-  in progress.
+  Arena match (300 games vs baseline): 33.2%, Elo -121.7.
+- Arm B (Ablation): `multipath_phase` with mirror augmentation. 20 epochs completed.
+  Val loss: 0.95141, Policy KL: 0.65112, Value MAE: 0.13537.
+  Arena match (300 games vs baseline): 30.3%, Elo -144.4.
 - Arm C (Candidate): `multipath_phase_bucketed` with mirror augmentation.
   20 epochs completed. Val loss: 0.94987, Policy KL: 0.64976, Value MAE:
   0.12874 (-0.0545 MAE drop from baseline; Bucket 1: 0.1205, Bucket 2: 0.1427,
-  Bucket 3: 0.1443).
-- Stage 2 Annealing (Recozimento): A2, B2, and C2 fine-tuning runs starting
-  from the respective Arm A, B, and C checkpoints. Uses reduced learning rate
+  Bucket 3: 0.1443). Arena match (300 games vs baseline): 34.2%, Elo -113.6.
+- Arm D (Deep ablation): `multipath_phase_deep` with mirror augmentation.
+  20 epochs completed. Val loss: 0.95029, Policy KL: 0.64993, Value MAE: 0.12956.
+  Arena match (300 games vs baseline): 34.8%, Elo -108.8.
+- Arm E (Contact candidate): `multipath_phase_contact_bucketed` with mirror augmentation.
+  20 epochs completed. Val loss: 0.90771, Policy KL: 0.61126, Value MAE: 0.12023
+  (Bucket 1: 0.1120, Bucket 2: 0.1333, Bucket 3: 0.1396). Arena match pending.
+- Stage 2 Annealing (Recozimento): A2 through E2 fine-tuning runs starting
+  from the respective Arm A, B, C, D, and E checkpoints. Uses reduced learning rate
   (`lr=1e-5`, `min_lr=1e-7`), slow trunk adaptation (`trunk_lr_scale=0.05`),
   cosine annealing schedule, and QAT to test whether simulated annealing
-  improves holdout loss and int8 quantization stability.
+  improves holdout loss and int8 quantization stability. Arm A2 is active on the local GPU.
 
 - Mirror augmentation: `training/mirror_augmentation.py` flips each training
   sample left to right with probability 0.5. The trainer flips the raw state and
