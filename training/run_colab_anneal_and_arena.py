@@ -10,7 +10,7 @@ Runs:
   6. Arm E2: multipath_phase_contact_bucketed anneal (60 epochs, mirror-h, warm-started from Arm E)
 
 Followed by:
-  - Arena matches (50 pairs = 100 games, 200 ms per move) of each candidate vs production baseline.
+  - Arena matches (150 pairs = 300 games, 200 ms per move) of each candidate vs production baseline.
 """
 from __future__ import annotations
 
@@ -36,7 +36,7 @@ CONFIG = {
     "data": "/content/dataset.npz",
     "runs_dir": "/content/drive/MyDrive/zquoridor_data/runs",
     "baseline_weights": str(ROOT / "data/nnue/nnue_weights_int8.bin"),
-    "arena_pairs": 50,
+    "arena_pairs": 150,
     "move_time_ms": 200,
     "arena_workers": 2,
     "device": "cuda",
@@ -299,7 +299,7 @@ def run_baseline_arena(config: dict):
         ("Arm E2 (Contact Anneal, 60ep)", base_dir / "arm_e2_anneal_60ep", "multipath_phase_contact_bucketed"),
     ]
 
-    openings_path = ROOT / "tools/external/openings_screen_v1.jsonl"
+    openings_path = ROOT / "tools/external/openings_600g_300pairs.jsonl"
     openings = run_benchmark._read_openings(openings_path, pairs, seed=20260920)
 
     print("\n" + "=" * 70)
