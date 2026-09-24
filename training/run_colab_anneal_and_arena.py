@@ -380,24 +380,26 @@ def run_baseline_arena(config: dict):
         summary_path.write_text(json.dumps(summary, indent=2) + "\n", encoding="utf-8")
         arena_results.append((name, summary))
 
-        score_pct = summary.get("score_percent", summary.get("score", 0.0) * 100)
-        print(f"Result for {name}: Score {score_pct:.1f}% ({summary.get('wins', 0)}W / {summary.get('draws', 0)}D / {summary.get('losses', 0)}L) in {elapsed:.1f}s")
+        score_pct = summary.get("score_pct", 0.0)
+        elo = summary.get("elo", 0.0)
+        bs = summary.get("paired_bootstrap_95") or {}
+        ci_str = f"[{bs.get('elo_low', 0.0):+.1f}, {bs.get('elo_high', 0.0):+.1f}]" if bs else ""
+        print(f"Result for {name}: Score {score_pct:.1f}% | Elo {elo:+.1f} {ci_str} in {elapsed:.1f}s")
 
     # Print Final Summary Table
     print("\n" + "=" * 80)
     print("FINAL CANDIDATE VS BASELINE ARENA SUMMARY")
     print("=" * 80)
-    header = f"{'Candidate Model':<35} | {'Games':<6} | {'Score %':<8} | {'Record (W-D-L)':<16} | {'Elo [95% CI]':<18}"
+    header = f"{'Candidate Model':<35} | {'Games':<6} | {'Score %':<8} | {'Elo [95% CI]':<20}"
     print(header)
     print("-" * len(header))
     for name, s in arena_results:
-        g = s.get("games", 0)
-        score = s.get("score_percent", s.get("score", 0.0) * 100)
-        rec = f"{s.get('wins', 0)}-{s.get('draws', 0)}-{s.get('losses', 0)}"
+        g = s.get("included_games", s.get("recorded_games", 0))
+        score = s.get("score_pct", 0.0)
         elo = s.get("elo", 0.0)
-        ci = s.get("elo_ci_95", [0.0, 0.0])
-        elo_str = f"{elo:+.1f} [{ci[0]:+.1f}, {ci[1]:+.1f}]" if ci else f"{elo:+.1f}"
-        print(f"{name:<35} | {g:<6} | {score:>6.1f}% | {rec:<16} | {elo_str:<18}")
+        bs = s.get("paired_bootstrap_95") or {}
+        elo_str = f"{elo:+.1f} [{bs.get('elo_low', 0.0):+.1f}, {bs.get('elo_high', 0.0):+.1f}]" if bs else f"{elo:+.1f}"
+        print(f"{name:<35} | {g:<6} | {score:>6.1f}% | {elo_str:<20}")
     print("=" * 80)
 
 
