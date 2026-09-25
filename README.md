@@ -1,4 +1,4 @@
-# Zquoridor 2.02
+# Zquoridor 2.03
 
 **[Play Zquoridor in your browser](https://gitzambrano.github.io/zquoridor/)**
 
@@ -15,6 +15,8 @@ or directly in the browser.
 - Value and policy guidance from a compact quantized NNUE.
 - Persistent tree reuse, transpositions, repetition handling, and opponent-root
   pondering.
+- Adaptive long-clock node scaling: volatile roots may expand to 96 nodes/ms with
+  a 1.28M-node ceiling; stable/non-volatile roots retain the 32 nodes/ms / 640k budget.
 - Fast wall-legality checks and exact pawn-race support when both players have
   no walls.
 - UCI-style protocol for external GUIs, benchmarks, and automation.
