@@ -91,6 +91,35 @@ void testAutomaticNodeBudget() {
 }
 
 // ---------------------------------------------------------------------
+// Adaptive node scaling: 2.03 production policy is volatile-only.
+// ---------------------------------------------------------------------
+void testAdaptiveNodeScalingPolicy() {
+    mcab::McabParams p;
+    p.nodeBudget = 20000;
+    p.autoNodeBudget = true;
+    p.autoNodeBudgetPerMs = 32;
+    p.autoNodeBudgetCeiling = 640000;
+    p.adaptiveNodeScalePerMs = 96;
+    p.adaptiveNodeScaleCeiling = 1280000;
+
+    assert(p.adaptiveNodeScaleMode == mcab::AdaptiveNodeScaleMode::VolatileOnly);
+    assert(mcab::effectiveNodeBudget(p, 10000) == 320000);
+    assert(mcab::effectiveAdaptiveNodeBudget(p, 10000) == 960000);
+    assert(mcab::effectiveAdaptiveNodeBudget(p, 30000) == 1280000);
+
+    auto vol = mcab::adaptiveRootClass(1.05, 0.00, 0.50);
+    auto unc = mcab::adaptiveRootClass(1.30, 0.01, 0.50);
+    auto normal = mcab::adaptiveRootClass(1.70, 0.01, 0.30);
+    assert(vol == mcab::AdaptiveRootClass::Volatile);
+    assert(unc == mcab::AdaptiveRootClass::Uncertain);
+    assert(normal == mcab::AdaptiveRootClass::Normal);
+    assert(mcab::adaptiveNodeScaleEligible(vol, p.adaptiveNodeScaleMode));
+    assert(!mcab::adaptiveNodeScaleEligible(unc, p.adaptiveNodeScaleMode));
+    assert(!mcab::adaptiveNodeScaleEligible(normal, p.adaptiveNodeScaleMode));
+    printf("[testAdaptiveNodeScalingPolicy] 2.03 volatile-only 96/1.28M policy OK\n");
+}
+
+// ---------------------------------------------------------------------
 // 1) Pool não estoura o orçamento configurado.
 // ---------------------------------------------------------------------
 void testPoolBudget() {
@@ -457,6 +486,7 @@ int main() {
     testScoreToQMatchesWinProb();
     testAdaptiveTimeFactor();
     testAutomaticNodeBudget();
+    testAdaptiveNodeScalingPolicy();
     testPoolBudget();
     testImmediateWinFastPath();
     testImmediateWinFastPathOtherPlayer();
