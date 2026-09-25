@@ -79,9 +79,9 @@ the network was never trained.
 | `multipath_phase_bucketed:512` Arm C | 504 / 512 | 4.26M stored-search, 6 buckets, 2 layers, mirror-h, warm start, QAT, 20 epochs | 0.94987* | 34.2% vs baseline (300 games, Elo -113.6) | local candidate completed |
 | `multipath_phase_deep:512` Arm D | 504 / 512 | 4.26M stored-search, 1 head, 2 layers, mirror-h, warm start, QAT, 20 epochs | 0.95029* | 34.8% vs baseline (300 games, Elo -108.8) | local ablation completed |
 | `multipath_phase_contact_bucketed:512` Arm E | 858 / 512 | 4.26M stored-search, 6 buckets, 2 layers, mirror-h, warm start from C, QAT, 20 epochs | 0.90771* | Val MAE 0.12023 | contact candidate completed, arena pending |
-| `multipath_phase:512` Arm A2 | 504 / 512 | un-biased replay, warm start from A, QAT anneal, LR 1e-5 → 1e-7, 60 epochs | in progress* | — | control annealing in progress |
-| `multipath_phase:512` Arm B2 | 504 / 512 | un-biased replay, mirror-h, warm start from B, QAT anneal, LR 1e-5 → 1e-7, 60 epochs | queued* | — | ablation annealing queued |
-| `multipath_phase_bucketed:512` Arm C2 | 504 / 512 | un-biased replay, mirror-h, 6 buckets, 2 layers, warm start from C, QAT anneal, 60 epochs | queued* | — | candidate annealing queued |
+| `multipath_phase:512` Arm A2 | 504 / 512 | un-biased replay, warm start from A, QAT anneal, LR 1e-5 → 1e-7, 60 epochs | 0.90447* | Val MAE 0.12686 (-3.2% vs A) | control annealing completed, arena pending |
+| `multipath_phase:512` Arm B2 | 504 / 512 | un-biased replay, mirror-h, warm start from B, QAT anneal, LR 1e-5 → 1e-7, 60 epochs | 0.93581* | Val MAE 0.13213 (-2.4% vs B) | ablation annealing completed, arena pending |
+| `multipath_phase_bucketed:512` Arm C2 | 504 / 512 | un-biased replay, mirror-h, 6 buckets, 2 layers, warm start from C, QAT anneal, 60 epochs | in progress* (0.93599*) | Val MAE 0.12577 | candidate annealing in progress (epoch 32/60) |
 | `multipath_phase_deep:512` Arm D2 | 504 / 512 | un-biased replay, mirror-h, 1 head, 2 layers, warm start from D, QAT anneal, 60 epochs | queued* | — | deep ablation annealing queued |
 | `multipath_phase_contact_bucketed:512` Arm E2 | 858 / 512 | un-biased replay, mirror-h, 6 buckets, 2 layers, warm start from E, QAT anneal, 60 epochs | queued* | — | contact candidate annealing queued |
 
@@ -217,7 +217,9 @@ checkpoint is underway:
   from the respective Arm A, B, C, D, and E checkpoints. Uses reduced learning rate
   (`lr=1e-5`, `min_lr=1e-7`), slow trunk adaptation (`trunk_lr_scale=0.05`),
   cosine annealing schedule, and QAT to test whether simulated annealing
-  improves holdout loss and int8 quantization stability. Arm A2 is active on the local GPU.
+  improves holdout loss and int8 quantization stability. Arm A2 (val loss: 0.90447,
+  val MAE: 0.12686) and Arm B2 (val loss: 0.93581, val MAE: 0.13213) completed 60 epochs.
+  Arm C2 is active on the local GPU (epoch 32 of 60, val loss: 0.93599).
 
 - Mirror augmentation: `training/mirror_augmentation.py` flips each training
   sample left to right with probability 0.5. The trainer flips the raw state and
