@@ -205,6 +205,20 @@ inline const char* backupModeName(BackupMode m) {
     return m == BackupMode::AvgBlend ? "avg" : "minimax";
 }
 
+enum class AdaptiveNodeScaleMode : uint8_t {
+    Off = 0,
+    VolatileOnly = 1,
+    UncertainOrVolatile = 2,
+};
+
+enum class AdaptiveRootClass : uint8_t {
+    Invalid = 0,
+    Volatile = 1,
+    Uncertain = 2,
+    Normal = 3,
+    Stable = 4,
+};
+
 // Estes são os valores de PRODUÇÃO: é aqui que mora o default de verdade.
 // Os blocos de CONFIG no topo de arena.cpp e selfplay_main.cpp são só listas
 // de override -- campo vazio (mcab::UNSET_*/Tri::Unset) cai no valor daqui.
@@ -235,6 +249,11 @@ struct McabParams {
     double adaptiveUncertainFactor = 1.25;
     double adaptiveVolatileFactor = 1.60;
     int adaptiveMinSimulations = 1500;
+    // 2.03: long-clock searches may unlock a larger node working set only
+    // for roots classified as volatile. Fixed movetime remains unchanged.
+    AdaptiveNodeScaleMode adaptiveNodeScaleMode = AdaptiveNodeScaleMode::VolatileOnly;
+    int adaptiveNodeScalePerMs = 96;
+    int adaptiveNodeScaleCeiling = 1280000;
     // 0 = folha avaliada só por nnueEvalInt no acumulador incremental, sem
     // searchLeaf e sem quiescência de muro. Era 4 (valor do plano); a Fase 8
     // mediu 4 como catastrófico a 200ms/lance e 0 como o único ponto que
@@ -331,17 +350,48 @@ struct McabParams {
     int endgameLeafDepth = 2;
 };
 
-inline int effectiveNodeBudget(const McabParams& params, int timeBudgetMs) {
+inline int effectiveNodeBudgetForRate(const McabParams& params, int timeBudgetMs,
+                                      int nodesPerMs, int nodeCeiling) {
     int budget = std::max(1, params.nodeBudget);
     if (!params.autoNodeBudget || timeBudgetMs <= 0 || params.nodeBudget <= 1)
         return budget;
 
     const long long scaled =
-        (long long)timeBudgetMs * (long long)std::max(1, params.autoNodeBudgetPerMs);
+        (long long)timeBudgetMs * (long long)std::max(1, nodesPerMs);
     const long long ceiling =
-        std::max<long long>(params.nodeBudget, params.autoNodeBudgetCeiling);
+        std::max<long long>(params.nodeBudget, nodeCeiling);
     return (int)std::min<long long>(
         std::max<long long>(params.nodeBudget, scaled), ceiling);
+}
+
+inline int effectiveNodeBudget(const McabParams& params, int timeBudgetMs) {
+    return effectiveNodeBudgetForRate(
+        params, timeBudgetMs, params.autoNodeBudgetPerMs, params.autoNodeBudgetCeiling);
+}
+
+inline int effectiveAdaptiveNodeBudget(const McabParams& params, int timeBudgetMs) {
+    return effectiveNodeBudgetForRate(
+        params, timeBudgetMs, params.adaptiveNodeScalePerMs, params.adaptiveNodeScaleCeiling);
+}
+
+inline AdaptiveRootClass adaptiveRootClass(double visitRatio, double qGap,
+                                           double stableFraction) {
+    if (stableFraction < 0.15 || visitRatio < 1.15 || qGap < -0.01)
+        return AdaptiveRootClass::Volatile;
+    if (visitRatio < 1.50 || qGap < 0.005)
+        return AdaptiveRootClass::Uncertain;
+    if (stableFraction >= 0.35 && visitRatio >= 2.0 && qGap >= 0.015)
+        return AdaptiveRootClass::Stable;
+    return AdaptiveRootClass::Normal;
+}
+
+inline bool adaptiveNodeScaleEligible(AdaptiveRootClass cls,
+                                      AdaptiveNodeScaleMode mode) {
+    if (mode == AdaptiveNodeScaleMode::VolatileOnly)
+        return cls == AdaptiveRootClass::Volatile;
+    if (mode == AdaptiveNodeScaleMode::UncertainOrVolatile)
+        return cls == AdaptiveRootClass::Volatile || cls == AdaptiveRootClass::Uncertain;
+    return false;
 }
 
 // Stockfish-inspired, but MCAB-specific, conversion from root uncertainty to
@@ -349,13 +399,12 @@ inline int effectiveNodeBudget(const McabParams& params, int timeBudgetMs) {
 // exposed as a pure function so regression tests can pin the classification.
 inline double adaptiveTimeFactor(double visitRatio, double qGap, double stableFraction,
                                  const McabParams& p) {
-    if (stableFraction < 0.15 || visitRatio < 1.15 || qGap < -0.01)
-        return p.adaptiveVolatileFactor;
-    if (visitRatio < 1.50 || qGap < 0.005)
-        return p.adaptiveUncertainFactor;
-    if (stableFraction >= 0.35 && visitRatio >= 2.0 && qGap >= 0.015)
-        return p.adaptiveStableFactor;
-    return 1.0;
+    switch (adaptiveRootClass(visitRatio, qGap, stableFraction)) {
+        case AdaptiveRootClass::Volatile:  return p.adaptiveVolatileFactor;
+        case AdaptiveRootClass::Uncertain: return p.adaptiveUncertainFactor;
+        case AdaptiveRootClass::Stable:    return p.adaptiveStableFactor;
+        default:                           return 1.0;
+    }
 }
 
 // Estatísticas agregadas de UMA chamada a chooseMoveMCAB (não confundir
@@ -383,6 +432,9 @@ struct McabStats {
     long long adaptiveLeaderChanges = 0;
     double adaptiveVisitRatio = 0.0;
     double adaptiveQGap = 0.0;
+    bool adaptiveNodeEscalated = false;
+    int adaptiveNodeFinalBudget = 0;
+    AdaptiveRootClass adaptiveNodeRootClass = AdaptiveRootClass::Invalid;
                                      // (ver evaluateLeaf). Muitas = leafDepth alto demais para o
                                      // controle de tempo em uso; a árvore fica cega nessas folhas.
 };
@@ -793,7 +845,13 @@ public:
         }
 
         int budget = effectiveNodeBudget(params, timeBudgetMs);
+        const int escalatedBudget =
+            params.adaptiveTime &&
+            params.adaptiveNodeScaleMode != AdaptiveNodeScaleMode::Off
+                ? std::max(budget, effectiveAdaptiveNodeBudget(params, timeBudgetMs))
+                : budget;
         mstats.effectiveNodeBudget = budget;
+        mstats.adaptiveNodeFinalBudget = budget;
         bool reused = false;
         // Seção 8.2: não reusar quando clearTTPerMove está ligado -- a
         // árvore depende de valores computados com aquela TT.
@@ -883,7 +941,7 @@ public:
         int adaptiveLeader = -1;
         long long adaptiveLeaderChangedMs = 0;
 
-        while (mstats.nodesExpanded < budget) {
+        while (true) {
             long long elapsedMs = 0;
             if (treeBudgetMs > 0) {
                 elapsedMs = std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -899,6 +957,8 @@ public:
                         double stableFraction =
                             (double)std::max<long long>(0, elapsedMs - adaptiveLeaderChangedMs) /
                             (double)std::max(1, optimumMs);
+                        AdaptiveRootClass rootClass = adaptiveRootClass(
+                            sig.visitRatio, sig.qGap, stableFraction);
                         double factor = adaptiveTimeFactor(
                             sig.visitRatio, sig.qGap, stableFraction, params);
                         int targetMs = std::clamp(
@@ -907,6 +967,15 @@ public:
                         mstats.adaptiveTargetMs = targetMs;
                         mstats.adaptiveVisitRatio = sig.visitRatio;
                         mstats.adaptiveQGap = sig.qGap;
+                        mstats.adaptiveNodeRootClass = rootClass;
+                        if (!mstats.adaptiveNodeEscalated &&
+                            escalatedBudget > budget &&
+                            adaptiveNodeScaleEligible(rootClass, params.adaptiveNodeScaleMode)) {
+                            budget = escalatedBudget;
+                            mstats.effectiveNodeBudget = budget;
+                            mstats.adaptiveNodeFinalBudget = budget;
+                            mstats.adaptiveNodeEscalated = true;
+                        }
                         if (elapsedMs >= targetMs) {
                             mstats.adaptiveTimeStop = true;
                             break;
@@ -914,6 +983,7 @@ public:
                     }
                 }
             }
+            if (mstats.nodesExpanded >= budget) break;
             if (pool[0].terminal) break;  // raiz já resolvida (ex.: vitória em 0 lances -- não deveria ocorrer)
             runSimulation(engine, stats, mstats);
 
