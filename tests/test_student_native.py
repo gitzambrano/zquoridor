@@ -22,11 +22,15 @@ def compile_probe(tmp_path, architecture):
     multipath = architecture in ("multipath", "multipath_phase", "multipath_phase_contact")
     phase = architecture in ("multipath_phase", "multipath_phase_contact")
     contact = architecture == "multipath_phase_contact"
+    buckets = 6 if "bucketed" in architecture else 1
+    depth = 2 if ("bucketed" in architecture or "deep" in architecture) else 1
     subprocess.run([compiler, "-std=c++17", "-O2", "-I" + str(ROOT / "src"),
                     f"-DZQ_NNUE_RACE_FEATURES={int(race)}",
                     f"-DZQ_NNUE_MULTIPATH_FEATURES={int(multipath)}",
                     f"-DZQ_NNUE_PHASE_FEATURES={int(phase)}",
                     f"-DZQ_NNUE_CONTACT_FEATURES={int(contact)}",
+                    f"-DZQ_NNUE_VALUE_BUCKETS={buckets}",
+                    f"-DZQ_NNUE_VALUE_DEPTH={depth}",
                     "-DZQ_NNUE_HIDDEN=512" if architecture in ("multipath_phase", "multipath_phase_contact") else "-DZQ_NNUE_HIDDEN=256",
                     str(ROOT / "tools/teacher/student_probe.cpp"), "-o", str(binary)], check=True)
     return binary

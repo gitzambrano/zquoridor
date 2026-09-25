@@ -48,9 +48,9 @@ from teachers.claustrophobia_inference_worker import infer
 from tools.external.bot_setup import ensure_bot
 
 CONFIG = {
-    "source": str(ROOT / "data/selfplay_canonical_v3"),
-    "out_dir": str(ROOT / "data/teaching/replay"),
-    "max_positions": 50000,
+    "source": str(ROOT / "data/selfplay_canonical_v3/contact-4m-50ms"),
+    "out_dir": str(ROOT / "data/teaching/replay_clean_stored"),
+    "max_positions": 5000000,
     "seed": 20260914,
     "val_fraction": 0.2,
     "chunk_size": 8192,
@@ -65,9 +65,9 @@ CONFIG = {
     "resume": True,
     # Legacy inference remains the default.  stored_search consumes aligned
     # V3/.meta pairs and never invokes either teacher.
-    "mode": "inference",
+    "mode": "stored_search",
     "stored_gamma": 0.99,
-    "stored_outcome_weight": 0.5,
+    "stored_outcome_weight": 0.0,
 }
 STATE_FIELDS = ("own_pawn", "opp_pawn", "walls_h", "walls_v", "walls_left_own", "walls_left_opp")
 POLICY_DIM = 209

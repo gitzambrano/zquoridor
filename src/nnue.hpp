@@ -87,10 +87,10 @@ inline int wallsLeftBucket(int n) {
 #define ZQ_NNUE_HIDDEN 512
 #endif
 #ifndef ZQ_NNUE_VALUE_BUCKETS
-#define ZQ_NNUE_VALUE_BUCKETS 1
+#define ZQ_NNUE_VALUE_BUCKETS 6
 #endif
 #ifndef ZQ_NNUE_VALUE_DEPTH
-#define ZQ_NNUE_VALUE_DEPTH 1
+#define ZQ_NNUE_VALUE_DEPTH 2
 #endif
 constexpr int VALUE_BUCKETS = ZQ_NNUE_VALUE_BUCKETS;
 constexpr int VALUE_DEPTH = ZQ_NNUE_VALUE_DEPTH;

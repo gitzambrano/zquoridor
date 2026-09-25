@@ -59,10 +59,10 @@ CONFIG = {
     "total_target": 8_516_655, "central_target": 6_016_655,
     "broad_target": 2_500_000, "family_floor": DEFAULT_FAMILY_FLOOR,
     "games_per_shard": 512, "seed_rows_per_shard": 10_000, "time_ms": 50,
-    "max_plies": 140, "seed": 20260921, "fine_tune_pid": None,
-    "threads_during_fine_tune": 14, "threads_after_fine_tune": 14,
-    "fine_tune_threads": 0, "cpu_thread_limit": 16, "reliability": 2.0,
-    "dry_run": True,
+    "max_plies": 140, "seed": 20260921, "fine_tune_pid": 28796,
+    "threads_during_fine_tune": 10, "threads_after_fine_tune": 14,
+    "fine_tune_threads": 4, "cpu_thread_limit": 16, "reliability": 2.0,
+    "dry_run": False,
 }
 META_DTYPE = np.dtype([
     ("game", "<u8"), ("root", "<f4"), ("plies", "<u2"), ("length", "<u2"),
@@ -283,8 +283,17 @@ class OutputLock:
 
 def _atomic_json(path: Path, value: object) -> None:
     temporary = path.with_suffix(path.suffix + ".tmp")
-    temporary.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    temporary.replace(path)
+    with temporary.open("w", encoding="utf-8") as stream:
+        json.dump(value, stream)
+        stream.write("\n")
+    for attempt in range(5):
+        try:
+            temporary.replace(path)
+            return
+        except PermissionError:
+            if attempt == 4:
+                raise
+            time.sleep(0.1 * (attempt + 1))
 
 
 def _read_manifest(out_dir: Path) -> dict:
@@ -518,6 +527,13 @@ def reconcile_store(out_dir: str | Path, accepted_shards: Iterable[Mapping[str, 
     """Rebuild the SQLite index from accepted shards before a resumed run."""
     root = Path(out_dir)
     final_path = root / "states.sqlite"
+    if final_path.exists():
+        existing = UniqueStateStore(final_path)
+        existing_count = existing.unique_count
+        manifest_count = sum(int(entry.get("unique_records", entry.get("records", 0))) for entry in accepted_shards)
+        if existing_count >= manifest_count and existing_count > 0:
+            return existing
+        existing.close()
     temporary = root / "states.reconcile.sqlite"
     if temporary.exists():
         temporary.unlink()

@@ -1,4 +1,4 @@
-# Zquoridor 2.03
+# Zquoridor 2.10
 
 **[Play Zquoridor in your browser](https://gitzambrano.github.io/zquoridor/)**
 
@@ -12,7 +12,8 @@ or directly in the browser.
 
 - Hybrid PUCT-guided MCTS/MCGS graph search with alpha-beta support for tactical
   and endgame positions.
-- Value and policy guidance from a compact quantized NNUE.
+- Multi-bucketed value and policy guidance from a compact quantized NNUE
+  (`multipath_phase_bucketed:512` with 6 wall-count value heads and 2-layer deep MLPs).
 - Persistent tree reuse, transpositions, repetition handling, and opponent-root
   pondering.
 - Adaptive long-clock node scaling: volatile roots may expand to 96 nodes/ms with

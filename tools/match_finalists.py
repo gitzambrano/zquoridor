@@ -16,18 +16,18 @@ from tools import run_benchmark
 from tools.external import local_arena
 
 CONFIG = {
-    "engine1_name": "race512-search10-ft",
-    "engine1_executable": str(ROOT / "results" / "experiments" / "race512-search10-ft-s20260917" / "zquoridor.exe"),
-    "engine1_nnue": str(ROOT / "results" / "experiments" / "race512-search10-ft-s20260917" / "student_int8.bin"),
-    "engine2_name": "base512-search10-ft",
-    "engine2_executable": str(ROOT / "results" / "experiments" / "base512-search10-ft-s20260917" / "zquoridor.exe"),
-    "engine2_nnue": str(ROOT / "results" / "experiments" / "base512-search10-ft-s20260917" / "student_int8.bin"),
+    "engine1_name": "multipath_unified_champion",
+    "engine1_executable": str(ROOT / "results" / "experiments" / "multipath_unified_champion" / "zquoridor.exe"),
+    "engine1_nnue": str(ROOT / "results" / "experiments" / "multipath_unified_champion" / "student_int8.bin"),
+    "engine2_name": "production_baseline",
+    "engine2_executable": str(ROOT / "results" / "experiments" / "multipath-phase512-searchboost-100ep" / "zquoridor.exe"),
+    "engine2_nnue": str(ROOT / "data" / "nnue" / "nnue_weights_int8.bin"),
     "pairs": 100,
     "move_time_ms": 200,
-    "workers": 2,
+    "workers": 4,
     "seed": 20260920,
     "openings": str(ROOT / "tools" / "external" / "openings_confirmation_v1.jsonl"),
-    "output": str(ROOT / "results" / "benchmarks" / "finalists-h2h-race512-vs-base512-200ms"),
+    "output": str(ROOT / "results" / "benchmarks" / "finalists-h2h-multipath_unified_champion-vs-baseline-200ms"),
     "bootstrap": 20000,
 }
 
