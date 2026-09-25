@@ -2462,8 +2462,8 @@ $('btnNew').onclick = () => modalNewGame();
 $('lvlChip').onclick = () => modalNewGame();
 $('btnSettings').onclick = () => modalSettings();
 $('logo').onclick = () => openModal(`<h3>ABOUT <span class="x" data-close>&#10005;</span></h3>
-  <p style="line-height:1.7;color:var(--txt2)"><b>Zquoridor 2.02</b> uses a
-  504-input, 512-hidden NNUE with value and policy heads inside a hybrid
+  <p style="line-height:1.7;color:var(--txt2)"><b>Zquoridor 2.10</b> uses a
+  504-input, 512-hidden NNUE with 6-bucketed value heads and policy heads inside a hybrid
   PUCT/MCGS search with alpha-beta support. Place walls to slow your opponent;
   reach the far row to win.</p>`);
 document.querySelectorAll('.tab[data-pane]').forEach(t => t.onclick = () => switchPane(t.dataset.pane));
