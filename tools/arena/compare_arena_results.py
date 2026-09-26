@@ -12,6 +12,10 @@ from pathlib import Path
 import sys
 
 ROOT = Path(__file__).resolve().parents[2]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from tools.external import local_arena
 
 CONFIG = {
     "eval_dir": str(ROOT / "results" / "benchmarks" / "colab_eval"),
@@ -42,6 +46,21 @@ def load_summary(path: Path) -> dict | None:
         return None
 
 
+def load_games(path: Path) -> list[dict]:
+    """Read games.jsonl if available."""
+    target = path / "games.jsonl"
+    if not target.is_file():
+        return []
+    rows = []
+    for line in target.read_text(encoding="utf-8").splitlines():
+        if line.strip():
+            try:
+                rows.append(json.loads(line))
+            except Exception:
+                pass
+    return rows
+
+
 def format_row(
     label: str,
     opponent: str,
@@ -50,16 +69,28 @@ def format_row(
     """Format single result row."""
     if not summary:
         return f"| {label:25s} | {opponent:15s} | Pending / No data |"
-    games = summary.get("games", 0)
+    games = summary.get("games") or summary.get("included_games") or summary.get("recorded_games", 0)
     score = summary.get("score_pct", 0.0)
     elo = summary.get("elo", 0.0)
-    ci = summary.get("elo_ci_95", [0.0, 0.0])
-    wins = summary.get("wins", 0)
-    losses = summary.get("losses", 0)
-    draws = summary.get("draws", 0)
+    ci = summary.get("elo_ci_95")
+    if not ci and "paired_bootstrap_95" in summary:
+        b = summary["paired_bootstrap_95"]
+        ci = [b.get("elo_low", 0.0), b.get("elo_high", 0.0)]
+    if not ci:
+        ci = [0.0, 0.0]
+    wins = summary.get("wins")
+    losses = summary.get("losses")
+    draws = summary.get("draws")
+    if wins is None and "complete_pairs" in summary:
+        score_str = f"Score: {score:5.1f}%"
+    else:
+        wins = wins or 0
+        losses = losses or 0
+        draws = draws or 0
+        score_str = f"{wins:3d}W - {draws:2d}D - {losses:3d}L ({score:5.1f}%)"
     return (
         f"| {label:25s} | {opponent:15s} | {games:5d} | "
-        f"{wins:3d}W - {draws:2d}D - {losses:3d}L ({score:5.1f}%) | "
+        f"{score_str:25s} | "
         f"{elo:+6.1f} [{ci[0]:+6.1f}, {ci[1]:+6.1f}] |"
     )
 
@@ -74,11 +105,26 @@ def compare_battery(base_dir: Path) -> None:
     print(f"Directory: {base_dir}\n")
 
     # Direct Head-to-Head
-    h2h_sum = load_summary(base_dir / "main")
+    h2h_gen = load_summary(base_dir / "main")
+    h2h_snd = load_summary(base_dir / "main_sound")
+    games_gen = load_games(base_dir / "main")
+    games_snd = load_games(base_dir / "main_sound")
+
     print("### Direct Head-to-Head (Candidate vs Baseline)")
-    print("| Match                     | Opponent        | Games | Score                   | Elo [95% CI]         |")
-    print("| :------------------------ | :-------------- | ----: | :---------------------- | :------------------- |")
-    print(format_row("Candidate (Direct H2H)", "Main Baseline", h2h_sum))
+    print("| Match                     | Opponent        | Games | Score                     | Elo [95% CI]         |")
+    print("| :------------------------ | :-------------- | ----: | :------------------------ | :------------------- |")
+    print(format_row("Candidate (General Book)", "Main Baseline", h2h_gen))
+    if h2h_snd or games_snd:
+        print(format_row("Candidate (Sound Book)", "Main Baseline", h2h_snd))
+    if games_gen and games_snd:
+        # Re-index sound book openings with an offset to avoid collisions in paired bootstrap
+        offset_games = []
+        for g in games_snd:
+            cg = dict(g)
+            cg["opening_index"] = int(cg.get("opening_index", 0)) + 100000
+            offset_games.append(cg)
+        combined_sum = local_arena.summarize_pairs(games_gen + offset_games, bootstrap=10000, seed=20260926)
+        print(format_row("Candidate (Combined 800g)", "Main Baseline", combined_sum))
     print()
 
     # External Opponents
