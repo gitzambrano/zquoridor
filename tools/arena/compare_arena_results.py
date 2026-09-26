@@ -35,13 +35,19 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def load_summary(path: Path) -> dict | None:
-    """Read summary.json if available."""
+def load_summary(path: Path, opponent: str | None = None) -> dict | None:
+    """Read summary.json if available, extracting bot summary if nested."""
     target = path / "summary.json"
     if not target.is_file():
         return None
     try:
-        return json.loads(target.read_text(encoding="utf-8"))
+        data = json.loads(target.read_text(encoding="utf-8"))
+        if "summaries" in data and isinstance(data["summaries"], dict):
+            if opponent and opponent in data["summaries"]:
+                return data["summaries"][opponent]
+            if len(data["summaries"]) == 1:
+                return next(iter(data["summaries"].values()))
+        return data
     except Exception:
         return None
 
@@ -133,8 +139,8 @@ def compare_battery(base_dir: Path) -> None:
     print("| :------------------------ | :-------------- | ----: | :---------------------- | :------------------- |")
 
     for opp in ["titanium", "claustrophobia"]:
-        cand_sum = load_summary(base_dir / opp)
-        base_sum = load_summary(base_dir / f"baseline_vs_{opp}")
+        cand_sum = load_summary(base_dir / opp, opp)
+        base_sum = load_summary(base_dir / f"baseline_vs_{opp}", opp)
 
         print(format_row(f"Candidate vs {opp.capitalize()}", opp.capitalize(), cand_sum))
         print(format_row(f"Baseline vs {opp.capitalize()}", opp.capitalize(), base_sum))
