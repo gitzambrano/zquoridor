@@ -426,3 +426,32 @@ volatile. Test volatile-only and uncertain-or-volatile escalation separately.
 The escalation must be disabled for fixed-movetime/self-play so the 200-ms
 production path remains bit-for-bit unchanged unless a dedicated test enables
 it. Promotion still requires gates versus both frozen main and Claustrophobia.
+
+#### 2026-09-26 Colab paired arena confirmation & 15M self-play launch
+
+A full 800-game paired external battery evaluated candidate architecture
+`multipath_contact_bucketed_unified` (858 features, 6 buckets, 2-layer MLP)
+against production baseline `multipath_phase_bucketed` (`data/nnue/nnue_weights_int8.bin`):
+
+- **vs Titanium (400 paired games at 200 ms/move)**:
+  - Candidate: 61.88% score, +84.1 Elo, 95% CI [+49.8, +120.1].
+  - Baseline: 70.25% score, +149.3 Elo, 95% CI [+114.3, +186.2].
+  - Delta: -8.37% score, -65.2 Elo. Baseline is decisively superior.
+- **vs Claustrophobia (400 paired games at 200 ms/move)**:
+  - Candidate: 40.625% score, -65.92 Elo, 95% CI [-99.01, -33.98].
+  - Baseline: 40.750% score, -65.02 Elo, 95% CI [-99.01, -32.23].
+  - Delta: -0.125% score, -0.90 Elo. Statistical parity.
+- **Root cause analysis**:
+  - Accumulator overhead (858 features vs 504) and deeper MLP evaluation
+    reduced search speed (NPS) by 25-35%. At fixed 200 ms clock, the candidate
+    searched 1-2 plies shallower than the baseline, causing significant Elo loss
+    in tactical bifurcation nodes against alpha-beta engines.
+  - Candidate architecture rejected for promotion.
+- **15M position self-play generation launch**:
+  - Cancelled H2H early to allocate resources to self-play generation.
+  - Deployed `tools/selfplay/run_colab_worker.py` on Google Colab with the winning
+    baseline network (`nnue_weights_int8.bin`) targeting 15 million positions.
+  - Settings: 100 ms/move, 2 threads, 250 games/chunk, Monte Carlo parameters
+    (`mc_temp_opening=0.35`, `mc_temp_decay_plies=45`, `mc_temp_end=0.12`),
+    persisting directly to Google Drive (`selfplay_15m`).
+
