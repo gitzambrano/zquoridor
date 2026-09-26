@@ -39,6 +39,7 @@ campaigns.
 | Train one network | `training/run_experiment.py` | one `dataset.npz` | float/int8 weights, manifest, matching executable | QAT and resume are configured here. |
 | Train an architecture matrix | `training/run_architecture_matrix.py` | one dataset and matrix settings | one experiment directory per candidate | Auxiliary batch wrapper; use only when its matrix matches the experiment. |
 | Complete campaign | `training/run_campaign.py` | configuration, data and optional teaching | data, candidates and arenas | Generic orchestration for a reproducible experiment. |
+| Resilient remote/Colab self-play | `tools/selfplay/run_colab_worker.py` | seed openings, executable, NNUE | chunked V3 shards and metadata in Google Drive | Auto-resumes from existing Drive shards, unique worker seeds. |
 | Historical all-in-one cycle | `training/strong_cycle.py` | generation settings | self-play, replay, training and arena output | Legacy orchestration. Do not use for a new campaign until it is migrated to the same `CONFIG` contract. |
 
 ## Self-play transitions and provenance
