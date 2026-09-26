@@ -86,13 +86,11 @@ results/**
 !results/experiments/margin_regime512-weakness-cr60ep/config.json
 !results/experiments/margin_regime512-weakness-cr60ep/train_report.json
 !results/experiments/margin_regime512-weakness-cr60ep/build_manifest.json
-!results/experiments/margin_regime512-weakness-cr60ep/
-!results/experiments/margin_regime512-weakness-cr60ep/student.bin
-!results/experiments/margin_regime512-weakness-cr60ep/student_int8.bin
-!results/experiments/margin_regime512-weakness-cr60ep/student.architecture.json
-!results/experiments/margin_regime512-weakness-cr60ep/config.json
-!results/experiments/margin_regime512-weakness-cr60ep/train_report.json
-!results/experiments/margin_regime512-weakness-cr60ep/build_manifest.json
+!results/experiments/multipath_contact_bucketed_unified/
+!results/experiments/multipath_contact_bucketed_unified/student_int8.bin
+!results/experiments/multipath_contact_bucketed_unified/student.architecture.json
+!results/experiments/multipath_contact_bucketed_unified/config.json
+!results/experiments/multipath_contact_bucketed_unified/train_report.json
 
 .pytest_cache/
 # Internal agent workflow state; never version project documentation here.

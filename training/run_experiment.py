@@ -32,11 +32,11 @@ except ImportError:  # Direct execution from the training directory.
 ROOT = Path(__file__).resolve().parents[1]
 CONFIG = {
     "data": "data/teaching/multipath_unified_clean_15m/dataset.npz",
-    "out_dir": "results/experiments/multipath_unified_champion",
-    "architecture": "multipath_phase_bucketed",
+    "out_dir": "results/experiments/multipath_contact_bucketed_unified",
+    "architecture": "multipath_phase_contact_bucketed",
     "hidden": 512,
-    "init_from": "results/experiments/multipath-phase512-searchboost-100ep/student.bin",
-    "init_architecture": "multipath_phase",
+    "init_from": "results/experiments/multipath_unified_champion/student.bin",
+    "init_architecture": "multipath_phase_bucketed",
     "init_hidden": 512,
     "from_scratch": False,
     "qat": True,
