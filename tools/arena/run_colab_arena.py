@@ -242,14 +242,16 @@ def run_vs_main(config: dict, candidate_exe: Path, out_dir: Path) -> dict:
                 done_games += 1
 
                 # Format live stats
-                side_str = "White" if row["zq_player"] == 0 else "Black"
-                status_str = "WIN" if row["zq_won"] else ("DRAW" if row["winner"] is None else "LOSS")
+                side_str = "White" if row.get("zq_player") == 0 else "Black"
+                res = float(row.get("result", 0.0))
+                status_str = "WIN" if res == 1.0 else ("DRAW" if res == 0.5 else "LOSS")
                 cand_score = sum(
-                    1.0 if r.get("zq_won") else (0.5 if r.get("winner") is None else 0.0)
+                    float(r.get("result", 0.0))
                     for r in latest.values()
+                    if r.get("status") == "ok"
                 )
                 print(
-                    f"[{done_games}/{total_games}] Opening {row['opening_index']:3d} ({side_str:5s}): "
+                    f"[{done_games}/{total_games}] Opening {int(row.get('opening_index', 0)):3d} ({side_str:5s}): "
                     f"Candidate {status_str:4s} ({row.get('plies', 0):2d} plies) | "
                     f"Candidate: {cand_score:.1f}/{done_games} ({cand_score/done_games*100:5.1f}%)",
                     flush=True,
