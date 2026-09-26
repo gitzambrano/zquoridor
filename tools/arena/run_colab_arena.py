@@ -25,8 +25,9 @@ from tools.external import local_arena
 
 # Top-level configuration following repository standards.
 CONFIG = {
-    "opponent": "main",  # choices: "main", "titanium", "claustrophobia"
-    "pairs": 200,        # 200 pairs = 400 paired games
+    "model": "candidate",  # choices: "candidate", "baseline"
+    "opponent": "main",    # choices: "main", "titanium", "claustrophobia"
+    "pairs": 200,          # 200 pairs = 400 paired games
     "move_time_ms": 200,
     "workers": 2,
     "seed": 20260926,
@@ -37,7 +38,7 @@ CONFIG = {
     "candidate_arch": "multipath_phase_contact_bucketed",
     "baseline_weights": str(ROOT / "data" / "nnue" / "nnue_weights_int8.bin"),
     "baseline_arch": "multipath_phase_bucketed",
-    "output_dir": None,  # auto-detected (Drive or local)
+    "output_dir": None,    # auto-detected (Drive or local)
     "bootstrap": 20000,
 }
 
@@ -45,6 +46,12 @@ CONFIG = {
 def build_parser() -> argparse.ArgumentParser:
     """Build command-line interface overriding CONFIG."""
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--model",
+        choices=("candidate", "baseline"),
+        default=CONFIG["model"],
+        help="Player model to evaluate (candidate, baseline).",
+    )
     parser.add_argument(
         "--opponent",
         choices=("main", "titanium", "claustrophobia"),
@@ -96,16 +103,17 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def detect_output_dir(opponent: str, override: str | None) -> Path:
+def detect_output_dir(opponent: str, override: str | None, model: str = "candidate") -> Path:
     """Resolve destination directory prioritizing Google Drive when present."""
     if override:
         path = Path(override).resolve()
     else:
         drive_dir = Path("/content/drive/MyDrive/zquoridor_data/arena_candidate_eval")
+        sub = f"{model}_vs_{opponent}" if model != "candidate" else opponent
         if drive_dir.parent.is_dir():
-            path = drive_dir / opponent
+            path = drive_dir / sub
         else:
-            path = ROOT / "results" / "benchmarks" / "colab_eval" / opponent
+            path = ROOT / "results" / "benchmarks" / "colab_eval" / sub
     path.mkdir(parents=True, exist_ok=True)
     return path
 
@@ -256,10 +264,16 @@ def run_vs_main(config: dict, candidate_exe: Path, out_dir: Path) -> dict:
     return summary
 
 
-def run_vs_external(config: dict, candidate_exe: Path, out_dir: Path, bot_name: str) -> dict:
-    """Run candidate vs external reference bot (Titanium or Claustrophobia)."""
+def run_vs_external(
+    config: dict,
+    player_name: str,
+    player_exe: Path,
+    player_weights: Path,
+    out_dir: Path,
+    bot_name: str,
+) -> dict:
+    """Run player (candidate or baseline) vs external reference bot (Titanium or Claustrophobia)."""
     openings_path = Path(config["openings"]).resolve()
-    candidate_weights = Path(config["candidate_weights"]).resolve()
 
     bench_config = dict(
         run_benchmark.CONFIG,
@@ -271,8 +285,8 @@ def run_vs_external(config: dict, candidate_exe: Path, out_dir: Path, bot_name: 
         output=str(out_dir),
         resume=True,
         auto_setup=True,
-        zq_executable=str(candidate_exe),
-        nnue=str(candidate_weights),
+        zq_executable=str(player_exe),
+        nnue=str(player_weights),
         zq_move_time_ms=int(config["move_time_ms"]),
         titanium_move_time_ms=int(config["move_time_ms"]),
         claustrophobia_move_time_ms=int(config["move_time_ms"]),
@@ -281,9 +295,9 @@ def run_vs_external(config: dict, candidate_exe: Path, out_dir: Path, bot_name: 
     )
 
     print("\n" + "=" * 65, flush=True)
-    print(f"MATCH: Candidate vs {bot_name.capitalize()}", flush=True)
+    print(f"MATCH: {player_name.capitalize()} vs {bot_name.capitalize()}", flush=True)
     print(f"Pairs: {config['pairs']} ({config['pairs']*2} games) | Time: {config['move_time_ms']} ms/move", flush=True)
-    print(f"Candidate: {candidate_exe.name} | Weights: {candidate_weights.name}", flush=True)
+    print(f"Engine:    {player_exe.name} | Weights: {player_weights.name}", flush=True)
     print(f"Output:    {out_dir}", flush=True)
     print("=" * 65 + "\n", flush=True)
 
@@ -301,18 +315,28 @@ def main(argv: list[str] | None = None) -> int:
         if val is not None:
             config[key] = val
 
-    out_dir = detect_output_dir(config["opponent"], config["output_dir"])
+    model_name = config.get("model", "candidate").lower()
+    out_dir = detect_output_dir(config["opponent"], config["output_dir"], model_name)
 
-    # 1. Compile candidate executable
-    candidate_exe = ensure_executable("candidate_zquoridor", config["candidate_arch"])
+    # 1. Compile and select player executable and weights
+    if model_name == "baseline":
+        player_label = "Baseline"
+        player_exe = ensure_executable("baseline_zquoridor", config["baseline_arch"])
+        player_weights = Path(config["baseline_weights"]).resolve()
+    else:
+        player_label = "Candidate"
+        player_exe = ensure_executable("candidate_zquoridor", config["candidate_arch"])
+        player_weights = Path(config["candidate_weights"]).resolve()
 
     # 2. Execute match based on chosen opponent
     t0 = time.time()
     opponent = config["opponent"]
     if opponent == "main":
-        summary = run_vs_main(config, candidate_exe, out_dir)
+        if model_name == "baseline":
+            raise ValueError("Cannot run baseline vs main (baseline vs baseline). Use --model candidate.")
+        summary = run_vs_main(config, player_exe, out_dir)
     elif opponent in ("titanium", "claustrophobia"):
-        summary = run_vs_external(config, candidate_exe, out_dir, opponent)
+        summary = run_vs_external(config, player_label, player_exe, player_weights, out_dir, opponent)
     else:
         raise ValueError(f"Unsupported opponent: {opponent}")
 
@@ -328,10 +352,10 @@ def main(argv: list[str] | None = None) -> int:
     total = summary.get("games", 0)
 
     print("\n" + "=" * 65, flush=True)
-    print(f"FINAL RESULT: Candidate vs {opponent.upper()}", flush=True)
+    print(f"FINAL RESULT: {player_label} vs {opponent.upper()}", flush=True)
     print(f"Games: {total} | Time elapsed: {elapsed:.1f}s ({elapsed/60:.1f} min)", flush=True)
     print(f"Score: {score:.2f}% | Elo: {elo:+.1f} [95% CI: {ci[0]:+.1f} to {ci[1]:+.1f}]", flush=True)
-    print(f"Record (Candidate): {wins} Wins, {losses} Losses, {draws} Draws", flush=True)
+    print(f"Record ({player_label}): {wins} Wins, {losses} Losses, {draws} Draws", flush=True)
     print(f"Results saved to: {out_dir}", flush=True)
     print("=" * 65 + "\n", flush=True)
     return 0
