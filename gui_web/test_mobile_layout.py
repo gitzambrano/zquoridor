@@ -183,6 +183,47 @@ def main():
                     full_page=True,
                 )
 
+                # Analysis on mobile must keep the game surface visible. The
+                # lower workspace may replace play controls/log, never the
+                # board or either player strip.
+                page.click("#tabBar .tab[data-pane='anPane']")
+                page.wait_for_timeout(250)
+                analysis = page.evaluate("""() => {
+                  const q=s=>document.querySelector(s);
+                  const rect=el=>{const r=el.getBoundingClientRect();return {
+                    left:r.left,right:r.right,top:r.top,bottom:r.bottom,
+                    width:r.width,height:r.height};};
+                  const b=rect(q('#board')), p=rect(q('#sidePanel'));
+                  const t=rect(q('#hudTop')), bot=rect(q('#hudBottom'));
+                  const tabs=rect(q('#tabBar'));
+                  const hit=document.elementFromPoint(
+                    b.left+b.width/2, b.top+b.height/2);
+                  return {
+                    board:b,panel:p,top:t,bottom:bot,tabs,
+                    panelVisible:getComputedStyle(q('#sidePanel')).display !== 'none',
+                    boardHit:hit ? hit.id : '',
+                  };
+                }""")
+                if not analysis["panelVisible"]:
+                    fail("analysis workspace did not open", analysis)
+                if abs(analysis["board"]["width"] - width) > 1.5:
+                    fail("analysis shrank mobile board", analysis)
+                if analysis["panel"]["top"] < analysis["bottom"]["bottom"] - 0.5:
+                    fail("analysis covers lower HUD", analysis)
+                if analysis["panel"]["top"] < analysis["board"]["bottom"] - 0.5:
+                    fail("analysis covers board", analysis)
+                if analysis["panel"]["bottom"] > analysis["tabs"]["top"] + 0.5:
+                    fail("analysis runs under tab bar", analysis)
+                if analysis["boardHit"] != "board":
+                    fail("analysis intercepts board surface", analysis)
+
+                page.screenshot(
+                    path=str(shots / f"{width}x{COMPACT_HEIGHTS[width]}-analysis.png"),
+                    full_page=True,
+                )
+                page.click("#tabBar .tab[data-pane='playPane']")
+                page.wait_for_timeout(150)
+
                 # Deliberate H-button drag to a known legal central slot.
                 n0 = page.evaluate("window.__w.plyCount()")
                 target = page.evaluate("""() => {
