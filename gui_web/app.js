@@ -765,6 +765,7 @@ let armedO = 0;            // last used orientation
 let forcedO = null;        // orientation forced by the H / V buttons or keys
 let dragPtr = null;
 let dragFrom = null;
+let dragFromDock = false;
 let forcedTimer = null;
 // Pawn drag: press your own pawn and pull it onto a legal destination.
 // Tap to select and tap the destination keeps working; a press that does not
@@ -782,7 +783,7 @@ function releaseForced() {
   hideLegalSlots();
 }
 function clearGhost() {
-  wallState = 'IDLE'; dragPtr = null; dragFrom = null; kbWall = null;
+  wallState = 'IDLE'; dragPtr = null; dragFrom = null; dragFromDock = false; kbWall = null;
   B.ghost = null; B.ghostFrom = null;
   pawnDrag = null;
   if (B.setDragPawn) B.setDragPawn(null);
@@ -1036,6 +1037,7 @@ function onBoardPointerDown(ev) {
     return;
   }
   armedO = forcedO != null ? forcedO : hit.o;
+  dragFromDock = false;
   wallState = 'DRAGGING'; dragPtr = ev.pointerId; dragFrom = pt;
   try { B.cv.setPointerCapture(ev.pointerId); } catch (e) { /* no capture: still works */ }
   snapGhost(pt.x, pt.y);
@@ -1074,7 +1076,12 @@ function onBoardPointerUp(ev) {
   if (wallState !== 'DRAGGING' || ev.pointerId !== dragPtr) return;
   const gh = B.ghost;
   if (gh && (gh.state === 'ok' || gh.state === 'assisted')) {
-    if (confirmOn()) { gh.state = 'pending'; wallState = 'PENDING'; showConfirmChip(gh); B.render(); return; }
+    // Releasing a wall that was deliberately dragged from H/V is already an
+    // explicit confirmation. Touch confirmation remains available for tap /
+    // arm placement, where an accidental board touch is still plausible.
+    if (!dragFromDock && confirmOn()) {
+      gh.state = 'pending'; wallState = 'PENDING'; showConfirmChip(gh); B.render(); return;
+    }
     commitGhost(gh);
   } else {
     if (gh && gh.state === 'bad') { shake(); toast('warn', $('status').textContent); }
@@ -1124,7 +1131,8 @@ for (const pair of [['wallH', 0], ['wallV', 1]]) {
          performance.now() - el._downAt > 150)) el._dragging = true;
     if (el._dragging && wallState !== 'DRAGGING') {
       if ($(pair[0]).classList.contains('off')) return;
-      armedO = o; wallState = 'DRAGGING'; dragPtr = ev.pointerId; dragFrom = null;
+      armedO = o; dragFromDock = true;
+      wallState = 'DRAGGING'; dragPtr = ev.pointerId; dragFrom = null;
     }
     if (wallState === 'DRAGGING' && ev.pointerId === dragPtr) {
       const br = B.cv.getBoundingClientRect();
