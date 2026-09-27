@@ -1,0 +1,65 @@
+name: Mobile UI validation
+
+on:
+  push:
+    branches:
+      - ui/mobile-frontend-v2
+
+permissions:
+  contents: write
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install browser test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install playwright
+          python -m playwright install --with-deps chromium
+
+      - name: Run existing full browser regression
+        working-directory: gui_web
+        run: python test_browser_full.py
+
+      - name: Run focused mobile source gate
+        working-directory: gui_web
+        run: python test_mobile_layout.py --page style.html
+
+      - name: Build standalone browser bundle
+        working-directory: gui_web
+        run: python build_standalone.py
+
+      - name: Run standalone regression
+        working-directory: gui_web
+        run: python test_standalone.py
+
+      - name: Run focused mobile standalone gate
+        working-directory: gui_web
+        run: python test_mobile_layout.py --page zquoridor.html
+
+      - name: Upload mobile screenshots
+        uses: actions/upload-artifact@v4
+        with:
+          name: mobile-ui-screenshots
+          path: gui_web/mobile-shots/
+          if-no-files-found: error
+
+      - name: Commit regenerated standalone bundle
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add gui_web/zquoridor.html docs/index.html
+          if ! git diff --cached --quiet; then
+            git commit -m "build: refresh browser standalone [skip ci]"
+            git push
+          fi
