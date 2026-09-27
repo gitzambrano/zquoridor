@@ -891,6 +891,106 @@ input[type="number"],input[type="text"],textarea{
   #setAccents #accentPick{flex:0 0 34px}
 }
 
+/* ================= mobile portrait gameplay v2 ========================
+   The phone board owns the viewport width. Player data and controls are
+   compacted around it; desktop and phone landscape keep their own layouts. */
+@media (max-width:899.98px) and (orientation:portrait){
+  #main{
+    padding-left:0;
+    padding-right:0;
+    padding-top:var(--space-2);
+  }
+  #boardCol{gap:var(--space-1)}
+  #boardZone{
+    width:100%;
+    height:100vw;
+    max-height:100vw;
+  }
+  #boardWrap,#board{
+    border-radius:0;
+    box-shadow:none;
+  }
+
+  /* Keep the ten wall pips, but make them a compact 5+5 instrument. */
+  .pbar{
+    border-left:0;
+    border-right:0;
+    border-radius:0;
+    padding:var(--space-1) var(--space-2);
+    gap:var(--space-2);
+  }
+  .pbar .pb-name{gap:var(--space-2);min-width:0}
+  .pbar .pb-data{gap:var(--space-2);flex:none}
+  .pbar .walls{gap:var(--space-1);margin-left:0}
+  .pbar .pips{gap:1px}
+  .pbar .pips i{
+    width:2px;
+    height:10px;
+    border-radius:1px;
+  }
+  .pbar .pips i:nth-child(5){margin-right:2px}
+  .pbar .wn{font-size:10px}
+  .pbar .clock{
+    min-width:4.6ch;
+    text-align:right;
+    font-size:clamp(.86rem,3.8vw,.98rem);
+  }
+  .pbar .dist{
+    gap:0;
+    padding-left:5px;
+    border-left:1px solid var(--bor);
+  }
+  .pbar .dist::before{display:none}
+  .pbar .dist b{
+    min-width:1ch;
+    text-align:right;
+    font-size:10px;
+  }
+
+  /* One thumb row at every supported portrait width. */
+  #underBoard{
+    width:100%!important;
+    max-width:none!important;
+    margin-left:0!important;
+    margin-right:0!important;
+  }
+  #statusRow{padding:0 var(--space-2)}
+  #controls{
+    display:grid;
+    grid-template-columns:repeat(7,minmax(0,1fr));
+    gap:3px;
+    width:100%;
+    min-height:44px;
+    padding:0 var(--space-1) 2px;
+    flex-wrap:nowrap;
+  }
+  #controls .btn,
+  #controls .btn-wide{
+    width:100%;
+    min-width:0;
+    height:44px;
+    padding:0 2px;
+  }
+  #wallH,#wallV{
+    width:100%;
+    min-width:0;
+    gap:2px;
+    padding:0 1px;
+  }
+  #wallH .barH{width:16px;height:4px}
+  #wallV .barV{width:4px;height:16px}
+  #controls .badge{font-size:9px}
+  #underBoard > #evalWrap{
+    width:100%!important;
+    margin-left:0!important;
+    margin-right:0!important;
+  }
+  #underBoard > #moveLog{
+    padding-left:var(--space-2);
+    padding-right:var(--space-2);
+  }
+}
+
 </style>
 </head>
 <body>
