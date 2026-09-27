@@ -991,6 +991,50 @@ input[type="number"],input[type="text"],textarea{
   }
 }
 
+/* ============== portrait board/HUD containment fix 2026-09-27 =========
+   The board is the primary mobile surface. A long move log may consume only
+   the space left after the board and player strips; it must never shrink the
+   board zone around a stale canvas. */
+@media (max-width:899.98px) and (orientation:portrait){
+  #boardCol{overflow:hidden}
+
+  /* Width is the governing dimension in portrait. Keep this row inflexible
+     so a long move history cannot steal height from the board. */
+  #boardZone{
+    flex:0 0 100vw;
+    width:100%;
+    height:100vw;
+    min-height:100vw;
+    max-height:100vw;
+    overflow:hidden;
+    z-index:0;
+  }
+
+  /* Player strips are normal-flow rows above and below the board. The z-index
+     is only a defensive guard during a viewport transition: even a stale
+     canvas can never paint over a clock. */
+  #hudTop,#hudBottom{
+    position:relative;
+    z-index:2;
+    flex:0 0 auto;
+  }
+
+  /* The move log gets whatever vertical space remains. Its content is
+     scrollable and has no intrinsic minimum that can push the board upward. */
+  #underBoard{
+    flex:1 1 0!important;
+    min-height:0!important;
+    overflow:hidden;
+  }
+  #statusRow{display:none}
+  #underBoard > #moveLog{
+    flex:1 1 0!important;
+    min-height:0!important;
+    max-height:none!important;
+    overflow-y:auto;
+  }
+}
+
 </style>
 </head>
 <body>
