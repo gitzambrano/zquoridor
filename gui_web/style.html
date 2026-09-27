@@ -1062,6 +1062,94 @@ input[type="number"],input[type="text"],textarea{
   }
 }
 
+/* ============== portrait hardening: status + compact workspaces =========
+   Gameplay messages remain visible on phones. They get a single compact row;
+   the move log, never the board or controls, yields vertical space. */
+@media (max-width:899.98px) and (orientation:portrait){
+  #statusRow{
+    display:flex!important;
+    flex:0 0 18px;
+    min-height:18px;
+    height:18px;
+    gap:4px;
+    padding:0 5px;
+    overflow:hidden;
+  }
+  #status{
+    font-size:9px;
+    line-height:18px;
+    letter-spacing:0;
+  }
+  #movesChip{
+    font-size:8px;
+    line-height:18px;
+    white-space:nowrap;
+  }
+  #resumeChip{
+    max-height:17px;
+    padding:0 5px;
+    font-size:9px;
+    line-height:15px;
+    white-space:nowrap;
+  }
+
+  /* Portrait always uses a full-width board, so a scale control here would
+     appear broken. Keep the setting available where it actually applies. */
+  .desktopBoardScale{display:none!important}
+}
+
+/* On short phones Analysis must expose useful controls immediately without
+   taking pixels away from the full-width board. The rest remains scrollable. */
+@media (max-width:899.98px) and (orientation:portrait) and (max-height:700px){
+  #panelBody{
+    padding-top:4px;
+    padding-bottom:4px;
+  }
+  #anPane{
+    gap:4px;
+  }
+  #anPane > .card:first-child{
+    display:grid;
+    grid-template-columns:minmax(92px,.9fr) minmax(0,1.6fr);
+    align-items:center;
+    gap:4px;
+    padding:4px;
+  }
+  #anPane > .card:first-child .row{
+    margin:0;
+    gap:3px!important;
+    min-width:0;
+  }
+  #anPane > .card:first-child label{display:none}
+  #anPane > .card:first-child .sel{
+    min-width:0;
+    width:50%;
+    padding-left:3px;
+    padding-right:3px;
+    font-size:10px;
+  }
+  #anEngBtn{
+    min-height:30px;
+    height:30px;
+    padding:0 4px;
+    font-size:10px;
+  }
+  #anInfo{
+    min-height:11px;
+    font-size:9px;
+    line-height:11px;
+  }
+  #anLines{min-height:30px}
+  .pvRow{padding:3px 2px;gap:4px}
+  .pvChip,.pvMoves,.pvDist,.pvTag{font-size:9px}
+  #anGraph{height:48px}
+  .anNavCard{padding:4px}
+  .anNav{gap:3px}
+  .navb{height:28px}
+  #edPane .card{padding:6px}
+  #edPane .etool{padding:4px 6px;font-size:10px}
+}
+
 </style>
 </head>
 <body>
