@@ -1,6 +1,6 @@
 # Zquoridor: project state, results, and roadmap
 
-Last reviewed: 2026-09-23. This is the single canonical project document.
+Last reviewed: 2026-09-27. This is the single canonical project document.
 It answers four questions in order: what is in production, what has already
 been measured, what is running now, and what happens next. Raw datasets,
 self-play shards, logs, opponent checkouts, and transient checkpoints are local
@@ -21,6 +21,22 @@ artifacts and are deliberately not versioned.
 A candidate must use an executable compiled for its exact NNUE architecture.
 Changing search settings creates a separate experiment; it cannot be credited
 as an NNUE gain.
+
+
+### Browser mobile interface
+
+Portrait mobile now gives the board the full viewport width and keeps the
+primary controls on one row at 360, 375, 390, and 412 px widths. Player strips
+retain all ten wall pips in a compact 5+5 form, while the path-to-goal readout
+is a small number beside the clock. A wall deliberately dragged from the H/V
+dock commits on release without a second confirmation; tap/arm placement keeps
+the existing confirmation preference.
+
+The focused Playwright gate verifies the source page and generated standalone
+bundle at 360×800, 375×812, 390×844, and 412×915. It checks edge-to-edge board
+width, one-row controls, zero horizontal overflow, HUD non-overlap, compact wall
+pips, hidden PATH label, direct dock-drag placement, and zero page errors. The
+full pre-existing browser regression and standalone regression also pass.
 
 ## 2. What has been measured
 
