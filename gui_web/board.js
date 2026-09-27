@@ -357,9 +357,14 @@ class QBoard {
         zw -= ch.getBoundingClientRect().width + gap;
       }
       const scale = Math.max(0.8, Math.min(1, parseFloat(this.ds().boardScale) || 1));
+      // Portrait mobile is intentionally edge-to-edge: the board owns the
+      // viewport width, so it must not keep the legacy 3px breathing room on
+      // each side. Desktop and landscape retain that safety inset.
+      const edgeToEdge = matchMedia('(max-width:899.98px) and (orientation:portrait)').matches;
+      const inset = edgeToEdge ? 0 : 6;
       // The floor must stay below what a phone in landscape can give, or the
       // board overflows its zone and covers the player strips.
-      side = Math.max(150, Math.floor(Math.min(zw, zh) * scale) - 6);
+      side = Math.max(150, Math.floor(Math.min(zw, zh) * scale) - inset);
       if (this._sideApplied === side) { this.render(); return; }
       const wrap = this.cv.parentElement;
       wrap.style.width = side + 'px';
