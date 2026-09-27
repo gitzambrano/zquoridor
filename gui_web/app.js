@@ -347,16 +347,17 @@ function clockTick() {
   const dt = now - lastTickAt; lastTickAt = now;
   const t = W.turn();
   clockMs[t] -= dt;
-  if (clockMs[t] <= 0) { clockMs[0] = Math.max(0, clockMs[0]); flagFall(t); }
+  if (clockMs[t] <= 0) { clockMs[t] = Math.max(0, clockMs[t]); flagFall(t); }
   renderClocks();
 }
 function flagFall(side) {
   stopClock(); gameOver = true; engineThinking = false;
   clearFinishedGameInteraction();
-  setStatus((side === humanSide ? 'Your clock ran out' : 'Zquoridor flagged you'));
+  setStatus(side === humanSide ? 'Your clock ran out' : 'Zquoridor ran out of time');
   const el = strip(side === humanSide ? 'bottom' : 'top');
   if (el) el.classList.add('flag');
   markResult(1 - side);   // whoever still had time on the clock
+  refreshHud();
   pushRecent('flag');
   sound('end'); haptic([80]);
 }
@@ -1448,7 +1449,7 @@ function modalSettings(tab) {
           <div class="row"><label>Wall profile</label>${seg('wallProfile', ['slim', 'standard', 'bold'], ['Slim', 'Standard', 'Bold'])}</div>
           <div class="row"><label>Wall preview</label>${seg('wallPreview', ['subtle', 'normal', 'strong'], ['Subtle', 'Normal', 'Strong'])}</div>
           <div class="row"><label>Cell surface</label>${seg('cellSep', ['grooves', 'flat', 'inlaid'], ['Grooves', 'Flat', 'Inlaid'])}</div>
-          <div class="row"><label>Board scale</label>${seg('boardScale', [0.88, 0.94, 1], ['88%', '94%', '100%'])}</div>
+          <div class="row desktopBoardScale"><label>Board scale</label>${seg('boardScale', [0.88, 0.94, 1], ['88%', '94%', '100%'])}</div>
         </div></details>
       </div>
       <div class="card"><h4>MARKS &amp; OVERLAYS</h4>
@@ -2196,6 +2197,24 @@ function syncMobilePanelGeometry() {
 }
 
 function switchPane(pane) {
+  const wasEditor = currentPane === 'edPane';
+
+  // Editor paints the scratch position directly into the shared board. Never
+  // let that scratch rendering leak into Play or Analysis after the user
+  // leaves without applying it.
+  if (wasEditor && pane !== 'edPane') syncFromEngine();
+
+  // Play always means the live game. Historical positions are useful inside
+  // Analysis, but arriving on Play with an inert old position and a Return
+  // button hidden in another tab is a trap.
+  if (pane === 'playPane' && !atLiveEnd()) {
+    if (AN.bcRun) {
+      toast('warn', 'Blunder check running - cancel it first');
+      return;
+    }
+    navGo(W.plyCount());
+  }
+
   currentPane = pane;
   document.querySelectorAll('.tab[data-pane]').forEach(x =>
     x.classList.toggle('on', x.dataset.pane === pane));
@@ -3001,11 +3020,15 @@ function showHint() {
 }
 
 // ===================== 12b. layout reflow ==============================
-let g_wideLayout = null;
+let g_layoutMode = null;
 function layoutReflow() {
   const wide = matchMedia('(min-width:900px)').matches;
-  if (wide === g_wideLayout) return;
-  g_wideLayout = wide;
+  const phoneLandscape = !wide && matchMedia('(orientation:landscape)').matches;
+  const mode = wide ? 'wide' : (phoneLandscape ? 'phone-landscape' : 'phone-portrait');
+  // Portrait and landscape are different DOM arrangements even though both
+  // are below 900px. Cache the actual layout mode, not only "wide".
+  if (mode === g_layoutMode) return;
+  g_layoutMode = mode;
   const slot = $('controlsSlot'), under = $('underBoard');
   if (!slot || !under) return;
   const target = wide ? slot : under;
