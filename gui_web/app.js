@@ -2171,6 +2171,30 @@ function allPliesPacked() {
 let currentPane = 'playPane';
 const ED = { tool: 'pawn0' };
 
+function syncMobilePanelGeometry() {
+  const panel = $('sidePanel');
+  if (!panel) return;
+  const portrait = matchMedia('(max-width:899.98px) and (orientation:portrait)').matches;
+  if (!portrait) {
+    document.documentElement.style.removeProperty('--mobile-panel-top');
+    document.documentElement.style.removeProperty('--mobile-panel-bottom');
+    return;
+  }
+  // Analysis/editor are lower workspaces on a phone, never replacements for
+  // the game surface. Anchor their top immediately below the bottom player
+  // strip and their bottom immediately above the persistent tab bar.
+  const hud = $('hudBottom');
+  const tabs = $('tabBar');
+  if (!hud || !tabs) return;
+  const hr = hud.getBoundingClientRect();
+  const tr = tabs.getBoundingClientRect();
+  const top = Math.max(0, Math.ceil(hr.bottom + 4));
+  const bottom = Math.max(0, Math.ceil(innerHeight - tr.top));
+  const root = document.documentElement.style;
+  root.setProperty('--mobile-panel-top', top + 'px');
+  root.setProperty('--mobile-panel-bottom', bottom + 'px');
+}
+
 function switchPane(pane) {
   currentPane = pane;
   document.querySelectorAll('.tab[data-pane]').forEach(x =>
@@ -2178,7 +2202,10 @@ function switchPane(pane) {
   document.querySelectorAll('.pane').forEach(p =>
     p.classList.toggle('on', p.id === pane));
   const mobile = !matchMedia('(min-width:900px)').matches;
-  if (mobile) $('sidePanel').classList.toggle('open', pane !== 'playPane');
+  if (mobile) {
+    $('sidePanel').classList.toggle('open', pane !== 'playPane');
+    syncMobilePanelGeometry();
+  }
   if (pane === 'edPane') edSyncFromLive();
 }
 function setEditorTool(t) {
@@ -3011,6 +3038,7 @@ function layoutReflow() {
                        getComputedStyle(panel).position === 'static';
   const logTarget = (wide || railIsColumn) ? home : under;
   if (log && logTarget && log.parentElement !== logTarget) logTarget.appendChild(log);
+  syncMobilePanelGeometry();
 }
 
 // ===================== 13. boot ========================================
@@ -3076,6 +3104,7 @@ function boot() {
         under.style.marginLeft = 'auto';
       }
     }
+    syncMobilePanelGeometry();
   };
   applySettings();
   W.newGame();
@@ -3093,7 +3122,12 @@ function boot() {
   // deferred re-fits: the first fit() may run before final layout; re-measure
   // once the flex layout settles, and on any viewport resize.
   [200, 600, 1500].forEach(t => setTimeout(() => { layoutReflow(); B.fit(); }, t));
-  window.addEventListener('resize', () => { layoutReflow(); B.fit(); drawGraph(); });
+  window.addEventListener('resize', () => {
+    layoutReflow();
+    B.fit();
+    syncMobilePanelGeometry();
+    drawGraph();
+  });
 
   // analysis controls (plan section 5.6)
   $('anEngBtn').onclick = anToggle;
