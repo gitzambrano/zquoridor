@@ -1035,6 +1035,33 @@ input[type="number"],input[type="text"],textarea{
   }
 }
 
+/* ============== mobile analysis/editor lower workspace =================
+   On portrait phones the board and both player strips stay visible in every
+   tab. Analysis and Editor use only the workspace below the lower HUD. */
+@media (max-width:899.98px) and (orientation:portrait){
+  #sidePanel{
+    position:fixed;
+    left:0;
+    right:0;
+    top:var(--mobile-panel-top,calc(100vw + 112px));
+    bottom:var(--mobile-panel-bottom,52px);
+    width:auto;
+    height:auto;
+    padding:0 var(--space-3);
+    border-left:0;
+    border-top:1px solid var(--bor);
+    background:var(--bg);
+    overflow:hidden;
+  }
+  #sidePanel.open{display:flex}
+  #panelBody{
+    min-height:0;
+    overflow-y:auto;
+    padding-top:var(--space-3);
+    padding-bottom:var(--space-4);
+  }
+}
+
 </style>
 </head>
 <body>
