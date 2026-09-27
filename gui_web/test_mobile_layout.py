@@ -86,6 +86,8 @@ def main():
                     tabbar:rect(q('#tabBar')),
                     zone:rect(q('#boardZone')),
                     under:rect(q('#underBoard')),
+                    statusRow:rect(q('#statusRow')),
+                    statusDisplay:getComputedStyle(q('#statusRow')).display,
                     controlScroll:q('#controls').scrollWidth,
                     controlClient:q('#controls').clientWidth,
                     configuredScale:document.documentElement.dataset.boardScale,
@@ -110,6 +112,8 @@ def main():
                     fail("document has horizontal overflow", metrics)
                 if metrics["controlScroll"] > metrics["controlClient"] + 1:
                     fail("controls have horizontal overflow", metrics)
+                if metrics["statusDisplay"] == "none" or metrics["statusRow"]["height"] < 15:
+                    fail("mobile status/resume row is hidden", metrics)
 
                 tops = [r["top"] for r in metrics["buttons"]]
                 if len(tops) != 7 or max(tops) - min(tops) > 1.5:
@@ -130,6 +134,140 @@ def main():
                         fail("wall stock overlaps clock", h)
                     if h["clock"]["right"] > h["dist"]["left"] + 0.5:
                         fail("clock overlaps path number", h)
+
+                if width == 390:
+                    # Resume must be visible and actionable on portrait. Use a
+                    # real one-ply QGN, then boot the same resume path used on
+                    # startup.
+                    resume = page.evaluate("""() => {
+                      newGame(); stopClock();
+                      window.__w.applyPawn(13); syncAll();
+                      const saved=qgnExport();
+                      localStorage.setItem('zq.game', saved);
+                      newGame(); stopClock();
+                      checkAutosaveOnBoot();
+                      const chip=document.getElementById('resumeChip');
+                      const row=document.getElementById('statusRow');
+                      return {
+                        visible:getComputedStyle(chip).display !== 'none',
+                        rowVisible:getComputedStyle(row).display !== 'none',
+                        savedPlies:1
+                      };
+                    }""")
+                    if not resume["visible"] or not resume["rowVisible"]:
+                        fail("resume chip is hidden on portrait", resume)
+                    page.click("#resumeChip")
+                    page.wait_for_timeout(250)
+                    if page.evaluate("window.__w.plyCount()") < 1:
+                        fail("resume chip did not restore saved game")
+
+                    # Scratch Editor rendering must never leak back to the live
+                    # game after leaving without Apply.
+                    editor = page.evaluate("""() => {
+                      newGame(); stopClock();
+                      const live=window.__w.pawn(1);
+                      switchPane('edPane');
+                      window.__w.editSetPawn(1,40);
+                      renderScratchToBoard();
+                      const scratch=window.__qb.pawn[1];
+                      switchPane('playPane');
+                      return {
+                        live,
+                        scratch,
+                        board:window.__qb.pawn[1],
+                        expected:window.__qb.engPawnToDisp(window.__w.pawn(1)),
+                        flipped:window.__qb.flipped,
+                        expectedFlip:((humanSide===1)!==!!S.flipped),
+                        pane:currentPane
+                      };
+                    }""")
+                    if editor["scratch"] == editor["expected"]:
+                        fail("editor stress did not change scratch rendering", editor)
+                    if editor["board"] != editor["expected"] or editor["flipped"] != editor["expectedFlip"]:
+                        fail("leaving editor did not restore live board", editor)
+                    if editor["pane"] != "playPane":
+                        fail("leaving editor did not return to Play", editor)
+
+                    # A historical Analysis position must not strand Play on an
+                    # inert old ply.
+                    review = page.evaluate("""() => {
+                      newGame(); stopClock();
+                      window.__w.applyPawn(13); syncAll();
+                      const end=window.__w.plyCount();
+                      switchPane('anPane');
+                      navGo(0);
+                      const old=window.__w.cursor();
+                      switchPane('playPane');
+                      return {old,end,cur:window.__w.cursor(),pane:currentPane};
+                    }""")
+                    if review["old"] != 0 or review["cur"] != review["end"] or review["pane"] != "playPane":
+                        fail("Play did not return historical review to live game", review)
+
+                    # Side-1 flag fall used to clamp side 0 and report the
+                    # winner/loser message backwards.
+                    flag = page.evaluate("""() => {
+                      newGame(); stopClock();
+                      window.__w.applyPawn(13); syncAll(); // side 1 to move
+                      S.clockMode='5+0';
+                      clockMs=[5000,1];
+                      lastTickAt=performance.now()-25;
+                      clockTick();
+                      const out={
+                        c0:clockMs[0],c1:clockMs[1],
+                        status:document.getElementById('status').textContent,
+                        active:[...document.querySelectorAll('.pbar.active')].length,
+                        topLose:document.getElementById('hudTop').classList.contains('lose'),
+                        bottomWin:document.getElementById('hudBottom').classList.contains('win')
+                      };
+                      S.clockMode='none'; newGame(); stopClock();
+                      return out;
+                    }""")
+                    if flag["c1"] != 0 or flag["c0"] <= 0:
+                        fail("flag fall clamped wrong clock", flag)
+                    if flag["status"] != "Zquoridor ran out of time":
+                        fail("flag fall message is wrong", flag)
+                    if flag["active"] != 0 or not flag["topLose"] or not flag["bottomWin"]:
+                        fail("flag fall HUD state is stale", flag)
+
+                    # The portrait settings UI must not offer a board-scale
+                    # control that portrait intentionally ignores.
+                    hidden_scale = page.evaluate("""() => {
+                      modalSettings('board');
+                      const e=document.querySelector('.desktopBoardScale');
+                      const hidden=e && getComputedStyle(e).display === 'none';
+                      closeModal();
+                      return hidden;
+                    }""")
+                    if not hidden_scale:
+                        fail("portrait still exposes inactive board-scale control")
+
+                    # Rotate both ways. Portrait and landscape share the <900px
+                    # breakpoint but use different DOM homes for the move log.
+                    page.set_viewport_size({"width": 844, "height": 390})
+                    page.wait_for_timeout(350)
+                    land = page.evaluate("""() => ({
+                      mode:g_layoutMode,
+                      logParent:document.getElementById('moveLog').parentElement.id,
+                      panelPos:getComputedStyle(document.getElementById('sidePanel')).position,
+                      board:document.getElementById('board').getBoundingClientRect().width
+                    })""")
+                    if land["mode"] != "phone-landscape" or land["logParent"] != "moveLogHome":
+                        fail("portrait-to-landscape reflow failed", land)
+                    if land["panelPos"] != "static" or land["board"] < 150:
+                        fail("landscape rail/board geometry failed", land)
+                    page.set_viewport_size({"width": width, "height": height})
+                    page.wait_for_timeout(350)
+                    portrait_back = page.evaluate("""() => ({
+                      mode:g_layoutMode,
+                      logParent:document.getElementById('moveLog').parentElement.id,
+                      board:document.getElementById('board').getBoundingClientRect().width
+                    })""")
+                    if portrait_back["mode"] != "phone-portrait" or portrait_back["logParent"] != "underBoard":
+                        fail("landscape-to-portrait reflow failed", portrait_back)
+                    if abs(portrait_back["board"] - width) > 1.5:
+                        fail("board did not recover full width after rotation", portrait_back)
+                    page.evaluate("newGame(); stopClock()")
+                    page.wait_for_timeout(100)
 
                 # Stress the exact failure from the field screenshot: a long
                 # move history plus a compact mobile-Chrome viewport. The log
@@ -161,6 +299,8 @@ def main():
                     controls:rect(q('#controls')),
                     tabbar:rect(q('#tabBar')),
                     log:rect(q('#moveLog')),
+                    status:rect(q('#statusRow')),
+                    statusDisplay:getComputedStyle(q('#statusRow')).display,
                     logScroll:q('#moveLog').scrollHeight,
                     logClient:q('#moveLog').clientHeight,
                   };
@@ -175,6 +315,10 @@ def main():
                     fail("long log made bottom HUD overlap board", stressed)
                 if stressed["controls"]["bottom"] > stressed["tabbar"]["top"] + 0.5:
                     fail("controls are hidden under mobile tab bar", stressed)
+                if stressed["statusDisplay"] == "none" or stressed["status"]["height"] < 15:
+                    fail("long game hid mobile status row", stressed)
+                if stressed["status"]["bottom"] > stressed["controls"]["top"] + 0.5:
+                    fail("status row overlaps controls", stressed)
                 if stressed["logClient"] > 0 and stressed["logScroll"] <= stressed["logClient"]:
                     fail("long move log is not scrollable", stressed)
 
@@ -196,10 +340,11 @@ def main():
                   const b=rect(q('#board')), p=rect(q('#sidePanel'));
                   const t=rect(q('#hudTop')), bot=rect(q('#hudBottom'));
                   const tabs=rect(q('#tabBar'));
+                  const ctl=rect(q('#anPane > .card:first-child'));
                   const hit=document.elementFromPoint(
                     b.left+b.width/2, b.top+b.height/2);
                   return {
-                    board:b,panel:p,top:t,bottom:bot,tabs,
+                    board:b,panel:p,top:t,bottom:bot,tabs,controlCard:ctl,
                     panelVisible:getComputedStyle(q('#sidePanel')).display !== 'none',
                     boardHit:hit ? hit.id : '',
                   };
@@ -216,6 +361,8 @@ def main():
                     fail("analysis runs under tab bar", analysis)
                 if analysis["boardHit"] != "board":
                     fail("analysis intercepts board surface", analysis)
+                if analysis["controlCard"]["height"] > 55:
+                    fail("short-screen analysis controls are too tall", analysis)
 
                 page.screenshot(
                     path=str(shots / f"{width}x{COMPACT_HEIGHTS[width]}-analysis.png"),
