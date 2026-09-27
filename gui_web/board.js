@@ -314,7 +314,19 @@ class QBoard {
     this._pawnAnim = [null, null];
     this._wallAnim = null;
     this._raf = 0;
-    if (!this.fixedSide) new ResizeObserver(() => this.fit()).observe(canvas.parentElement);
+    if (!this.fixedSide) {
+      // The layout constraint is #boardZone, not #boardWrap. Observing the
+      // wrapper cannot detect the failure mode where a growing move log or a
+      // mobile browser viewport change shrinks the zone around an already
+      // sized canvas. In that case the stale board overflows across both
+      // player strips. Observe the constraint itself so fit() always follows
+      // the real space available.
+      this._fitZone = canvas.closest('#boardZone') ||
+                      canvas.parentElement.parentElement ||
+                      canvas.parentElement;
+      this._resizeObserver = new ResizeObserver(() => this.fit());
+      this._resizeObserver.observe(this._fitZone);
+    }
     this.fit();
   }
 
@@ -356,11 +368,14 @@ class QBoard {
         if (chs.display === 'none') continue;
         zw -= ch.getBoundingClientRect().width + gap;
       }
-      const scale = Math.max(0.8, Math.min(1, parseFloat(this.ds().boardScale) || 1));
-      // Portrait mobile is intentionally edge-to-edge: the board owns the
-      // viewport width, so it must not keep the legacy 3px breathing room on
-      // each side. Desktop and landscape retain that safety inset.
+      const configuredScale = Math.max(0.8, Math.min(1, parseFloat(this.ds().boardScale) || 1));
+      // Portrait mobile is a gameplay-first surface: the board always owns the
+      // full available width. A persisted desktop boardScale must not make a
+      // phone board 88% or 94% wide. The preference remains effective on
+      // desktop and landscape.
       const edgeToEdge = matchMedia('(max-width:899.98px) and (orientation:portrait)').matches;
+      const scale = edgeToEdge ? 1 : configuredScale;
+      // Portrait mobile also drops the legacy 3px breathing room per side.
       const inset = edgeToEdge ? 0 : 6;
       // The floor must stay below what a phone in landscape can give, or the
       // board overflows its zone and covers the player strips.
