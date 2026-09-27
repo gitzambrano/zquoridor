@@ -50,6 +50,21 @@ compact wall pips, hidden PATH label, direct dock-drag placement, and zero page
 errors. The full pre-existing browser regression and standalone regression pass
 alongside these mobile-specific checks.
 
+The mobile hardening gate additionally covers the failure modes found after the
+field screenshots: the compact status row and autosave Resume action remain
+visible in portrait; leaving Editor without Apply restores the live engine
+position and board orientation; entering Play from an older Analysis ply
+returns to the live game; portrait↔landscape rotation moves the log between its
+correct DOM homes; a player-1 flag fall clamps the correct clock, clears active
+turn styling, and reports the correct result text; and the portrait Settings
+sheet hides the board-scale control because portrait intentionally renders at
+100% width. On screens no taller than 700 px, the first Analysis controls are
+compressed into one compact row while the rest remains scrollable.
+
+Both the source page and the generated standalone WASM bundle pass these checks
+at 360, 375, 390, and 412 px portrait widths, with compact-height stress cases,
+in addition to the complete pre-existing browser and standalone suites.
+
 ## 2. What has been measured
 
 All percentages below are candidate score. A small match is screening evidence,
