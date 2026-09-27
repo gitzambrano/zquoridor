@@ -1060,6 +1060,94 @@ input[type="number"],input[type="text"],textarea{
   }
 }
 
+/* ============== portrait hardening: status + compact workspaces =========
+   Gameplay messages remain visible on phones. They get a single compact row;
+   the move log, never the board or controls, yields vertical space. */
+@media (max-width:899.98px) and (orientation:portrait){
+  #statusRow{
+    display:flex!important;
+    flex:0 0 18px;
+    min-height:18px;
+    height:18px;
+    gap:4px;
+    padding:0 5px;
+    overflow:hidden;
+  }
+  #status{
+    font-size:9px;
+    line-height:18px;
+    letter-spacing:0;
+  }
+  #movesChip{
+    font-size:8px;
+    line-height:18px;
+    white-space:nowrap;
+  }
+  #resumeChip{
+    max-height:17px;
+    padding:0 5px;
+    font-size:9px;
+    line-height:15px;
+    white-space:nowrap;
+  }
+
+  /* Portrait always uses a full-width board, so a scale control here would
+     appear broken. Keep the setting available where it actually applies. */
+  .desktopBoardScale{display:none!important}
+}
+
+/* On short phones Analysis must expose useful controls immediately without
+   taking pixels away from the full-width board. The rest remains scrollable. */
+@media (max-width:899.98px) and (orientation:portrait) and (max-height:700px){
+  #panelBody{
+    padding-top:4px;
+    padding-bottom:4px;
+  }
+  #anPane{
+    gap:4px;
+  }
+  #anPane > .card:first-child{
+    display:grid;
+    grid-template-columns:minmax(92px,.9fr) minmax(0,1.6fr);
+    align-items:center;
+    gap:4px;
+    padding:4px;
+  }
+  #anPane > .card:first-child .row{
+    margin:0;
+    gap:3px!important;
+    min-width:0;
+  }
+  #anPane > .card:first-child label{display:none}
+  #anPane > .card:first-child .sel{
+    min-width:0;
+    width:50%;
+    padding-left:3px;
+    padding-right:3px;
+    font-size:10px;
+  }
+  #anEngBtn{
+    min-height:30px;
+    height:30px;
+    padding:0 4px;
+    font-size:10px;
+  }
+  #anInfo{
+    min-height:11px;
+    font-size:9px;
+    line-height:11px;
+  }
+  #anLines{min-height:30px}
+  .pvRow{padding:3px 2px;gap:4px}
+  .pvChip,.pvMoves,.pvDist,.pvTag{font-size:9px}
+  #anGraph{height:48px}
+  .anNavCard{padding:4px}
+  .anNav{gap:3px}
+  .navb{height:28px}
+  #edPane .card{padding:6px}
+  #edPane .etool{padding:4px 6px;font-size:10px}
+}
+
 </style>
 <style>
 /* inlined fonts (standalone: no network needed) */
@@ -3463,16 +3551,17 @@ function clockTick() {
   const dt = now - lastTickAt; lastTickAt = now;
   const t = W.turn();
   clockMs[t] -= dt;
-  if (clockMs[t] <= 0) { clockMs[0] = Math.max(0, clockMs[0]); flagFall(t); }
+  if (clockMs[t] <= 0) { clockMs[t] = Math.max(0, clockMs[t]); flagFall(t); }
   renderClocks();
 }
 function flagFall(side) {
   stopClock(); gameOver = true; engineThinking = false;
   clearFinishedGameInteraction();
-  setStatus((side === humanSide ? 'Your clock ran out' : 'Zquoridor flagged you'));
+  setStatus(side === humanSide ? 'Your clock ran out' : 'Zquoridor ran out of time');
   const el = strip(side === humanSide ? 'bottom' : 'top');
   if (el) el.classList.add('flag');
   markResult(1 - side);   // whoever still had time on the clock
+  refreshHud();
   pushRecent('flag');
   sound('end'); haptic([80]);
 }
@@ -4564,7 +4653,7 @@ function modalSettings(tab) {
           <div class="row"><label>Wall profile</label>${seg('wallProfile', ['slim', 'standard', 'bold'], ['Slim', 'Standard', 'Bold'])}</div>
           <div class="row"><label>Wall preview</label>${seg('wallPreview', ['subtle', 'normal', 'strong'], ['Subtle', 'Normal', 'Strong'])}</div>
           <div class="row"><label>Cell surface</label>${seg('cellSep', ['grooves', 'flat', 'inlaid'], ['Grooves', 'Flat', 'Inlaid'])}</div>
-          <div class="row"><label>Board scale</label>${seg('boardScale', [0.88, 0.94, 1], ['88%', '94%', '100%'])}</div>
+          <div class="row desktopBoardScale"><label>Board scale</label>${seg('boardScale', [0.88, 0.94, 1], ['88%', '94%', '100%'])}</div>
         </div></details>
       </div>
       <div class="card"><h4>MARKS &amp; OVERLAYS</h4>
@@ -5312,6 +5401,24 @@ function syncMobilePanelGeometry() {
 }
 
 function switchPane(pane) {
+  const wasEditor = currentPane === 'edPane';
+
+  // Editor paints the scratch position directly into the shared board. Never
+  // let that scratch rendering leak into Play or Analysis after the user
+  // leaves without applying it.
+  if (wasEditor && pane !== 'edPane') syncFromEngine();
+
+  // Play always means the live game. Historical positions are useful inside
+  // Analysis, but arriving on Play with an inert old position and a Return
+  // button hidden in another tab is a trap.
+  if (pane === 'playPane' && !atLiveEnd()) {
+    if (AN.bcRun) {
+      toast('warn', 'Blunder check running - cancel it first');
+      return;
+    }
+    navGo(W.plyCount());
+  }
+
   currentPane = pane;
   document.querySelectorAll('.tab[data-pane]').forEach(x =>
     x.classList.toggle('on', x.dataset.pane === pane));
@@ -6117,11 +6224,15 @@ function showHint() {
 }
 
 // ===================== 12b. layout reflow ==============================
-let g_wideLayout = null;
+let g_layoutMode = null;
 function layoutReflow() {
   const wide = matchMedia('(min-width:900px)').matches;
-  if (wide === g_wideLayout) return;
-  g_wideLayout = wide;
+  const phoneLandscape = !wide && matchMedia('(orientation:landscape)').matches;
+  const mode = wide ? 'wide' : (phoneLandscape ? 'phone-landscape' : 'phone-portrait');
+  // Portrait and landscape are different DOM arrangements even though both
+  // are below 900px. Cache the actual layout mode, not only "wide".
+  if (mode === g_layoutMode) return;
+  g_layoutMode = mode;
   const slot = $('controlsSlot'), under = $('underBoard');
   if (!slot || !under) return;
   const target = wide ? slot : under;
