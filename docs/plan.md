@@ -33,10 +33,22 @@ dock commits on release without a second confirmation; tap/arm placement keeps
 the existing confirmation preference.
 
 The focused Playwright gate verifies the source page and generated standalone
-bundle at 360×800, 375×812, 390×844, and 412×915. It checks edge-to-edge board
-width, one-row controls, zero horizontal overflow, HUD non-overlap, compact wall
-pips, hidden PATH label, direct dock-drag placement, and zero page errors. The
-full pre-existing browser regression and standalone regression also pass.
+bundle at 360, 375, 390, and 412 px widths, including compact-height browser
+viewports and a deliberately long move log. Portrait ignores a persisted
+desktop `boardScale` for layout, so even an 88% saved preference still produces
+an edge-to-edge phone board. The board fitter observes the board zone itself,
+preventing a stale canvas from overflowing across either player strip when the
+available height changes.
+
+Analysis and Editor on portrait mobile use a lower workspace anchored below the
+bottom player strip instead of replacing the game surface. The gate opens
+Analysis after the long-log/compact-height stress case and verifies that the
+board remains full-width, both HUDs remain visible, the analysis panel stays
+below the board and above the tab bar, and the board center is still the actual
+canvas hit target. It also checks one-row controls, zero horizontal overflow,
+compact wall pips, hidden PATH label, direct dock-drag placement, and zero page
+errors. The full pre-existing browser regression and standalone regression pass
+alongside these mobile-specific checks.
 
 ## 2. What has been measured
 
