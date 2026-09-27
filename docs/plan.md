@@ -497,4 +497,10 @@ against production baseline `multipath_phase_bucketed` (`data/nnue/nnue_weights_
   - Settings: 100 ms/move, 2 threads, 250 games/chunk, Monte Carlo parameters
     (`mc_temp_opening=0.35`, `mc_temp_decay_plies=45`, `mc_temp_end=0.12`),
     persisting directly to Google Drive (`selfplay_15m`).
+  - Added dedicated headless Playwright orchestration suite under `scripts/colab/`
+    (`config.py`, `inspect_workers.py`, `launch_workers.py`, `manage_runtime.py`).
+    Switched remote runtimes to standard CPU to bypass GPU free-tier compute
+    unit quota limits. Worker 4 actively producing shards; over 313 shards
+    (>4.1 million valid V3 positions, >27% of target) saved to Drive.
+
 
