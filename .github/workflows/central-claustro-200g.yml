@@ -1,0 +1,330 @@
+name: Central Claustrophobia 200g
+
+on:
+  push:
+    branches:
+      - "bench/central-claustro-200g-20260928"
+    paths:
+      - ".github/workflows/central-claustro-200g.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  bench:
+    name: central shard ${{ matrix.shard }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install runtime dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install --index-url https://download.pytorch.org/whl/cpu torch
+          python -m pip install numpy
+
+      - name: Select 25 unique central opening pairs
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: |
+          python - <<'PY'
+          import json, os, random
+          from pathlib import Path
+          src = Path("tools/external/openings_center_rush_sound_5k.jsonl")
+          rows = [json.loads(x) for x in src.read_text().splitlines() if x.strip()]
+          indexed = list(enumerate(rows))
+          random.Random(20260928).shuffle(indexed)
+          shard = int(os.environ["SHARD"])
+          selected = indexed[shard*25:(shard+1)*25]
+          out = Path("selected_openings.jsonl")
+          meta = []
+          with out.open("w", encoding="utf-8") as f:
+              for local_index, (global_index, row) in enumerate(selected):
+                  f.write(json.dumps(row, separators=(",", ":")) + "\n")
+                  meta.append({
+                      "local_index": local_index,
+                      "global_index": global_index,
+                      "id": row.get("id", f"global_{global_index}"),
+                      "category": row.get("category", "unknown"),
+                      "base_plies": row.get("base_plies"),
+                      "total_plies": row.get("total_plies", len(row.get("moves", []))),
+                      "eval_prob": row.get("eval_prob"),
+                      "moves": row.get("moves", []),
+                  })
+          Path("selected.json").write_text(json.dumps(meta, indent=2) + "\n")
+          print(json.dumps({"shard": shard, "pairs": len(selected),
+                            "categories": sorted({m["category"] for m in meta})}, indent=2))
+          PY
+
+      - name: Run 50 games against pinned Claustrophobia
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: |
+          python tools/run_benchmark.py             --opponents claustrophobia             --pairs 25             --workers 2             --seed $((20260928 + SHARD))             --openings selected_openings.jsonl             --output "results/benchmarks/central_claustro_shard_${SHARD}"             --zq-move-time-ms 200             --claustrophobia-move-time-ms 200             --claustrophobia-max-sims 4096             --claustrophobia-cpuct 1.5             --claustrophobia-device cpu             --bootstrap 5000
+
+      - name: Add opening metadata to game records
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: |
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          shard = int(os.environ["SHARD"])
+          meta = {int(x["local_index"]): x for x in json.loads(Path("selected.json").read_text())}
+          src = Path(f"results/benchmarks/central_claustro_shard_{shard}/games.jsonl")
+          dst = Path("games_augmented.jsonl")
+          with dst.open("w", encoding="utf-8") as out:
+              for line in src.read_text().splitlines():
+                  if not line.strip():
+                      continue
+                  row = json.loads(line)
+                  m = meta[int(row["opening_index"])]
+                  row.update({
+                      "global_opening_index": m["global_index"],
+                      "opening_id": m["id"],
+                      "opening_category": m["category"],
+                      "opening_base_plies": m["base_plies"],
+                      "opening_total_plies": m["total_plies"],
+                      "opening_eval_prob": m["eval_prob"],
+                      "book_moves": m["moves"],
+                      "shard": shard,
+                  })
+                  out.write(json.dumps(row, separators=(",", ":")) + "\n")
+          PY
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: central-shard-${{ matrix.shard }}
+          path: |
+            games_augmented.jsonl
+            selected.json
+            results/benchmarks/central_claustro_shard_${{ matrix.shard }}/summary.json
+            results/benchmarks/central_claustro_shard_${{ matrix.shard }}/manifest.json
+          if-no-files-found: error
+          retention-days: 7
+
+  aggregate:
+    name: aggregate central opening analysis
+    runs-on: ubuntu-latest
+    needs: bench
+    timeout-minutes: 10
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: central-shard-*
+          path: shards
+
+      - name: Aggregate score, weakest families, and first move disagreements
+        run: |
+          python - <<'PY'
+          import json, math
+          from collections import Counter, defaultdict
+          from pathlib import Path
+
+          roots = {
+              "classic_rush_sound": ["e2","e8","e3","e7","e4","e6"],
+              "early_dev_0": ["e2","e8"],
+              "early_dev_1": ["e2","e8","e3","e7"],
+              "early_dev_2": ["e2","e8","d3h","e7"],
+              "early_dev_3": ["e2","e8","e3","d6h"],
+              "early_dev_4": ["e2","e8","d4v","e7"],
+              "early_dev_5": ["e2","e8","e3","e5v"],
+              "early_dev_6": ["e2","e8","e3h","e7h"],
+              "early_dev_7": ["e2","e8","d3h","d7h"],
+              "early_dev_8": ["e2","e8","c3v","f7v"],
+              "early_dev_9": ["e2","e8","e4v","d5v"],
+          }
+
+          rows = []
+          for p in sorted(Path("shards").glob("central-shard-*/games_augmented.jsonl")):
+              rows += [json.loads(x) for x in p.read_text().splitlines() if x.strip()]
+          ok = [r for r in rows if r.get("status") == "ok"]
+          failed = [r for r in rows if r.get("status") != "ok"]
+
+          pairs = defaultdict(dict)
+          for r in ok:
+              pairs[r["opening_id"]][int(r["zq_player"])] = r
+
+          complete = []
+          for oid, colors in pairs.items():
+              if set(colors) != {0,1}:
+                  continue
+              a, b = colors[0], colors[1]
+              score = float(a["result"]) + float(b["result"])
+              book = list(a["book_moves"])
+              L = len(book)
+              ma, mb = a["moves"], b["moves"]
+              k = L
+              while k < min(len(ma), len(mb)) and ma[k] == mb[k]:
+                  k += 1
+              div = None
+              if k < min(len(ma), len(mb)):
+                  side = k % 2
+                  zrow = colors[side]
+                  crow = colors[1-side]
+                  div = {
+                      "absolute_ply_1based": k + 1,
+                      "post_book_ply_1based": k - L + 1,
+                      "side_to_move": side,
+                      "zquoridor_move": zrow["moves"][k],
+                      "claustrophobia_move": crow["moves"][k],
+                      "agreement_plies_after_book": k - L,
+                  }
+              complete.append({
+                  "opening_id": oid,
+                  "global_opening_index": a["global_opening_index"],
+                  "category": a["opening_category"],
+                  "category_root": roots.get(a["opening_category"], []),
+                  "book_moves": book,
+                  "eval_prob": a.get("opening_eval_prob"),
+                  "pair_score": score,
+                  "pair_score_pct": 50.0 * score,
+                  "game_results": [float(a["result"]), float(b["result"])],
+                  "first_divergence": div,
+              })
+
+          total_points = sum(x["pair_score"] for x in complete)
+          total_games = 2 * len(complete)
+          overall = 100.0 * total_points / total_games if total_games else None
+          wins = sum(float(r["result"]) == 1.0 for r in ok)
+          draws = sum(float(r["result"]) == 0.5 for r in ok)
+          losses = sum(float(r["result"]) == 0.0 for r in ok)
+
+          cat = defaultdict(list)
+          for x in complete:
+              cat[x["category"]].append(x)
+          categories = []
+          for name, xs in cat.items():
+              pts = sum(x["pair_score"] for x in xs)
+              games = 2 * len(xs)
+              categories.append({
+                  "category": name,
+                  "root": roots.get(name, []),
+                  "pairs": len(xs),
+                  "games": games,
+                  "score_pct": 100.0 * pts / games,
+                  "lost_pairs": sum(x["pair_score"] < 1.0 for x in xs),
+                  "swept_pairs": sum(x["pair_score"] == 0.0 for x in xs),
+              })
+          categories.sort(key=lambda x: (x["score_pct"], -x["pairs"], x["category"]))
+
+          patterns = defaultdict(list)
+          div_ply = Counter()
+          for x in complete:
+              d = x["first_divergence"]
+              if not d:
+                  continue
+              key = (x["category"], d["post_book_ply_1based"],
+                     d["zquoridor_move"], d["claustrophobia_move"])
+              patterns[key].append(x)
+              div_ply[d["post_book_ply_1based"]] += 1
+          disagreements = []
+          for (category, postply, zm, cm), xs in patterns.items():
+              pts = sum(x["pair_score"] for x in xs)
+              games = 2 * len(xs)
+              disagreements.append({
+                  "category": category,
+                  "root": roots.get(category, []),
+                  "post_book_ply_1based": postply,
+                  "zquoridor_move": zm,
+                  "claustrophobia_move": cm,
+                  "count": len(xs),
+                  "associated_score_pct": 100.0 * pts / games,
+                  "swept_pairs": sum(x["pair_score"] == 0.0 for x in xs),
+                  "opening_ids": [x["opening_id"] for x in xs[:12]],
+              })
+          disagreements.sort(key=lambda x: (-x["count"], x["associated_score_pct"], x["category"]))
+
+          weakest = sorted(
+              complete,
+              key=lambda x: (x["pair_score"], x["first_divergence"] is None,
+                             (x["first_divergence"] or {}).get("post_book_ply_1based", 999),
+                             x["opening_id"])
+          )[:20]
+
+          report = {
+              "schema": "zquoridor.central_claustro_200g.analysis.v1",
+              "main_base_sha": "bb3b6394dff043aa748f77b9e6728b84cf8d799b",
+              "book": "tools/external/openings_center_rush_sound_5k.jsonl",
+              "selection_seed": 20260928,
+              "move_time_ms": 200,
+              "claustrophobia_max_sims": 4096,
+              "complete_pairs": len(complete),
+              "included_games": total_games,
+              "failed_games": len(failed),
+              "overall_score_pct": overall,
+              "wdl": {"wins": wins, "draws": draws, "losses": losses},
+              "categories_weak_to_strong": categories,
+              "first_divergence_ply_histogram": dict(sorted(div_ply.items())),
+              "top_first_divergence_patterns": disagreements[:30],
+              "weakest_opening_pairs": weakest,
+          }
+          Path("analysis.json").write_text(json.dumps(report, indent=2) + "\n")
+
+          lines = [
+              "# Central openings vs Claustrophobia — 200-game paired screen",
+              "",
+              f"- Base main SHA: {report['main_base_sha']}",
+              f"- Complete pairs: {len(complete)} ({total_games} games); failed games: {len(failed)}",
+              f"- Score: {overall:.2f}% ({wins}W/{draws}D/{losses}L)" if overall is not None else "- No complete pairs",
+              "- Book: sound central 5k; 100 unique positions sampled with seed 20260928; colors swapped per position.",
+              "",
+              "## Opening families, weakest first",
+              "",
+              "| Family | Root | Pairs | Score | Lost pairs | Swept 0–2 |",
+              "|---|---|---:|---:|---:|---:|",
+          ]
+          for c in categories:
+              lines.append(f"| {c['category']} | {' '.join(c['root']) or '—'} | {c['pairs']} | {c['score_pct']:.1f}% | {c['lost_pairs']} | {c['swept_pairs']} |")
+          lines += [
+              "",
+              "## Most frequent first disagreements",
+              "",
+              "| Family | Post-book ply | ZQuoridor | Claustrophobia | Count | Associated score | Swept pairs |",
+              "|---|---:|---|---|---:|---:|---:|",
+          ]
+          for d in disagreements[:20]:
+              lines.append(f"| {d['category']} | {d['post_book_ply_1based']} | {d['zquoridor_move']} | {d['claustrophobia_move']} | {d['count']} | {d['associated_score_pct']:.1f}% | {d['swept_pairs']} |")
+          lines += [
+              "",
+              "## Weakest individual paired openings",
+              "",
+              "| Opening | Family | Pair score | First divergence | ZQ | Claustrophobia | Book tail |",
+              "|---|---|---:|---:|---|---|---|",
+          ]
+          for x in weakest[:15]:
+              d = x["first_divergence"] or {}
+              tail = " ".join(x["book_moves"][-6:])
+              lines.append(f"| {x['opening_id']} | {x['category']} | {x['pair_score']:.1f}/2 | {d.get('post_book_ply_1based','—')} | {d.get('zquoridor_move','—')} | {d.get('claustrophobia_move','—')} | {tail} |")
+          lines += [
+              "",
+              "A low associated score identifies an empirical weakness in this 200 ms sample. It does not by itself prove that a move is theoretically losing.",
+              "",
+          ]
+          Path("analysis.md").write_text("\n".join(lines), encoding="utf-8")
+          Path("combined_games.jsonl").write_text(
+              "".join(json.dumps(r, separators=(",", ":")) + "\n" for r in rows),
+              encoding="utf-8"
+          )
+          print("\n".join(lines))
+          PY
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: central-claustro-200g-analysis
+          path: |
+            analysis.json
+            analysis.md
+            combined_games.jsonl
+          if-no-files-found: error
+          retention-days: 14
