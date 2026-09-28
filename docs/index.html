@@ -5908,6 +5908,20 @@ function anRestart() {
 }
 function anKick() {
   if (!AN.on || AN.busy || AN.bcRun) return;
+
+  // A finished position has no legal continuation. qr_analyze correctly
+  // returns zero lines there, but an empty PV box looks like an engine crash.
+  // Explain the state and let history navigation restart analysis as soon as
+  // the user steps back to a non-terminal position.
+  if (W.winner() !== -1 || W.isDraw()) {
+    AN.busy = false;
+    $('anLines').innerHTML =
+      '<div class="mlEmpty"><span>Terminal position</span>'
+      + '<small>No legal move to analyse. Go back a ply to inspect the finish.</small></div>';
+    $('anInfo').textContent = 'Game over · no legal move';
+    return;
+  }
+
   const selDepth = +$('anDepth').value;
   const lines = +$('anPvCount').value;
   const isInf = selDepth === 0;
