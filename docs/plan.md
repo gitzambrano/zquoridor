@@ -65,6 +65,19 @@ Both the source page and the generated standalone WASM bundle pass these checks
 at 360, 375, 390, and 412 px portrait widths, with compact-height stress cases,
 in addition to the complete pre-existing browser and standalone suites.
 
+A long-form mobile gameplay gate now exercises actual sessions instead of only
+layout states. It plays from both sides through the production UI, mixing pawn
+moves with dock-dragged walls and real engine replies, performs a takeback and
+continues the game, verifies HUD wall counts and clocks after every turn, opens
+Analysis on the played game, previews a PV, navigates history and the graph,
+runs a full blunder check, round-trips the exact game through QGN, and repeats
+the session on the generated standalone bundle. In the reference run the first
+game reached a terminal position after 18 plies; Analysis now identifies a
+terminal root explicitly instead of showing an empty PV list, and stepping back
+one ply produced three PV lines in about 1.2 s. The blunder check covered all 18
+plies. The same sequence passed on both the source page and the standalone
+bundle with zero page errors.
+
 ## 2. What has been measured
 
 All percentages below are candidate score. A small match is screening evidence,
