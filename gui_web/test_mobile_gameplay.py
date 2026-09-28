@@ -241,11 +241,25 @@ def analyze_played_game(page, shots):
     if not page.evaluate("AN.on"):
         page.click("#anEngBtn")
 
+    terminal=page.evaluate("window.__w.winner() !== -1 || window.__w.isDraw()")
+    if terminal:
+        page.wait_for_function(
+            "() => document.getElementById('anInfo').textContent.includes('Game over')",
+            timeout=3000,
+        )
+        term_txt=(page.text_content("#anLines") or "")
+        if "Terminal position" not in term_txt:
+            fail("terminal Analysis has no explanatory state", term_txt)
+        # Inspect the decisive position from one ply earlier; this should kick
+        # the engine automatically and produce a normal PV.
+        page.click("#navPrev")
+        page.wait_for_timeout(150)
+
     t0=time.time()
     try:
         page.wait_for_function(
             "() => document.querySelectorAll('.pvRow').length >= 1",
-            timeout=30000,
+            timeout=15000,
         )
     except Exception:
         diag=page.evaluate("""() => ({
@@ -261,26 +275,10 @@ def analyze_played_game(page, shots):
             ready:ANW.ready, failed:ANW.failed,
             pending:ANW.pending.size, nextId:ANW.nextId,
             lastError:ANW.lastError, hasWorker:!!ANW.wk
-          },
-          startedFromCustom:g_startedFromCustom(),
-          root:g_rootQfen,
-          pageStatus:document.getElementById('status').textContent
+          }
         })""")
         print("ANALYSIS TIMEOUT DIAG:", diag, flush=True)
-        # Probe the local analyser too. This separates a worker/replay problem
-        # from the underlying analysis search itself.
-        local=page.evaluate("""() => {
-          const old=S.worker; S.worker=false;
-          AN.sid++; AN.busy=false;
-          const t=performance.now();
-          W.scratchFromLive();
-          const got=W.analyze(6,1500,1);
-          const out={got,nodes:W.anNodes(),depth:W.anDepth(),ms:performance.now()-t};
-          S.worker=old;
-          return out;
-        }""")
-        print("LOCAL ANALYSIS PROBE:", local, flush=True)
-        fail("analysis produced no PV within 30s", {"diag":diag,"local":local})
+        fail("analysis produced no PV after moving off terminal position", diag)
     first_pv_ms=round((time.time()-t0)*1000)
     print("FIRST PV MS:", first_pv_ms, flush=True)
     info=page.text_content("#anInfo") or ""
@@ -300,13 +298,14 @@ def analyze_played_game(page, shots):
 
     # Navigate several historical positions and verify the board follows.
     live=n
+    cur0=page.evaluate("window.__w.cursor()")
     page.click("#navPrev")
     page.wait_for_timeout(200)
-    if page.evaluate("window.__w.cursor()") != live-1:
+    if page.evaluate("window.__w.cursor()") != cur0-1:
         fail("analysis navPrev did not move one ply")
     page.click("#navPrev")
     page.wait_for_timeout(200)
-    if page.evaluate("window.__w.cursor()") != live-2:
+    if page.evaluate("window.__w.cursor()") != cur0-2:
         fail("analysis second navPrev failed")
     if not page.is_visible("#btnReturn"):
         fail("Return to game missing during historical review")
