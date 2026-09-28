@@ -1,0 +1,348 @@
+name: Central Families Claustrophobia 200g
+
+on:
+  push:
+    branches:
+      - "bench/central-families-200g-20260928"
+    paths:
+      - ".github/workflows/central-families-200g.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  family:
+    name: ${{ matrix.family }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        family:
+          - front_wall
+          - pawn_jump
+          - vertical_channel
+          - reed_rear_wall
+          - sidestep_flank
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install runtime dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install --index-url https://download.pytorch.org/whl/cpu torch
+          python -m pip install numpy
+
+      - name: Build balanced family book
+        env:
+          FAMILY: ${{ matrix.family }}
+        run: |
+          python - <<'PY'
+          import json, os, random
+          from pathlib import Path
+
+          family = os.environ["FAMILY"]
+          seed_map = {
+              "front_wall": 11,
+              "pawn_jump": 23,
+              "vertical_channel": 37,
+              "reed_rear_wall": 53,
+              "sidestep_flank": 71,
+          }
+          source = Path("tools/external/openings_center_rush_50pairs.jsonl")
+          all_rows = [json.loads(x) for x in source.read_text().splitlines() if x.strip()]
+          pool = [r for r in all_rows if r.get("category") == family]
+          rng = random.Random(20260928 + seed_map[family])
+          rng.shuffle(pool)
+
+          selected = []
+          for i in range(20):
+              src = dict(pool[i % len(pool)])
+              selected.append({
+                  **src,
+                  "catalog_opening_index": int(src["opening_index"]),
+                  "catalog_description": src.get("description", ""),
+                  "catalog_moves": list(src["moves"]),
+                  "replicate": i // len(pool),
+                  "selection_slot": i,
+              })
+
+          with Path("selected_openings.jsonl").open("w", encoding="utf-8") as f:
+              for r in selected:
+                  f.write(json.dumps(r, separators=(",", ":")) + "\n")
+          Path("selected.json").write_text(json.dumps(selected, indent=2) + "\n")
+          print(json.dumps({
+              "family": family,
+              "unique_catalog_lines": len(pool),
+              "selected_pairs": len(selected),
+              "catalog_indices": [r["catalog_opening_index"] for r in selected],
+          }, indent=2))
+          PY
+
+      - name: Run 40 games
+        env:
+          FAMILY: ${{ matrix.family }}
+        run: |
+          python tools/run_benchmark.py             --opponents claustrophobia             --pairs 20             --workers 2             --seed 20260928             --openings selected_openings.jsonl             --output "results/benchmarks/central_family_${FAMILY}"             --zq-move-time-ms 200             --claustrophobia-move-time-ms 200             --claustrophobia-max-sims 4096             --claustrophobia-cpuct 1.5             --claustrophobia-device cpu             --bootstrap 5000
+
+      - name: Attach catalog metadata
+        env:
+          FAMILY: ${{ matrix.family }}
+        run: |
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          family = os.environ["FAMILY"]
+          selected = json.loads(Path("selected.json").read_text())
+          src = Path(f"results/benchmarks/central_family_{family}/games.jsonl")
+          with Path("games_augmented.jsonl").open("w", encoding="utf-8") as out:
+              for line in src.read_text().splitlines():
+                  if not line.strip():
+                      continue
+                  row = json.loads(line)
+                  local = int(row["opening_index"])
+                  meta = selected[local]
+                  row.update({
+                      "central_family": family,
+                      "catalog_opening_index": int(meta["catalog_opening_index"]),
+                      "catalog_description": meta["catalog_description"],
+                      "book_moves": meta["catalog_moves"],
+                      "replicate": int(meta["replicate"]),
+                      "selection_slot": int(meta["selection_slot"]),
+                      "pair_id": f"{family}:{local}",
+                  })
+                  out.write(json.dumps(row, separators=(",", ":")) + "\n")
+          PY
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: central-family-${{ matrix.family }}
+          path: |
+            games_augmented.jsonl
+            selected.json
+            results/benchmarks/central_family_${{ matrix.family }}/summary.json
+          if-no-files-found: error
+          retention-days: 7
+
+  aggregate:
+    name: aggregate central families
+    runs-on: ubuntu-latest
+    needs: family
+    timeout-minutes: 10
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: central-family-*
+          path: families
+
+      - name: Analyze families, openings and move disagreements
+        run: |
+          python - <<'PY'
+          import json
+          from collections import Counter, defaultdict
+          from pathlib import Path
+
+          rows = []
+          for p in sorted(Path("families").glob("central-family-*/games_augmented.jsonl")):
+              rows.extend(json.loads(x) for x in p.read_text().splitlines() if x.strip())
+
+          ok = [r for r in rows if r.get("status") == "ok"]
+          failed = [r for r in rows if r.get("status") != "ok"]
+
+          by_pair = defaultdict(dict)
+          for r in ok:
+              by_pair[r["pair_id"]][int(r["zq_player"])] = r
+
+          pairs = []
+          for pid, colors in by_pair.items():
+              if set(colors) != {0, 1}:
+                  continue
+              r0, r1 = colors[0], colors[1]
+              book = list(r0["book_moves"])
+              L = len(book)
+              m0, m1 = r0["moves"], r1["moves"]
+              k = L
+              while k < min(len(m0), len(m1)) and m0[k] == m1[k]:
+                  k += 1
+              divergence = None
+              if k < min(len(m0), len(m1)):
+                  side = k & 1
+                  zrow = colors[side]
+                  crow = colors[1-side]
+                  divergence = {
+                      "absolute_ply_1based": k + 1,
+                      "post_book_ply_1based": k - L + 1,
+                      "common_history": zrow["moves"][:k],
+                      "zquoridor_move": zrow["moves"][k],
+                      "claustrophobia_move": crow["moves"][k],
+                  }
+              pairs.append({
+                  "pair_id": pid,
+                  "family": r0["central_family"],
+                  "catalog_opening_index": r0["catalog_opening_index"],
+                  "description": r0["catalog_description"],
+                  "book_moves": book,
+                  "replicate": r0["replicate"],
+                  "pair_score": float(r0["result"]) + float(r1["result"]),
+                  "results": [float(r0["result"]), float(r1["result"])],
+                  "first_divergence": divergence,
+              })
+
+          wins = sum(float(r["result"]) == 1.0 for r in ok)
+          draws = sum(float(r["result"]) == 0.5 for r in ok)
+          losses = sum(float(r["result"]) == 0.0 for r in ok)
+          overall = 100.0 * sum(float(r["result"]) for r in ok) / len(ok)
+
+          def summarize(group):
+              games = 2 * len(group)
+              points = sum(x["pair_score"] for x in group)
+              return {
+                  "pairs": len(group),
+                  "games": games,
+                  "score_pct": 100.0 * points / games if games else None,
+                  "swept_losses": sum(x["pair_score"] == 0.0 for x in group),
+                  "lost_pairs": sum(x["pair_score"] < 1.0 for x in group),
+                  "won_pairs": sum(x["pair_score"] > 1.0 for x in group),
+              }
+
+          family_groups = defaultdict(list)
+          opening_groups = defaultdict(list)
+          for x in pairs:
+              family_groups[x["family"]].append(x)
+              opening_groups[(x["family"], x["catalog_opening_index"], x["description"], tuple(x["book_moves"]))].append(x)
+
+          families = []
+          for family, xs in family_groups.items():
+              families.append({"family": family, **summarize(xs)})
+          families.sort(key=lambda x: (x["score_pct"], x["family"]))
+
+          openings = []
+          for (family, idx, desc, book), xs in opening_groups.items():
+              openings.append({
+                  "family": family,
+                  "opening_index": idx,
+                  "description": desc,
+                  "book_moves": list(book),
+                  **summarize(xs),
+              })
+          openings.sort(key=lambda x: (x["score_pct"], -x["pairs"], x["family"], x["opening_index"]))
+
+          disagreement_groups = defaultdict(list)
+          ply_hist = Counter()
+          for x in pairs:
+              d = x["first_divergence"]
+              if not d:
+                  continue
+              key = (
+                  x["family"],
+                  x["catalog_opening_index"],
+                  d["post_book_ply_1based"],
+                  tuple(d["common_history"]),
+                  d["zquoridor_move"],
+                  d["claustrophobia_move"],
+              )
+              disagreement_groups[key].append(x)
+              ply_hist[d["post_book_ply_1based"]] += 1
+
+          disagreements = []
+          for (family, idx, postply, history, zm, cm), xs in disagreement_groups.items():
+              s = summarize(xs)
+              disagreements.append({
+                  "family": family,
+                  "opening_index": idx,
+                  "post_book_ply_1based": postply,
+                  "common_history": list(history),
+                  "zquoridor_move": zm,
+                  "claustrophobia_move": cm,
+                  "occurrences": len(xs),
+                  "associated_score_pct": s["score_pct"],
+                  "swept_losses": s["swept_losses"],
+                  "lost_pairs": s["lost_pairs"],
+              })
+          disagreements.sort(key=lambda x: (-x["occurrences"], x["associated_score_pct"], x["family"], x["opening_index"]))
+
+          losing_disagreements = sorted(
+              disagreements,
+              key=lambda x: (x["associated_score_pct"], -x["occurrences"], -x["swept_losses"])
+          )
+
+          report = {
+              "schema": "zquoridor.central_families_200g.analysis.v1",
+              "main_sha": "e0866ab6c9577d5d25cfdf46d5209be0d4edd34c",
+              "move_time_ms": 200,
+              "complete_pairs": len(pairs),
+              "games": len(ok),
+              "failed_games": len(failed),
+              "score_pct": overall,
+              "wdl": {"wins": wins, "draws": draws, "losses": losses},
+              "families_weak_to_strong": families,
+              "openings_weak_to_strong": openings,
+              "first_divergence_ply_histogram": dict(sorted(ply_hist.items())),
+              "most_frequent_disagreements": disagreements[:30],
+              "worst_scoring_disagreements": losing_disagreements[:30],
+          }
+          Path("analysis.json").write_text(json.dumps(report, indent=2) + "\n")
+
+          lines = [
+              "# Central opening families vs Claustrophobia — 200 games",
+              "",
+              f"- main: {report['main_sha']}",
+              f"- {len(pairs)} complete pairs / {len(ok)} games; failures: {len(failed)}",
+              f"- score: {overall:.2f}% ({wins}W/{draws}D/{losses}L)",
+              "- 20 color-swapped pairs per central family, 200 ms/move.",
+              "",
+              "## Families",
+              "",
+              "| Family | Games | Score | Lost pairs | Swept losses |",
+              "|---|---:|---:|---:|---:|",
+          ]
+          for x in families:
+              lines.append(f"| {x['family']} | {x['games']} | {x['score_pct']:.1f}% | {x['lost_pairs']} | {x['swept_losses']} |")
+
+          lines += [
+              "",
+              "## Weakest catalog openings",
+              "",
+              "| Index | Family | Pairs | Score | Swept losses | Line |",
+              "|---:|---|---:|---:|---:|---|",
+          ]
+          for x in openings[:15]:
+              lines.append(f"| {x['opening_index']} | {x['family']} | {x['pairs']} | {x['score_pct']:.1f}% | {x['swept_losses']} | {' '.join(x['book_moves'])} |")
+
+          lines += [
+              "",
+              "## Most repeated first disagreements",
+              "",
+              "| Opening | Family | Ply after book | ZQ | Claustrophobia | Count | Associated score |",
+              "|---:|---|---:|---|---|---:|---:|",
+          ]
+          for x in disagreements[:15]:
+              lines.append(f"| {x['opening_index']} | {x['family']} | {x['post_book_ply_1based']} | {x['zquoridor_move']} | {x['claustrophobia_move']} | {x['occurrences']} | {x['associated_score_pct']:.1f}% |")
+
+          lines += [
+              "",
+              "## Worst-scoring first disagreements",
+              "",
+              "| Opening | Family | Ply after book | ZQ | Claustrophobia | Count | Associated score | Swept |",
+              "|---:|---|---:|---|---|---:|---:|---:|",
+          ]
+          for x in losing_disagreements[:15]:
+              lines.append(f"| {x['opening_index']} | {x['family']} | {x['post_book_ply_1based']} | {x['zquoridor_move']} | {x['claustrophobia_move']} | {x['occurrences']} | {x['associated_score_pct']:.1f}% | {x['swept_losses']} |")
+
+          Path("analysis.md").write_text("\n".join(lines) + "\n")
+          print("\n".join(lines))
+          PY
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: central-families-200g-analysis
+          path: |
+            analysis.json
+            analysis.md
+          if-no-files-found: error
+          retention-days: 14
