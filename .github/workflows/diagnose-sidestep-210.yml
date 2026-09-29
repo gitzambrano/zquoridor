@@ -1,0 +1,191 @@
+name: Diagnose sidestep 2.03 vs 2.10
+
+on:
+  push:
+    branches:
+      - "bench/diagnose-sidestep-210-20260929"
+    paths:
+      - ".github/workflows/diagnose-sidestep-210.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout harness
+        uses: actions/checkout@v4
+
+      - name: Checkout 2.03
+        uses: actions/checkout@v4
+        with:
+          ref: a742db9e1f8e7ef71174bc11784706a7508d8e1b
+          path: v203
+
+      - name: Checkout 2.10
+        uses: actions/checkout@v4
+        with:
+          ref: a0def30e725b34c19eec07e54719af989f290063
+          path: v210
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Instrument root P/N/Q
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          for d in ("v203","v210"):
+              p=Path(d)/"tools/external/zquoridor_uci.cpp"
+              s=p.read_text()
+              if "#include <algorithm>" not in s:
+                  s=s.replace("#include <", "#include <algorithm>\n#include <", 1)
+              needle="qr::Move best = runner.choose(engine, state, 40, budgetMs, stats, history, &mstats);"
+              block=r'''
+            qr::Move best = runner.choose(engine, state, 40, budgetMs, stats, history, &mstats);
+            if constexpr (decltype(runner)::supported) {
+                const auto* dbgRoot = runner.search.rootNodeForInspection();
+                if (dbgRoot) {
+                    std::vector<size_t> ord(dbgRoot->moves.size());
+                    for (size_t di = 0; di < ord.size(); ++di) ord[di] = di;
+                    std::sort(ord.begin(), ord.end(), [&](size_t a, size_t b) {
+                        if (dbgRoot->N[a] != dbgRoot->N[b]) return dbgRoot->N[a] > dbgRoot->N[b];
+                        return dbgRoot->P[a] > dbgRoot->P[b];
+                    });
+                    std::cout << "ROOTMETA totalN=" << dbgRoot->totalN
+                              << " moves=" << dbgRoot->moves.size() << "\n";
+                    size_t lim = std::min<size_t>(20, ord.size());
+                    for (size_t rank = 0; rank < lim; ++rank) {
+                        size_t di = ord[rank];
+                        double q = dbgRoot->N[di] > 0.0f
+                                     ? (double)dbgRoot->W[di] / (double)dbgRoot->N[di]
+                                     : 0.0;
+                        std::cout << "ROOTSTAT rank=" << rank
+                                  << " move=" << moveToText(dbgRoot->moves[di])
+                                  << " P=" << dbgRoot->P[di]
+                                  << " N=" << dbgRoot->N[di]
+                                  << " W=" << dbgRoot->W[di]
+                                  << " Q=" << q << "\n";
+                    }
+                    std::vector<size_t> pord(dbgRoot->moves.size());
+                    for (size_t di = 0; di < pord.size(); ++di) pord[di] = di;
+                    std::sort(pord.begin(), pord.end(), [&](size_t a, size_t b) {
+                        return dbgRoot->P[a] > dbgRoot->P[b];
+                    });
+                    lim = std::min<size_t>(20, pord.size());
+                    for (size_t rank = 0; rank < lim; ++rank) {
+                        size_t di = pord[rank];
+                        double q = dbgRoot->N[di] > 0.0f
+                                     ? (double)dbgRoot->W[di] / (double)dbgRoot->N[di]
+                                     : 0.0;
+                        std::cout << "PRIORSTAT rank=" << rank
+                                  << " move=" << moveToText(dbgRoot->moves[di])
+                                  << " P=" << dbgRoot->P[di]
+                                  << " N=" << dbgRoot->N[di]
+                                  << " Q=" << q << "\n";
+                    }
+                }
+            }'''
+              if needle not in s:
+                  raise SystemExit(f"needle missing in {d}")
+              s=s.replace(needle, block, 1)
+              p.write_text(s)
+          PY
+
+      - name: Build both engines
+        run: |
+          for d in v203 v210; do
+            (cd "$d" && chmod +x build/build_uci.sh && ./build/build_uci.sh)
+            test -x "$d/bin/zquoridor"
+          done
+
+      - name: Probe six sidestep roots
+        run: |
+          python - <<'PY'
+          import json, re, subprocess
+          from pathlib import Path
+
+          book=[json.loads(x) for x in Path("tools/external/openings_center_rush_50pairs.jsonl").read_text().splitlines() if x.strip()]
+          rows=[x for x in book if x.get("category")=="sidestep_flank"]
+          refs={
+              "v203": ("v203/bin/zquoridor","v203/data/nnue/nnue_weights_int8.bin"),
+              "v210": ("v210/bin/zquoridor","v210/data/nnue/nnue_weights_int8.bin"),
+          }
+          out=[]
+          for ref,(exe,nnue) in refs.items():
+              for opening in rows:
+                  for rep in range(5):
+                      commands="uci\nisready\nucinewgame\nposition startpos moves "+" ".join(opening["moves"])+"\ngo movetime 200\nquit\n"
+                      p=subprocess.run([exe,"--nnue",nnue],input=commands,text=True,capture_output=True,check=True,timeout=20)
+                      stats=[]
+                      priors=[]
+                      meta={}
+                      best=None
+                      for line in p.stdout.splitlines():
+                          if line.startswith("ROOTMETA "):
+                              meta=dict(re.findall(r"(\w+)=([^ ]+)",line))
+                          elif line.startswith("ROOTSTAT "):
+                              d=dict(re.findall(r"(\w+)=([^ ]+)",line))
+                              for k in ("P","N","W","Q"):
+                                  if k in d: d[k]=float(d[k])
+                              if "rank" in d: d["rank"]=int(d["rank"])
+                              stats.append(d)
+                          elif line.startswith("PRIORSTAT "):
+                              d=dict(re.findall(r"(\w+)=([^ ]+)",line))
+                              for k in ("P","N","Q"):
+                                  if k in d: d[k]=float(d[k])
+                              if "rank" in d: d["rank"]=int(d["rank"])
+                              priors.append(d)
+                          elif line.startswith("bestmove "):
+                              best=line.split()[1]
+                      out.append({
+                          "ref":ref,
+                          "opening_index":opening["opening_index"],
+                          "moves":opening["moves"],
+                          "rep":rep,
+                          "bestmove":best,
+                          "meta":meta,
+                          "by_visits":stats,
+                          "by_prior":priors,
+                      })
+          Path("sidestep_root_stats.json").write_text(json.dumps(out,indent=2)+"\n")
+
+          # Compact aggregation.
+          from collections import Counter,defaultdict
+          agg={}
+          for ref in refs:
+              agg[ref]={}
+              for op in rows:
+                  rr=[x for x in out if x["ref"]==ref and x["opening_index"]==op["opening_index"]]
+                  best=Counter(x["bestmove"] for x in rr)
+                  # Average root entries by move over repeats.
+                  accum=defaultdict(lambda: {"P":[],"N":[],"Q":[]})
+                  for x in rr:
+                      for e in x["by_visits"]:
+                          for k in ("P","N","Q"): accum[e["move"]][k].append(e[k])
+                  av=[]
+                  for mv,v in accum.items():
+                      av.append({"move":mv,**{k:sum(vals)/len(vals) for k,vals in v.items() if vals}})
+                  av.sort(key=lambda z:z.get("N",0),reverse=True)
+                  prior=sorted(av,key=lambda z:z.get("P",0),reverse=True)
+                  agg[ref][str(op["opening_index"])]={
+                      "moves":op["moves"],
+                      "bestmove_counts":dict(best),
+                      "top_visits":av[:10],
+                      "top_prior":prior[:10],
+                  }
+          Path("sidestep_root_aggregate.json").write_text(json.dumps(agg,indent=2)+"\n")
+          print(json.dumps(agg,indent=2))
+          PY
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sidestep-root-diagnostic
+          path: |
+            sidestep_root_stats.json
+            sidestep_root_aggregate.json
+          if-no-files-found: error
+          retention-days: 14
