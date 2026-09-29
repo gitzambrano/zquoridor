@@ -5,7 +5,8 @@ on:
     branches:
       - "bench/sidestep-root-diagnostic-20260929"
     paths:
-      - ".github/workflows/sidestep-critical-divergences.yml"\n      - "benchmarks/root_probe_nnue.cpp"
+      - ".github/workflows/sidestep-critical-divergences.yml"
+      - "benchmarks/root_probe_nnue.cpp"
 
 permissions:
   contents: read
