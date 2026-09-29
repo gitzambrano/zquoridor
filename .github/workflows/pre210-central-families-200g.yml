@@ -1,0 +1,227 @@
+name: Pre-2.10 Central Families 200g
+
+on:
+  push:
+    branches:
+      - "bench/pre210-central-families-200g-20260929"
+    paths:
+      - ".github/workflows/pre210-central-families-200g.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  family:
+    name: ${{ matrix.family }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        family:
+          - front_wall
+          - pawn_jump
+          - vertical_channel
+          - reed_rear_wall
+          - sidestep_flank
+
+    steps:
+      - name: Checkout current harness
+        uses: actions/checkout@v4
+
+      - name: Checkout exact pre-2.10 engine
+        uses: actions/checkout@v4
+        with:
+          ref: a742db9e1f8e7ef71174bc11784706a7508d8e1b
+          path: pre210
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install runtime dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install --index-url https://download.pytorch.org/whl/cpu torch
+          python -m pip install numpy
+
+      - name: Build pre-2.10 engine
+        run: |
+          cd pre210
+          chmod +x build/build_uci.sh
+          ./build/build_uci.sh
+          test -x bin/zquoridor
+
+      - name: Build identical balanced family book
+        env:
+          FAMILY: ${{ matrix.family }}
+        run: |
+          python - <<'PY'
+          import json, os, random
+          from pathlib import Path
+
+          family = os.environ["FAMILY"]
+          seed_map = {
+              "front_wall": 11,
+              "pawn_jump": 23,
+              "vertical_channel": 37,
+              "reed_rear_wall": 53,
+              "sidestep_flank": 71,
+          }
+          source = Path("tools/external/openings_center_rush_50pairs.jsonl")
+          all_rows = [json.loads(x) for x in source.read_text().splitlines() if x.strip()]
+          pool = [r for r in all_rows if r.get("category") == family]
+          rng = random.Random(20260928 + seed_map[family])
+          rng.shuffle(pool)
+
+          selected = []
+          for i in range(20):
+              src = dict(pool[i % len(pool)])
+              selected.append({
+                  **src,
+                  "catalog_opening_index": int(src["opening_index"]),
+                  "catalog_description": src.get("description", ""),
+                  "catalog_moves": list(src["moves"]),
+                  "replicate": i // len(pool),
+                  "selection_slot": i,
+              })
+
+          with Path("selected_openings.jsonl").open("w", encoding="utf-8") as f:
+              for r in selected:
+                  f.write(json.dumps(r, separators=(",", ":")) + "\n")
+          Path("selected.json").write_text(json.dumps(selected, indent=2) + "\n")
+          PY
+
+      - name: Run 40 games with pre-2.10 engine
+        env:
+          FAMILY: ${{ matrix.family }}
+        run: |
+          python tools/run_benchmark.py \
+            --opponents claustrophobia \
+            --pairs 20 \
+            --workers 2 \
+            --seed 20260928 \
+            --openings selected_openings.jsonl \
+            --output "results/benchmarks/pre210_central_family_${FAMILY}" \
+            --zq-executable pre210/bin/zquoridor \
+            --nnue pre210/data/nnue/nnue_weights_int8.bin \
+            --zq-move-time-ms 200 \
+            --claustrophobia-move-time-ms 200 \
+            --claustrophobia-max-sims 4096 \
+            --claustrophobia-cpuct 1.5 \
+            --claustrophobia-device cpu \
+            --bootstrap 5000
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pre210-central-family-${{ matrix.family }}
+          path: |
+            selected.json
+            results/benchmarks/pre210_central_family_${{ matrix.family }}/summary.json
+            results/benchmarks/pre210_central_family_${{ matrix.family }}/games.jsonl
+          if-no-files-found: error
+          retention-days: 7
+
+  aggregate:
+    name: aggregate pre-2.10 central families
+    runs-on: ubuntu-latest
+    needs: family
+    timeout-minutes: 10
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: pre210-central-family-*
+          path: families
+
+      - name: Aggregate and compare with 2.10/HEAD result
+        run: |
+          python - <<'PY'
+          import json, math
+          from pathlib import Path
+
+          current = {
+              "overall_score_pct": 41.75,
+              "families": {
+                  "vertical_channel": 37.5,
+                  "reed_rear_wall": 40.0,
+                  "pawn_jump": 42.5,
+                  "sidestep_flank": 42.5,
+                  "front_wall": 46.25,
+              },
+              "wdl": {"wins":83,"draws":1,"losses":116},
+          }
+
+          report = {
+              "schema": "zquoridor.pre210.central_families_200g.v1",
+              "pre210_sha": "a742db9e1f8e7ef71174bc11784706a7508d8e1b",
+              "current_reference_sha": "e0866ab6c9577d5d25cfdf46d5209be0d4edd34c",
+              "move_time_ms": 200,
+              "families": {},
+          }
+
+          total_games = total_w = total_d = total_l = 0
+          total_points = 0.0
+
+          for p in sorted(Path("families").glob("pre210-central-family-*/summary.json")):
+              family = p.parent.name.replace("pre210-central-family-","")
+              data = json.loads(p.read_text())
+              s = data["summaries"]["claustrophobia"]
+              games = int(s.get("included_games", s.get("recorded_games", 0)))
+              score = float(s["score_pct"])
+              wins = int(s.get("wins", 0))
+              draws = int(s.get("draws", 0))
+              losses = int(s.get("losses", 0))
+              total_games += games
+              total_points += score / 100.0 * games
+              total_w += wins; total_d += draws; total_l += losses
+              report["families"][family] = {
+                  "games": games,
+                  "score_pct": score,
+                  "elo": s.get("elo"),
+                  "wins": wins,
+                  "draws": draws,
+                  "losses": losses,
+                  "current_score_pct": current["families"].get(family),
+                  "delta_pp_current_minus_pre210": current["families"].get(family) - score if family in current["families"] else None,
+                  "paired_bootstrap_95": s.get("paired_bootstrap_95"),
+              }
+
+          overall = 100.0 * total_points / total_games
+          report["overall"] = {
+              "games": total_games,
+              "score_pct": overall,
+              "wins": total_w,
+              "draws": total_d,
+              "losses": total_l,
+              "current_score_pct": current["overall_score_pct"],
+              "delta_pp_current_minus_pre210": current["overall_score_pct"] - overall,
+          }
+
+          Path("pre210_comparison.json").write_text(json.dumps(report, indent=2) + "\n")
+
+          lines = [
+              "# Pre-2.10 vs current — five central families",
+              "",
+              f"- pre-2.10: a742db9",
+              f"- games: {total_games}",
+              f"- pre-2.10 score: {overall:.2f}% ({total_w}W/{total_d}D/{total_l}L)",
+              f"- current 2.10/HEAD reference: {current['overall_score_pct']:.2f}%",
+              f"- delta current - pre-2.10: {current['overall_score_pct']-overall:+.2f} pp",
+              "",
+              "| Family | Pre-2.10 | Current | Delta |",
+              "|---|---:|---:|---:|",
+          ]
+          for family, row in sorted(report["families"].items(), key=lambda kv: kv[1]["score_pct"]):
+              lines.append(f"| {family} | {row['score_pct']:.1f}% | {row['current_score_pct']:.1f}% | {row['delta_pp_current_minus_pre210']:+.1f} pp |")
+          Path("pre210_comparison.md").write_text("\n".join(lines) + "\n")
+          print("\n".join(lines))
+          PY
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pre210-central-families-comparison
+          path: |
+            pre210_comparison.json
+            pre210_comparison.md
+          if-no-files-found: error
+          retention-days: 14
