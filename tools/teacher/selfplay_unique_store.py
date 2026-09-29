@@ -228,7 +228,7 @@ class UniqueStateStore:
 
     def import_weakness_loss_100ms(self, root: str | Path | None = None,
                                    reliability: float = 1.0) -> int:
-        root = Path(root or "data/selfplay_canonical_v3/weakness-loss-100ms-20260920")
+        root = Path(root or "data/selfplay/dataset-weakness-loss-100ms")
         total = 0
         for path in sorted(root.rglob("*.bin")):
             if path.stat().st_size % V3_RECORD_SIZE:
@@ -237,7 +237,7 @@ class UniqueStateStore:
             keys = [self.canonical_key(row) for row in arr]
             before = self.unique_count
             self.admit_shard(path, keys=keys, reliability=reliability,
-                             source="weakness-loss-100ms-20260920", family=None,
+                             source="dataset-weakness-loss-100ms", family=None,
                              missing_metadata=True)
             total += len(keys)
         return total

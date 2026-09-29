@@ -114,9 +114,8 @@ SEED          = 150    # semente base do RNG; chunks subsequentes variam automat
 # --- Saída ---
 # Use {shard:03d} para nomear os chunks automaticamente e {mode} para o
 # modo desta execução ("epsilon" ou "montecarlo") -- cada execução nasce
-# diretamente no contrato V3 em `data/selfplay_canonical_v3`. Os diretórios
-# históricos em `data/selfplay` existem somente como fonte da migração.
-OUT_TEMPLATE  = "data/selfplay_canonical_v3/gen-current-{mode}/selfplay_{shard:03d}.bin"
+# diretamente no contrato V3 em `data/selfplay`.
+OUT_TEMPLATE  = "data/selfplay/gen-current-{mode}/selfplay_{shard:03d}.bin"
 
 # --- Avaliação de folha (NNUE vs. heurística) ---
 # NNUE é o default de avaliação deste binário desde 2026-08 (selfplay
@@ -605,7 +604,7 @@ def main():
         print()
         print("Próximos passos -- treinar a NNUE com o corpus canônico:")
         print("  python3 training/train_nnue.py")
-        print("  # default: data/selfplay_canonical_v3 (todos os shards V3)")
+        print("  # default: data/selfplay (todos os shards V3)")
     else:
         print(f"[run_selfplay] ERRO: selfplay terminou com código {ret}", file=sys.stderr)
         sys.exit(ret)

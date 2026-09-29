@@ -178,7 +178,7 @@ DATA_ROOT_DEFAULT = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath
 # "esqueca" padroes antigos e drifte para o otimo local do gen mais recente.
 # Vazia = comportamento antigo, direto de DATA_DEFAULT/--data sem amostragem.
 DATA_SOURCES_DEFAULT = [
-      {"path": "selfplay_canonical_v3", "frac": 1.0, "k": 1.0},
+      {"path": "selfplay", "frac": 1.0, "k": 1.0},
 ]
  
 OUT_DEFAULT = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data", "nnue", "nnue_weights.bin")

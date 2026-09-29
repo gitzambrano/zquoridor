@@ -144,7 +144,7 @@ def snapshot_champion(generation: str) -> tuple[Path, Path]:
 
 def selfplay_shards(generation: str) -> list[Path]:
     """Return the generated shards in deterministic order."""
-    folder = DATA_DIR / "selfplay_canonical_v3" / generation
+    folder = DATA_DIR / "selfplay" / generation
     return [Path(p) for p in sorted(glob.glob(str(folder / "selfplay_*.bin")))]
 
 
@@ -289,7 +289,7 @@ def source_json(train_shards: list[Path], focus_path: Path) -> str:
 
 def generate_selfplay(args) -> list[Path]:
     """Generate a generation whose played move comes from search from ply zero."""
-    out = f"data/selfplay_canonical_v3/{args.generation}/selfplay_{{shard:03d}}.bin"
+    out = f"data/selfplay/{args.generation}/selfplay_{{shard:03d}}.bin"
     cmd = [
         sys.executable,
         "tools/selfplay/run_selfplay.py",
@@ -458,7 +458,7 @@ def main(argv=None) -> int:
         shards = generate_selfplay(args)
 
     train_shards, val_shard = split_train_validation(shards)
-    focus_path = DATA_DIR / "selfplay_canonical_v3" / f"{args.generation}-focus" / "focus_000.bin"
+    focus_path = DATA_DIR / "selfplay" / f"{args.generation}-focus" / "focus_000.bin"
     focus_stats = build_focus_replay(
         train_shards,
         focus_path,

@@ -13,8 +13,7 @@ Formatos reconhecidos (deteccao automatica por `load_selfplay`):
     detecta automaticamente e faz upcast para SAMPLE_DTYPE (os 3 campos novos
     ficam com valor 0), permitindo que o resto do pipeline use sempre
     SAMPLE_DTYPE independentemente do formato no disco. Treino e teaching
-    usam exclusivamente V3 em `data/selfplay_canonical_v3`; rode
-    `migrate_selfplay_v3.py` para converter arquivos históricos.
+    usam exclusivamente V3 em `data/selfplay`.
 
 `load_multi_selfplay`/`MultiFileSelfPlay` fazem o mesmo para varios
 arquivos ao mesmo tempo SEM concatenar em RAM: cada shard continua

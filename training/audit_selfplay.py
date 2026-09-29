@@ -23,7 +23,7 @@ import numpy as np
 
 ROOT = Path(__file__).resolve().parents[1]
 TRAINING_DIR = ROOT / "training"
-DATA_ROOT = ROOT / "data" / "selfplay_canonical_v3"
+DATA_ROOT = ROOT / "data" / "selfplay"
 
 sys.path.insert(0, str(TRAINING_DIR))
 from read_selfplay import (  # noqa: E402
@@ -136,7 +136,7 @@ def parse_args():
     p.add_argument(
         "paths",
         nargs="*",
-        help="files or directories to audit. Default: data/selfplay_canonical_v3",
+        help="files or directories to audit. Default: data/selfplay",
     )
     p.add_argument(
         "--fail-on-legacy",

@@ -145,7 +145,7 @@ def sample_canonical_states(
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--source", type=Path, default=ROOT / "data/selfplay_canonical_v3")
+    parser.add_argument("--source", type=Path, default=ROOT / "data/selfplay")
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--count", type=int, required=True)
     parser.add_argument("--mode", choices=["crisis", "generic"], default="crisis")

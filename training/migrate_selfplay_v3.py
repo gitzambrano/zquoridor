@@ -24,8 +24,8 @@ sys.path.insert(0, str(ROOT / "training"))
 from read_selfplay import SAMPLE_DTYPE, SAMPLE_DTYPE_LEGACY, SAMPLE_DTYPE_V2, _detect_format
 
 CONFIG = {
-    "source": str(ROOT / "data" / "selfplay"),
-    "out_dir": str(ROOT / "data" / "selfplay_canonical_v3"),
+    "source": str(ROOT / "data" / "legacy_selfplay"),
+    "out_dir": str(ROOT / "data" / "selfplay"),
     "overwrite": False,
     "include_partial": False,
     "chunk_records": 262144,

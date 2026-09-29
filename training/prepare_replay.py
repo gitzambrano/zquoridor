@@ -2,7 +2,7 @@
 """Build a replay dataset from existing canonical self-play shards.
 
 Input:
-    ``data/selfplay_canonical_v3/<generation>/selfplay_*.bin`` (64-byte V3
+    ``data/selfplay/<generation>/selfplay_*.bin`` (64-byte V3
     records), plus the old NNUE weights and the pinned Claustrophobia
     checkpoint. With ``--mode stored_search``, each V3 shard must instead
     have an aligned 20-byte ``.meta`` sidecar; stored MCAB visits and root
@@ -48,7 +48,7 @@ from teachers.claustrophobia_inference_worker import infer
 from tools.external.bot_setup import ensure_bot
 
 CONFIG = {
-    "source": str(ROOT / "data/selfplay_canonical_v3/contact-4m-50ms"),
+    "source": str(ROOT / "data/selfplay/corpus-contact-4m-50ms"),
     "out_dir": str(ROOT / "data/teaching/replay_clean_stored"),
     "max_positions": 5000000,
     "seed": 20260914,

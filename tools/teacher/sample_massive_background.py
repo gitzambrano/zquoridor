@@ -27,7 +27,7 @@ from student_model import Student, encode_features
 from prepare_replay import legal_wall_topology, STATE_FIELDS
 
 CONFIG = {
-    "source": str(ROOT / "data/selfplay_canonical_v3"),
+    "source": str(ROOT / "data/selfplay"),
     "out": str(ROOT / "data/teaching/massive-background-sample/dataset.npz"),
     "champion": str(ROOT / "results/experiments/race512-search10-ft-s20260917/student.bin"),
     "target_positions": 2000000,
