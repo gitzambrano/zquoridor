@@ -90,7 +90,7 @@ int main(int argc, char** argv) {
 
     ProbeSearch search;
     search.params.treeReuse = true;
-    search.params.nodeBudget = 20000;
+    search.params.nodeBudget = nodeBudget;
     search.params.autoNodeBudget = false;
     search.params.adaptiveTime = false;
 
