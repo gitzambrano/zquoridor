@@ -1,7 +1,7 @@
 # Colab Worker Orchestration Suite
 
 This directory contains automated, headless Playwright tooling to inspect,
-bootstrap, and manage remote Google Colab self-play workers for Zquoridor.
+bootstrap, monitor, and manage remote Google Colab self-play workers for Zquoridor.
 
 ## Worker Registry
 
@@ -11,19 +11,9 @@ bootstrap, and manage remote Google Colab self-play workers for Zquoridor.
 | 4 | Colab 4 | `zquoridor@gmail.com` | [Notebook Colab 4](https://colab.research.google.com/drive/1nC1LOjwFm1LyeJtx4kxg6T7wQXym9FnA) | `c4_shard_*.bin` |
 | 5 | Colab 5 | `gustati2201@gmail.com` | [Notebook Colab 5](https://colab.research.google.com/drive/1cPMl8_zEi-el5GAE8sv2Bw3T6uKDwK1i) | `c5_shard_*.bin` |
 
-## Scripts
+## The 3 Core Tools
 
-### 1. `inspect_workers.py`
-Inspects the current state of all workers headlessly without interrupting ongoing runs:
-```bash
-python scripts/colab/inspect_workers.py
-```
-- Checks runtime connection state (`CONNECTED`, `CONNECTING`, `DISCONNECTED`).
-- Checks execution status (`ACTIVE RUNNING`, `PENDING VM`, `IDLE`).
-- Detects GPU quota exhaustion warnings.
-- Displays recent self-play progress (game count and positions).
-
-### 2. `launch_workers.py`
+### 1. Disparar: `launch_workers.py`
 Bootstraps workers with the resilient self-cloning cell code and starts generation:
 ```bash
 python scripts/colab/launch_workers.py
@@ -33,11 +23,32 @@ python scripts/colab/launch_workers.py
 - Updates Monaco and notebook cell models with the self-cloning bootloader.
 - Clicks the run button and dismisses confirmation dialogs.
 - Override flags:
-  - `--worker-ids 4 5`: Run specific workers.
+  - `--worker-ids 3 4 5`: Select specific workers.
   - `--force-restart`: Force re-execution even if the worker is currently running.
 
-### 3. `manage_runtime.py`
-Performs administrative operations on Colab notebook environments:
+### 2. Monitorar: `watchdog_workers.py`
+Continuous active watchdog and keep-alive monitor:
+```bash
+python scripts/colab/watchdog_workers.py
+```
+- Keeps persistent browser sessions open with periodic micro-interactions (mouse moves) to prevent Google Colab idle timeout disconnects.
+- Continuous loop reporting real-time game and position counts.
+- Detects VM disconnects and automatically reconnects and re-triggers execution.
+- Captures periodic health screenshots in `artifacts/colab/`.
+
+### 3. Reportar: `report_workers.py` (ou `inspect_workers.py`)
+Snapshot inspection and structured audit:
+```bash
+python scripts/colab/report_workers.py
+```
+- Audits runtime status (`CONNECTED`, `CONNECTING`, `DISCONNECTED`).
+- Audits execution status (`ACTIVE RUNNING`, `PENDING VM`, `IDLE`).
+- Parses live progress: current shard ID, games completed, positions generated, and speed metrics.
+- Saves clean visual screenshots for all workers to `artifacts/colab/`.
+- Generates a consolidated Markdown audit report at `artifacts/colab/report.md`.
+
+### Auxiliary Tool: `manage_runtime.py`
+Administrative operations on Colab notebook environments:
 ```bash
 # Switch accelerator from GPU to standard CPU (resolves quota blocks)
 python scripts/colab/manage_runtime.py --action switch-cpu
