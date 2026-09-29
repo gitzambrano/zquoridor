@@ -295,8 +295,8 @@ def train(config):
         raise ValueError("schedule must be constant or cosine")
     if config["weight_decay_schedule"] not in ("constant", "cosine"):
         raise ValueError("weight_decay_schedule must be constant or cosine")
-    if config["train_scope"] not in ("full", "policy", "heads"):
-        raise ValueError("train_scope must be full, policy, or heads")
+    if config["train_scope"] not in ("full", "policy", "heads", "value"):
+        raise ValueError("train_scope must be full, policy, heads, or value")
     path, folder = _path(config["data"]), _path(config["out_dir"])
     folder.mkdir(parents=True, exist_ok=True)
     data = load_dataset(path)
@@ -316,8 +316,15 @@ def train(config):
         model.warm_start(old)
     model.to(device)
     for name, param in model.named_parameters():
-        enabled = config["train_scope"] == "full" or name.startswith("policy.")
-        enabled |= config["train_scope"] == "heads" and name.startswith("value")
+        scope = config["train_scope"]
+        if scope == "full":
+            enabled = True
+        elif scope == "policy":
+            enabled = name.startswith("policy.")
+        elif scope == "heads":
+            enabled = name.startswith("policy.") or name.startswith("value")
+        else:  # value
+            enabled = name.startswith("value")
         param.requires_grad_(enabled)
     groups = []
     for name, param in model.named_parameters():
