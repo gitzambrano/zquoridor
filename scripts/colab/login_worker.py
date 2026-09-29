@@ -1,4 +1,4 @@
-"""Interactive login helper for Google Colab worker profiles.
+"""Interactive login helper for Google Colab worker profiles in Zquoridor.
 
 Opens a visible (headed) Chrome browser window with the worker's persistent profile,
 allows the user to complete Google authentication / 2FA without rushing, detects when
@@ -17,7 +17,13 @@ if str(CURRENT_DIR) not in sys.path:
     sys.path.insert(0, str(CURRENT_DIR))
 
 from config import WORKERS, BOOTLOADER_TEMPLATE
-from browser_utils import is_cdp_reachable, is_profile_in_use, dismiss_modals, connect_runtime_if_needed
+from browser_utils import (
+    is_cdp_reachable,
+    is_profile_in_use,
+    dismiss_modals,
+    connect_runtime_if_needed,
+    trigger_cell_execution,
+)
 
 CONFIG: Dict[str, Any] = {
     "worker_id": 4,
@@ -108,30 +114,8 @@ def login_and_wait(worker_id: int, timeout_s: int, trigger_after: bool) -> bool:
             connect_runtime_if_needed(page)
             time.sleep(4)
 
-            cell_code = BOOTLOADER_TEMPLATE.format(worker_id=worker_id)
-            trig_res = page.evaluate("""(code) => {
-                const cells = typeof colab !== 'undefined' && colab.global && colab.global.notebook && colab.global.notebook.cells ? colab.global.notebook.cells : [];
-                let targetCell = null;
-                for (let i = cells.length - 1; i >= 0; i--) {
-                    const txt = cells[i].getText();
-                    if (txt.includes('run_colab_worker.py') || txt.includes('selfplay_15m')) {
-                        targetCell = cells[i];
-                        break;
-                    }
-                }
-                if (!targetCell && cells.length > 0) targetCell = cells[cells.length - 1];
-
-                if (!targetCell) return { clicked: false, error: 'No cells' };
-
-                targetCell.model.setText(code);
-                if (targetCell.runButton) {
-                    targetCell.runButton.click();
-                    return { clicked: true };
-                }
-                return { clicked: false, error: 'Button not found' };
-            }""", cell_code)
-
-            print(f"  Cell trigger result: {trig_res}")
+            ok = trigger_cell_execution(page, worker_id, BOOTLOADER_TEMPLATE)
+            print(f"  Cell trigger result: {'Success' if ok else 'Failed'}")
             time.sleep(5)
             dismiss_modals(page)
 

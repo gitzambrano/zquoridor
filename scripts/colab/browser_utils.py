@@ -1,13 +1,14 @@
-"""Browser session utilities and safe Playwright helpers for Zquoridor Colab automation.
+"""Browser session utilities and safe Playwright helpers for Colab automation.
 
 Provides CDP connection fallback, profile lock detection, modal handling,
-and safe execution primitives without terminating active Chrome processes.
+DOM state inspection, and safe cell execution primitives without terminating
+active Chrome processes.
 """
 
 import os
 import socket
 import time
-from typing import Dict, Any, Optional, Tuple
+from typing import Dict, Any, Optional, Tuple, List
 import psutil
 
 
@@ -87,10 +88,10 @@ def connect_runtime_if_needed(page: Any) -> bool:
         return False
 
 
-def get_notebook_dom_state(page: Any, target_keywords: list = None) -> Dict[str, Any]:
+def get_notebook_dom_state(page: Any, target_keywords: Optional[List[str]] = None) -> Dict[str, Any]:
     """Inspect the Colab notebook DOM and extract runtime and cell execution state."""
     if target_keywords is None:
-        target_keywords = ["run_colab_worker.py", "selfplay_15m"]
+        target_keywords = ["run_colab_worker.py", "selfplay_15m", "Remessa 2", "selfplay"]
 
     return page.evaluate("""(keywords) => {
         const curUrl = window.location.href || '';
@@ -118,8 +119,9 @@ def get_notebook_dom_state(page: Any, target_keywords: list = None) -> Dict[str,
         let targetCell = null;
         let targetIndex = -1;
 
+        // Search backward for target cell matching keywords
         for (let i = cells.length - 1; i >= 0; i--) {
-            const txt = cells[i].getText() || '';
+            const txt = (cells[i] && typeof cells[i].getText === 'function') ? cells[i].getText() : '';
             for (const kw of keywords) {
                 if (txt.includes(kw)) {
                     targetCell = cells[i];
@@ -130,9 +132,22 @@ def get_notebook_dom_state(page: Any, target_keywords: list = None) -> Dict[str,
             if (targetCell) break;
         }
 
-        if (!targetCell && cells.length > 0) {
-            targetCell = cells[cells.length - 1];
-            targetIndex = cells.length - 1;
+        // DOM fallback if model is unavailable
+        if (!targetCell) {
+            const domCells = Array.from(document.querySelectorAll('colab-cell'));
+            for (let i = domCells.length - 1; i >= 0; i--) {
+                const txt = domCells[i].innerText || '';
+                for (const kw of keywords) {
+                    if (txt.includes(kw)) {
+                        targetIndex = i;
+                        break;
+                    }
+                }
+                if (targetIndex >= 0) break;
+            }
+            if (targetIndex === -1 && domCells.length > 0) {
+                targetIndex = domCells.length - 1;
+            }
         }
 
         const isRunningBtn = Array.from(document.querySelectorAll(
@@ -153,6 +168,11 @@ def get_notebook_dom_state(page: Any, target_keywords: list = None) -> Dict[str,
             const dom = targetCell.getElement ? targetCell.getElement() : (targetCell.element_ || targetCell.dom_);
             const outDiv = dom ? dom.querySelector('.output, colab-output, .output-stream, .output_text') : null;
             outText = outDiv ? outDiv.innerText.slice(-1200) : '';
+        } else {
+            const streams = Array.from(document.querySelectorAll('.output-stream, .output_text, colab-output'));
+            if (streams.length > 0) {
+                outText = streams[streams.length - 1].innerText.slice(-1200);
+            }
         }
 
         return {
@@ -166,11 +186,33 @@ def get_notebook_dom_state(page: Any, target_keywords: list = None) -> Dict[str,
     }""", target_keywords)
 
 
-def trigger_cell_execution(page: Any, worker_id: int, bootloader_template: str) -> bool:
-    """Inject bootloader code into the Colab target cell and trigger execution."""
-    code = bootloader_template.format(worker_id=worker_id)
+def trigger_cell_execution(
+    page: Any,
+    worker_or_id: Any,
+    bootloader_template: Optional[str] = None,
+    target_keywords: Optional[List[str]] = None,
+) -> bool:
+    """Inject bootloader code into the Colab target cell if template is given, and trigger execution."""
+    new_code: Optional[str] = None
+    if bootloader_template:
+        if isinstance(worker_or_id, dict):
+            wid = worker_or_id.get("worker_id", "")
+            profile = worker_or_id.get("profile", str(wid))
+            account_id = worker_or_id.get("account_id", 1)
+            fmt_kwargs = {**worker_or_id, "worker_id": wid, "profile": profile, "account_id": account_id}
+            new_code = bootloader_template.format(**fmt_kwargs)
+        else:
+            new_code = bootloader_template.format(worker_id=worker_or_id, profile=worker_or_id)
+
+    if target_keywords is None:
+        if isinstance(worker_or_id, dict) and "target_keywords" in worker_or_id:
+            target_keywords = worker_or_id["target_keywords"]
+        else:
+            target_keywords = ["run_colab_worker.py", "selfplay_15m", "zquoridor", "Remessa 2", "zchezz"]
+
     try:
-        res = page.evaluate("""(newCode) => {
+        res = page.evaluate("""(data) => {
+            const { newCode, keywords } = data;
             const nb = typeof colab !== 'undefined' && colab.global ? colab.global.notebook : null;
             if (!nb || !nb.cells || nb.cells.length === 0) return { success: false, reason: 'no_cells' };
 
@@ -178,10 +220,13 @@ def trigger_cell_execution(page: Any, worker_id: int, bootloader_template: str) 
             let targetCell = null;
             for (let i = cells.length - 1; i >= 0; i--) {
                 const txt = cells[i].getText ? cells[i].getText() : '';
-                if (txt.includes('run_colab_worker.py') || txt.includes('selfplay_15m') || txt.includes('zquoridor')) {
-                    targetCell = cells[i];
-                    break;
+                for (const kw of keywords) {
+                    if (txt.includes(kw)) {
+                        targetCell = cells[i];
+                        break;
+                    }
                 }
+                if (targetCell) break;
             }
             if (!targetCell) {
                 targetCell = cells[cells.length - 1];
@@ -191,18 +236,23 @@ def trigger_cell_execution(page: Any, worker_id: int, bootloader_template: str) 
                 return { success: true, alreadyRunning: true };
             }
 
-            if (targetCell.model && targetCell.model.setText) {
-                targetCell.model.setText(newCode);
-            }
-            if (targetCell.model && targetCell.model.removeOutputs) {
-                targetCell.model.removeOutputs();
-            }
+            if (newCode) {
+                if (targetCell.model && targetCell.model.setText) {
+                    targetCell.model.setText(newCode);
+                }
+                if (targetCell.model && targetCell.model.removeOutputs) {
+                    targetCell.model.removeOutputs();
+                }
 
-            if (typeof monaco !== 'undefined') {
-                for (const m of monaco.editor.getModels()) {
-                    const val = m.getValue ? m.getValue() : '';
-                    if (val.includes('run_colab_worker.py') || val.includes('selfplay_15m') || val.includes('zquoridor')) {
-                        m.setValue(newCode);
+                if (typeof monaco !== 'undefined') {
+                    for (const m of monaco.editor.getModels()) {
+                        const val = m.getValue ? m.getValue() : '';
+                        for (const kw of keywords) {
+                            if (val.includes(kw)) {
+                                m.setValue(newCode);
+                                break;
+                            }
+                        }
                     }
                 }
             }
@@ -227,10 +277,9 @@ def trigger_cell_execution(page: Any, worker_id: int, bootloader_template: str) 
                 }
             }
             return { success: false, reason: 'no_run_method' };
-        }""", code)
+        }""", {"newCode": new_code, "keywords": target_keywords})
         time.sleep(3)
         dismiss_modals(page)
         return res.get("success", False) if isinstance(res, dict) else False
     except Exception:
         return False
-
