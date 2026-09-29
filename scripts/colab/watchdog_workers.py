@@ -10,7 +10,7 @@ import sys
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional
 
 # Ensure scripts root is in path
 CURRENT_DIR = Path(__file__).resolve().parent
@@ -44,6 +44,56 @@ def create_artifacts_dir(dir_path: str) -> Path:
     return p
 
 
+def init_worker_session(p: Any, worker: Dict[str, Any], headless: bool, timeout_ms: int) -> Optional[Dict[str, Any]]:
+    """Initialize or attach to a persistent browser session for a Colab worker."""
+    wid = worker["worker_id"]
+    cdp_port = worker.get("cdp_port", 9000 + wid)
+    print(f"Initializing session for {worker['name']} (Worker #{wid})...")
+
+    cdp_active = is_cdp_reachable(cdp_port)
+    in_use, proc_pid = is_profile_in_use(worker["profile_dir"])
+
+    if in_use and not cdp_active:
+        print(f"  [WARN] Profile for {worker['name']} is locked by external process PID {proc_pid}.")
+        return None
+
+    try:
+        if cdp_active:
+            print(f"  Attaching over live CDP on port {cdp_port}...")
+            browser = p.chromium.connect_over_cdp(f"http://127.0.0.1:{cdp_port}")
+            ctx = browser.contexts[0] if browser.contexts else browser.new_context()
+            page = ctx.pages[0] if ctx.pages else ctx.new_page()
+            is_cdp = True
+        else:
+            ctx = p.chromium.launch_persistent_context(
+                user_data_dir=worker["profile_dir"],
+                headless=headless,
+                channel="chrome",
+                args=[
+                    f"--remote-debugging-port={cdp_port}",
+                    "--no-sandbox",
+                    "--disable-gpu",
+                    "--remote-allow-origins=*",
+                ],
+            )
+            page = ctx.pages[0] if ctx.pages else ctx.new_page()
+            page.goto(worker["notebook_url"], wait_until="commit", timeout=timeout_ms)
+            is_cdp = False
+
+        print(f"  Connected to {worker['name']}.")
+        return {
+            "worker": worker,
+            "ctx": ctx,
+            "page": page,
+            "is_cdp": is_cdp,
+            "reconnect_count": 0,
+            "last_progress": "Initializing...",
+        }
+    except Exception as exc:
+        print(f"  [ERROR] Failed to initialize {worker['name']}: {exc}")
+        return None
+
+
 def run_watchdog(cfg: Dict[str, Any]) -> None:
     from playwright.sync_api import sync_playwright
 
@@ -62,60 +112,14 @@ def run_watchdog(cfg: Dict[str, Any]) -> None:
     print("=" * 70)
 
     with sync_playwright() as p:
-        sessions: Dict[int, Dict[str, Any]] = {}
+        sessions: Dict[int, Optional[Dict[str, Any]]] = {}
 
         # 1. Initialize persistent contexts or attach via CDP
         for wid in worker_ids:
-            w = WORKERS[wid]
-            cdp_port = w.get("cdp_port", 9000 + wid)
-            print(f"Initializing session for {w['name']} (Worker #{wid})...")
+            sessions[wid] = init_worker_session(p, WORKERS[wid], cfg["headless"], cfg["page_timeout_ms"])
 
-            cdp_active = is_cdp_reachable(cdp_port)
-            in_use, proc_pid = is_profile_in_use(w["profile_dir"])
-
-            if in_use and not cdp_active:
-                print(f"  [WARN] Profile for {w['name']} is locked by external process PID {proc_pid}.")
-                print(f"  Skipping direct control. Active watchdog for other workers will continue.")
-                continue
-
-            try:
-                if cdp_active:
-                    print(f"  Attaching over live CDP on port {cdp_port}...")
-                    browser = p.chromium.connect_over_cdp(f"http://127.0.0.1:{cdp_port}")
-                    ctx = browser.contexts[0] if browser.contexts else browser.new_context()
-                    page = ctx.pages[0] if ctx.pages else ctx.new_page()
-                    is_cdp = True
-                else:
-                    ctx = p.chromium.launch_persistent_context(
-                        user_data_dir=w["profile_dir"],
-                        headless=cfg["headless"],
-                        channel="chrome",
-                        args=[
-                            f"--remote-debugging-port={cdp_port}",
-                            "--no-sandbox",
-                            "--disable-gpu",
-                            "--remote-allow-origins=*",
-                        ],
-                    )
-                    page = ctx.pages[0] if ctx.pages else ctx.new_page()
-                    page.goto(w["notebook_url"], wait_until="commit", timeout=cfg["page_timeout_ms"])
-                    is_cdp = False
-
-                sessions[wid] = {
-                    "worker": w,
-                    "ctx": ctx,
-                    "page": page,
-                    "is_cdp": is_cdp,
-                    "reconnect_count": 0,
-                    "last_progress": "Initializing...",
-                }
-                print(f"  Connected to {w['name']}.")
-            except Exception as exc:
-                print(f"  [ERROR] Failed to initialize {w['name']}: {exc}")
-
-        if not sessions:
-            print("[WATCHDOG] No sessions could be initialized. Exiting.")
-            return
+        if not any(sessions.values()):
+            print("[WATCHDOG] No sessions could be initialized. Retrying in main loop...")
 
         time.sleep(10)
         cycle = 0
@@ -127,8 +131,23 @@ def run_watchdog(cfg: Dict[str, Any]) -> None:
                 now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                 print(f"\n--- [Cycle {cycle:04d}] {now_str} ---")
 
-                for wid, sess in sessions.items():
-                    w = sess["worker"]
+                for wid in worker_ids:
+                    w = WORKERS[wid]
+                    sess = sessions.get(wid)
+
+                    # Auto-recover dead or closed browser sessions
+                    if sess is None or sess.get("page") is None or sess["page"].is_closed():
+                        print(f"[{w['name']}] Session missing or closed. Recovering...")
+                        try:
+                            if sess and not sess.get("is_cdp") and sess.get("ctx"):
+                                sess["ctx"].close()
+                        except Exception:
+                            pass
+                        sess = init_worker_session(p, w, cfg["headless"], cfg["page_timeout_ms"])
+                        sessions[wid] = sess
+                        if not sess:
+                            continue
+
                     page = sess["page"]
 
                     try:
@@ -218,6 +237,15 @@ def run_watchdog(cfg: Dict[str, Any]) -> None:
 
                     except Exception as err:
                         print(f"[{w['name']}] [ERROR in cycle {cycle}]: {err}")
+                        err_str = str(err).lower()
+                        if any(k in err_str for k in ["closed", "target", "connection closed", "session"]):
+                            print(f"[{w['name']}] Connection lost. Resetting session for next cycle recovery...")
+                            try:
+                                if sess and not sess.get("is_cdp") and sess.get("ctx"):
+                                    sess["ctx"].close()
+                            except Exception:
+                                pass
+                            sessions[wid] = None
 
                 sys.stdout.flush()
                 time.sleep(cfg["check_interval_seconds"])
@@ -227,11 +255,12 @@ def run_watchdog(cfg: Dict[str, Any]) -> None:
         finally:
             for wid, sess in sessions.items():
                 try:
-                    if sess.get("is_cdp"):
-                        sess["ctx"].browser.disconnect()
-                    else:
-                        sess["ctx"].close()
-                    print(f"Closed session for Worker #{wid}.")
+                    if sess:
+                        if sess.get("is_cdp"):
+                            sess["ctx"].browser.disconnect()
+                        elif sess.get("ctx"):
+                            sess["ctx"].close()
+                        print(f"Closed session for Worker #{wid}.")
                 except Exception:
                     pass
             print("[WATCHDOG] All sessions closed.")
