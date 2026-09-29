@@ -1,0 +1,104 @@
+name: Sidestep NNUE Regression Probe
+
+on:
+  push:
+    branches:
+      - "bench/sidestep-network-probe-20260929"
+    paths:
+      - ".github/workflows/sidestep-network-probe.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout diagnostics
+        uses: actions/checkout@v4
+      - name: Checkout pre-2.10
+        uses: actions/checkout@v4
+        with:
+          ref: a742db9e1f8e7ef71174bc11784706a7508d8e1b
+          path: pre210
+      - name: Checkout 2.10
+        uses: actions/checkout@v4
+        with:
+          ref: a0def30e725b34c19eec07e54719af989f290063
+          path: v210
+
+      - name: Compile identical network probes
+        run: |
+          g++ -O3 -std=c++17 -Ipre210/src tools/diagnostics/sidestep_network_probe.cpp -o pre210_probe
+          g++ -O3 -std=c++17 -Iv210/src tools/diagnostics/sidestep_network_probe.cpp -o v210_probe
+
+      - name: Probe matched regression roots
+        run: |
+          python - <<'PY'
+          import json, subprocess
+          from pathlib import Path
+
+          roots = [
+            {"id":"cat32_white_immediate",
+             "moves":"e2 e8 e3 e7 e4 e6 f4 d6 e4v f6h".split(),
+             "focus":["f5","d4h"]},
+            {"id":"cat31_white_immediate",
+             "moves":"e2 e8 e3 e7 e4 e6 d4 f6 d4v c6h".split(),
+             "focus":["e4h","f2h"]},
+            {"id":"cat28_white_late",
+             "moves":"e2 e8 e3 e7 e4 e6 f4 f6 f5h e6 e4 e6v e3h e5 c3h d5h f4v e8v b4v b6h".split(),
+             "focus":["d5","a2h"]},
+            {"id":"cat29_black_late",
+             "moves":"e2 e8 e3 e7 e4 e6 d4 e5 d4v c5h e4h e5h g4h a5h g5v d2v g7v".split(),
+             "focus":["c3h","c1h","c2h"]},
+            {"id":"cat27_black_beneficial",
+             "moves":"e2 e8 e3 e7 e4 e6 d4 d6 d5h".split(),
+             "focus":["a6h","c6h"]},
+            {"id":"cat30_black_persistent",
+             "moves":"e2 e8 e3 e7 e4 e6 f4 e5 e4v".split(),
+             "focus":["f5h","d5h"]},
+          ]
+
+          versions = {
+            "pre210": ("./pre210_probe","pre210/data/nnue/nnue_weights_int8.bin"),
+            "v210": ("./v210_probe","v210/data/nnue/nnue_weights_int8.bin"),
+          }
+          out={}
+          for root in roots:
+              out[root["id"]]={"history":root["moves"],"focus":root["focus"]}
+              for version,(exe,weights) in versions.items():
+                  raw=subprocess.check_output([exe,"--nnue",weights,*root["moves"]],text=True)
+                  data=json.loads(raw)
+                  by={m["move"]:m for m in data["moves"]}
+                  prior_rank={m["move"]:i+1 for i,m in enumerate(sorted(data["moves"],key=lambda x:x["prior"],reverse=True))}
+                  q_rank={m["move"]:i+1 for i,m in enumerate(sorted(data["moves"],key=lambda x:x["q1"],reverse=True))}
+                  data["focus"]={m:{**by[m],"prior_rank":prior_rank[m],"q1_rank":q_rank[m]} for m in root["focus"] if m in by}
+                  data["top_policy"]=sorted(data["moves"],key=lambda x:x["prior"],reverse=True)[:8]
+                  data["top_q1"]=sorted(data["moves"],key=lambda x:x["q1"],reverse=True)[:8]
+                  del data["moves"]
+                  out[root["id"]][version]=data
+
+          Path("probe.json").write_text(json.dumps(out,indent=2)+"\n")
+
+          lines=["# Sidestep NNUE regression probe",""]
+          for rid,r in out.items():
+              lines += [f"## {rid}", "", f"History: `{' '.join(r['history'])}`", "",
+                        "| Move | pre prior/rank | 2.10 prior/rank | pre Q1/rank | 2.10 Q1/rank |",
+                        "|---|---:|---:|---:|---:|"]
+              for m in r["focus"]:
+                  a=r["pre210"]["focus"].get(m); b=r["v210"]["focus"].get(m)
+                  if not a or not b: continue
+                  lines.append(f"| {m} | {100*a['prior']:.2f}% / {a['prior_rank']} | {100*b['prior']:.2f}% / {b['prior_rank']} | {a['q1']:.4f} / {a['q1_rank']} | {b['q1']:.4f} / {b['q1_rank']} |")
+              lines += ["", f"Root WL: pre={r['pre210']['root_winprob']:.4f}, 2.10={r['v210']['root_winprob']:.4f}", ""]
+          Path("probe.md").write_text("\n".join(lines)+"\n")
+          print("\n".join(lines))
+          PY
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sidestep-network-probe
+          path: |
+            probe.json
+            probe.md
+          retention-days: 14
