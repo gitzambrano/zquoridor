@@ -54,8 +54,11 @@ jobs:
         run: |
           python - <<'PY'
           import json, os
-          row={"schema":"zquoridor.opening.v1","opening_index":0,"moves":json.loads(os.environ["MOVES"]),"category":os.environ["NAME"],"description":os.environ["NAME"]}
-          open("forced.jsonl","w").write(json.dumps(row)+"\n")
+          moves=json.loads(os.environ["MOVES"])
+          with open("forced.jsonl","w") as f:
+              for i in range(20):
+                  row={"schema":"zquoridor.opening.v1","opening_index":i,"moves":moves,"category":os.environ["NAME"],"description":os.environ["NAME"]}
+                  f.write(json.dumps(row)+"\\n")
           PY
       - name: Run 40 games
         run: |
