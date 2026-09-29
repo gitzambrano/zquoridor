@@ -58,7 +58,7 @@ jobs:
           with open("forced.jsonl","w") as f:
               for i in range(20):
                   row={"schema":"zquoridor.opening.v1","opening_index":i,"moves":moves,"category":os.environ["NAME"],"description":os.environ["NAME"]}
-                  f.write(json.dumps(row)+"\\n")
+                  f.write(json.dumps(row)+"\n")
           PY
       - name: Run 40 games
         run: |
