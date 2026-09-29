@@ -1,0 +1,119 @@
+name: Sidestep NNUE root-cause probe
+
+on:
+  push:
+    branches:
+      - "bench/sidestep-root-cause-20260929"
+    paths:
+      - ".github/workflows/sidestep-root-cause.yml"
+      - "tools/debug/sidestep_probe.cpp"
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: pre210
+            ref: a742db9e1f8e7ef71174bc11784706a7508d8e1b
+          - label: v210
+            ref: a0def30e725b34c19eec07e54719af989f290063
+
+    steps:
+      - name: Checkout probe branch
+        uses: actions/checkout@v4
+
+      - name: Checkout engine ref
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ matrix.ref }}
+          path: engine
+
+      - name: Build probe against selected ref
+        run: |
+          g++ -O3 -std=c++17 -I engine/src tools/debug/sidestep_probe.cpp -o sidestep_probe
+
+      - name: Run root probe
+        run: |
+          ./sidestep_probe "${{ matrix.label }}" engine/data/nnue/nnue_weights_int8.bin | tee "${{ matrix.label }}.jsonl"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sidestep-root-${{ matrix.label }}
+          path: ${{ matrix.label }}.jsonl
+          retention-days: 7
+
+  aggregate:
+    needs: probe
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: sidestep-root-*
+          path: dumps
+
+      - name: Compare policy, value and root search
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          from collections import defaultdict
+
+          rows=[]
+          for p in Path("dumps").rglob("*.jsonl"):
+              rows += [json.loads(x) for x in p.read_text().splitlines() if x.strip()]
+          roots={(r["label"],r["opening"],r["mode"]):r for r in rows if r["type"]=="root"}
+          edges=defaultdict(dict)
+          for r in rows:
+              if r["type"]=="edge":
+                  edges[(r["label"],r["opening"],r["mode"])][r["move"]]=r
+
+          report=[]
+          for op in [27,28,29,30,31,32]:
+              for mode in ["nodes6000","time200"]:
+                  a=roots[("pre210",op,mode)]
+                  b=roots[("v210",op,mode)]
+                  moves=set(edges[("pre210",op,mode)]) | set(edges[("v210",op,mode)])
+                  rec={
+                    "opening":op,"mode":mode,
+                    "pre_chosen":a["chosen"],"v210_chosen":b["chosen"],
+                    "pre_root_value":a["root_value"],"v210_root_value":b["root_value"],
+                    "pre_nodes":a["nodes_expanded"],"v210_nodes":b["nodes_expanded"],
+                    "moves":[]
+                  }
+                  for m in moves:
+                      ea=edges[("pre210",op,mode)].get(m)
+                      eb=edges[("v210",op,mode)].get(m)
+                      if not ea or not eb: continue
+                      if ea["N"]>0 or eb["N"]>0 or ea["chosen"] or eb["chosen"]:
+                          rec["moves"].append({
+                            "move":m,
+                            "pre_raw_prior":ea["raw_prior"],
+                            "v210_raw_prior":eb["raw_prior"],
+                            "pre_child_value_root":ea["child_value_root"],
+                            "v210_child_value_root":eb["child_value_root"],
+                            "pre_N":ea["N"],"v210_N":eb["N"],
+                            "pre_Q":ea["Q"],"v210_Q":eb["Q"],
+                            "pre_chosen":ea["chosen"],"v210_chosen":eb["chosen"],
+                          })
+                  rec["moves"].sort(key=lambda x:max(x["pre_N"],x["v210_N"]), reverse=True)
+                  report.append(rec)
+
+          Path("comparison.json").write_text(json.dumps(report,indent=2)+"\n")
+          for r in report:
+              print(f"OPEN {r['opening']} {r['mode']}: {r['pre_chosen']} -> {r['v210_chosen']}  rootV {r['pre_root_value']:.4f}->{r['v210_root_value']:.4f}")
+              for m in r["moves"][:8]:
+                  print(f"  {m['move']:4s} prior {m['pre_raw_prior']:.4f}->{m['v210_raw_prior']:.4f} childV {m['pre_child_value_root']:.4f}->{m['v210_child_value_root']:.4f} N {m['pre_N']:.0f}->{m['v210_N']:.0f} Q {m['pre_Q']:.4f}->{m['v210_Q']:.4f}")
+          PY
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sidestep-root-comparison
+          path: comparison.json
+          retention-days: 14
