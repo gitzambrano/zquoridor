@@ -5,7 +5,7 @@ on:
     branches:
       - "bench/sidestep-root-diagnostic-20260929"
     paths:
-      - ".github/workflows/sidestep-critical-divergences.yml"
+      - ".github/workflows/sidestep-critical-divergences.yml"\n      - "benchmarks/root_probe_nnue.cpp"
 
 permissions:
   contents: read
@@ -46,28 +46,28 @@ jobs:
               "id": "28_white_ply20",
               "opening": 28,
               "history": "e2 e8 e3 e7 e4 e6 f4 f6 f5h e6 e4 e6v e3h e5 c3h d5h f4v e8v b4v b6h".split(),
-              "pre_move": "d5", "v210_move": "a2h",
+              "pre_move": "d5", "v210_move": "a2h", "nodes": 7200,
               "effect": "pre wins all 4 white games; 2.10 loses all 4"
             },
             {
               "id": "29_black_ply17",
               "opening": 29,
               "history": "e2 e8 e3 e7 e4 e6 d4 e5 d4v c5h e4h e5h g4h a5h g5v d2v g7v".split(),
-              "pre_move": "c3h", "v210_move": "c2h",
+              "pre_move": "c3h", "v210_move": "c2h", "nodes": 6000,
               "effect": "pre wins all 3 black games; 2.10 loses 2 of 3"
             },
             {
               "id": "32_white_ply10",
               "opening": 32,
               "history": "e2 e8 e3 e7 e4 e6 f4 d6 e4v f6h".split(),
-              "pre_move": "f5", "v210_move": "d4h",
+              "pre_move": "f5", "v210_move": "d4h", "nodes": 7150,
               "effect": "pre wins all 3 white games; 2.10 loses all 3"
             },
             {
               "id": "27_black_ply9_gain",
               "opening": 27,
               "history": "e2 e8 e3 e7 e4 e6 d4 d6 d5h".split(),
-              "pre_move": "a6h", "v210_move": "c6h",
+              "pre_move": "a6h", "v210_move": "c6h", "nodes": 6650,
               "effect": "2.10 gain: current wins all 3; pre loses 1 of 3"
             }
           ]
@@ -75,7 +75,7 @@ jobs:
           out=[]
           for pos in positions:
               cp=subprocess.run(
-                  ["./root_probe","engine/data/nnue/nnue_weights_int8.bin",*pos["history"]],
+                  ["./root_probe","engine/data/nnue/nnue_weights_int8.bin","--nodes",str(pos["nodes"]),*pos["history"]],
                   check=True,text=True,capture_output=True)
               parsed={**pos,"label":os.environ["LABEL"],"edges":[]}
               for line in cp.stdout.splitlines():
