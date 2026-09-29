@@ -42,7 +42,7 @@ DEFAULT_FAMILY_FLOOR = 400_000
 # Edit this block to run the controller without CLI options. CLI options override
 # these values for one invocation. Paths are deliberately relative to ROOT.
 CONFIG = {
-    "out": "data/selfplay_canonical_v3/contact-4m-50ms",
+    "out": "data/selfplay/corpus-contact-4m-50ms",
     "exe": "bin/selfplay_phase_mcgs075.exe",
     "exe_arg": [],
     # Optional mode transition. The replacement executable must match the weights.
@@ -53,8 +53,8 @@ CONFIG = {
                                "--mc-temp-end", "0.12", "--mc-temp-decay-plies", "20",
                                "--epsilon-midgame", "0", "--mcab"],
     "weights": "results/experiments/multipath-phase512-searchboost-100ep/student_int8.bin",
-    "central_schedule": "data/selfplay_canonical_v3/contact-4m-50ms/schedules/central_positions.jsonl",
-    "broad_schedule": "data/selfplay_canonical_v3/contact-4m-50ms/schedules/broad_positions.jsonl",
+    "central_schedule": "data/selfplay/corpus-contact-4m-50ms/schedules/central_positions.jsonl",
+    "broad_schedule": "data/selfplay/corpus-contact-4m-50ms/schedules/broad_positions.jsonl",
     "weakness_corpus": [],
     "total_target": 8_516_655, "central_target": 6_016_655,
     "broad_target": 2_500_000, "family_floor": DEFAULT_FAMILY_FLOOR,

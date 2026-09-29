@@ -236,7 +236,7 @@ versioned; the rest are intentionally local.
 ## 5. Work running now
 
 `tools/teacher/run_four_million_selfplay.py` is the generic controller for the
-local `contact-4m-50ms` V3 corpus with the selected executable and weights.
+local `corpus-contact-4m-50ms` V3 corpus with the selected executable and weights.
 The audit snapshot contains 4,329,982 unique states, approximately 55% central.
 Preserve these states and correct the composition through subsequent shards:
 
@@ -330,7 +330,7 @@ The large-scale canonical self-play generation run (`tools/teacher/run_four_mill
 - **Broad Quota**: Exactly **2,500,000** unique states.
 - **Corpus Shards**: 1,315 shards (`shard_000000.bin` to `shard_001314.bin`).
 - **Store Counters**: 14,877,910 raw records evaluated; 6,361,255 duplicates; 96,148 replaced; 6,265,107 equal; 0 rejected.
-- **Durable Store**: `data/selfplay_canonical_v3/contact-4m-50ms/states.sqlite` (2.89 GB).
+- **Durable Store**: `data/selfplay/corpus-contact-4m-50ms/states.sqlite` (2.89 GB).
 
 ### Unified champion training (`multipath_unified_champion`)
 

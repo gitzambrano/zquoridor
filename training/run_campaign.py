@@ -27,7 +27,7 @@ from tools import run_benchmark
 
 CONFIG = {
     "out_dir": str(ROOT / "results/campaign-million-parallel"),
-    "source": str(ROOT / "data/selfplay_canonical_v3"),
+    "source": str(ROOT / "data/selfplay"),
     "positions": 1000000,
     "fresh_positions": 16384,
     "fresh_games": 1024,

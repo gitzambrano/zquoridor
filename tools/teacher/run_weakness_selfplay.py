@@ -15,7 +15,7 @@ RECORD_BYTES = 64
 # Edit this block for a generic resumable weakness corpus. CLI options override it.
 CONFIG = {
     "positions": "data/teaching/weakness/positions.jsonl",
-    "out": "data/selfplay_canonical_v3/weakness",
+    "out": "data/selfplay/weakness",
     "exe": "bin/selfplay.exe",
     "weights": "data/nnue/nnue_weights_int8.bin",
     "target": 500_000,

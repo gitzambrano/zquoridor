@@ -181,7 +181,7 @@ def mine_tier3_5_critical(
 
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--selfplay-dir", type=Path, default=ROOT / "data/selfplay_canonical_v3")
+    parser.add_argument("--selfplay-dir", type=Path, default=ROOT / "data/selfplay")
     parser.add_argument("--out", type=Path, default=ROOT / "data/teaching/tier3-5-generic-critical-100k/positions.jsonl")
     parser.add_argument("--count", type=int, default=100000)
     parser.add_argument("--val-fraction", type=float, default=0.15)
