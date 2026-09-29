@@ -1,0 +1,186 @@
+name: Sidestep NNUE Root Diagnostic
+
+on:
+  push:
+    branches:
+      - "bench/sidestep-root-diagnostic-20260929"
+    paths:
+      - ".github/workflows/sidestep-root-diagnostic.yml"
+      - "benchmarks/root_probe_nnue.cpp"
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: pre210
+            ref: a742db9e1f8e7ef71174bc11784706a7508d8e1b
+          - label: v210
+            ref: a0def30e725b34c19eec07e54719af989f290063
+    steps:
+      - name: Checkout diagnostic harness
+        uses: actions/checkout@v4
+
+      - name: Checkout engine ref
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ matrix.ref }}
+          path: engine
+
+      - name: Build probe
+        run: |
+          g++ -O3 -DNDEBUG -std=c++17 -pthread -Iengine/src \
+            benchmarks/root_probe_nnue.cpp -o root_probe
+
+      - name: Probe six sidestep roots
+        env:
+          LABEL: ${{ matrix.label }}
+          REF: ${{ matrix.ref }}
+        run: |
+          python - <<'PY'
+          import json, os, subprocess
+          from pathlib import Path
+
+          rows = [
+            json.loads(x) for x in Path("tools/external/openings_center_rush_50pairs.jsonl").read_text().splitlines()
+            if x.strip()
+          ]
+          rows = [r for r in rows if r.get("category") == "sidestep_flank"]
+
+          out = []
+          for r in rows:
+              cmd = ["./root_probe", "engine/data/nnue/nnue_weights_int8.bin", *r["moves"]]
+              cp = subprocess.run(cmd, check=True, text=True, capture_output=True)
+              parsed = {"label": os.environ["LABEL"], "ref": os.environ["REF"],
+                        "opening_index": r["opening_index"], "moves": r["moves"],
+                        "description": r.get("description",""), "edges": []}
+              for line in cp.stdout.splitlines():
+                  parts = line.split("\t")
+                  if not parts:
+                      continue
+                  if parts[0] == "ROOT":
+                      parsed["chosen"] = parts[1]
+                      parsed["root_value"] = float(parts[2])
+                      parsed["simulations"] = int(parts[3])
+                      parsed["nodes_expanded"] = int(parts[4])
+                  elif parts[0] == "EDGE":
+                      parsed["edges"].append({
+                          "move": parts[1],
+                          "prior": float(parts[2]),
+                          "child_value_parent": float(parts[3]),
+                          "visits": float(parts[4]),
+                          "q": float(parts[5]),
+                      })
+              parsed["edges_by_prior"] = sorted(parsed["edges"], key=lambda x: x["prior"], reverse=True)
+              parsed["edges_by_child_value"] = sorted(parsed["edges"], key=lambda x: x["child_value_parent"], reverse=True)
+              parsed["edges_by_visits"] = sorted(parsed["edges"], key=lambda x: x["visits"], reverse=True)
+              parsed["edges_by_q"] = sorted([x for x in parsed["edges"] if x["visits"] > 0], key=lambda x: x["q"], reverse=True)
+              out.append(parsed)
+
+          Path("sidestep_probe.json").write_text(json.dumps(out, indent=2) + "\n")
+          for p in out:
+              print("OPENING", p["opening_index"], "chosen", p["chosen"], "root", p["root_value"])
+              print("  PRIOR", [(x["move"], round(x["prior"],4)) for x in p["edges_by_prior"][:5]])
+              print("  VALUE", [(x["move"], round(x["child_value_parent"],4)) for x in p["edges_by_child_value"][:5]])
+              print("  VISIT", [(x["move"], int(x["visits"]), round(x["q"],4)) for x in p["edges_by_visits"][:5]])
+          PY
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sidestep-probe-${{ matrix.label }}
+          path: sidestep_probe.json
+          retention-days: 14
+
+  aggregate:
+    runs-on: ubuntu-latest
+    needs: probe
+    timeout-minutes: 10
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: sidestep-probe-*
+          path: probes
+
+      - name: Compare pre-2.10 and 2.10
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          def load(label):
+              p = next(Path("probes").glob(f"sidestep-probe-{label}/sidestep_probe.json"))
+              return {x["opening_index"]: x for x in json.loads(p.read_text())}
+
+          a = load("pre210")
+          b = load("v210")
+          report = []
+          for idx in sorted(a):
+              x, y = a[idx], b[idx]
+              def bymove(p):
+                  return {e["move"]: e for e in p["edges"]}
+              ax, bx = bymove(x), bymove(y)
+              moves = sorted(set(ax) & set(bx))
+              diffs = []
+              for m in moves:
+                  diffs.append({
+                      "move": m,
+                      "prior_pre210": ax[m]["prior"],
+                      "prior_v210": bx[m]["prior"],
+                      "delta_prior": bx[m]["prior"] - ax[m]["prior"],
+                      "value_pre210": ax[m]["child_value_parent"],
+                      "value_v210": bx[m]["child_value_parent"],
+                      "delta_value": bx[m]["child_value_parent"] - ax[m]["child_value_parent"],
+                      "visits_pre210": ax[m]["visits"],
+                      "visits_v210": bx[m]["visits"],
+                      "q_pre210": ax[m]["q"],
+                      "q_v210": bx[m]["q"],
+                  })
+              row = {
+                  "opening_index": idx,
+                  "moves": x["moves"],
+                  "chosen_pre210": x["chosen"],
+                  "chosen_v210": y["chosen"],
+                  "root_value_pre210": x["root_value"],
+                  "root_value_v210": y["root_value"],
+                  "root_value_delta": y["root_value"] - x["root_value"],
+                  "top_prior_pre210": x["edges_by_prior"][:5],
+                  "top_prior_v210": y["edges_by_prior"][:5],
+                  "top_value_pre210": x["edges_by_child_value"][:5],
+                  "top_value_v210": y["edges_by_child_value"][:5],
+                  "top_visits_pre210": x["edges_by_visits"][:5],
+                  "top_visits_v210": y["edges_by_visits"][:5],
+                  "move_diffs": diffs,
+              }
+              report.append(row)
+
+          Path("sidestep_comparison.json").write_text(json.dumps(report, indent=2) + "\n")
+
+          lines = ["# Sidestep root diagnostic", ""]
+          for r in report:
+              lines.append(f"## Opening {r['opening_index']}")
+              lines.append(f"- chosen: pre-2.10 \`{r['chosen_pre210']}\` -> 2.10 \`{r['chosen_v210']}\`")
+              lines.append(f"- root value: {r['root_value_pre210']:.4f} -> {r['root_value_v210']:.4f} ({r['root_value_delta']:+.4f})")
+              lines.append("- top prior pre: " + ", ".join(f"{x['move']} {x['prior']:.3f}" for x in r["top_prior_pre210"][:3]))
+              lines.append("- top prior 2.10: " + ", ".join(f"{x['move']} {x['prior']:.3f}" for x in r["top_prior_v210"][:3]))
+              lines.append("- top value pre: " + ", ".join(f"{x['move']} {x['child_value_parent']:.3f}" for x in r["top_value_pre210"][:3]))
+              lines.append("- top value 2.10: " + ", ".join(f"{x['move']} {x['child_value_parent']:.3f}" for x in r["top_value_v210"][:3]))
+              lines.append("- top visits pre: " + ", ".join(f"{x['move']} {int(x['visits'])} Q={x['q']:.3f}" for x in r["top_visits_pre210"][:3]))
+              lines.append("- top visits 2.10: " + ", ".join(f"{x['move']} {int(x['visits'])} Q={x['q']:.3f}" for x in r["top_visits_v210"][:3]))
+              lines.append("")
+          Path("sidestep_comparison.md").write_text("\n".join(lines) + "\n")
+          print("\n".join(lines))
+          PY
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sidestep-root-comparison
+          path: |
+            sidestep_comparison.json
+            sidestep_comparison.md
+          retention-days: 14
