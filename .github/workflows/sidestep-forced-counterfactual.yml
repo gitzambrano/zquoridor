@@ -1,0 +1,123 @@
+name: Sidestep forced-move counterfactual
+
+on:
+  push:
+    branches:
+      - "bench/sidestep-root-cause-20260929"
+    paths:
+      - ".github/workflows/sidestep-forced-counterfactual.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  arm:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: s280_old_d5
+            moves: '["e2","e8","e3","e7","e4","e6","f4","f6","f5h","e6","e4","e6v","e3h","e5","c3h","d5h","f4v","e8v","b4v","b6h","d5"]'
+          - name: s280_new_a2h
+            moves: '["e2","e8","e3","e7","e4","e6","f4","f6","f5h","e6","e4","e6v","e3h","e5","c3h","d5h","f4v","e8v","b4v","b6h","a2h"]'
+          - name: s320_old_f5
+            moves: '["e2","e8","e3","e7","e4","e6","f4","d6","e4v","f6h","f5"]'
+          - name: s320_new_d4h
+            moves: '["e2","e8","e3","e7","e4","e6","f4","d6","e4v","f6h","d4h"]'
+
+    steps:
+      - name: Checkout current harness
+        uses: actions/checkout@v4
+      - name: Checkout exact 2.10
+        uses: actions/checkout@v4
+        with:
+          ref: a0def30e725b34c19eec07e54719af989f290063
+          path: engine
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install
+        run: |
+          python -m pip install --index-url https://download.pytorch.org/whl/cpu torch
+          python -m pip install numpy
+      - name: Build engine
+        run: |
+          cd engine
+          chmod +x build/build_uci.sh
+          ./build/build_uci.sh
+      - name: Write forced opening
+        env:
+          MOVES: ${{ matrix.moves }}
+          NAME: ${{ matrix.name }}
+        run: |
+          python - <<'PY'
+          import json, os
+          row={"schema":"zquoridor.opening.v1","opening_index":0,"moves":json.loads(os.environ["MOVES"]),"category":os.environ["NAME"],"description":os.environ["NAME"]}
+          open("forced.jsonl","w").write(json.dumps(row)+"\n")
+          PY
+      - name: Run 40 games
+        run: |
+          python tools/run_benchmark.py \
+            --opponents claustrophobia \
+            --pairs 20 \
+            --workers 2 \
+            --seed 20260928 \
+            --openings forced.jsonl \
+            --output "results/benchmarks/${{ matrix.name }}" \
+            --zq-executable engine/bin/zquoridor \
+            --nnue engine/data/nnue/nnue_weights_int8.bin \
+            --zq-move-time-ms 200 \
+            --claustrophobia-move-time-ms 200 \
+            --claustrophobia-max-sims 4096 \
+            --claustrophobia-cpuct 1.5 \
+            --claustrophobia-device cpu \
+            --bootstrap 5000
+      - name: Summarize by color
+        run: |
+          python - <<'PY'
+          import json, pathlib
+          name="${{ matrix.name }}"
+          rows=[json.loads(x) for x in open(f"results/benchmarks/{name}/games.jsonl") if x.strip()]
+          ok=[r for r in rows if r["status"]=="ok"]
+          out={"name":name}
+          for z in [0,1]:
+            g=[r for r in ok if int(r["zq_player"])==z]
+            out[f"zq_player_{z}"]={"games":len(g),"score_pct":100*sum(float(r["result"]) for r in g)/len(g),"results":[r["result"] for r in g]}
+          out["overall_score_pct"]=100*sum(float(r["result"]) for r in ok)/len(ok)
+          pathlib.Path("arm_summary.json").write_text(json.dumps(out,indent=2)+"\n")
+          print(json.dumps(out,indent=2))
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: forced-${{ matrix.name }}
+          path: |
+            arm_summary.json
+            results/benchmarks/${{ matrix.name }}/games.jsonl
+          retention-days: 7
+
+  aggregate:
+    needs: arm
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: forced-*
+          path: arms
+      - name: Compare old vs new forced moves
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          rows=[json.loads(p.read_text()) for p in Path("arms").rglob("arm_summary.json")]
+          rows=sorted(rows,key=lambda x:x["name"])
+          for r in rows:
+            print(f"{r['name']}: player0={r['zq_player_0']['score_pct']:.1f}% player1={r['zq_player_1']['score_pct']:.1f}% overall={r['overall_score_pct']:.1f}%")
+          Path("counterfactual.json").write_text(json.dumps(rows,indent=2)+"\n")
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: forced-counterfactual-comparison
+          path: counterfactual.json
+          retention-days: 14
