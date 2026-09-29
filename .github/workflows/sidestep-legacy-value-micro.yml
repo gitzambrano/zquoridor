@@ -1,0 +1,212 @@
+name: Sidestep Legacy Value Micro
+
+on:
+  push:
+    branches:
+      - "exp/sidestep-legacy-value-micro-20260929"
+    paths:
+      - ".github/workflows/sidestep-legacy-value-micro.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  train:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          ref: a742db9e1f8e7ef71174bc11784706a7508d8e1b
+          path: pre210
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install --index-url https://download.pytorch.org/whl/cpu torch
+          python -m pip install numpy
+      - name: Build encoder and 12-state corpus
+        run: |
+          mkdir -p bin results/sidestep-legacy
+          g++ -O3 -DNDEBUG -std=c++17 -Isrc tools/teacher/encode_state.cpp -o bin/teacher_encode_state
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          roots=[
+            (28,"e2 e8 e3 e7 e4 e6 f4 f6 f5h e6 e4 e6v e3h e5 c3h d5h f4v e8v b4v b6h".split(),"d5","a2h","train"),
+            (29,"e2 e8 e3 e7 e4 e6 d4 e5 d4v c5h e4h e5h g4h a5h g5v d2v g7v".split(),"c3h","c2h","train"),
+            (32,"e2 e8 e3 e7 e4 e6 f4 d6 e4v f6h".split(),"f5","d4h","train"),
+            (27,"e2 e8 e3 e7 e4 e6 d4 d6 d5h".split(),"a6h","c6h","val"),
+          ]
+          rows=[]
+          for op,h,old,new,split in roots:
+            for kind,hist in [("root",h),("old",h+[old]),("new",h+[new])]:
+              rows.append({"schema":"zquoridor.position.v1","id":f"l{op}_{kind}",
+                           "side_to_move":len(hist)%2,"opening_index":op,"split":split,
+                           "history":hist,"metadata":{"role":kind}})
+          Path("results/sidestep-legacy/positions.jsonl").write_text(
+            "".join(json.dumps(r,separators=(",",":"))+"\n" for r in rows))
+          print(json.dumps({"rows":len(rows)},indent=2))
+          PY
+      - name: Distill pre-2.10 local value targets
+        run: |
+          python - <<'PY'
+          import json,sys
+          from pathlib import Path
+          import numpy as np, torch
+          sys.path.insert(0,"training")
+          from build_teacher_soft import load_positions,encode_states
+          from student_model import Student,encode_features
+          rows=load_positions(Path("results/sidestep-legacy/positions.jsonl"))
+          state=encode_states(rows,Path("bin/teacher_encode_state"))
+          data={k:v for k,v in state.items() if k!="mover"}
+          idx=np.arange(len(rows))
+          old=Student("multipath_phase",512,qat=True)
+          old.load_float("pre210/data/nnue/nnue_weights.bin")
+          cur=Student("multipath_phase_bucketed",512,qat=True)
+          cur.load_float("data/nnue/nnue_weights.bin")
+          old.eval(); cur.eval()
+          with torch.no_grad():
+            xo=torch.from_numpy(encode_features(data,idx,"multipath_phase"))
+            xc=torch.from_numpy(encode_features(data,idx,"multipath_phase_bucketed"))
+            ov,op=old(xo); cv,cp=cur(xc)
+            value=(2*ov.sigmoid()-1).numpy().astype(np.float32)
+            policy=torch.softmax(cp,dim=1).numpy().astype(np.float32)
+          np.savez("results/sidestep-legacy/targets.npz",
+                   id=np.asarray([r["id"] for r in rows],dtype="S24"),
+                   side_to_move=np.asarray([r["side_to_move"] for r in rows],dtype=np.uint8),
+                   policy=policy,value=value,
+                   best_action=policy.argmax(1).astype(np.uint16),
+                   budget_agreement=np.ones(len(rows),dtype=np.float32))
+          for r,v,cvv in zip(rows,value,(2*cv.sigmoid()-1).numpy()):
+            print(r["id"],"legacy",round(float(v),5),"current",round(float(cvv),5),"delta",round(float(v-cvv),5))
+          PY
+      - name: Build anchored dataset
+        run: |
+          python tools/teacher/build_sidestep_value_recovery_dataset.py \
+            --positions results/sidestep-legacy/positions.jsonl \
+            --targets results/sidestep-legacy/targets.npz \
+            --encoder bin/teacher_encode_state \
+            --base-weights data/nnue/nnue_weights.bin \
+            --out results/sidestep-legacy/dataset.npz
+      - name: Fine tune value only
+        run: |
+          python training/run_experiment.py \
+            --data results/sidestep-legacy/dataset.npz \
+            --out-dir results/experiments/sidestep-legacy-value-micro \
+            --architecture multipath_phase_bucketed --hidden 512 \
+            --init-from data/nnue/nnue_weights.bin \
+            --init-architecture multipath_phase_bucketed --init-hidden 512 \
+            --no-from-scratch --qat --mirror-h \
+            --epochs 20 --batch-size 256 --lr 0.00002 --schedule cosine \
+            --warmup-epochs 2 --min-lr 0.000001 --trunk-lr-scale 1.0 \
+            --weight-decay 0.0 --weight-decay-schedule constant --min-weight-decay 0.0 \
+            --weight-boosts '[[0,12,2.5]]' --max-sample-weight 30.0 \
+            --policy-weight 0.0 --value-weight 1.0 --train-scope value \
+            --grad-clip 0.5 --patience 6 --seed 20260929 --device cpu --cpu-threads 4 \
+            --no-resume --no-teaching --no-build --no-benchmark
+      - name: Verify frozen non-value parameters
+        run: |
+          python - <<'PY'
+          import sys,torch,json
+          from pathlib import Path
+          sys.path.insert(0,"training")
+          from student_model import Student
+          a=Student("multipath_phase_bucketed",512); a.load_float("data/nnue/nnue_weights.bin")
+          b=Student("multipath_phase_bucketed",512); b.load_float("results/experiments/sidestep-legacy-value-micro/student.bin")
+          assert torch.equal(a.fc1.weight,b.fc1.weight) and torch.equal(a.fc1.bias,b.fc1.bias)
+          assert torch.equal(a.policy.weight,b.policy.weight) and torch.equal(a.policy.bias,b.policy.bias)
+          changed=[n for n,p in a.named_parameters() if n.startswith("value") and not torch.equal(p,dict(b.named_parameters())[n])]
+          assert changed
+          report={"trunk_exact":True,"policy_exact":True,"changed_value_tensors":changed}
+          print(json.dumps(report,indent=2))
+          Path("results/sidestep-legacy/freeze.json").write_text(json.dumps(report,indent=2)+"\n")
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sidestep-legacy-candidate
+          path: |
+            results/experiments/sidestep-legacy-value-micro/student.bin
+            results/experiments/sidestep-legacy-value-micro/student_int8.bin
+            results/experiments/sidestep-legacy-value-micro/student.architecture.json
+            results/experiments/sidestep-legacy-value-micro/train_report.json
+            results/sidestep-legacy/dataset.manifest.json
+            results/sidestep-legacy/freeze.json
+          retention-days: 14
+
+  gate:
+    needs: train
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install --index-url https://download.pytorch.org/whl/cpu torch
+          python -m pip install numpy
+      - uses: actions/download-artifact@v4
+        with:
+          name: sidestep-legacy-candidate
+          path: candidate
+      - name: Build engine and family books
+        run: |
+          chmod +x build/build_uci.sh
+          ./build/build_uci.sh
+          python - <<'PY'
+          import json,random
+          from pathlib import Path
+          src=[json.loads(x) for x in Path("tools/external/openings_center_rush_50pairs.jsonl").read_text().splitlines() if x.strip()]
+          for fam,offset in [("sidestep_flank",71),("reed_rear_wall",53)]:
+            pool=[r for r in src if r.get("category")==fam]
+            random.Random(20260928+offset).shuffle(pool)
+            out=[dict(pool[i%len(pool)]) for i in range(20)]
+            Path(f"{fam}.jsonl").write_text("".join(json.dumps(r,separators=(",",":"))+"\n" for r in out))
+          PY
+      - name: Run A/B
+        run: |
+          set -e
+          for book in sidestep_flank reed_rear_wall; do
+            for variant in base cand; do
+              if [ "$variant" = base ]; then W=data/nnue/nnue_weights_int8.bin; else W=candidate/student_int8.bin; fi
+              python tools/run_benchmark.py --opponents claustrophobia --pairs 20 --workers 4 --seed 20260928 \
+                --openings "${book}.jsonl" --output "results/legacy/${variant}_${book}" \
+                --zq-executable bin/zquoridor --nnue "$W" \
+                --zq-move-time-ms 200 --claustrophobia-move-time-ms 200 \
+                --claustrophobia-max-sims 4096 --claustrophobia-cpuct 1.5 --claustrophobia-device cpu --bootstrap 5000
+            done
+          done
+          for variant in base cand; do
+            if [ "$variant" = base ]; then W=data/nnue/nnue_weights_int8.bin; else W=candidate/student_int8.bin; fi
+            python tools/run_benchmark.py --opponents claustrophobia --pairs 25 --workers 4 --seed 20260914 \
+              --openings tools/external/openings_screen_v1.jsonl --output "results/legacy/${variant}_normal" \
+              --zq-executable bin/zquoridor --nnue "$W" \
+              --zq-move-time-ms 200 --claustrophobia-move-time-ms 200 \
+              --claustrophobia-max-sims 4096 --claustrophobia-cpuct 1.5 --claustrophobia-device cpu --bootstrap 5000
+          done
+      - name: Verdict
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          out={}
+          for key in ["sidestep_flank","reed_rear_wall","normal"]:
+            a=json.loads(Path(f"results/legacy/base_{key}/summary.json").read_text())["summaries"]["claustrophobia"]
+            b=json.loads(Path(f"results/legacy/cand_{key}/summary.json").read_text())["summaries"]["claustrophobia"]
+            out[key]={"baseline":a["score_pct"],"candidate":b["score_pct"],"delta_pp":b["score_pct"]-a["score_pct"],
+                      "baseline_wdl":[a["wins"],a["draws"],a["losses"]],"candidate_wdl":[b["wins"],b["draws"],b["losses"]]}
+          out["screen_pass"]=out["sidestep_flank"]["delta_pp"]>=5 and out["reed_rear_wall"]["delta_pp"]>=-5 and out["normal"]["delta_pp"]>=-4
+          Path("legacy_verdict.json").write_text(json.dumps(out,indent=2)+"\n")
+          print(json.dumps(out,indent=2))
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sidestep-legacy-verdict
+          path: legacy_verdict.json
+          retention-days: 14
