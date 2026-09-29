@@ -1,6 +1,6 @@
 // Diagnostic-only root probe for pre-2.10 vs 2.10 NNUE behavior.
 #include <algorithm>
-#include <cmath>
+#include <cmath>\n#include <cstdlib>
 #include <iomanip>
 #include <iostream>
 #include <string>
@@ -64,9 +64,16 @@ int main(int argc, char** argv) {
         return 3;
     }
 
+    int nodeBudget = 20000;
+    int firstMoveArg = 2;
+    if (argc >= 4 && std::string(argv[2]) == "--nodes") {
+        nodeBudget = std::max(1, std::atoi(argv[3]));
+        firstMoveArg = 4;
+    }
+
     State state = initialState();
     RepetitionTable history;
-    for (int i = 2; i < argc; ++i) {
+    for (int i = firstMoveArg; i < argc; ++i) {
         Move m;
         if (!parseLegalMove(state, argv[i], m)) {
             std::cerr << "illegal move: " << argv[i] << "\n";
