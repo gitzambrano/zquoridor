@@ -1,0 +1,74 @@
+name: Sidestep Fixed-Node Root Probe
+
+on:
+  push:
+    branches:
+      - "bench/sidestep-network-probe-20260929"
+    paths:
+      - ".github/workflows/sidestep-fixed-node-probe.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          ref: a742db9e1f8e7ef71174bc11784706a7508d8e1b
+          path: pre210
+      - uses: actions/checkout@v4
+        with:
+          ref: a0def30e725b34c19eec07e54719af989f290063
+          path: v210
+
+      - name: Compile probes
+        run: |
+          g++ -O3 -std=c++17 -Ipre210/src tools/diagnostics/mcab_root_probe.cpp -o pre_root
+          g++ -O3 -std=c++17 -Iv210/src tools/diagnostics/mcab_root_probe.cpp -o new_root
+
+      - name: Compare fixed node roots
+        run: |
+          python - <<'PY'
+          import json, subprocess
+          from pathlib import Path
+          roots={
+            "cat32":"e2 e8 e3 e7 e4 e6 f4 d6 e4v f6h",
+            "cat31":"e2 e8 e3 e7 e4 e6 d4 f6 d4v c6h",
+            "cat28":"e2 e8 e3 e7 e4 e6 f4 f6 f5h e6 e4 e6v e3h e5 c3h d5h f4v e8v b4v b6h",
+            "cat30":"e2 e8 e3 e7 e4 e6 f4 e5 e4v",
+          }
+          cfgs=[
+            ("pre_7000","./pre_root","pre210/data/nnue/nnue_weights_int8.bin",7000,0.8),
+            ("v210_7000","./new_root","v210/data/nnue/nnue_weights_int8.bin",7000,0.8),
+            ("v210_10000","./new_root","v210/data/nnue/nnue_weights_int8.bin",10000,0.8),
+            ("v210_20000","./new_root","v210/data/nnue/nnue_weights_int8.bin",20000,0.8),
+            ("v210_40000","./new_root","v210/data/nnue/nnue_weights_int8.bin",40000,0.8),
+          ]
+          out={}
+          for rid,h in roots.items():
+            out[rid]={}
+            for name,exe,w,n,c in cfgs:
+              raw=subprocess.check_output([exe,"--nnue",w,"--nodes",str(n),"--cpuct",str(c),*h.split()],text=True)
+              out[rid][name]=json.loads(raw)
+          Path("fixed_node.json").write_text(json.dumps(out,indent=2)+"\n")
+          lines=["# Fixed-node root probe",""]
+          for rid,vals in out.items():
+            lines += [f"## {rid}","", "| Config | Best | Top visits (move:N/Q/P) |","|---|---|---|"]
+            for name,d in vals.items():
+              top=", ".join(f"{x['move']}:{int(x['N'])}/{x['Q']:.3f}/{x['P']:.3f}" for x in d["top"][:5])
+              lines.append(f"| {name} | {d['best']} | {top} |")
+            lines.append("")
+          Path("fixed_node.md").write_text("\n".join(lines)+"\n")
+          print("\n".join(lines))
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sidestep-fixed-node-root-probe
+          path: |
+            fixed_node.json
+            fixed_node.md
+          retention-days: 14
