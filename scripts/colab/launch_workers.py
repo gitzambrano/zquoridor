@@ -16,6 +16,7 @@ if str(CURRENT_DIR) not in sys.path:
     sys.path.insert(0, str(CURRENT_DIR))
 
 from config import WORKERS, BOOTLOADER_TEMPLATE
+from browser_utils import is_cdp_reachable, is_profile_in_use, dismiss_modals, connect_runtime_if_needed
 
 CONFIG: Dict[str, Any] = {
     "worker_ids": [3, 4, 5],
@@ -34,6 +35,7 @@ def launch_worker(worker: Dict[str, Any], skip_if_running: bool, headless: bool,
     profile = worker["profile_dir"]
     url = worker["notebook_url"]
     worker_id = worker["worker_id"]
+    cdp_port = worker.get("cdp_port", 9000 + worker_id)
     cell_code = BOOTLOADER_TEMPLATE.format(worker_id=worker_id)
 
     result: Dict[str, Any] = {
@@ -46,38 +48,55 @@ def launch_worker(worker: Dict[str, Any], skip_if_running: bool, headless: bool,
         "error": None,
     }
 
+    cdp_active = is_cdp_reachable(cdp_port)
+    in_use, proc_pid = is_profile_in_use(profile)
+
+    if in_use and not cdp_active:
+        msg = f"Profile directory is actively locked by process PID {proc_pid}. Skipping launch to prevent corruption."
+        print(f"  [WARN] {msg}")
+        result["action_taken"] = "locked_by_external_process"
+        result["error"] = msg
+        return result
+
     try:
         with sync_playwright() as p:
-            ctx = p.chromium.launch_persistent_context(
-                user_data_dir=profile,
-                headless=headless,
-                channel="chrome",
-                args=["--no-sandbox"],
-            )
+            browser_to_close = None
+            if cdp_active:
+                browser = p.chromium.connect_over_cdp(f"http://127.0.0.1:{cdp_port}")
+                ctx = browser.contexts[0] if browser.contexts else browser.new_context()
+                page = ctx.pages[0] if ctx.pages else ctx.new_page()
+                browser_to_close = browser
+            else:
+                ctx = p.chromium.launch_persistent_context(
+                    user_data_dir=profile,
+                    headless=headless,
+                    channel="chrome",
+                    args=[
+                        f"--remote-debugging-port={cdp_port}",
+                        "--no-sandbox",
+                        "--disable-gpu",
+                        "--remote-allow-origins=*",
+                    ],
+                )
+                page = ctx.pages[0] if ctx.pages else ctx.new_page()
+                browser_to_close = ctx
+
             try:
-                page = ctx.new_page()
-                page.goto(url, timeout=timeout_ms)
+                page.goto(url, wait_until="commit", timeout=timeout_ms)
                 time.sleep(delay_s)
 
                 # Step 1: Connect runtime if disconnected
-                page.evaluate("""() => {
-                    const btn = document.querySelector('colab-connect-button');
-                    if (btn && btn.shadowRoot) {
-                        const conn = btn.shadowRoot.querySelector('#connect');
-                        if (conn && (conn.innerText.includes('Conectar') || conn.innerText.includes('Reconectar'))) {
-                            conn.click();
-                        }
-                    }
-                }""")
+                connect_runtime_if_needed(page)
                 time.sleep(4)
 
                 # Step 2: Check current status and update target cell
                 prep_res = page.evaluate("""(data) => {
                     const { newCode, skipIfRunning } = data;
-                    const cells = typeof colab !== 'undefined' && colab.global && colab.global.notebook && colab.global.notebook.cells ? colab.global.notebook.cells : [];
+                    const nb = typeof colab !== 'undefined' && colab.global ? colab.global.notebook : null;
+                    const cells = nb && nb.cells ? nb.cells : [];
                     let targetCell = null;
                     for (let i = cells.length - 1; i >= 0; i--) {
-                        const txt = cells[i].getText();
+                        const txt = cells[i].getText ? cells[i].getText() : '';
                         if (txt.includes('run_colab_worker.py') || txt.includes('selfplay_15m')) {
                             targetCell = cells[i];
                             break;
@@ -99,8 +118,10 @@ def launch_worker(worker: Dict[str, Any], skip_if_running: bool, headless: bool,
                     }
 
                     // Update cell model
-                    targetCell.model.setText(newCode);
-                    if (targetCell.model.removeOutputs) {
+                    if (targetCell.model && targetCell.model.setText) {
+                        targetCell.model.setText(newCode);
+                    }
+                    if (targetCell.model && targetCell.model.removeOutputs) {
                         targetCell.model.removeOutputs();
                     }
 
@@ -108,7 +129,7 @@ def launch_worker(worker: Dict[str, Any], skip_if_running: bool, headless: bool,
                     let monacoCount = 0;
                     if (typeof monaco !== 'undefined') {
                         for (const m of monaco.editor.getModels()) {
-                            if (m.getValue().includes('run_colab_worker.py') || m.getValue().includes('selfplay_15m')) {
+                            if (m.getValue().includes('run_colab_worker.py') || m.getValue().includes('selfplay_15m') || m.getValue().includes('zquoridor')) {
                                 m.setValue(newCode);
                                 monacoCount++;
                             }
@@ -117,12 +138,23 @@ def launch_worker(worker: Dict[str, Any], skip_if_running: bool, headless: bool,
 
                     // Trigger execution
                     let runClicked = false;
-                    if (targetCell.runButton) {
-                        targetCell.runButton.click();
-                        runClicked = true;
-                    } else if (targetCell.manualExecute) {
+                    const elem = targetCell.getElement ? targetCell.getElement() : (targetCell.element_ || targetCell.dom_);
+                    if (elem && elem.scrollIntoView) elem.scrollIntoView();
+                    if (typeof targetCell.manualExecute === 'function') {
                         targetCell.manualExecute();
                         runClicked = true;
+                    } else if (elem) {
+                        const btn = elem.querySelector('colab-run-button');
+                        if (btn) {
+                            if (btn.shadowRoot) {
+                                const inner = btn.shadowRoot.querySelector('button, [role="button"]');
+                                if (inner) inner.click();
+                                else btn.click();
+                            } else {
+                                btn.click();
+                            }
+                            runClicked = true;
+                        }
                     }
 
                     return {
@@ -146,26 +178,19 @@ def launch_worker(worker: Dict[str, Any], skip_if_running: bool, headless: bool,
                 result["action_taken"] = "bootloader_injected_and_run"
                 time.sleep(3)
 
-                # Step 3: Dismiss any warning modal ("Executar de qualquer maneira" / "Run anyway")
-                page.evaluate("""() => {
-                    const btns = Array.from(document.querySelectorAll('paper-button, mwc-button, button'));
-                    for (const b of btns) {
-                        const t = b.innerText || '';
-                        if (t.includes('Executar de qualquer maneira') || t.includes('Run anyway')) {
-                            b.click();
-                            return;
-                        }
-                    }
-                }""")
+                # Step 3: Dismiss any warning modal ("Executar de qualquer maneira" / "Run anyway" / Drive / OK)
+                dismiss_modals(page)
 
                 # Step 4: Wait for execution to start
                 time.sleep(wait_run_s)
+                dismiss_modals(page)
 
                 status_after = page.evaluate("""() => {
-                    const cells = typeof colab !== 'undefined' && colab.global && colab.global.notebook && colab.global.notebook.cells ? colab.global.notebook.cells : [];
+                    const nb = typeof colab !== 'undefined' && colab.global ? colab.global.notebook : null;
+                    const cells = nb && nb.cells ? nb.cells : [];
                     let targetCell = null;
                     for (let i = cells.length - 1; i >= 0; i--) {
-                        const txt = cells[i].getText();
+                        const txt = cells[i].getText ? cells[i].getText() : '';
                         if (txt.includes('run_colab_worker.py') || txt.includes('selfplay_15m')) {
                             targetCell = cells[i];
                             break;
@@ -174,8 +199,8 @@ def launch_worker(worker: Dict[str, Any], skip_if_running: bool, headless: bool,
                     if (!targetCell && cells.length > 0) targetCell = cells[cells.length - 1];
                     if (!targetCell) return { running: false, pending: false, out: '' };
 
-                    const dom = targetCell.element_ || targetCell.dom_;
-                    const outDiv = dom ? dom.querySelector('.output, colab-output') : null;
+                    const dom = targetCell.getElement ? targetCell.getElement() : (targetCell.element_ || targetCell.dom_);
+                    const outDiv = dom ? dom.querySelector('.output, colab-output, .output-stream, .output_text') : null;
                     return {
                         running: targetCell.isRunning ? targetCell.isRunning() : false,
                         pending: targetCell.isPending ? targetCell.isPending() : false,
@@ -187,7 +212,8 @@ def launch_worker(worker: Dict[str, Any], skip_if_running: bool, headless: bool,
                 result["pending"] = status_after["pending"]
                 result["output_preview"] = status_after["out"]
             finally:
-                ctx.close()
+                if not cdp_active and browser_to_close:
+                    browser_to_close.close()
     except Exception as exc:
         result["error"] = str(exc)
 
@@ -238,6 +264,7 @@ def main() -> None:
     parser.add_argument("--force-restart", action="store_true", help="Do not skip workers that are already running")
     parser.add_argument("--headed", action="store_true", help="Run browser in visible mode")
     parser.add_argument("--timeout-ms", type=int, default=CONFIG["page_timeout_ms"], help="Page navigation timeout in ms")
+    parser.add_argument("--show-config", action="store_true", help="Display effective configuration and exit.")
     args = parser.parse_args()
 
     cfg = dict(CONFIG)
@@ -247,6 +274,12 @@ def main() -> None:
     if args.headed:
         cfg["headless"] = False
     cfg["page_timeout_ms"] = args.timeout_ms
+
+    if args.show_config:
+        print("Effective Configuration:")
+        for k, v in cfg.items():
+            print(f"  {k}: {v}")
+        return
 
     run_launch(cfg)
 

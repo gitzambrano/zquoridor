@@ -99,3 +99,5 @@ docs/superpowers/
 docs/datasets.md
 # One-off local launchers are not project runners.
 tools/teacher/launch_synced_contact_after_phase.ps1
+artifacts/
+
