@@ -115,7 +115,7 @@ def main():
             "weight": weight.astype(np.float32),
             "is_val": np.asarray([r.get("split") == "val" for r in rows], dtype=np.bool_),
             "group_id": np.asarray([f"{prefix}_{r['id']}" for r in rows]),
-            "opening_index": np.asarray([int(r.get("opening_index", -1)) for r in rows], dtype=np.int32),
+            "opening_index": np.asarray([int(hashlib.sha256((prefix+"_"+r["id"]).encode("utf-8")).hexdigest()[:8], 16) & 0x7fffffff for r in rows], dtype=np.int32),
         })
         return result
 
