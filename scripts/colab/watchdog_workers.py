@@ -1,11 +1,12 @@
-"""Continuous watchdog and keep-alive monitor for Google Colab self-play workers.
+"""Continuous watchdog and keep-alive monitor for Google Colab self-play workers in Zquoridor.
 
 Maintains active persistent browser sessions with periodic micro-interactions to
 prevent Colab idle disconnects. Detects session disconnects, automatically reconnects,
-re-triggers the resilient bootloader cell, and saves periodic status screenshots.
+re-triggers the resilient bootloader cell, and saves periodic status screenshots and metrics.
 """
 
 import argparse
+import json
 import sys
 import time
 from datetime import datetime
@@ -24,6 +25,7 @@ from browser_utils import (
     is_profile_in_use,
     dismiss_modals,
     connect_runtime_if_needed,
+    get_notebook_dom_state,
     trigger_cell_execution,
 )
 
@@ -149,58 +151,13 @@ def run_watchdog(cfg: Dict[str, Any]) -> None:
                             continue
 
                     page = sess["page"]
+                    keywords = ["run_colab_worker.py", "selfplay_15m", "zquoridor"]
 
                     try:
                         dismiss_modals(page)
 
                         # Extract state from Colab DOM
-                        state = page.evaluate("""() => {
-                            const btn = document.querySelector('colab-connect-button');
-                            const sr = btn ? btn.shadowRoot : null;
-                            const connBtn = sr ? sr.querySelector('#connect') : null;
-                            const statusText = connBtn ? connBtn.innerText.trim() : (btn ? btn.innerText.trim() : 'no button');
-
-                            const k = typeof colab !== 'undefined' && colab.global && colab.global.notebook ? colab.global.notebook.kernel : null;
-                            const kConnected = k && k.isConnected ? k.isConnected() : false;
-
-                            const isRunningBtn = Array.from(document.querySelectorAll(
-                                'colab-run-button[title*="Interromper"], colab-run-button[aria-label*="Interromper"], colab-run-button.running'
-                            ));
-                            const nb = typeof colab !== 'undefined' && colab.global ? colab.global.notebook : null;
-                            let running = isRunningBtn.length > 0;
-                            if (nb && typeof nb.isExecuting === 'function') {
-                                running = running || nb.isExecuting();
-                            }
-
-                            const cells = nb && nb.cells ? nb.cells : [];
-                            let targetCell = null;
-                            for (let i = cells.length - 1; i >= 0; i--) {
-                                const txt = cells[i].getText ? cells[i].getText() : '';
-                                if (txt.includes('run_colab_worker.py') || txt.includes('selfplay_15m')) {
-                                    targetCell = cells[i];
-                                    break;
-                                }
-                            }
-                            if (!targetCell && cells.length > 0) targetCell = cells[cells.length - 1];
-
-                            let pending = false;
-                            let outText = '';
-                            if (targetCell) {
-                                running = running || (targetCell.isRunning ? targetCell.isRunning() : false);
-                                pending = targetCell.isPending ? targetCell.isPending() : false;
-                                const dom = targetCell.getElement ? targetCell.getElement() : (targetCell.element_ || targetCell.dom_);
-                                const outDiv = dom ? dom.querySelector('.output, colab-output, .output-stream, .output_text') : null;
-                                outText = outDiv ? outDiv.innerText.slice(-1200) : '';
-                            }
-
-                            return {
-                                statusText,
-                                kConnected,
-                                running,
-                                pending,
-                                outText
-                            };
-                        }""")
+                        state = get_notebook_dom_state(page, keywords)
 
                         # Extract clean progress line
                         lines = [line.strip() for line in state["outText"].splitlines() if line.strip()]
@@ -224,16 +181,35 @@ def run_watchdog(cfg: Dict[str, Any]) -> None:
                                     time.sleep(12)
 
                                 print(f"[{w['name']}] Triggering cell execution...")
-                                ok = trigger_cell_execution(page, wid, BOOTLOADER_TEMPLATE)
+                                ok = trigger_cell_execution(page, wid, BOOTLOADER_TEMPLATE, target_keywords=keywords)
                                 if ok:
                                     print(f"[{w['name']}] Triggered execution successfully.")
                                 else:
                                     print(f"[{w['name']}] Trigger attempt complete (will re-verify next cycle).")
 
-                        # 4. Periodic health screenshot
+                        # 4. Periodic health screenshot and status sidecar
                         if cycle % cfg["screenshot_interval_cycles"] == 0:
-                            shot_file = artifacts_path / f"{w['name'].lower().replace(' ', '_')}_watchdog.png"
+                            shot_file = artifacts_path / f"colab_{wid}_watchdog.png"
                             page.screenshot(path=str(shot_file))
+
+                            status_data = {
+                                "worker_id": wid,
+                                "name": w["name"],
+                                "account": w["account"],
+                                "cycle": cycle,
+                                "timestamp": now_str,
+                                "running": state["running"],
+                                "pending": state["pending"],
+                                "status_text": state["statusText"],
+                                "progress": current_progress,
+                                "reconnect_count": sess["reconnect_count"],
+                                "screenshot": str(shot_file),
+                            }
+                            json_path = artifacts_path / f"colab_{wid}_status.json"
+                            with open(json_path, "w", encoding="utf-8") as f:
+                                json.dump(status_data, f, indent=2)
+
+                            print(f"[{w['name']}] Saved snapshot to {shot_file.name}")
 
                     except Exception as err:
                         print(f"[{w['name']}] [ERROR in cycle {cycle}]: {err}")
@@ -267,29 +243,29 @@ def run_watchdog(cfg: Dict[str, Any]) -> None:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Active watchdog and keep-alive for Colab workers.")
-    parser.add_argument("--worker-ids", type=int, nargs="+", default=CONFIG["worker_ids"], help="Worker IDs to monitor")
-    parser.add_argument("--interval", type=int, default=CONFIG["check_interval_seconds"], help="Seconds between health checks")
-    parser.add_argument("--no-auto-reconnect", action="store_true", help="Disable automatic reconnect upon disconnect")
-    parser.add_argument("--headed", action="store_true", help="Run browser in visible mode")
+    parser = argparse.ArgumentParser(description="Zquoridor Colab active watchdog and keep-alive monitor.")
+    parser.add_argument("--worker-ids", type=int, nargs="+", default=CONFIG["worker_ids"], help="Worker IDs (e.g. 3 4 5).")
+    parser.add_argument("--interval", type=int, default=CONFIG["check_interval_seconds"], help="Seconds between checks.")
+    parser.add_argument("--no-auto-reconnect", action="store_true", help="Disable automatic VM reconnection.")
+    parser.add_argument("--headed", action="store_true", help="Run browser in visible headed mode.")
     parser.add_argument("--show-config", action="store_true", help="Display effective configuration and exit.")
     args = parser.parse_args()
 
-    cfg = dict(CONFIG)
-    cfg["worker_ids"] = args.worker_ids
-    cfg["check_interval_seconds"] = args.interval
+    effective_cfg = dict(CONFIG)
+    effective_cfg["worker_ids"] = args.worker_ids
+    effective_cfg["check_interval_seconds"] = args.interval
     if args.no_auto_reconnect:
-        cfg["auto_reconnect"] = False
+        effective_cfg["auto_reconnect"] = False
     if args.headed:
-        cfg["headless"] = False
+        effective_cfg["headless"] = False
 
     if args.show_config:
         print("Effective Configuration:")
-        for k, v in cfg.items():
+        for k, v in effective_cfg.items():
             print(f"  {k}: {v}")
         return
 
-    run_watchdog(cfg)
+    run_watchdog(effective_cfg)
 
 
 if __name__ == "__main__":

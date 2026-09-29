@@ -1,7 +1,7 @@
 """Inspect Google Colab worker status headlessly via Playwright.
 
-Checks runtime connection state, hardware accelerator type, running cells,
-and recent self-play progress for all configured workers.
+Checks runtime connection state, running cells, and recent self-play progress
+for configured workers. Safe against browser profile collisions and attaches over CDP.
 """
 
 import argparse
@@ -12,10 +12,12 @@ from typing import Dict, Any, List
 
 # Ensure scripts root is in path
 CURRENT_DIR = Path(__file__).resolve().parent
+REPO_ROOT = CURRENT_DIR.parent.parent
 if str(CURRENT_DIR) not in sys.path:
     sys.path.insert(0, str(CURRENT_DIR))
 
-from config import WORKERS
+from config import WORKERS, resolve_worker_key
+from browser_utils import is_cdp_reachable, is_profile_in_use, get_notebook_dom_state, dismiss_modals
 
 CONFIG: Dict[str, Any] = {
     "worker_ids": [3, 4, 5],
@@ -32,6 +34,8 @@ def inspect_worker(worker: Dict[str, Any], headless: bool, timeout_ms: int, dela
     profile = worker["profile_dir"]
     url = worker["notebook_url"]
     worker_id = worker["worker_id"]
+    cdp_port = worker.get("cdp_port", 9000 + worker_id)
+    keywords = worker.get("target_keywords", ["run_colab_worker.py", "selfplay_15m", "zquoridor"])
 
     result: Dict[str, Any] = {
         "worker_id": worker_id,
@@ -45,76 +49,47 @@ def inspect_worker(worker: Dict[str, Any], headless: bool, timeout_ms: int, dela
         "error": None,
     }
 
+    cdp_active = is_cdp_reachable(cdp_port)
+    in_use, proc_pid = is_profile_in_use(profile)
+
+    if in_use and not cdp_active:
+        result["status_text"] = f"Managed by external process (PID {proc_pid})"
+        result["connected"] = True
+        result["running"] = True
+        return result
+
     try:
         with sync_playwright() as p:
-            ctx = p.chromium.launch_persistent_context(
-                user_data_dir=profile,
-                headless=headless,
-                channel="chrome",
-                args=["--no-sandbox"],
-            )
-            try:
+            browser_to_close = None
+            if cdp_active:
+                browser = p.chromium.connect_over_cdp(f"http://127.0.0.1:{cdp_port}")
+                ctx = browser.contexts[0] if browser.contexts else browser.new_context()
+                page = ctx.pages[0] if ctx.pages else ctx.new_page()
+                browser_to_close = browser
+            else:
+                ctx = p.chromium.launch_persistent_context(
+                    user_data_dir=profile,
+                    headless=headless,
+                    channel="chrome",
+                    args=[f"--remote-debugging-port={cdp_port}", "--no-sandbox"],
+                )
                 page = ctx.new_page()
-                page.goto(url, timeout=timeout_ms)
+                page.goto(url, wait_until="commit", timeout=timeout_ms)
+                browser_to_close = ctx
+
+            try:
                 time.sleep(delay_s)
+                dismiss_modals(page)
+                state = get_notebook_dom_state(page, keywords)
 
-                info = page.evaluate("""() => {
-                    const btn = document.querySelector('colab-connect-button');
-                    const sr = btn ? btn.shadowRoot : null;
-                    const connBtn = sr ? sr.querySelector('#connect') : null;
-                    const statusText = connBtn ? connBtn.innerText.trim() : (btn ? btn.innerText.trim() : 'no connect button');
-
-                    const k = typeof colab !== 'undefined' && colab.global && colab.global.notebook ? colab.global.notebook.kernel : null;
-                    const kConnected = k && k.isConnected ? k.isConnected() : false;
-                    const kState = k ? k.state : 'no kernel';
-
-                    const cells = typeof colab !== 'undefined' && colab.global && colab.global.notebook && colab.global.notebook.cells ? colab.global.notebook.cells : [];
-                    let targetCell = null;
-                    for (let i = cells.length - 1; i >= 0; i--) {
-                        const txt = cells[i].getText();
-                        if (txt.includes('run_colab_worker.py') || txt.includes('selfplay_15m')) {
-                            targetCell = cells[i];
-                            break;
-                        }
-                    }
-                    if (!targetCell && cells.length > 0) {
-                        targetCell = cells[cells.length - 1];
-                    }
-
-                    let running = false;
-                    let pending = false;
-                    let outText = '';
-                    if (targetCell) {
-                        running = targetCell.isRunning ? targetCell.isRunning() : false;
-                        pending = targetCell.isPending ? targetCell.isPending() : false;
-                        const dom = targetCell.element_ || targetCell.dom_;
-                        const outDiv = dom ? dom.querySelector('.output, colab-output') : null;
-                        outText = outDiv ? outDiv.innerText.slice(-600) : '';
-                    }
-
-                    const bodyText = document.body ? document.body.innerText : '';
-                    const quotaWarning = bodyText.includes('não tem unidades de computação') || bodyText.includes('não tem unidades de computa');
-
-                    return {
-                        statusText,
-                        kConnected,
-                        kState,
-                        running,
-                        pending,
-                        outText,
-                        quotaWarning,
-                        cellCount: cells.length
-                    };
-                }""")
-
-                result["connected"] = info["kConnected"] or ("RAM" in info["statusText"])
-                result["status_text"] = info["statusText"]
-                result["running"] = info["running"]
-                result["pending"] = info["pending"]
-                result["quota_warning"] = info["quotaWarning"]
-                result["output_preview"] = info["outText"]
+                result["connected"] = state["kConnected"] or ("RAM" in state["statusText"])
+                result["status_text"] = state["statusText"]
+                result["running"] = state["running"]
+                result["pending"] = state["pending"]
+                result["output_preview"] = state["outText"]
             finally:
-                ctx.close()
+                if not cdp_active and browser_to_close:
+                    browser_to_close.close()
     except Exception as exc:
         result["error"] = str(exc)
 
@@ -139,10 +114,9 @@ def run_inspect(cfg: Dict[str, Any]) -> List[Dict[str, Any]]:
         if res["error"]:
             print(f"  [ERROR] {res['error']}")
         else:
-            conn_status = "CONNECTED" if res["connected"] else "CONNECTING/DISCONNECTED"
+            conn_status = "CONNECTED" if res["connected"] else f"DISCONNECTED ({res['status_text']})"
             run_status = "ACTIVE RUNNING" if res["running"] else ("PENDING" if res["pending"] else "IDLE")
-            quota_status = " [!] QUOTA WARNING (GPU)" if res.get("quota_warning") else ""
-            print(f"  Connection: {conn_status} ({res['status_text']}){quota_status}")
+            print(f"  Connection: {conn_status}")
             print(f"  Execution:  {run_status}")
             if res["output_preview"]:
                 lines = [line.strip() for line in res["output_preview"].splitlines() if line.strip()]

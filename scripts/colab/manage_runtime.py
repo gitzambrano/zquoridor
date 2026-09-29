@@ -1,7 +1,8 @@
 """Administrative runtime management for Google Colab notebooks via Playwright.
 
 Provides tools to switch hardware accelerators (e.g. from GPU to CPU to clear quota
-exhaustion), reset hanging environments, or terminate stale ghost sessions.
+exhaustion), reset hanging environments, or terminate stale ghost sessions. Safe
+against profile lock collisions.
 """
 
 import argparse
@@ -12,10 +13,12 @@ from typing import Dict, Any
 
 # Ensure scripts root is in path
 CURRENT_DIR = Path(__file__).resolve().parent
+REPO_ROOT = CURRENT_DIR.parent.parent
 if str(CURRENT_DIR) not in sys.path:
     sys.path.insert(0, str(CURRENT_DIR))
 
 from config import WORKERS
+from browser_utils import is_cdp_reachable, is_profile_in_use
 
 CONFIG: Dict[str, Any] = {
     "worker_ids": [3, 4, 5],
@@ -33,6 +36,7 @@ def manage_worker(worker: Dict[str, Any], action: str, headless: bool, timeout_m
     profile = worker["profile_dir"]
     url = worker["notebook_url"]
     wid = worker["worker_id"]
+    cdp_port = worker.get("cdp_port", 9000 + wid)
 
     result: Dict[str, Any] = {
         "worker_id": wid,
@@ -43,97 +47,89 @@ def manage_worker(worker: Dict[str, Any], action: str, headless: bool, timeout_m
         "error": None,
     }
 
+    cdp_active = is_cdp_reachable(cdp_port)
+    in_use, proc_pid = is_profile_in_use(profile)
+
+    if in_use and not cdp_active:
+        msg = f"Profile directory is actively locked by process PID {proc_pid}. Skipping manage action."
+        print(f"  [WARN] {msg}")
+        result["error"] = msg
+        return result
+
     try:
         with sync_playwright() as p:
-            ctx = p.chromium.launch_persistent_context(
-                user_data_dir=profile,
-                headless=headless,
-                channel="chrome",
-                args=["--no-sandbox"],
-            )
-            try:
+            browser_to_close = None
+            if cdp_active:
+                browser = p.chromium.connect_over_cdp(f"http://127.0.0.1:{cdp_port}")
+                ctx = browser.contexts[0] if browser.contexts else browser.new_context()
+                page = ctx.pages[0] if ctx.pages else ctx.new_page()
+                browser_to_close = browser
+            else:
+                ctx = p.chromium.launch_persistent_context(
+                    user_data_dir=profile,
+                    headless=headless,
+                    channel="chrome",
+                    args=[f"--remote-debugging-port={cdp_port}", "--no-sandbox"],
+                )
                 page = ctx.new_page()
                 page.goto(url, timeout=timeout_ms)
-                time.sleep(delay_s)
+                browser_to_close = ctx
 
-                if action == "switch-cpu":
-                    # 1. Open Runtime menu
-                    page.locator('div[id="runtime-menu-button"]').click()
-                    time.sleep(1)
-                    page.locator('text="Alterar o tipo de ambiente de execução"').click()
-                    time.sleep(2)
+            time.sleep(delay_s)
 
-                    # 2. Select CPU option
-                    page.get_by_text("CPU", exact=True).click()
-                    time.sleep(1)
+            if action == "switch-cpu":
+                page.locator('div[id="runtime-menu-button"]').click()
+                time.sleep(1)
+                page.locator('text="Alterar o tipo de ambiente de execução"').click()
+                time.sleep(2)
 
-                    # 3. Save
-                    page.locator('md-text-button').filter(has_text="Salvar").click()
-                    time.sleep(5)
-                    result["success"] = True
-                    result["details"] = "Hardware accelerator switched to CPU (Standard)."
+                page.get_by_text("CPU", exact=True).click()
+                time.sleep(1)
 
-                elif action == "reset":
-                    # Open menu and disconnect/delete runtime
-                    page.locator('div[id="runtime-menu-button"]').click()
-                    time.sleep(1)
-                    page.locator('text="Desconectar e excluir ambiente de execução"').click()
-                    time.sleep(2)
+                page.locator('md-text-button').filter(has_text="Salvar").click()
+                time.sleep(5)
+                result["success"] = True
+                result["details"] = "Hardware accelerator switched to CPU (Standard)."
 
-                    # Confirm if dialog appears
-                    page.evaluate("""() => {
-                        const btns = Array.from(document.querySelectorAll('mwc-button, paper-button, button'));
-                        const ok = btns.find(b => b.innerText && (b.innerText.trim() === 'Sim' || b.innerText.trim() === 'Desconectar'));
-                        if (ok) ok.click();
-                    }""")
-                    time.sleep(3)
-                    result["success"] = True
-                    result["details"] = "Runtime disconnected and deleted."
+            elif action == "reset":
+                page.locator('div[id="runtime-menu-button"]').click()
+                time.sleep(1)
+                page.locator('text="Desconectar e excluir ambiente de execução"').click()
+                time.sleep(2)
 
-                elif action == "terminate-active":
-                    # Open Gerenciar sessões
-                    page.locator('div[id="runtime-menu-button"]').click()
-                    time.sleep(1)
-                    page.locator('text="Gerenciar sessões"').click()
-                    time.sleep(2)
+                page.evaluate("""() => {
+                    const btns = Array.from(document.querySelectorAll('mwc-button, paper-button, button'));
+                    const ok = btns.find(b => b.innerText && (b.innerText.trim() === 'Sim' || b.innerText.trim() === 'Desconectar'));
+                    if (ok) ok.click();
+                }""")
+                time.sleep(3)
+                result["success"] = True
+                result["details"] = "Runtime disconnected and deleted."
 
-                    # Click terminate trash icon
-                    trash_res = page.evaluate("""() => {
-                        const dialog = Array.from(document.querySelectorAll('mwc-dialog, paper-dialog, dialog')).find(d => d.innerText && d.innerText.includes('Sessões ativas'));
-                        if (!dialog) return 'No dialog found';
-                        const btns = Array.from(dialog.querySelectorAll('mwc-icon-button, paper-icon-button, button'));
-                        for (const b of btns) {
-                            if (b.innerText.includes('delete') || (b.title && b.title.includes('Encerrar'))) {
-                                b.click();
-                                return 'Clicked terminate button';
-                            }
-                        }
-                        if (btns.length > 0) {
-                            btns[0].click();
-                            return 'Clicked first button';
-                        }
-                        return 'No buttons in dialog';
-                    }""")
-                    time.sleep(2)
+            elif action == "terminate-active":
+                page.locator('div[id="runtime-menu-button"]').click()
+                time.sleep(1)
+                page.locator('text="Gerenciar sessões"').click()
+                time.sleep(2)
 
-                    # Confirm
-                    page.evaluate("""() => {
-                        const btns = Array.from(document.querySelectorAll('mwc-button, paper-button, button'));
-                        const ok = btns.find(b => b.innerText && (b.innerText.trim() === 'Encerrar' || b.innerText.trim() === 'Sim'));
-                        if (ok) ok.click();
-                    }""")
-                    time.sleep(2)
+                terminated = page.evaluate("""() => {
+                    const btns = Array.from(document.querySelectorAll('mwc-icon-button, paper-icon-button, button'));
+                    const trashBtns = btns.filter(b => {
+                        const title = (b.getAttribute('title') || b.getAttribute('aria-label') || '').toLowerCase();
+                        return title.includes('cancelar') || title.includes('encerrar') || title.includes('terminate');
+                    });
+                    for (const b of trashBtns) {
+                        b.click();
+                    }
+                    return trashBtns.length;
+                }""")
+                time.sleep(3)
+                result["success"] = True
+                result["details"] = f"Terminated {terminated} active sessions."
 
-                    # Close modal
-                    page.locator('text="Fechar"').click()
-                    result["success"] = True
-                    result["details"] = f"Manage sessions result: {trash_res}"
+            if not cdp_active and browser_to_close:
+                browser_to_close.close()
 
-                else:
-                    result["error"] = f"Unknown action: {action}"
-
-            finally:
-                ctx.close()
     except Exception as exc:
         result["error"] = str(exc)
 
@@ -141,11 +137,11 @@ def manage_worker(worker: Dict[str, Any], action: str, headless: bool, timeout_m
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Manage Google Colab runtimes.")
+    parser = argparse.ArgumentParser(description="Manage Colab notebook runtime environments.")
     parser.add_argument("--worker-ids", type=int, nargs="+", default=CONFIG["worker_ids"], help="Worker IDs to manage")
     parser.add_argument("--action", choices=["switch-cpu", "reset", "terminate-active"], default=CONFIG["action"], help="Action to execute")
     parser.add_argument("--headed", action="store_true", help="Run browser in visible mode")
-    parser.add_argument("--timeout-ms", type=int, default=CONFIG["page_timeout_ms"], help="Navigation timeout in ms")
+    parser.add_argument("--show-config", action="store_true", help="Display effective configuration and exit.")
     args = parser.parse_args()
 
     cfg = dict(CONFIG)
@@ -153,24 +149,30 @@ def main() -> None:
     cfg["action"] = args.action
     if args.headed:
         cfg["headless"] = False
-    cfg["page_timeout_ms"] = args.timeout_ms
+
+    if args.show_config:
+        print("Effective Configuration:")
+        for k, v in cfg.items():
+            print(f"  {k}: {v}")
+        return
 
     print("=" * 70)
-    print(f"COLAB RUNTIME MANAGEMENT: Action '{cfg['action']}'")
+    print(f"COLAB RUNTIME MANAGEMENT: {cfg['action'].upper()}")
     print("=" * 70)
 
     for wid in cfg["worker_ids"]:
         if wid not in WORKERS:
-            print(f"Unknown worker ID {wid}, skipping.")
             continue
         w = WORKERS[wid]
-        print(f"Applying '{cfg['action']}' on {w['name']} (Worker #{wid})...")
+        print(f"Applying '{cfg['action']}' to {w['name']} ({w['account']})...")
         res = manage_worker(w, cfg["action"], cfg["headless"], cfg["page_timeout_ms"], cfg["load_delay_seconds"])
-        if res["error"]:
-            print(f"  [ERROR] {res['error']}")
-        else:
+        if res["success"]:
             print(f"  [SUCCESS] {res['details']}")
+        else:
+            print(f"  [FAILED] {res['error']}")
         print("-" * 70)
+
+    print("Management sequence complete.")
 
 
 if __name__ == "__main__":
