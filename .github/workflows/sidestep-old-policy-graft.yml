@@ -1,0 +1,97 @@
+name: Sidestep old-policy graft 40g
+
+on:
+  push:
+    branches:
+      - "bench/sidestep-root-cause-20260929"
+    paths:
+      - ".github/workflows/sidestep-old-policy-graft.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  match:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - name: Checkout current harness
+        uses: actions/checkout@v4
+      - name: Checkout pre-2.10
+        uses: actions/checkout@v4
+        with:
+          ref: a742db9e1f8e7ef71174bc11784706a7508d8e1b
+          path: old
+      - name: Checkout 2.10
+        uses: actions/checkout@v4
+        with:
+          ref: a0def30e725b34c19eec07e54719af989f290063
+          path: new
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install runtime
+        run: |
+          python -m pip install --index-url https://download.pytorch.org/whl/cpu torch
+          python -m pip install numpy
+      - name: Build 2.10 engine
+        run: |
+          cd new
+          chmod +x build/build_uci.sh
+          ./build/build_uci.sh
+      - name: Graft old policy onto 2.10
+        run: |
+          python - <<'PY'
+          H=512; F=504; P=209; header=8
+          trunk=F*H*2 + H*2
+          old_value=H*32 + 32*4 + 32 + 4
+          new_value=6*(H*32 + 32*4 + 32*32 + 32*4 + 32 + 4)
+          policy=P*H + P*4
+          old=open("old/data/nnue/nnue_weights_int8.bin","rb").read()
+          new=open("new/data/nnue/nnue_weights_int8.bin","rb").read()
+          assert len(old)==header+trunk+old_value+policy
+          assert len(new)==header+trunk+new_value+policy
+          hybrid=new[:-policy]+old[-policy:]
+          open("hybrid_old_policy.bin","wb").write(hybrid)
+          print("hybrid bytes",len(hybrid))
+          PY
+      - name: Build identical sidestep book
+        run: |
+          python - <<'PY'
+          import json,random
+          from pathlib import Path
+          rows=[json.loads(x) for x in Path("tools/external/openings_center_rush_50pairs.jsonl").read_text().splitlines() if x.strip()]
+          pool=[r for r in rows if r.get("category")=="sidestep_flank"]
+          rng=random.Random(20260928+71); rng.shuffle(pool)
+          out=[]
+          for i in range(20):
+              r=dict(pool[i%len(pool)])
+              r["opening_index"]=i
+              out.append(r)
+          with open("sidestep20.jsonl","w") as f:
+              for r in out: f.write(json.dumps(r)+"\n")
+          PY
+      - name: Run 40-game sidestep gate
+        run: |
+          python tools/run_benchmark.py \
+            --opponents claustrophobia \
+            --pairs 20 \
+            --workers 2 \
+            --seed 20260928 \
+            --openings sidestep20.jsonl \
+            --output results/benchmarks/old_policy_graft \
+            --zq-executable new/bin/zquoridor \
+            --nnue hybrid_old_policy.bin \
+            --zq-move-time-ms 200 \
+            --claustrophobia-move-time-ms 200 \
+            --claustrophobia-max-sims 4096 \
+            --claustrophobia-cpuct 1.5 \
+            --claustrophobia-device cpu \
+            --bootstrap 5000
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sidestep-old-policy-graft
+          path: |
+            results/benchmarks/old_policy_graft/summary.json
+            results/benchmarks/old_policy_graft/games.jsonl
+          retention-days: 14
