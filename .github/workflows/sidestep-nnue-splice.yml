@@ -1,0 +1,138 @@
+name: Sidestep NNUE block splice
+
+on:
+  push:
+    branches:
+      - "bench/sidestep-root-cause-20260929"
+    paths:
+      - ".github/workflows/sidestep-nnue-splice.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  splice:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - variant: old_full
+            arch: old
+            recipe: old_full
+          - variant: new_full
+            arch: new
+            recipe: new_full
+          - variant: newV_oldTP
+            arch: new
+            recipe: newV_oldTP
+          - variant: newV_newT_oldP
+            arch: new
+            recipe: newV_newT_oldP
+          - variant: newV_oldT_newP
+            arch: new
+            recipe: newV_oldT_newP
+          - variant: oldV_newTP
+            arch: old
+            recipe: oldV_newTP
+          - variant: oldV_oldT_newP
+            arch: old
+            recipe: oldV_oldT_newP
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          ref: a742db9e1f8e7ef71174bc11784706a7508d8e1b
+          path: old
+      - uses: actions/checkout@v4
+        with:
+          ref: a0def30e725b34c19eec07e54719af989f290063
+          path: new
+
+      - name: Splice weight blocks
+        env:
+          RECIPE: ${{ matrix.recipe }}
+        run: |
+          python - <<'PY'
+          import os
+          H=512; F=504; P=209
+          header=8
+          trunk=F*H*2 + H*2
+          old_value=H*32 + 32*4 + 32 + 4
+          new_value=6*(H*32 + 32*4 + 32*32 + 32*4 + 32 + 4)
+          policy=P*H + P*4
+          old=open("old/data/nnue/nnue_weights_int8.bin","rb").read()
+          new=open("new/data/nnue/nnue_weights_int8.bin","rb").read()
+          assert len(old)==header+trunk+old_value+policy,(len(old),header+trunk+old_value+policy)
+          assert len(new)==header+trunk+new_value+policy,(len(new),header+trunk+new_value+policy)
+          assert old[:header]==new[:header]
+          oh,ot,ov,op=old[:header],old[header:header+trunk],old[header+trunk:header+trunk+old_value],old[-policy:]
+          nh,nt,nv,np=new[:header],new[header:header+trunk],new[header+trunk:header+trunk+new_value],new[-policy:]
+          recipes={
+            "old_full": old,
+            "new_full": new,
+            "newV_oldTP": nh+ot+nv+op,
+            "newV_newT_oldP": nh+nt+nv+op,
+            "newV_oldT_newP": nh+ot+nv+np,
+            "oldV_newTP": oh+nt+ov+np,
+            "oldV_oldT_newP": oh+ot+ov+np,
+          }
+          out=recipes[os.environ["RECIPE"]]
+          open("hybrid.bin","wb").write(out)
+          print(os.environ["RECIPE"],len(out))
+          PY
+
+      - name: Build probe
+        run: |
+          if [ "${{ matrix.arch }}" = "new" ]; then INC=new/src; else INC=old/src; fi
+          g++ -O3 -std=c++17 -I "$INC" tools/debug/sidestep_divergence_probe.cpp -o probe
+
+      - name: Run hybrid probe
+        run: ./probe "${{ matrix.variant }}" hybrid.bin | tee result.jsonl
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: splice-${{ matrix.variant }}
+          path: result.jsonl
+          retention-days: 7
+
+  aggregate:
+    needs: splice
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: splice-*
+          path: dumps
+      - name: Summarize fixed-node watched moves
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          rows=[]
+          for p in Path("dumps").rglob("result.jsonl"):
+            rows += [json.loads(x) for x in p.read_text().splitlines() if x.strip()]
+          variants=["old_full","new_full","newV_oldTP","newV_newT_oldP","newV_oldT_newP","oldV_newTP","oldV_oldT_newP"]
+          ids={280:["d5","a2h"],310:["e4h","f2h"],320:["f5","d4h"]}
+          roots={(r["label"],r["id"],r["mode"]):r for r in rows if r["type"]=="root"}
+          edges={(r["label"],r["id"],r["mode"],r["move"]):r for r in rows if r["type"]=="edge"}
+          report=[]
+          for i,watch in ids.items():
+            print("STATE",i)
+            for v in variants:
+              rr=roots[(v,i,"nodes6000")]
+              vals=[]
+              for m in watch:
+                e=edges[(v,i,"nodes6000",m)]
+                vals.append(f"{m}:P={e['prior']:.4f},N={e['N']:.0f},Q={e['Q']:.4f}")
+              print(f"  {v:16s} chosen={rr['chosen']:4s}  "+"  ".join(vals))
+              report.append({"id":i,"variant":v,"chosen":rr["chosen"],"moves":[edges[(v,i,"nodes6000",m)] for m in watch]})
+          Path("splice_comparison.json").write_text(json.dumps(report,indent=2)+"\n")
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: splice-comparison
+          path: splice_comparison.json
+          retention-days: 14
