@@ -1,0 +1,344 @@
+name: Sidestep Value Recovery
+
+on:
+  push:
+    branches:
+      - "exp/sidestep-value-recovery-20260929"
+    paths:
+      - ".github/workflows/sidestep-value-recovery.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  train:
+    name: deep teacher and value-only fine-tune
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install --index-url https://download.pytorch.org/whl/cpu torch
+          python -m pip install numpy
+
+      - name: Build state tools
+        run: |
+          mkdir -p bin
+          g++ -O3 -DNDEBUG -std=c++17 -Isrc tools/teacher/encode_state.cpp -o bin/teacher_encode_state
+          g++ -O3 -DNDEBUG -std=c++17 -Isrc tools/teacher/generate_sidestep_recovery_positions.cpp -o bin/generate_sidestep_recovery_positions
+
+      - name: Generate diagnosed neighborhoods
+        run: |
+          mkdir -p results/sidestep-recovery
+          ./bin/generate_sidestep_recovery_positions > results/sidestep-recovery/positions.jsonl
+          python - <<'PY'
+          import json
+          from collections import Counter
+          from pathlib import Path
+          rows=[json.loads(x) for x in Path("results/sidestep-recovery/positions.jsonl").read_text().splitlines() if x.strip()]
+          print(json.dumps({
+            "positions":len(rows),
+            "by_opening":Counter(r["opening_index"] for r in rows),
+            "splits":Counter(r["split"] for r in rows),
+            "sides":Counter(r["side_to_move"] for r in rows),
+          },default=dict,indent=2))
+          PY
+
+      - name: Provision pinned Claustrophobia
+        run: |
+          python - <<'PY'
+          from tools.external.bot_setup import ensure_bot
+          info=ensure_bot("claustrophobia", build=True)
+          for k,v in info.items():
+              print(k, v)
+          PY
+
+      - name: Deep-label neighborhoods with Claustrophobia
+        run: |
+          PYTHONPATH=training/teachers python training/teachers/claustrophobia_search_relabel.py \
+            --positions results/sidestep-recovery/positions.jsonl \
+            --bridge external_bots/claustrophobia/repo/target/release/zq_search_bridge \
+            --checkpoint external_bots/claustrophobia/champion.pt \
+            --sims 1024,4096 \
+            --cpuct 1.5 \
+            --workers 2 \
+            --out results/sidestep-recovery/claustro_targets.npz
+
+      - name: Build anchored recovery dataset
+        run: |
+          python tools/teacher/build_sidestep_value_recovery_dataset.py \
+            --positions results/sidestep-recovery/positions.jsonl \
+            --targets results/sidestep-recovery/claustro_targets.npz \
+            --encoder bin/teacher_encode_state \
+            --base-weights data/nnue/nnue_weights.bin \
+            --out results/sidestep-recovery/dataset.npz
+
+      - name: Fine-tune value heads only
+        run: |
+          python training/run_experiment.py \
+            --data results/sidestep-recovery/dataset.npz \
+            --out-dir results/experiments/sidestep-value-recovery \
+            --architecture multipath_phase_bucketed \
+            --hidden 512 \
+            --init-from data/nnue/nnue_weights.bin \
+            --init-architecture multipath_phase_bucketed \
+            --init-hidden 512 \
+            --no-from-scratch \
+            --qat \
+            --mirror-h \
+            --epochs 20 \
+            --batch-size 256 \
+            --lr 0.00002 \
+            --schedule cosine \
+            --warmup-epochs 2 \
+            --min-lr 0.000001 \
+            --trunk-lr-scale 1.0 \
+            --weight-decay 0.0 \
+            --weight-decay-schedule constant \
+            --min-weight-decay 0.0 \
+            --policy-weight 0.0 \
+            --value-weight 1.0 \
+            --train-scope value \
+            --grad-clip 0.5 \
+            --patience 6 \
+            --seed 20260929 \
+            --device cpu \
+            --cpu-threads 4 \
+            --no-resume \
+            --no-teaching \
+            --no-build \
+            --no-benchmark
+
+      - name: Prove trunk and policy stayed frozen
+        run: |
+          python - <<'PY'
+          import torch
+          from pathlib import Path
+          import sys
+          sys.path.insert(0,"training")
+          from student_model import Student
+          a=Student("multipath_phase_bucketed",512)
+          b=Student("multipath_phase_bucketed",512)
+          a.load_float("data/nnue/nnue_weights.bin")
+          b.load_float("results/experiments/sidestep-value-recovery/student.bin")
+          report={}
+          report["fc1_exact"]=torch.equal(a.fc1.weight,b.fc1.weight) and torch.equal(a.fc1.bias,b.fc1.bias)
+          report["policy_exact"]=torch.equal(a.policy.weight,b.policy.weight) and torch.equal(a.policy.bias,b.policy.bias)
+          value_changed=0
+          for na,pa in a.named_parameters():
+              if not na.startswith("value"): continue
+              pb=dict(b.named_parameters())[na]
+              if not torch.equal(pa,pb): value_changed += 1
+          report["value_parameter_tensors_changed"]=value_changed
+          print(report)
+          assert report["fc1_exact"]
+          assert report["policy_exact"]
+          assert value_changed > 0
+          Path("results/sidestep-recovery/freeze_check.json").write_text(__import__("json").dumps(report,indent=2)+"\n")
+          PY
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sidestep-value-candidate
+          path: |
+            results/experiments/sidestep-value-recovery/student.bin
+            results/experiments/sidestep-value-recovery/student_int8.bin
+            results/experiments/sidestep-value-recovery/student.architecture.json
+            results/experiments/sidestep-value-recovery/train_report.json
+            results/experiments/sidestep-value-recovery/config.json
+            results/sidestep-recovery/positions.jsonl
+            results/sidestep-recovery/claustro_targets.npz.manifest.json
+            results/sidestep-recovery/dataset.manifest.json
+            results/sidestep-recovery/freeze_check.json
+          if-no-files-found: error
+          retention-days: 14
+
+  central_ab:
+    name: 200g five-family A/B
+    needs: train
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install --index-url https://download.pytorch.org/whl/cpu torch
+          python -m pip install numpy
+      - uses: actions/download-artifact@v4
+        with:
+          name: sidestep-value-candidate
+          path: candidate
+      - name: Build current engine
+        run: |
+          chmod +x build/build_uci.sh
+          ./build/build_uci.sh
+      - name: Build exact five-family book
+        run: |
+          python - <<'PY'
+          import json, random
+          from pathlib import Path
+          rows=[json.loads(x) for x in Path("tools/external/openings_center_rush_50pairs.jsonl").read_text().splitlines() if x.strip()]
+          fams=[("front_wall",11),("pawn_jump",23),("vertical_channel",37),("reed_rear_wall",53),("sidestep_flank",71)]
+          out=[]
+          for family,offset in fams:
+              pool=[r for r in rows if r.get("category")==family]
+              random.Random(20260928+offset).shuffle(pool)
+              for i in range(20):
+                  r=dict(pool[i%len(pool)])
+                  r["source_opening_index"]=r["opening_index"]
+                  r["opening_index"]=len(out)
+                  out.append(r)
+          Path("five_families.jsonl").write_text("".join(json.dumps(r,separators=(",",":"))+"\n" for r in out))
+          print("pairs",len(out))
+          PY
+      - name: Baseline 200g
+        run: |
+          python tools/run_benchmark.py \
+            --opponents claustrophobia --pairs 100 --workers 4 --seed 20260928 \
+            --openings five_families.jsonl --output results/ab/central_baseline \
+            --zq-executable bin/zquoridor --nnue data/nnue/nnue_weights_int8.bin \
+            --zq-move-time-ms 200 --claustrophobia-move-time-ms 200 \
+            --claustrophobia-max-sims 4096 --claustrophobia-cpuct 1.5 \
+            --claustrophobia-device cpu --bootstrap 10000
+      - name: Candidate 200g
+        run: |
+          python tools/run_benchmark.py \
+            --opponents claustrophobia --pairs 100 --workers 4 --seed 20260928 \
+            --openings five_families.jsonl --output results/ab/central_candidate \
+            --zq-executable bin/zquoridor --nnue candidate/student_int8.bin \
+            --zq-move-time-ms 200 --claustrophobia-move-time-ms 200 \
+            --claustrophobia-max-sims 4096 --claustrophobia-cpuct 1.5 \
+            --claustrophobia-device cpu --bootstrap 10000
+      - name: Compare
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          a=json.loads(Path("results/ab/central_baseline/summary.json").read_text())["summaries"]["claustrophobia"]
+          b=json.loads(Path("results/ab/central_candidate/summary.json").read_text())["summaries"]["claustrophobia"]
+          report={"baseline":a,"candidate":b,"delta_pp":b["score_pct"]-a["score_pct"],"family_delta":{}}
+          for fam in sorted(set(a.get("by_opening_category",{}))|set(b.get("by_opening_category",{}))):
+              av=a["by_opening_category"][fam]["score_pct"]; bv=b["by_opening_category"][fam]["score_pct"]
+              report["family_delta"][fam]={"baseline":av,"candidate":bv,"delta_pp":bv-av}
+          Path("central_ab.json").write_text(json.dumps(report,indent=2)+"\n")
+          print(json.dumps(report,indent=2))
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sidestep-value-central-ab
+          path: |
+            central_ab.json
+            results/ab/central_baseline/summary.json
+            results/ab/central_candidate/summary.json
+          retention-days: 14
+
+  normal_ab:
+    name: 100g normal-book A/B
+    needs: train
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install --index-url https://download.pytorch.org/whl/cpu torch
+          python -m pip install numpy
+      - uses: actions/download-artifact@v4
+        with:
+          name: sidestep-value-candidate
+          path: candidate
+      - name: Build current engine
+        run: |
+          chmod +x build/build_uci.sh
+          ./build/build_uci.sh
+      - name: Baseline 100g
+        run: |
+          python tools/run_benchmark.py \
+            --opponents claustrophobia --pairs 50 --workers 4 --seed 20260914 \
+            --openings tools/external/openings_screen_v1.jsonl --output results/ab/normal_baseline \
+            --zq-executable bin/zquoridor --nnue data/nnue/nnue_weights_int8.bin \
+            --zq-move-time-ms 200 --claustrophobia-move-time-ms 200 \
+            --claustrophobia-max-sims 4096 --claustrophobia-cpuct 1.5 \
+            --claustrophobia-device cpu --bootstrap 10000
+      - name: Candidate 100g
+        run: |
+          python tools/run_benchmark.py \
+            --opponents claustrophobia --pairs 50 --workers 4 --seed 20260914 \
+            --openings tools/external/openings_screen_v1.jsonl --output results/ab/normal_candidate \
+            --zq-executable bin/zquoridor --nnue candidate/student_int8.bin \
+            --zq-move-time-ms 200 --claustrophobia-move-time-ms 200 \
+            --claustrophobia-max-sims 4096 --claustrophobia-cpuct 1.5 \
+            --claustrophobia-device cpu --bootstrap 10000
+      - name: Compare
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          a=json.loads(Path("results/ab/normal_baseline/summary.json").read_text())["summaries"]["claustrophobia"]
+          b=json.loads(Path("results/ab/normal_candidate/summary.json").read_text())["summaries"]["claustrophobia"]
+          report={"baseline":a,"candidate":b,"delta_pp":b["score_pct"]-a["score_pct"]}
+          Path("normal_ab.json").write_text(json.dumps(report,indent=2)+"\n")
+          print(json.dumps(report,indent=2))
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sidestep-value-normal-ab
+          path: |
+            normal_ab.json
+            results/ab/normal_baseline/summary.json
+            results/ab/normal_candidate/summary.json
+          retention-days: 14
+
+  verdict:
+    name: aggregate recovery verdict
+    needs: [central_ab, normal_ab]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: sidestep-value-*-ab
+          path: ab
+      - name: Verdict
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          central=json.loads(next(Path("ab").rglob("central_ab.json")).read_text())
+          normal=json.loads(next(Path("ab").rglob("normal_ab.json")).read_text())
+          sf=central["family_delta"]["sidestep_flank"]
+          reed=central["family_delta"]["reed_rear_wall"]
+          verdict={
+            "central_delta_pp":central["delta_pp"],
+            "normal_delta_pp":normal["delta_pp"],
+            "sidestep":sf,
+            "reed_rear_wall":reed,
+            "screen_pass": (
+              sf["delta_pp"] >= 5.0 and
+              reed["delta_pp"] >= -5.0 and
+              central["delta_pp"] >= -2.5 and
+              normal["delta_pp"] >= -3.0
+            )
+          }
+          Path("verdict.json").write_text(json.dumps(verdict,indent=2)+"\n")
+          print(json.dumps(verdict,indent=2))
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sidestep-value-verdict
+          path: verdict.json
+          retention-days: 14
