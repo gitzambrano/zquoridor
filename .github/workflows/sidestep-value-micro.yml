@@ -1,0 +1,199 @@
+name: Sidestep Value Micro Recovery
+
+on:
+  push:
+    branches:
+      - "exp/sidestep-value-micro-20260929"
+    paths:
+      - ".github/workflows/sidestep-value-micro.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  train:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install --index-url https://download.pytorch.org/whl/cpu torch
+          python -m pip install numpy
+      - name: Build encoder
+        run: |
+          mkdir -p bin results/sidestep-micro
+          g++ -O3 -DNDEBUG -std=c++17 -Isrc tools/teacher/encode_state.cpp -o bin/teacher_encode_state
+      - name: Build 12-state causal corpus
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          roots = [
+            (28, "e2 e8 e3 e7 e4 e6 f4 f6 f5h e6 e4 e6v e3h e5 c3h d5h f4v e8v b4v b6h".split(), "d5", "a2h", "train"),
+            (29, "e2 e8 e3 e7 e4 e6 d4 e5 d4v c5h e4h e5h g4h a5h g5v d2v g7v".split(), "c3h", "c2h", "train"),
+            (32, "e2 e8 e3 e7 e4 e6 f4 d6 e4v f6h".split(), "f5", "d4h", "train"),
+            (27, "e2 e8 e3 e7 e4 e6 d4 d6 d5h".split(), "a6h", "c6h", "val"),
+          ]
+          rows=[]
+          for op,h,old,new,split in roots:
+            variants=[("root",h),("old",h+[old]),("new",h+[new])]
+            for kind,hist in variants:
+              rows.append({
+                "schema":"zquoridor.position.v1",
+                "id":f"m{op}_{kind}",
+                "side_to_move":len(hist)%2,
+                "opening_index":op,
+                "split":split,
+                "history":hist,
+                "metadata":{"role":kind},
+              })
+          p=Path("results/sidestep-micro/positions.jsonl")
+          p.write_text("".join(json.dumps(r,separators=(",",":"))+"\n" for r in rows))
+          print(json.dumps({"rows":len(rows),"train":sum(r["split"]=="train" for r in rows),"val":sum(r["split"]=="val" for r in rows)},indent=2))
+          PY
+      - name: Provision Claustrophobia
+        run: |
+          python - <<'PY'
+          from tools.external.bot_setup import ensure_bot
+          print(ensure_bot("claustrophobia", build=True))
+          PY
+      - name: Deep teacher labels
+        run: |
+          PYTHONPATH=training/teachers python training/teachers/claustrophobia_search_relabel.py \
+            --positions results/sidestep-micro/positions.jsonl \
+            --bridge external_bots/claustrophobia/repo/target/release/zq_search_bridge \
+            --checkpoint external_bots/claustrophobia/champion.pt \
+            --sims 1024,4096 \
+            --cpuct 1.5 --workers 4 \
+            --out results/sidestep-micro/targets.npz
+      - name: Build anchored dataset
+        run: |
+          python tools/teacher/build_sidestep_value_recovery_dataset.py \
+            --positions results/sidestep-micro/positions.jsonl \
+            --targets results/sidestep-micro/targets.npz \
+            --encoder bin/teacher_encode_state \
+            --base-weights data/nnue/nnue_weights.bin \
+            --out results/sidestep-micro/dataset.npz
+      - name: Fine tune value only
+        run: |
+          python training/run_experiment.py \
+            --data results/sidestep-micro/dataset.npz \
+            --out-dir results/experiments/sidestep-value-micro \
+            --architecture multipath_phase_bucketed --hidden 512 \
+            --init-from data/nnue/nnue_weights.bin \
+            --init-architecture multipath_phase_bucketed --init-hidden 512 \
+            --no-from-scratch --qat --mirror-h \
+            --epochs 20 --batch-size 256 \
+            --lr 0.00002 --schedule cosine --warmup-epochs 2 --min-lr 0.000001 \
+            --trunk-lr-scale 1.0 --weight-decay 0.0 --weight-decay-schedule constant --min-weight-decay 0.0 \
+            --weight-boosts '[[0,12,2.5]]' --max-sample-weight 30.0 \
+            --policy-weight 0.0 --value-weight 1.0 --train-scope value \
+            --grad-clip 0.5 --patience 6 --seed 20260929 --device cpu --cpu-threads 4 \
+            --no-resume --no-teaching --no-build --no-benchmark
+      - name: Verify frozen policy and trunk
+        run: |
+          python - <<'PY'
+          import sys, torch, json
+          from pathlib import Path
+          sys.path.insert(0,"training")
+          from student_model import Student
+          a=Student("multipath_phase_bucketed",512); a.load_float("data/nnue/nnue_weights.bin")
+          b=Student("multipath_phase_bucketed",512); b.load_float("results/experiments/sidestep-value-micro/student.bin")
+          assert torch.equal(a.fc1.weight,b.fc1.weight) and torch.equal(a.fc1.bias,b.fc1.bias)
+          assert torch.equal(a.policy.weight,b.policy.weight) and torch.equal(a.policy.bias,b.policy.bias)
+          changed=[n for n,p in a.named_parameters() if n.startswith("value") and not torch.equal(p,dict(b.named_parameters())[n])]
+          report={"trunk_exact":True,"policy_exact":True,"changed_value_tensors":changed}
+          print(json.dumps(report,indent=2))
+          Path("results/sidestep-micro/freeze.json").write_text(json.dumps(report,indent=2)+"\n")
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sidestep-micro-candidate
+          path: |
+            results/experiments/sidestep-value-micro/student.bin
+            results/experiments/sidestep-value-micro/student_int8.bin
+            results/experiments/sidestep-value-micro/student.architecture.json
+            results/experiments/sidestep-value-micro/train_report.json
+            results/sidestep-micro/targets.npz.manifest.json
+            results/sidestep-micro/dataset.manifest.json
+            results/sidestep-micro/freeze.json
+          retention-days: 14
+
+  gate:
+    needs: train
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install --index-url https://download.pytorch.org/whl/cpu torch
+          python -m pip install numpy
+      - uses: actions/download-artifact@v4
+        with:
+          name: sidestep-micro-candidate
+          path: candidate
+      - name: Build engine and books
+        run: |
+          chmod +x build/build_uci.sh
+          ./build/build_uci.sh
+          python - <<'PY'
+          import json, random
+          from pathlib import Path
+          src=[json.loads(x) for x in Path("tools/external/openings_center_rush_50pairs.jsonl").read_text().splitlines() if x.strip()]
+          for fam,offset in [("sidestep_flank",71),("reed_rear_wall",53)]:
+            pool=[r for r in src if r.get("category")==fam]
+            random.Random(20260928+offset).shuffle(pool)
+            out=[dict(pool[i%len(pool)]) for i in range(20)]
+            Path(f"{fam}.jsonl").write_text("".join(json.dumps(r,separators=(",",":"))+"\n" for r in out))
+          PY
+      - name: Run A/B gates
+        run: |
+          set -e
+          for book in sidestep_flank reed_rear_wall; do
+            python tools/run_benchmark.py --opponents claustrophobia --pairs 20 --workers 4 --seed 20260928 \
+              --openings "${book}.jsonl" --output "results/micro/base_${book}" \
+              --zq-executable bin/zquoridor --nnue data/nnue/nnue_weights_int8.bin \
+              --zq-move-time-ms 200 --claustrophobia-move-time-ms 200 --claustrophobia-max-sims 4096 --claustrophobia-cpuct 1.5 --claustrophobia-device cpu --bootstrap 5000
+            python tools/run_benchmark.py --opponents claustrophobia --pairs 20 --workers 4 --seed 20260928 \
+              --openings "${book}.jsonl" --output "results/micro/cand_${book}" \
+              --zq-executable bin/zquoridor --nnue candidate/student_int8.bin \
+              --zq-move-time-ms 200 --claustrophobia-move-time-ms 200 --claustrophobia-max-sims 4096 --claustrophobia-cpuct 1.5 --claustrophobia-device cpu --bootstrap 5000
+          done
+          python tools/run_benchmark.py --opponents claustrophobia --pairs 25 --workers 4 --seed 20260914 \
+            --openings tools/external/openings_screen_v1.jsonl --output results/micro/base_normal \
+            --zq-executable bin/zquoridor --nnue data/nnue/nnue_weights_int8.bin \
+            --zq-move-time-ms 200 --claustrophobia-move-time-ms 200 --claustrophobia-max-sims 4096 --claustrophobia-cpuct 1.5 --claustrophobia-device cpu --bootstrap 5000
+          python tools/run_benchmark.py --opponents claustrophobia --pairs 25 --workers 4 --seed 20260914 \
+            --openings tools/external/openings_screen_v1.jsonl --output results/micro/cand_normal \
+            --zq-executable bin/zquoridor --nnue candidate/student_int8.bin \
+            --zq-move-time-ms 200 --claustrophobia-move-time-ms 200 --claustrophobia-max-sims 4096 --claustrophobia-cpuct 1.5 --claustrophobia-device cpu --bootstrap 5000
+      - name: Summarize
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          out={}
+          for key in ["sidestep_flank","reed_rear_wall","normal"]:
+            a=json.loads(Path(f"results/micro/base_{key}/summary.json").read_text())["summaries"]["claustrophobia"]
+            b=json.loads(Path(f"results/micro/cand_{key}/summary.json").read_text())["summaries"]["claustrophobia"]
+            out[key]={"baseline":a["score_pct"],"candidate":b["score_pct"],"delta_pp":b["score_pct"]-a["score_pct"],
+                      "baseline_wdl":[a["wins"],a["draws"],a["losses"]],"candidate_wdl":[b["wins"],b["draws"],b["losses"]]}
+          out["screen_pass"]=out["sidestep_flank"]["delta_pp"]>=5 and out["reed_rear_wall"]["delta_pp"]>=-5 and out["normal"]["delta_pp"]>=-4
+          Path("micro_verdict.json").write_text(json.dumps(out,indent=2)+"\n")
+          print(json.dumps(out,indent=2))
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sidestep-micro-verdict
+          path: micro_verdict.json
+          retention-days: 14
