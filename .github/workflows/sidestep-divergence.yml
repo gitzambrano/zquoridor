@@ -1,0 +1,86 @@
+name: Sidestep divergence probe
+
+on:
+  push:
+    branches:
+      - "bench/sidestep-root-cause-20260929"
+    paths:
+      - ".github/workflows/sidestep-divergence.yml"
+      - "tools/debug/sidestep_divergence_probe.cpp"
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: pre210
+            ref: a742db9e1f8e7ef71174bc11784706a7508d8e1b
+          - label: v210
+            ref: a0def30e725b34c19eec07e54719af989f290063
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ matrix.ref }}
+          path: engine
+      - name: Build
+        run: g++ -O3 -std=c++17 -I engine/src tools/debug/sidestep_divergence_probe.cpp -o divergence_probe
+      - name: Run
+        run: ./divergence_probe "${{ matrix.label }}" engine/data/nnue/nnue_weights_int8.bin | tee "${{ matrix.label }}.jsonl"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sidestep-divergence-${{ matrix.label }}
+          path: ${{ matrix.label }}.jsonl
+          retention-days: 7
+
+  aggregate:
+    needs: probe
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: sidestep-divergence-*
+          path: dumps
+      - name: Compare watched moves
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          rows=[]
+          for p in Path("dumps").rglob("*.jsonl"):
+              rows += [json.loads(x) for x in p.read_text().splitlines() if x.strip()]
+          roots={(r["label"],r["id"],r["mode"]):r for r in rows if r["type"]=="root"}
+          edges={}
+          for r in rows:
+              if r["type"]=="edge":
+                  edges[(r["label"],r["id"],r["mode"],r["move"])]=r
+          ids={280:["d5","a2h"],290:["c1h","c3h","c2h"],310:["e4h","f2h"],320:["f5","d4h"],321:["e8v","d5"]}
+          out=[]
+          for i,watch in ids.items():
+            for mode in ["nodes6000","time200"]:
+              a=roots[("pre210",i,mode)]; b=roots[("v210",i,mode)]
+              rec={"id":i,"mode":mode,"pre_chosen":a["chosen"],"v210_chosen":b["chosen"],"moves":[]}
+              for m in watch:
+                ea=edges.get(("pre210",i,mode,m)); eb=edges.get(("v210",i,mode,m))
+                rec["moves"].append({"move":m,"pre":ea,"v210":eb})
+              out.append(rec)
+              print(f"STATE {i} {mode}: {a['chosen']} -> {b['chosen']}")
+              for m in watch:
+                ea=edges.get(("pre210",i,mode,m)); eb=edges.get(("v210",i,mode,m))
+                def f(x,k):
+                    return float('nan') if x is None else x[k]
+                print(f"  {m:4s} prior {f(ea,'prior'):.5f}->{f(eb,'prior'):.5f} childV {f(ea,'childV'):.4f}->{f(eb,'childV'):.4f} N {f(ea,'N'):.0f}->{f(eb,'N'):.0f} Q {f(ea,'Q'):.4f}->{f(eb,'Q'):.4f}")
+          Path("comparison.json").write_text(json.dumps(out,indent=2)+"\n")
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sidestep-divergence-comparison
+          path: comparison.json
+          retention-days: 14
