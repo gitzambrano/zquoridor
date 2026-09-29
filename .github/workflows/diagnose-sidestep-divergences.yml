@@ -1,0 +1,141 @@
+name: Diagnose sidestep divergence states
+
+on:
+  push:
+    branches:
+      - "bench/diagnose-sidestep-210-20260929"
+    paths:
+      - ".github/workflows/diagnose-sidestep-divergences.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          ref: a742db9e1f8e7ef71174bc11784706a7508d8e1b
+          path: v203
+      - uses: actions/checkout@v4
+        with:
+          ref: a0def30e725b34c19eec07e54719af989f290063
+          path: v210
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Instrument root P/N/Q
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          for d in ("v203","v210"):
+              p=Path(d)/"tools/external/zquoridor_uci.cpp"
+              s=p.read_text()
+              if "#include <algorithm>" not in s:
+                  s=s.replace("#include <", "#include <algorithm>\n#include <", 1)
+              needle="qr::Move best = runner.choose(engine, state, 40, budgetMs, stats, history, &mstats);"
+              block=r'''
+            qr::Move best = runner.choose(engine, state, 40, budgetMs, stats, history, &mstats);
+            if constexpr (decltype(runner)::supported) {
+                const auto* dbgRoot = runner.search.rootNodeForInspection();
+                if (dbgRoot) {
+                    std::vector<size_t> ord(dbgRoot->moves.size());
+                    for (size_t di = 0; di < ord.size(); ++di) ord[di] = di;
+                    std::sort(ord.begin(), ord.end(), [&](size_t a, size_t b) {
+                        if (dbgRoot->N[a] != dbgRoot->N[b]) return dbgRoot->N[a] > dbgRoot->N[b];
+                        return dbgRoot->P[a] > dbgRoot->P[b];
+                    });
+                    std::cout << "ROOTMETA totalN=" << dbgRoot->totalN
+                              << " moves=" << dbgRoot->moves.size() << "\n";
+                    for (size_t di = 0; di < dbgRoot->moves.size(); ++di) {
+                        double q = dbgRoot->N[di] > 0.0f
+                                     ? (double)dbgRoot->W[di] / (double)dbgRoot->N[di]
+                                     : 0.0;
+                        std::cout << "ROOTALL move=" << moveToText(dbgRoot->moves[di])
+                                  << " P=" << dbgRoot->P[di]
+                                  << " N=" << dbgRoot->N[di]
+                                  << " Q=" << q << "\n";
+                    }
+                }
+            }'''
+              if needle not in s: raise SystemExit(f"needle missing {d}")
+              p.write_text(s.replace(needle,block,1))
+          PY
+
+      - name: Build engines
+        run: |
+          for d in v203 v210; do
+            (cd "$d" && chmod +x build/build_uci.sh && ./build/build_uci.sh)
+          done
+
+      - name: Probe exact divergence states
+        run: |
+          python - <<'PY'
+          import json,re,subprocess
+          from pathlib import Path
+
+          targets=[
+            {"id":"28_p21","history":"e2 e8 e3 e7 e4 e6 f4 f6 f5h e6 e4 e6v e3h e5 c3h d5h f4v e8v b4v b6h".split(),"old":"d5","new":"a2h","count":4},
+            {"id":"32_p11","history":"e2 e8 e3 e7 e4 e6 f4 d6 e4v f6h".split(),"old":"f5","new":"d4h","count":3},
+            {"id":"29_p18a","history":"e2 e8 e3 e7 e4 e6 d4 e5 d4v c5h e4h e5h g4h a5h g5v d2v g7v".split(),"old":"c1h","new":"c2h","count":1},
+            {"id":"29_p18b","history":"e2 e8 e3 e7 e4 e6 d4 e5 d4v c5h e4h e5h g4h a5h g5v d2v g7v".split(),"old":"c3h","new":"c2h","count":1},
+            {"id":"27_p10","history":"e2 e8 e3 e7 e4 e6 d4 d6 d5h".split(),"old":"a6h","new":"c6h","count":1},
+            {"id":"28_p12","history":"e2 e8 e3 e7 e4 e6 f4 f6 f5h e6 e4".split(),"old":"e6h","new":"c6h","count":1},
+            {"id":"31_p11","history":"e2 e8 e3 e7 e4 e6 d4 f6 d4v c6h".split(),"old":"e4h","new":"f2h","count":1},
+            {"id":"31_p20","history":"e2 e8 e3 e7 e4 e6 d4 f6 d4v c5h f5v a5h d3 d2v f7v c2h c3 b3v c4".split(),"old":"e4v","new":"c6v","count":1},
+            {"id":"32_p20","history":"e2 e8 e3 e7 e4 e6 f4 d6 e4v f5h c5v h5h f3 e2v c7v f2h g3 g3v g4".split(),"old":"e8v","new":"d5","count":1},
+          ]
+          refs={
+            "v203":("v203/bin/zquoridor","v203/data/nnue/nnue_weights_int8.bin"),
+            "v210":("v210/bin/zquoridor","v210/data/nnue/nnue_weights_int8.bin"),
+          }
+          rows=[]
+          for target in targets:
+            for budget in (200,1000):
+              for ref,(exe,nnue) in refs.items():
+                reps=5 if budget==200 else 3
+                for rep in range(reps):
+                  cmd="uci\nisready\nucinewgame\nposition startpos moves "+" ".join(target["history"])+f"\ngo movetime {budget}\nquit\n"
+                  p=subprocess.run([exe,"--nnue",nnue],input=cmd,text=True,capture_output=True,check=True,timeout=20)
+                  best=None; stats={}
+                  for line in p.stdout.splitlines():
+                    if line.startswith("bestmove "): best=line.split()[1]
+                    elif line.startswith("ROOTALL "):
+                      d=dict(re.findall(r"(\w+)=([^ ]+)",line))
+                      stats[d["move"]]={"P":float(d["P"]),"N":float(d["N"]),"Q":float(d["Q"])}
+                  rows.append({**target,"ref":ref,"budget":budget,"rep":rep,"best":best,
+                               "old_stats":stats.get(target["old"]),
+                               "new_stats":stats.get(target["new"])})
+          Path("divergence_probe.json").write_text(json.dumps(rows,indent=2)+"\n")
+
+          from collections import Counter
+          summary=[]
+          for t in targets:
+            for budget in (200,1000):
+              for ref in refs:
+                rr=[x for x in rows if x["id"]==t["id"] and x["budget"]==budget and x["ref"]==ref]
+                def avg(which,key):
+                    vals=[x[which][key] for x in rr if x[which] is not None]
+                    return sum(vals)/len(vals) if vals else None
+                summary.append({
+                  "id":t["id"],"count":t["count"],"budget":budget,"ref":ref,
+                  "best":dict(Counter(x["best"] for x in rr)),
+                  "old":t["old"],"new":t["new"],
+                  "old_P":avg("old_stats","P"),"old_N":avg("old_stats","N"),"old_Q":avg("old_stats","Q"),
+                  "new_P":avg("new_stats","P"),"new_N":avg("new_stats","N"),"new_Q":avg("new_stats","Q"),
+                })
+          Path("divergence_summary.json").write_text(json.dumps(summary,indent=2)+"\n")
+          print(json.dumps(summary,indent=2))
+          PY
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sidestep-divergence-diagnostic
+          path: |
+            divergence_probe.json
+            divergence_summary.json
+          retention-days: 14
