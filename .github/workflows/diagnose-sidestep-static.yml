@@ -1,0 +1,105 @@
+name: Diagnose sidestep static NNUE
+
+on:
+  push:
+    branches:
+      - "bench/diagnose-sidestep-210-20260929"
+    paths:
+      - ".github/workflows/diagnose-sidestep-static.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          ref: a742db9e1f8e7ef71174bc11784706a7508d8e1b
+          path: v203
+      - uses: actions/checkout@v4
+        with:
+          ref: a0def30e725b34c19eec07e54719af989f290063
+          path: v210
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Instrument static policy and child value
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          for d in ("v203","v210"):
+              p=Path(d)/"tools/external/zquoridor_uci.cpp"
+              s=p.read_text()
+              needle="qr::Move best = runner.choose(engine, state, 40, budgetMs, stats, history, &mstats);"
+              block=r'''
+            qr::Move best = runner.choose(engine, state, 40, budgetMs, stats, history, &mstats);
+            {
+                auto rootAcc = qr::buildAccPairRoot(state);
+                std::array<float, qr::POLICY_OUT> policy{};
+                qr::forwardPolicyQuant(rootAcc.acc[state.turn], policy);
+                auto legal = qr::legalMoves(state);
+                for (const auto& mv : legal) {
+                    float logit = qr::policyLogitForMove(policy, mv, state.turn);
+                    qr::State childState = qr::applyMove(state, mv);
+                    auto childAcc = qr::buildAccPairRoot(childState);
+                    int childEval = qr::nnueEvalInt(childAcc, childState.turn);
+                    std::cout << "STATIC move=" << moveToText(mv)
+                              << " policyLogit=" << logit
+                              << " childSideEval=" << childEval << "\n";
+                }
+            }'''
+              if needle not in s: raise SystemExit(f"needle missing {d}")
+              p.write_text(s.replace(needle,block,1))
+          PY
+
+      - name: Build engines
+        run: |
+          for d in v203 v210; do
+            (cd "$d" && chmod +x build/build_uci.sh && ./build/build_uci.sh)
+          done
+
+      - name: Compare three diagnostic roots
+        run: |
+          python - <<'PY'
+          import json,re,subprocess
+          from pathlib import Path
+
+          targets=[
+            {"id":"28_p21","history":"e2 e8 e3 e7 e4 e6 f4 f6 f5h e6 e4 e6v e3h e5 c3h d5h f4v e8v b4v b6h".split(),"moves":["d5","a2h"]},
+            {"id":"32_p11","history":"e2 e8 e3 e7 e4 e6 f4 d6 e4v f6h".split(),"moves":["f5","d4h"]},
+            {"id":"27_p10","history":"e2 e8 e3 e7 e4 e6 d4 d6 d5h".split(),"moves":["a6h","c6h"]},
+          ]
+          refs={
+            "v203":("v203/bin/zquoridor","v203/data/nnue/nnue_weights_int8.bin"),
+            "v210":("v210/bin/zquoridor","v210/data/nnue/nnue_weights_int8.bin"),
+          }
+          out=[]
+          for t in targets:
+            for ref,(exe,nnue) in refs.items():
+              cmd="uci\nisready\nucinewgame\nposition startpos moves "+" ".join(t["history"])+"\ngo movetime 30\nquit\n"
+              p=subprocess.run([exe,"--nnue",nnue],input=cmd,text=True,capture_output=True,check=True,timeout=20)
+              data={}
+              best=None
+              for line in p.stdout.splitlines():
+                if line.startswith("STATIC "):
+                  d=dict(re.findall(r"(\w+)=([^ ]+)",line))
+                  data[d["move"]]={"policyLogit":float(d["policyLogit"]),"childSideEval":int(d["childSideEval"])}
+                elif line.startswith("bestmove "):
+                  best=line.split()[1]
+              row={"id":t["id"],"ref":ref,"best30ms":best}
+              for mv in t["moves"]: row[mv]=data.get(mv)
+              out.append(row)
+          Path("static_nnue.json").write_text(json.dumps(out,indent=2)+"\n")
+          print(json.dumps(out,indent=2))
+          PY
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sidestep-static-nnue
+          path: static_nnue.json
+          retention-days: 14
