@@ -1,0 +1,94 @@
+name: Sidestep Search Ablation
+
+on:
+  push:
+    branches:
+      - "bench/sidestep-network-probe-20260929"
+    paths:
+      - ".github/workflows/sidestep-search-ablation.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  ablate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          ref: a742db9e1f8e7ef71174bc11784706a7508d8e1b
+          path: pre210
+      - uses: actions/checkout@v4
+        with:
+          ref: a0def30e725b34c19eec07e54719af989f290063
+          path: v210
+
+      - name: Build UCI engines
+        run: |
+          (cd pre210 && chmod +x build/build_uci.sh && ./build/build_uci.sh)
+          (cd v210 && chmod +x build/build_uci.sh && ./build/build_uci.sh)
+
+      - name: Run root-search ablations
+        run: |
+          python - <<'PY'
+          import json, subprocess
+          from pathlib import Path
+
+          roots = {
+            "cat32_white_immediate": "e2 e8 e3 e7 e4 e6 f4 d6 e4v f6h",
+            "cat31_white_immediate": "e2 e8 e3 e7 e4 e6 d4 f6 d4v c6h",
+            "cat28_white_late": "e2 e8 e3 e7 e4 e6 f4 f6 f5h e6 e4 e6v e3h e5 c3h d5h f4v e8v b4v b6h",
+            "cat29_black_late": "e2 e8 e3 e7 e4 e6 d4 e5 d4v c5h e4h e5h g4h a5h g5v d2v g7v",
+            "cat27_black_beneficial": "e2 e8 e3 e7 e4 e6 d4 d6 d5h",
+            "cat30_black_persistent": "e2 e8 e3 e7 e4 e6 f4 e5 e4v",
+          }
+          configs = {
+            "pre210_default": ("pre210/bin/zquoridor", "pre210/data/nnue/nnue_weights_int8.bin", []),
+            "v210_cpuct_0p10": ("v210/bin/zquoridor", "v210/data/nnue/nnue_weights_int8.bin", ["--cpuct","0.10"]),
+            "v210_cpuct_0p40": ("v210/bin/zquoridor", "v210/data/nnue/nnue_weights_int8.bin", ["--cpuct","0.40"]),
+            "v210_default": ("v210/bin/zquoridor", "v210/data/nnue/nnue_weights_int8.bin", []),
+            "v210_cpuct_1p60": ("v210/bin/zquoridor", "v210/data/nnue/nnue_weights_int8.bin", ["--cpuct","1.60"]),
+            "v210_cpuct_3p20": ("v210/bin/zquoridor", "v210/data/nnue/nnue_weights_int8.bin", ["--cpuct","3.20"]),
+            "v210_leaf1": ("v210/bin/zquoridor", "v210/data/nnue/nnue_weights_int8.bin", ["--leaf-depth","1"]),
+            "v210_leaf2": ("v210/bin/zquoridor", "v210/data/nnue/nnue_weights_int8.bin", ["--leaf-depth","2"]),
+            "v210_ab": ("v210/bin/zquoridor", "v210/data/nnue/nnue_weights_int8.bin", ["--no-mcab"]),
+          }
+
+          def run(exe, weights, args, hist):
+              cmd=[exe,"--nnue",weights,*args]
+              p=subprocess.Popen(cmd,stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True)
+              inp=f"position startpos moves {hist}\ngo movetime 200\nquit\n"
+              out,err=p.communicate(inp,timeout=20)
+              best=None; info=None
+              for line in out.splitlines():
+                  if line.startswith("bestmove "): best=line.split()[1]
+                  if line.startswith("info "): info=line
+              return {"bestmove":best,"info":info,"stderr":err.strip()}
+
+          out={}
+          for rid,hist in roots.items():
+              out[rid]={}
+              for name,(exe,w,args) in configs.items():
+                  # 3 repeats expose wall-clock nondeterminism.
+                  out[rid][name]=[run(exe,w,args,hist) for _ in range(3)]
+
+          Path("search_ablation.json").write_text(json.dumps(out,indent=2)+"\n")
+          lines=["# Sidestep search ablation",""]
+          for rid,vals in out.items():
+              lines += [f"## {rid}","", "| Config | bestmove x3 |","|---|---|"]
+              for name,runs in vals.items():
+                  lines.append(f"| {name} | {' / '.join(x['bestmove'] or '?' for x in runs)} |")
+              lines.append("")
+          Path("search_ablation.md").write_text("\n".join(lines)+"\n")
+          print("\n".join(lines))
+          PY
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sidestep-search-ablation
+          path: |
+            search_ablation.json
+            search_ablation.md
+          retention-days: 14
