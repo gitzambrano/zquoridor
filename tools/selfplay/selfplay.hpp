@@ -276,6 +276,8 @@ struct SelfPlayConfig {
     bool playoutCapEnabled = false;
     double fullSearchProb = 1.0;
     int cheapTimeBudgetMs = 20;
+    // Full searches for the first N plies after a supplied opening seed.
+    int fullSearchOpeningPlies = 0;
 
     // Optional aligned sidecar for TrainingSample records.
     std::string metadataOutputPath;
@@ -562,7 +564,7 @@ inline std::vector<TrainingSample> playOneGame(Negamax& engine0, Negamax& engine
                 // Under a playout cap, the configured full/cheap split also
                 // applies to temperature plies; only full searches are
                 // retained as training samples.
-                bool fullSearch = !cfg.playoutCapEnabled || (unif(rng) < cfg.fullSearchProb);
+                bool fullSearch = !cfg.playoutCapEnabled || ply < cfg.fullSearchOpeningPlies || (unif(rng) < cfg.fullSearchProb);
                 chosen = searchedMove(fullSearch);
                 recordSample = !cfg.playoutCapEnabled || fullSearch;
                 const auto* rootNode = mcabRunner.search.rootNodeForInspection();
@@ -575,7 +577,7 @@ inline std::vector<TrainingSample> playOneGame(Negamax& engine0, Negamax& engine
                 // decaiu (quebra loops simétricos no meio/fim de jogo).
                 chosen = chooseShallowRunnerUp(engine, s, moves, reptbl, rng);
             } else {
-                bool fullSearch = !cfg.playoutCapEnabled || (unif(rng) < cfg.fullSearchProb);
+                bool fullSearch = !cfg.playoutCapEnabled || ply < cfg.fullSearchOpeningPlies || (unif(rng) < cfg.fullSearchProb);
                 chosen = searchedMove(fullSearch);
                 recordSample = !cfg.playoutCapEnabled || fullSearch;
             }
@@ -604,7 +606,7 @@ inline std::vector<TrainingSample> playOneGame(Negamax& engine0, Negamax& engine
                     chosen = chooseShallowRunnerUp(engine, s, moves, reptbl, rng);
                 }
             } else {
-                bool fullSearch = !cfg.playoutCapEnabled || (unif(rng) < cfg.fullSearchProb);
+                bool fullSearch = !cfg.playoutCapEnabled || ply < cfg.fullSearchOpeningPlies || (unif(rng) < cfg.fullSearchProb);
                 chosen = searchedMove(fullSearch);
                 recordSample = !cfg.playoutCapEnabled || fullSearch;
             }
@@ -624,6 +626,24 @@ inline std::vector<TrainingSample> playOneGame(Negamax& engine0, Negamax& engine
         if (!chosenLegal) {
             chosen = moves[0];
             recordSample = false;
+        }
+
+        // Stored-search campaigns require a real root value and visit policy.
+        // A completed time-budgeted call can occasionally return without an
+        // expanded root; retain the move for the trajectory, not as a target.
+        if (recordSample && cfg.playoutCapEnabled && metadataOut && cfg.mcabParams.enabled) {
+            const auto* rootNode = mcabRunner.search.rootNodeForInspection();
+            bool validRoot = rootNode && rootNode->expanded && rootNode->state.hash == s.hash;
+            bool hasVisit = false;
+            if (validRoot) {
+                for (size_t i = 0; i < rootNode->N.size(); ++i) {
+                    if (rootNode->N[i] > 0.0f && std::isfinite(rootNode->W[i])) {
+                        hasVisit = true;
+                        break;
+                    }
+                }
+            }
+            if (!hasVisit) recordSample = false;
         }
 
         if (!recordSample && cfg.playoutCapEnabled) stats.samplesSkipped++;
