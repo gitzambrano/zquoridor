@@ -334,7 +334,7 @@ The large-scale canonical self-play generation run (`tools/teacher/run_four_mill
 
 ### Unified champion training (`multipath_unified_champion`)
 
-Following the findings from the 60-epoch annealing study (where Arm C2 bucketed architecture demonstrated superior retention and the only positive Elo delta), a unified master training dataset combining the 11.065M master weakness-boosted positions with the 4.572M clean stored-search replay corpus (`stored_outcome_weight: 0.0`, eliminating fast 50ms blunder contamination) was assembled into `data/teaching/multipath_unified_clean_15m/dataset.npz` (15,637,120 samples: 12,893,910 train / 2,743,210 validation).
+Following the findings from the 60-epoch annealing study (where Arm C2 bucketed architecture demonstrated superior retention and the only positive Elo delta), a unified master training dataset combining the 11.065M master weakness-boosted positions with the 4.572M clean stored-search replay corpus (`stored_outcome_weight: 0.0`, eliminating fast 50ms blunder contamination) was assembled into `data/teaching/multipath_unified_clean_15m/dataset.npz` (15,637,120 samples: 12,893,910 train / 2,743,210 validation). The exact relabeling provenance, teacher models, and anti-forgetting roles across all eight curriculum tiers are cataloged in `docs/datasets.md` and `data/teaching/multipath_unified_clean_15m/dataset.manifest.json`.
 
 The champion model (`multipath_phase_bucketed`, 512 hidden, 6 wall-count value heads, 2 dense layers per head, `mirror_h: True`, QAT, warm-started from production float) completed 13 epochs of training on local CUDA (NVIDIA RTX 4050 Laptop GPU):
 

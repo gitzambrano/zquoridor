@@ -203,3 +203,32 @@ def test_time_budget_for_recorded_search_is_fixed():
     import pytest
     with pytest.raises(SystemExit):
         campaign._resolve_args(["--time-ms", "80"])
+
+
+def test_runner_recovers_interrupted_admission_before_counting(tmp_path: Path, monkeypatch):
+    source_dir = tmp_path / "production_bucketed"
+    source_dir.mkdir()
+    (source_dir / "central_weakness_00000.bin").write_bytes(b"partial")
+    executable = campaign._source_path(campaign.SELFPLAY_SOURCES[0]["executable"])
+    monkeypatch.setattr(campaign, "_ensure_executable", lambda source, artifacts:
+                        (executable, {"executable_sha256": "test-build"}))
+    monkeypatch.setattr(campaign, "_generate_opening_bank", lambda *args:
+                        {"fingerprint": "test-bank", "bank_sha256": "test-bank-sha"})
+
+    def fake_selfplay(command, **kwargs):
+        rows = np.zeros(1, dtype=V3_DTYPE)
+        rows["policy_top_prob"][:, 0] = 65535
+        rows.tofile(command[command.index("--out") + 1])
+        metadata = np.zeros(1, dtype=campaign.META_DTYPE)
+        metadata["flags"] = 2
+        metadata["root"] = 0.5
+        metadata.tofile(command[command.index("--meta-out") + 1])
+        return argparse.Namespace(returncode=0)
+
+    monkeypatch.setattr(campaign.subprocess, "run", fake_selfplay)
+    assert campaign.main(["--no-dry-run", "--no-prepare-replay", "--source", "production_bucketed",
+                          "--target-positions", "1", "--out", str(tmp_path)]) == 0
+    assert campaign._existing_shards(source_dir)[:2] == (1, 1)
+    preserved = list((source_dir / "staging").rglob("central_weakness_00000.bin"))
+    assert len(preserved) == 1 and preserved[0].read_bytes() == b"partial"
+    assert campaign.CONFIG["threads"] == 10
