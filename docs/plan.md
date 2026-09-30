@@ -10,12 +10,12 @@ artifacts and are deliberately not versioned.
 
 | Area | Current state |
 | --- | --- |
-| Release | Zquoridor 2.02 |
+| Release | Zquoridor 2.10 |
 | Search | Hybrid PUCT/MCGS graph search with alpha-beta support, transpositions, persistent tree reuse, repetition escape, and adaptive time management |
 | Pondering | Opponent-root pondering with subtree reuse; browser work runs in bounded Web Worker slices |
-| NNUE | `multipath_phase:512`: 504 sparse inputs, 512 SCReLU units, WL head `512 → 32 → 1`, policy head `512 → 209`, QAT/int8 |
+| NNUE | `multipath_phase_bucketed:512`: 504 sparse inputs, 512 SCReLU units, 6 wall-count value heads with 2-layer MLPs, policy head `512 → 209`, QAT/int8 |
 | Production weights | `data/nnue/nnue_weights.bin` and `data/nnue/nnue_weights_int8.bin` |
-| Versioned provenance | `results/experiments/multipath-phase512-searchboost-100ep/` |
+| Versioned provenance | `results/experiments/multipath_unified_champion/` |
 | Browser/protocol | WebAssembly build and UCI-style text protocol with fixed-time, clock, and pondering commands |
 
 A candidate must use an executable compiled for its exact NNUE architecture.
