@@ -163,7 +163,7 @@ CONFIG = {
     "seed_cache_limit": 10_000,
     "replay_max_positions": 12_000_000,
     "games_per_shard": 512,
-    "threads": 14,
+    "threads": 10,
     "depth": 50,
     "time_ms": 200,
     "cheap_time_ms": 20,
@@ -462,6 +462,8 @@ def _generate_opening_bank(args: argparse.Namespace, bank_path: Path, manifest_p
             "mirrored": bool(mirrored),
         }
         bank_rows.append(row)
+        if len(bank_rows) % 1_000 == 0:
+            print(f"[central-weakness] opening bank: {len(bank_rows):,}/{args.seed_bank_size:,} legal roots", flush=True)
         source_counts[source] = source_counts.get(source, 0) + 1
         ply_counts[len(key)] = ply_counts.get(len(key), 0) + 1
         mirrored_count += int(mirrored)
@@ -753,7 +755,9 @@ def _ensure_executable(source: Mapping, artifacts: dict) -> tuple[Path, dict]:
               "cpp_flags": artifacts["cpp_flags"], "weights_sha256": artifacts["weights_sha256"],
               "architecture_manifest_sha256": artifacts["architecture_manifest_sha256"],
               "source_sha256": _sha256(ROOT / "tools/selfplay/selfplay_main.cpp"),
-              "headers_sha256": {p.name: _sha256(p) for p in sorted((ROOT / "src").glob("*.hpp"))}}
+              "headers_sha256": {str(p.relative_to(ROOT)): _sha256(p) for p in
+                                 sorted([*(ROOT / "src").glob("*.hpp"),
+                                         *(ROOT / "tools/selfplay").glob("*.hpp")])}}
     if executable.is_file() and build_manifest_path.is_file():
         previous = json.loads(build_manifest_path.read_text(encoding="utf-8"))
         if previous.get("inputs") == inputs and previous.get("executable_sha256") == _sha256(executable):
@@ -925,8 +929,8 @@ def main(argv=None) -> int:
             source["target_positions"] = args.target_positions
     if not args.source and not args.target_positions and sum(s["target_positions"] for s in selected) + RESERVE_UNASSIGNED != CAMPAIGN_TOTAL_TARGET:
         raise ValueError("source quotas and reserve do not sum to campaign target")
-    completed = {s["name"]: _existing_shards(out_dir / s["name"])[0] for s in selected}
     if args.dry_run:
+        completed = {s["name"]: _existing_shards(out_dir / s["name"])[0] for s in selected}
         print("CENTRAL WEAKNESS MULTI-NETWORK CAMPAIGN")
         print(f"Total design target: {CAMPAIGN_TOTAL_TARGET:,} positions")
         print("Assigned:")
@@ -958,6 +962,7 @@ def main(argv=None) -> int:
     bank_manifest_path = out_dir / "opening_bank.manifest.json"
 
     with OutputLock(out_dir):
+        print(f"[central-weakness] preparing shared opening bank ({args.seed_bank_size:,} roots)", flush=True)
         bank_manifest = _generate_opening_bank(args, bank_path, bank_manifest_path)
         source_manifest = []
         for s in selected:
@@ -1001,6 +1006,7 @@ def main(argv=None) -> int:
                                          "status": status, "progress": progress, "shards": entries,
                                          "positions": sum(v["completed"] for v in progress.values())})
 
+        snapshot("running")
         for source in selected:
             source_index = next(i for i, item in enumerate(SELFPLAY_SOURCES) if item["name"] == source["name"])
             source_dir = out_dir / source["name"]
