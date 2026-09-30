@@ -16,8 +16,9 @@ The public runners currently following this convention are `tools/setup_bots.py`
 `tools/run_benchmark.py`, `tools/run_clock_smoke.py`,
 `tools/run_full_candidate_suite.py`, `tools/benchmark_candidate.py`,
 `training/run_teaching.py`, `training/run_experiment.py`,
-`training/run_campaign.py`, `tools/teacher/run_four_million_selfplay.py`, and
-`tools/teacher/run_weakness_selfplay.py`. `tools/selfplay/run_selfplay.py`
+`training/run_campaign.py`, `tools/teacher/run_four_million_selfplay.py`,
+`tools/teacher/run_weakness_selfplay.py`, and
+`tools/teacher/run_central_weakness_rollouts.py`. `tools/selfplay/run_selfplay.py`
 uses its documented uppercase settings at the top of the file. Other scripts
 are libraries, tests, or reusable internal stages and are not standalone
 campaigns.
@@ -34,6 +35,7 @@ campaigns.
 | Balanced, resumable self-play | `tools/teacher/run_four_million_selfplay.py` | central/broad seed schedules and matching executable/NNUE | a V3 corpus with metadata sidecars | Active controller. It deduplicates states, resumes safely, and exposes its configuration block at the top of the file. |
 | Build a seed schedule | `tools/teacher/build_selfplay_seed_schedule.py` | JSONL snapshots/openings | central and broad JSONL schedules | Internal stage used by the balanced controller. |
 | Weakness self-play | `tools/teacher/run_weakness_selfplay.py` | any compatible position snapshot | weakness V3 shards | Resumable generic runner; configure paths and target counts at the top. |
+| Central weakness rollouts | `tools/teacher/run_central_weakness_rollouts.py` | Center-Rush catalog plus production self-play executable/NNUE | large V3 + metadata corpus and optional stored-search replay | Builds a network-independent 8-10-ply bank around the classic central prefix, then cycles wide/balanced/sharp visit-temperature profiles. |
 | Convert and audit old self-play | `training/migrate_selfplay_v3.py`, then `training/audit_selfplay.py` | old shards | canonical V3 shards and manifest | Migration preserves original files. |
 | Build replay/teaching data | `training/prepare_replay.py` or `training/run_teaching.py` | V3 shards or JSONL trajectories | one `dataset.npz` plus manifest | The dataset contains mover-relative policy and value targets. |
 | Train one network | `training/run_experiment.py` | one `dataset.npz` | float/int8 weights, manifest, matching executable | QAT and resume are configured here. |
@@ -60,6 +62,35 @@ Create `stop.request` in the corpus directory to stop an updated controller
 after its current shard transaction. Remove the request before resuming.
 An older process does not acquire this behavior from a source edit.
 Do not terminate a controller during shard admission or launch a second controller.
+
+## Central weakness rollout campaign
+
+Use `tools/teacher/run_central_weakness_rollouts.py` for the dedicated
+Center-Rush recovery corpus. The default campaign builds 50,000 unique legal
+8-10-ply roots around `e2 e8 e3 e7 e4 e6`, explicitly oversamples the
+empirically weak catalog families, adds left/right mirrors, and does not use the
+current NNUE to accept or reject opening roots. Self-play then cycles
+wide/balanced/sharp MCAB visit-temperature profiles with Dirichlet root noise
+and playout-cap randomization. Temperature changes the played trajectory; the
+stored policy supervision remains the untempered top-eight root-visit
+distribution.
+
+The default target is 16 million recorded full-search positions. Every shard
+has an aligned metadata sidecar, and the runner namespaces metadata game IDs
+before admission so independently launched shards remain separate games during
+replay splitting. The optional replay stage caps the deduplicated dataset at
+12 million states.
+
+For this campaign the documented value target is a literal 50/50 blend:
+
+`0.5 * signed_mcab_root_value + 0.5 * terminal_game_result`
+
+It is implemented with `prepare_replay.py --mode stored_search`,
+`stored_outcome_weight=0.5`, and `stored_gamma=1.0`. The raw NNUE forward
+evaluation stored in V3 is deliberately not used as the value teacher. Before
+promotion, mix a frozen broad/general replay slice into network training and
+gate the candidate on both normal-book and Center-Rush paired external-opponent
+matches.
 
 ## Stored-search replay
 
