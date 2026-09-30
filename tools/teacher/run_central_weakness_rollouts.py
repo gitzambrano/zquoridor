@@ -30,8 +30,11 @@ labels*:
    namespaced per shard before admission, keeping train/validation grouping
    clean.
 
-The defaults intentionally target sixteen million recorded full-search
-positions and cap the deduplicated replay dataset at twelve million positions.
+The design target is sixteen million positions: eight million production,
+four million contact-bucketed, and four million explicitly unassigned. The
+first sixteen rollout plies are always searched at 200 ms. Later plies may
+steer cheaply, but only 200 ms full searches become training records.
+The deduplicated replay dataset is capped at twelve million positions.
 The runner is resumable shard-by-shard.  Set ``dry_run`` to ``False`` in
 ``CONFIG`` (or pass ``--no-dry-run``) only when the self-play executable and
 weights are ready.
@@ -40,7 +43,7 @@ Outputs under ``data/selfplay/central-weakness-rollouts-16m``:
 
 - ``opening_bank_8to10ply.jsonl``: generated start positions;
 - ``opening_bank.manifest.json``: reproducible bank identity and statistics;
-- ``central_weakness_XXXXX.bin/.meta``: V3 self-play + aligned search metadata;
+- ``<source>/central_weakness_XXXXX.bin/.meta``: V3 self-play + aligned search metadata;
 - ``campaign_manifest.json``: resumable campaign provenance;
 - ``training_recipe.json``: exact replay/training contract;
 - ``replay-50-50/dataset.npz``: optional prepared training dataset.
@@ -56,6 +59,7 @@ import json
 import math
 import os
 import random
+import shutil
 import subprocess
 import sys
 import time
@@ -79,8 +83,9 @@ from tools.teacher.build_selfplay_seed_schedule import (  # noqa: E402
     _replay_history,
 )
 from tools.teacher.run_four_million_selfplay import OutputLock  # noqa: E402
+from tools.teacher.selfplay_unique_store import V3_DTYPE  # noqa: E402
 
-SCHEMA = "zquoridor.central_weakness_rollouts.v1"
+SCHEMA = "zquoridor.central_weakness_rollouts.v2"
 BANK_SCHEMA = "zquoridor.central_weakness_opening_bank.v1"
 RECIPE_SCHEMA = "zquoridor.central_weakness_training_recipe.v1"
 V3_RECORD_BYTES = 64
@@ -123,12 +128,23 @@ ROLLOUT_PROFILES = {
 }
 PROFILE_CYCLE = ("wide", "balanced", "wide", "balanced", "sharp")
 
+CAMPAIGN_TOTAL_TARGET = 16_000_000
+SELFPLAY_SOURCES = (
+    {"name": "production_bucketed", "architecture": "multipath_phase_bucketed",
+     "features": 504, "target_positions": 8_000_000,
+     "weights": "data/nnue/nnue_weights_int8.bin", "executable": "bin/selfplay"},
+    {"name": "contact_bucketed", "architecture": "multipath_phase_contact_bucketed",
+     "features": 858, "target_positions": 4_000_000,
+     "weights": "results/experiments/multipath_contact_bucketed_unified/student_int8.bin",
+     "architecture_manifest": "results/experiments/multipath_contact_bucketed_unified/student.architecture.json",
+     "executable": "bin/selfplay_multipath_phase_contact_bucketed"},
+)
+RESERVE_UNASSIGNED = CAMPAIGN_TOTAL_TARGET - sum(s["target_positions"] for s in SELFPLAY_SOURCES)
+
 # Edit this block for normal use.  CLI options override the scalar/path fields.
 CONFIG = {
     "opening_book": "tools/external/openings_center_rush_50pairs.jsonl",
     "out": "data/selfplay/central-weakness-rollouts-16m",
-    "exe": "bin/selfplay",
-    "weights": "data/nnue/nnue_weights_int8.bin",
     "seed_bank_size": 50_000,
     # Roughly-eight-ply means most roots are 8 plies, with 9-10 ply tails to
     # provide parity balance and enough combinatorial room for a large bank.
@@ -145,13 +161,13 @@ CONFIG = {
     "seed_proposal_temperature": 1.35,
     "seed_wall_margin": 1,
     "seed_cache_limit": 10_000,
-    "target_positions": 16_000_000,
     "replay_max_positions": 12_000_000,
     "games_per_shard": 512,
-    "threads": 12,
+    "threads": 14,
     "depth": 50,
-    "time_ms": 80,
+    "time_ms": 200,
     "cheap_time_ms": 20,
+    "full_search_opening_plies": 16,
     "max_plies": 160,
     "seed": 20260930,
     "val_fraction": 0.15,
@@ -413,6 +429,8 @@ def _generate_opening_bank(args: argparse.Namespace, bank_path: Path, manifest_p
             )
         if previous.get("rows") != args.seed_bank_size:
             raise ValueError("existing opening bank has the wrong row count")
+        if previous.get("bank_sha256") != _sha256(bank_path):
+            raise ValueError("existing opening bank content changed")
         return previous
 
     rng = random.Random(args.seed ^ 0xC3E71A9)
@@ -559,6 +577,21 @@ def _pair_record_count(v3_path: Path, meta_path: Path) -> int:
     return int(v3_count)
 
 
+def _retain_complete_search_records(v3_path: Path, meta_path: Path) -> int:
+    """Keep only aligned V3 rows with usable searched root value and visits."""
+    _pair_record_count(v3_path, meta_path)
+    rows = np.fromfile(v3_path, dtype=V3_DTYPE)
+    metadata = np.fromfile(meta_path, dtype=META_DTYPE)
+    valid = ((metadata["flags"] & 2) != 0) & np.isfinite(metadata["root"])
+    valid &= (metadata["root"] >= 0) & (metadata["root"] <= 1)
+    valid &= rows["policy_top_prob"].sum(axis=1) > 0
+    dropped = int(len(rows) - np.count_nonzero(valid))
+    if dropped:
+        rows[valid].tofile(v3_path)
+        metadata[valid].tofile(meta_path)
+    return dropped
+
+
 def _namespace_metadata_game_ids(meta_path: Path, shard_index: int, games_per_shard: int) -> None:
     """Make metadata game IDs globally unique across independently run shards."""
     data = np.memmap(meta_path, dtype=META_DTYPE, mode="r+")
@@ -589,9 +622,12 @@ def _build_selfplay_command(
     shard_index: int,
     out_bin: Path,
     out_meta: Path,
+    source_index: int = 0,
 ) -> tuple[list[str], RolloutProfile, int]:
     profile = _profile_for_shard(shard_index)
-    shard_seed = int(args.seed + shard_index * 999_983)
+    # Every source sees the same profile and opening-bank schedule at a given
+    # local shard index. The source offset keeps RNG streams independent.
+    shard_seed = int(args.seed + shard_index * 999_983 + source_index * 104_729)
     command = [
         str(executable),
         "--games", str(args.games_per_shard),
@@ -619,6 +655,7 @@ def _build_selfplay_command(
         "--playout-cap",
         "--full-search-prob", str(profile.full_search_prob),
         "--cheap-time-ms", str(args.cheap_time_ms),
+        "--full-search-opening-plies", str(args.full_search_opening_plies),
         "--policy-order",
     ]
     return command, profile, shard_seed
@@ -638,24 +675,119 @@ def _existing_shards(out_dir: Path) -> tuple[int, int, list[dict]]:
         total += count
         next_index = max(next_index, index + 1)
         shards.append({"index": index, "records": count, "bin": v3_path.name, "meta": meta_path.name})
+    for meta_path in out_dir.glob("central_weakness_*.meta"):
+        if not meta_path.with_suffix(".bin").exists():
+            raise ValueError(f"orphan metadata shard: {meta_path}")
     return total, next_index, shards
 
 
-def _campaign_identity(args: argparse.Namespace, executable: Path, weights: Path, bank_manifest: dict) -> dict:
+def _recover_partial_shards(source_dir: Path) -> None:
+    """Preserve incomplete admissions outside the accepted shard namespace."""
+    candidates = {p.stem for p in source_dir.glob("central_weakness_*.bin")}
+    candidates.update(p.stem for p in source_dir.glob("central_weakness_*.meta"))
+    for stem in sorted(candidates):
+        bin_path = source_dir / f"{stem}.bin"
+        meta_path = source_dir / f"{stem}.meta"
+        sidecar = source_dir / f"{stem}.shard.json"
+        if bin_path.is_file() and meta_path.is_file() and sidecar.is_file():
+            _pair_record_count(bin_path, meta_path)
+            info = json.loads(sidecar.read_text(encoding="utf-8"))
+            if (info.get("bin_sha256") != _sha256(bin_path)
+                    or info.get("meta_sha256") != _sha256(meta_path)):
+                raise ValueError(f"accepted shard SHA mismatch: {stem}")
+            continue
+        orphan_dir = source_dir / "staging" / f"interrupted_{stem}_{time.time_ns()}"
+        orphan_dir.mkdir(parents=True)
+        for path in (bin_path, meta_path, sidecar):
+            if path.exists():
+                path.replace(orphan_dir / path.name)
+
+
+def _source_path(value: str) -> Path:
+    path = ROOT / value
+    if os.name == "nt" and path.suffix.lower() != ".exe" and value.startswith("bin/"):
+        path = path.with_suffix(".exe")
+    return path.resolve()
+
+
+def _source_artifacts(source: Mapping) -> dict:
+    weights = _source_path(source["weights"])
+    if not weights.is_file():
+        raise FileNotFoundError(weights)
+    manifest_path = _source_path(source["architecture_manifest"]) if source.get("architecture_manifest") else None
+    architecture = None
+    flags = []
+    if manifest_path:
+        if not manifest_path.is_file():
+            raise FileNotFoundError(manifest_path)
+        architecture = json.loads(manifest_path.read_text(encoding="utf-8"))
+        if architecture["architecture"] != source["architecture"] or architecture["features"] != source["features"]:
+            raise ValueError(f"architecture manifest disagrees with source {source['name']}")
+        flags = architecture["cpp_flags"]
+        if not isinstance(flags, list) or not flags or not all(isinstance(flag, str) and flag.startswith("-DZQ_NNUE_") for flag in flags):
+            raise ValueError(f"invalid cpp_flags in {manifest_path}")
+        expected = architecture.get("int8_sha256")
+        if expected and _sha256(weights) != expected:
+            raise ValueError(f"weights SHA disagrees with {manifest_path}")
+    # Quantized layouts have a fixed byte count per feature for this 512-wide
+    # architecture. This rejects a swapped 504/858-input file before search.
+    expected_bytes = {504: 731_172, 858: 1_093_668}.get(source["features"])
+    if expected_bytes and weights.stat().st_size != expected_bytes:
+        raise ValueError(f"weights layout/feature count mismatch: {weights}")
+    return {"weights": weights, "weights_sha256": _sha256(weights),
+            "architecture_manifest": manifest_path,
+            "architecture_manifest_sha256": _sha256(manifest_path) if manifest_path else None,
+            "cpp_flags": flags}
+
+
+def _ensure_executable(source: Mapping, artifacts: dict) -> tuple[Path, dict]:
+    compiler = shutil.which("g++") or ("C:/mingw64/bin/g++.exe" if Path("C:/mingw64/bin/g++.exe").is_file() else None)
+    if not compiler:
+        raise RuntimeError("g++ is required to build architecture-specific self-play")
+    compiler = str(Path(compiler).resolve())
+    executable = _source_path(source["executable"])
+    build_manifest_path = executable.with_name(executable.name + ".build.json")
+    inputs = {"source_commit": subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip(),
+              "compiler": compiler, "compiler_sha256": _sha256(Path(compiler)),
+              "architecture": source["architecture"], "features": source["features"],
+              "cpp_flags": artifacts["cpp_flags"], "weights_sha256": artifacts["weights_sha256"],
+              "architecture_manifest_sha256": artifacts["architecture_manifest_sha256"],
+              "source_sha256": _sha256(ROOT / "tools/selfplay/selfplay_main.cpp"),
+              "headers_sha256": {p.name: _sha256(p) for p in sorted((ROOT / "src").glob("*.hpp"))}}
+    if executable.is_file() and build_manifest_path.is_file():
+        previous = json.loads(build_manifest_path.read_text(encoding="utf-8"))
+        if previous.get("inputs") == inputs and previous.get("executable_sha256") == _sha256(executable):
+            return executable, previous
+    executable.parent.mkdir(parents=True, exist_ok=True)
+    command = [compiler, "-O3", "-std=c++17", "-pthread", "-march=native"]
+    if os.name == "nt" or (os.uname().machine.lower() in ("x86_64", "amd64")):
+        command += ["-mavx2", "-mfma"]
+    command += artifacts["cpp_flags"] + ["-I" + str(ROOT / "src"),
+               "-I" + str(ROOT / "tools/selfplay"), "-o", str(executable),
+               str(ROOT / "tools/selfplay/selfplay_main.cpp")]
+    subprocess.run(command, cwd=ROOT, check=True)
+    build = {"inputs": inputs, "command": command, "build_timestamp": time.time(),
+             "executable_sha256": _sha256(executable)}
+    _atomic_json(build_manifest_path, build)
+    return executable, build
+
+
+def _campaign_identity(args: argparse.Namespace, sources: list[dict], bank_manifest: dict) -> dict:
     return {
         "schema": SCHEMA,
-        "engine": str(executable),
-        "engine_sha256": _sha256(executable),
-        "weights": str(weights),
-        "weights_sha256": _sha256(weights),
+        "sources": sources,
+        "campaign_total_target": CAMPAIGN_TOTAL_TARGET,
+        "assigned_target": sum(s["target_positions"] for s in SELFPLAY_SOURCES),
+        "source_plan": [dict(s) for s in SELFPLAY_SOURCES],
+        "reserve_unassigned": RESERVE_UNASSIGNED,
         "bank_fingerprint": bank_manifest["fingerprint"],
         "bank_sha256": bank_manifest["bank_sha256"],
-        "target_positions": args.target_positions,
         "games_per_shard": args.games_per_shard,
         "threads": args.threads,
         "depth": args.depth,
         "time_ms": args.time_ms,
         "cheap_time_ms": args.cheap_time_ms,
+        "full_search_opening_plies": args.full_search_opening_plies,
         "max_plies": args.max_plies,
         "seed": args.seed,
         "profile_cycle": list(PROFILE_CYCLE),
@@ -669,6 +801,7 @@ def _write_training_recipe(args: argparse.Namespace, out_dir: Path) -> dict:
         "schema": RECIPE_SCHEMA,
         "corpus": str(out_dir.resolve()),
         "replay_dataset": str((replay_dir / "dataset.npz").resolve()),
+        "mode": "stored_search",
         "value_target": {
             "formula": "0.5 * signed_mcab_root_value + 0.5 * terminal_game_result",
             "stored_outcome_weight": args.stored_outcome_weight,
@@ -680,13 +813,15 @@ def _write_training_recipe(args: argparse.Namespace, out_dir: Path) -> dict:
             "geometry-only opening-bank generation (no NNUE acceptance filter)",
             "wide/balanced/sharp visit-temperature profiles",
             "Dirichlet root-noise variation by profile",
-            "playout-cap cheap/full trajectory randomization",
+            f"200 ms full search for first {args.full_search_opening_plies} plies after seed; later cheap trajectory plies are not recorded",
             "canonical-state deduplication and duplicate-target averaging in stored replay",
             "game-grouped train/validation split",
         ],
         "recommended_network_training": {
             "initialize_from": "current production/champion weights rather than random initialization",
-            "retain_general_strength": "mix 20-30% frozen broad/general replay before final training",
+            "central_fraction": "70-80% of training replay",
+            "frozen_general_background_fraction": "20-30% of training replay",
+            "retain_general_strength": "include normal book, general midgame, endgame, wall fights and noncentral Claustrophobia",
             "promotion_gate": "paired normal-book and Center-Rush external-opponent benchmarks; reject normal-book regression",
         },
     }
@@ -720,18 +855,20 @@ def _resolve_args(argv=None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--opening-book", type=Path, default=Path(CONFIG["opening_book"]))
     parser.add_argument("--out", type=Path, default=Path(CONFIG["out"]))
-    parser.add_argument("--exe", type=Path, default=Path(CONFIG["exe"]))
-    parser.add_argument("--weights", type=Path, default=Path(CONFIG["weights"]))
+    parser.add_argument("--source", choices=[s["name"] for s in SELFPLAY_SOURCES],
+                        help="run just one assigned source (useful for smoke tests)")
     parser.add_argument("--seed-bank-size", type=int, default=CONFIG["seed_bank_size"])
     parser.add_argument("--weak-opening-indices", type=_parse_int_list,
                         default=CONFIG["weak_opening_indices"])
-    parser.add_argument("--target-positions", type=int, default=CONFIG["target_positions"])
+    parser.add_argument("--target-positions", type=int,
+                        help="override selected source target for an isolated test corpus")
     parser.add_argument("--replay-max-positions", type=int, default=CONFIG["replay_max_positions"])
     parser.add_argument("--games-per-shard", type=int, default=CONFIG["games_per_shard"])
     parser.add_argument("--threads", type=int, default=CONFIG["threads"])
     parser.add_argument("--depth", type=int, default=CONFIG["depth"])
     parser.add_argument("--time-ms", type=int, default=CONFIG["time_ms"])
     parser.add_argument("--cheap-time-ms", type=int, default=CONFIG["cheap_time_ms"])
+    parser.add_argument("--full-search-opening-plies", type=int, default=CONFIG["full_search_opening_plies"])
     parser.add_argument("--max-plies", type=int, default=CONFIG["max_plies"])
     parser.add_argument("--seed", type=int, default=CONFIG["seed"])
     parser.add_argument("--val-fraction", type=float, default=CONFIG["val_fraction"])
@@ -758,12 +895,16 @@ def _resolve_args(argv=None) -> argparse.Namespace:
     args.stored_outcome_weight = float(CONFIG["stored_outcome_weight"])
     args.stored_gamma = float(CONFIG["stored_gamma"])
 
-    if args.seed_bank_size < 1 or args.target_positions < 1 or args.replay_max_positions < 1:
+    if args.seed_bank_size < 1 or (args.target_positions is not None and args.target_positions < 1) or args.replay_max_positions < 1:
         parser.error("bank and position targets must be positive")
     if args.games_per_shard < 1 or args.threads < 1 or args.depth < 1 or args.max_plies < 1:
         parser.error("games/threads/depth/max-plies must be positive")
-    if not (0 < args.cheap_time_ms <= args.time_ms):
-        parser.error("cheap-time-ms must be positive and <= time-ms")
+    if args.games_per_shard >= 1 << 32:
+        parser.error("games-per-shard exceeds the uint64 source namespace")
+    if args.time_ms != 200:
+        parser.error("this campaign requires --time-ms 200 for full-search plies")
+    if not 0 < args.cheap_time_ms <= args.time_ms or args.full_search_opening_plies < 1:
+        parser.error("invalid cheap time or opening full-search window")
     if not 0.0 < args.val_fraction < 1.0:
         parser.error("val-fraction must be in (0,1)")
     if not math.isclose(args.stored_outcome_weight, 0.5, abs_tol=1e-12):
@@ -778,31 +919,39 @@ def main(argv=None) -> int:
     out_dir = (ROOT / args.out).resolve() if not args.out.is_absolute() else args.out.resolve()
     opening_book = (ROOT / args.opening_book).resolve() if not args.opening_book.is_absolute() else args.opening_book.resolve()
     args.opening_book = opening_book
-
-    planned = {
-        "schema": SCHEMA,
-        "opening_book": str(opening_book),
-        "out": str(out_dir),
-        "seed_bank_size": args.seed_bank_size,
-        "seed_ply_weights": args.seed_ply_weights,
-        "weak_opening_indices": list(args.weak_opening_indices),
-        "target_positions": args.target_positions,
-        "replay_max_positions": args.replay_max_positions,
-        "value_blend": "50% MCAB root search value / 50% terminal result",
-        "profiles": {name: profile.__dict__ for name, profile in ROLLOUT_PROFILES.items()},
-        "profile_cycle": list(PROFILE_CYCLE),
-        "dry_run": args.dry_run,
-    }
+    selected = [dict(s) for s in SELFPLAY_SOURCES if not args.source or s["name"] == args.source]
+    if args.target_positions is not None:
+        for source in selected:
+            source["target_positions"] = args.target_positions
+    if not args.source and not args.target_positions and sum(s["target_positions"] for s in selected) + RESERVE_UNASSIGNED != CAMPAIGN_TOTAL_TARGET:
+        raise ValueError("source quotas and reserve do not sum to campaign target")
+    completed = {s["name"]: _existing_shards(out_dir / s["name"])[0] for s in selected}
     if args.dry_run:
-        print(json.dumps(planned, indent=2), flush=True)
+        print("CENTRAL WEAKNESS MULTI-NETWORK CAMPAIGN")
+        print(f"Total design target: {CAMPAIGN_TOTAL_TARGET:,} positions")
+        print("Assigned:")
+        for s in selected:
+            print(f"  {s['name']:<25} {s['target_positions']:>10,}  {s['target_positions']/CAMPAIGN_TOTAL_TARGET:5.1%}")
+        print(f"Reserve: unassigned {RESERVE_UNASSIGNED:,} ({RESERVE_UNASSIGNED/CAMPAIGN_TOTAL_TARGET:.1%})")
+        print(f"Search: 200 ms for first {args.full_search_opening_plies} plies after seed; "
+              f"then {args.cheap_time_ms} ms cheap trajectory plies; only 200 ms searches recorded")
+        print(f"Opening bank: {args.seed_bank_size:,} roots; 8-10 plies; classic central prefix; weak-line oversampling; mirrored")
+        print("Profiles: wide / balanced / sharp (same local cycle for every source)")
+        print("Value replay: 50% MCAB root search value + 50% terminal result")
+        for s in selected:
+            print(f"{s['name']}: architecture={s['architecture']} features={s['features']} "
+                  f"weights={_source_path(s['weights'])} executable={_source_path(s['executable'])} "
+                  f"target={s['target_positions']:,} completed={completed[s['name']]:,} "
+                  f"remaining={max(0,s['target_positions']-completed[s['name']]):,}")
         return 0
 
     if not opening_book.exists():
         raise FileNotFoundError(opening_book)
-    executable = _resolve_executable((ROOT / args.exe) if not args.exe.is_absolute() else args.exe)
-    weights = ((ROOT / args.weights) if not args.weights.is_absolute() else args.weights).resolve()
-    if not weights.exists():
-        raise FileNotFoundError(weights)
+    runtime = {}
+    for s in selected:
+        artifacts = _source_artifacts(s)
+        executable, build = _ensure_executable(s, artifacts)
+        runtime[s["name"]] = (artifacts, executable, build)
 
     out_dir.mkdir(parents=True, exist_ok=True)
     bank_path = out_dir / "opening_bank_8to10ply.jsonl"
@@ -810,89 +959,98 @@ def main(argv=None) -> int:
 
     with OutputLock(out_dir):
         bank_manifest = _generate_opening_bank(args, bank_path, bank_manifest_path)
-        identity = _campaign_identity(args, executable, weights, bank_manifest)
+        source_manifest = []
+        for s in selected:
+            artifacts, executable, build = runtime[s["name"]]
+            source_manifest.append({**s, "weights": str(artifacts["weights"]),
+                                    "weights_sha256": artifacts["weights_sha256"],
+                                    "architecture_manifest": str(artifacts["architecture_manifest"]) if artifacts["architecture_manifest"] else None,
+                                    "architecture_manifest_sha256": artifacts["architecture_manifest_sha256"],
+                                    "executable": str(executable), "executable_sha256": build["executable_sha256"],
+                                    "build_manifest": str(executable) + ".build.json",
+                                    "cpp_flags": artifacts["cpp_flags"], "build": build})
+        identity = _campaign_identity(args, source_manifest, bank_manifest)
         identity_fingerprint = _stable_fingerprint(identity)
         manifest_path = out_dir / "campaign_manifest.json"
-
-        total, next_shard, existing = _existing_shards(out_dir)
         if manifest_path.exists():
             previous = json.loads(manifest_path.read_text(encoding="utf-8"))
             if previous.get("identity_fingerprint") != identity_fingerprint:
                 raise ValueError("campaign identity changed; use a new output directory")
-            shard_log = list(previous.get("shards", existing))
-        else:
-            shard_log = existing
-
         _write_training_recipe(args, out_dir)
         stop_path = out_dir / "stop.request"
-        while total < args.target_positions:
-            if stop_path.exists():
-                _atomic_json(manifest_path, {
-                    **identity,
-                    "identity_fingerprint": identity_fingerprint,
-                    "status": "stopped",
-                    "positions": total,
-                    "target_positions": args.target_positions,
-                    "next_shard": next_shard,
-                    "shards": shard_log,
-                })
-                print(f"[central-weakness] stop requested at {total:,} positions", flush=True)
-                return 0
+        for source in selected:
+            source_dir = out_dir / source["name"]
+            source_dir.mkdir(exist_ok=True)
+            _recover_partial_shards(source_dir)
+        def snapshot(status):
+            entries = []
+            progress = {}
+            for source in selected:
+                count, next_index, shards = _existing_shards(out_dir / source["name"])
+                progress[source["name"]] = {"completed": count, "target": source["target_positions"],
+                                            "remaining": max(0, source["target_positions"] - count),
+                                            "next_shard": next_index}
+                for shard in shards:
+                    sidecar = out_dir / source["name"] / shard["bin"].replace(".bin", ".shard.json")
+                    provenance = json.loads(sidecar.read_text(encoding="utf-8")) if sidecar.exists() else {}
+                    entries.append({"source": source["name"], "architecture": source["architecture"],
+                                    "v3": f"{source['name']}/{shard['bin']}",
+                                    "meta": f"{source['name']}/{shard['meta']}", **shard,
+                                    **provenance})
+            _atomic_json(manifest_path, {**identity, "identity_fingerprint": identity_fingerprint,
+                                         "status": status, "progress": progress, "shards": entries,
+                                         "positions": sum(v["completed"] for v in progress.values())})
 
-            staging = out_dir / "staging"
-            staging.mkdir(exist_ok=True)
-            stage_bin = staging / f"central_weakness_{next_shard:05d}.bin.tmp"
-            stage_meta = staging / f"central_weakness_{next_shard:05d}.meta.tmp"
-            for path in (stage_bin, stage_meta):
-                if path.exists():
-                    path.unlink()
-            final_bin = out_dir / f"central_weakness_{next_shard:05d}.bin"
-            final_meta = out_dir / f"central_weakness_{next_shard:05d}.meta"
-
-            command, profile, shard_seed = _build_selfplay_command(
-                args, executable=executable, weights=weights, bank_path=bank_path,
-                shard_index=next_shard, out_bin=stage_bin, out_meta=stage_meta,
-            )
-            print(
-                f"[central-weakness] shard={next_shard:05d} profile={profile.name} "
-                f"positions={total:,}/{args.target_positions:,}",
-                flush=True,
-            )
-            started = time.time()
-            completed = subprocess.run(command, cwd=ROOT, check=False)
-            if completed.returncode != 0:
-                raise RuntimeError(
-                    f"self-play shard {next_shard} failed with exit code {completed.returncode}"
-                )
-            produced = _pair_record_count(stage_bin, stage_meta)
-            if produced == 0:
-                raise RuntimeError(f"self-play shard {next_shard} produced zero recorded positions")
-            _namespace_metadata_game_ids(stage_meta, next_shard, args.games_per_shard)
-            stage_bin.replace(final_bin)
-            stage_meta.replace(final_meta)
-
-            elapsed = time.time() - started
-            total += produced
-            shard_log.append({
-                "index": next_shard,
-                "profile": profile.name,
-                "seed": shard_seed,
-                "records": produced,
-                "seconds": elapsed,
-                "bin": final_bin.name,
-                "meta": final_meta.name,
-                "command": command,
-            })
-            next_shard += 1
-            _atomic_json(manifest_path, {
-                **identity,
-                "identity_fingerprint": identity_fingerprint,
-                "status": "running" if total < args.target_positions else "selfplay_complete",
-                "positions": total,
-                "target_positions": args.target_positions,
-                "next_shard": next_shard,
-                "shards": shard_log,
-            })
+        for source in selected:
+            source_index = next(i for i, item in enumerate(SELFPLAY_SOURCES) if item["name"] == source["name"])
+            source_dir = out_dir / source["name"]
+            artifacts, executable, _build = runtime[source["name"]]
+            total, next_shard, _ = _existing_shards(source_dir)
+            while total < source["target_positions"]:
+                if next_shard >= 1 << 32:
+                    raise OverflowError("source shard namespace exhausted")
+                if stop_path.exists():
+                    snapshot("stopped")
+                    print(f"[central-weakness] stop requested at {total:,} {source['name']} positions", flush=True)
+                    return 0
+                staging = source_dir / "staging"
+                staging.mkdir(exist_ok=True)
+                stage_bin = staging / f"central_weakness_{next_shard:05d}.bin.tmp"
+                stage_meta = staging / f"central_weakness_{next_shard:05d}.meta.tmp"
+                for path in (stage_bin, stage_meta):
+                    if path.exists():
+                        interrupted = staging / f"interrupted_{next_shard}_{time.time_ns()}"
+                        interrupted.mkdir(exist_ok=True)
+                        path.replace(interrupted / path.name)
+                final_bin = source_dir / f"central_weakness_{next_shard:05d}.bin"
+                final_meta = source_dir / f"central_weakness_{next_shard:05d}.meta"
+                command, profile, shard_seed = _build_selfplay_command(
+                    args, executable=executable, weights=artifacts["weights"], bank_path=bank_path,
+                    shard_index=next_shard, source_index=source_index, out_bin=stage_bin, out_meta=stage_meta)
+                print(f"[central-weakness] source={source['name']} shard={next_shard:05d} "
+                      f"profile={profile.name} positions={total:,}/{source['target_positions']:,}", flush=True)
+                started = time.time()
+                subprocess.run(command, cwd=ROOT, check=True)
+                dropped = _retain_complete_search_records(stage_bin, stage_meta)
+                produced = _pair_record_count(stage_bin, stage_meta)
+                if produced == 0:
+                    raise RuntimeError(f"self-play shard {next_shard} produced zero positions")
+                _namespace_metadata_game_ids(stage_meta, source_index * (1 << 32) + next_shard,
+                                             args.games_per_shard)
+                stage_bin.replace(final_bin)
+                stage_meta.replace(final_meta)
+                shard_info = {"source": source["name"], "architecture": source["architecture"],
+                              "profile": profile.name, "seed": shard_seed, "records": produced,
+                              "incomplete_search_records_dropped": dropped,
+                              "seconds": time.time() - started, "time_ms": args.time_ms,
+                              "bin_sha256": _sha256(final_bin), "meta_sha256": _sha256(final_meta),
+                              "weights_sha256": artifacts["weights_sha256"],
+                              "executable_sha256": _sha256(executable),
+                              "opening_bank_sha256": bank_manifest["bank_sha256"]}
+                _atomic_json(final_bin.with_suffix(".shard.json"), shard_info)
+                total += produced
+                next_shard += 1
+                snapshot("running")
 
         recipe = _write_training_recipe(args, out_dir)
         replay_command = _build_replay_command(args, out_dir)
@@ -908,21 +1066,13 @@ def main(argv=None) -> int:
             recipe["replay_command"] = replay_command
             _atomic_json(out_dir / "training_recipe.json", recipe)
 
-        _atomic_json(manifest_path, {
-            **identity,
-            "identity_fingerprint": identity_fingerprint,
-            "status": "complete",
-            "positions": total,
-            "target_positions": args.target_positions,
-            "next_shard": next_shard,
-            "shards": shard_log,
-            "replay_prepared": bool(args.prepare_replay),
-        })
-        print(
-            f"[central-weakness] complete: {total:,} recorded positions; "
-            f"bank={args.seed_bank_size:,}; replay={'prepared' if args.prepare_replay else 'deferred'}",
-            flush=True,
-        )
+        all_sources_selected = len(selected) == len(SELFPLAY_SOURCES)
+        campaign_assigned_complete = all_sources_selected and args.target_positions is None
+        snapshot("assigned_sources_complete_reserve_unassigned" if campaign_assigned_complete and RESERVE_UNASSIGNED else
+                 "complete" if campaign_assigned_complete else "test_targets_complete" if args.target_positions else "selected_sources_complete")
+        print(f"{'Assigned' if campaign_assigned_complete else 'Test/selected'} sources complete: "
+              f"{sum(_existing_shards(out_dir / s['name'])[0] for s in selected):,}", flush=True)
+        print(f"Campaign reserve still unassigned: {RESERVE_UNASSIGNED:,}", flush=True)
     return 0
 
 

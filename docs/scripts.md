@@ -35,7 +35,7 @@ campaigns.
 | Balanced, resumable self-play | `tools/teacher/run_four_million_selfplay.py` | central/broad seed schedules and matching executable/NNUE | a V3 corpus with metadata sidecars | Active controller. It deduplicates states, resumes safely, and exposes its configuration block at the top of the file. |
 | Build a seed schedule | `tools/teacher/build_selfplay_seed_schedule.py` | JSONL snapshots/openings | central and broad JSONL schedules | Internal stage used by the balanced controller. |
 | Weakness self-play | `tools/teacher/run_weakness_selfplay.py` | any compatible position snapshot | weakness V3 shards | Resumable generic runner; configure paths and target counts at the top. |
-| Central weakness rollouts | `tools/teacher/run_central_weakness_rollouts.py` | Center-Rush catalog plus production self-play executable/NNUE | large V3 + metadata corpus and optional stored-search replay | Builds a network-independent 8-10-ply bank around the classic central prefix, then cycles wide/balanced/sharp visit-temperature profiles. |
+| Central weakness rollouts | `tools/teacher/run_central_weakness_rollouts.py` | Center-Rush catalog plus production and contact-bucketed self-play executables/NNUEs | source-separated V3 + metadata corpus and optional stored-search replay | Shared network-independent 8-10-ply bank; identical wide/balanced/sharp profile cycle per source. |
 | Convert and audit old self-play | `training/migrate_selfplay_v3.py`, then `training/audit_selfplay.py` | old shards | canonical V3 shards and manifest | Migration preserves original files. |
 | Build replay/teaching data | `training/prepare_replay.py` or `training/run_teaching.py` | V3 shards or JSONL trajectories | one `dataset.npz` plus manifest | The dataset contains mover-relative policy and value targets. |
 | Train one network | `training/run_experiment.py` | one `dataset.npz` | float/int8 weights, manifest, matching executable | QAT and resume are configured here. |
@@ -70,16 +70,30 @@ Center-Rush recovery corpus. The default campaign builds 50,000 unique legal
 8-10-ply roots around `e2 e8 e3 e7 e4 e6`, explicitly oversamples the
 empirically weak catalog families, adds left/right mirrors, and does not use the
 current NNUE to accept or reject opening roots. Self-play then cycles
-wide/balanced/sharp MCAB visit-temperature profiles with Dirichlet root noise
-and playout-cap randomization. Temperature changes the played trajectory; the
+wide/balanced/sharp MCAB visit-temperature profiles with Dirichlet root noise.
+Temperature changes the played trajectory; the
 stored policy supervision remains the untempered top-eight root-visit
 distribution.
 
-The default target is 16 million recorded full-search positions. Every shard
-has an aligned metadata sidecar, and the runner namespaces metadata game IDs
-before admission so independently launched shards remain separate games during
-replay splitting. The optional replay stage caps the deduplicated dataset at
-12 million states.
+The 16 million design target assigns 8 million positions to the 504-feature
+production bucketed champion (`data/nnue/nnue_weights_int8.bin`) and 4 million
+to the 858-feature contact-bucketed student
+(`results/experiments/multipath_contact_bucketed_unified/student_int8.bin`).
+The remaining 4 million are explicitly unassigned. The contact executable is
+built from its versioned `student.architecture.json` flags, separately from
+`bin/selfplay`. The runner validates weight SHA and architecture before running.
+Each source uses the same opening bank and local profile cycle.
+
+The first 16 plies after each 8-10-ply seed are always searched at 200 ms.
+Later plies use playout-cap randomization: full searches receive 200 ms and are
+recorded; cheap 20 ms searches only steer the trajectory and are never recorded.
+Every recorded target therefore has a 200 ms MCAB search. Every shard has an
+aligned metadata sidecar and globally distinct game IDs across sources. The
+optional replay stage caps the deduplicated dataset at 12 million states and
+reports source contribution, overlap, root-value disagreement, opening family,
+rollout ply and exploration profile. Source provenance is retained in the
+campaign manifest and per-shard JSON. Training should mix about 70-80% of this
+central replay with 20-30% frozen broad/general champion replay.
 
 For this campaign the documented value target is a literal 50/50 blend:
 

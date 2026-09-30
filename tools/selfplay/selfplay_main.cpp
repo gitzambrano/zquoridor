@@ -135,6 +135,7 @@ static void printUsage(const char* prog) {
         "  --playout-cap       liga datagen cheap/full: so buscas completas viram amostras\n"
         "  --full-search-prob F fracao de buscas reais completas/gravadas (default 1.0)\n"
         "  --cheap-time-ms N   tempo dos plies baratos, trajectory-only (default 20ms)\n"
+        "  --full-search-opening-plies N  primeiros N plies apos seed sempre com busca completa\n"
         "  --nnue-weights PATH caminho para pesos NNUE quantizados (default:\n"
         "                      data/nnue/nnue_weights_int8.bin). NNUE e o\n"
         "                      default de avaliacao de folha deste binario; se\n"
@@ -264,6 +265,7 @@ int main(int argc, char** argv) {
         else if (a == "--playout-cap")      cfg.playoutCapEnabled     = true;
         else if (a == "--full-search-prob") cfg.fullSearchProb        = std::atof(next("--full-search-prob").c_str());
         else if (a == "--cheap-time-ms")    cfg.cheapTimeBudgetMs     = std::atoi(next("--cheap-time-ms").c_str());
+        else if (a == "--full-search-opening-plies") cfg.fullSearchOpeningPlies = std::atoi(next("--full-search-opening-plies").c_str());
         else if (a == "--nnue-weights")  { cfg.nnueWeightsPath       = next("--nnue-weights");
                                             cfg.nnueWeightsExplicit   = true; }
         else if (a == "--heuristic")       cfg.forceHeuristic        = true;
@@ -354,6 +356,10 @@ int main(int argc, char** argv) {
         return 1;
     }
     if (cfg.playoutCapEnabled) {
+        if (cfg.fullSearchOpeningPlies < 0) {
+            std::fprintf(stderr, "erro: --full-search-opening-plies deve ser >= 0\n");
+            return 1;
+        }
         if (!(cfg.fullSearchProb > 0.0 && cfg.fullSearchProb <= 1.0)) {
             std::fprintf(stderr, "erro: --full-search-prob deve estar em (0,1]\n");
             return 1;

@@ -144,3 +144,41 @@ def test_sample_states_averages_duplicate_results(tmp_path):
     idx4 = np.where(data["own_pawn"] == 4)[0][0]
     assert data["game_result"][idx4] == pytest.approx(0.0)
     assert data["game_result"].dtype == np.float32
+
+
+def test_campaign_replay_keeps_both_networks_and_averages_shared_state(tmp_path):
+    import json
+    from tools.teacher.selfplay_unique_store import V3_DTYPE
+    entries = []
+    for name, game, root, result, pawn in (
+        ("production_bucketed", 0, 0.2, 1, 4),
+        ("contact_bucketed", 1 << 41, 0.8, -1, 4),
+    ):
+        folder = tmp_path / name
+        folder.mkdir()
+        rows = np.zeros(2, dtype=V3_DTYPE)
+        rows["own_pawn"] = [pawn, 10 if name == "production_bucketed" else 20]
+        rows["opp_pawn"] = 76
+        rows["walls_left_own"] = rows["walls_left_opp"] = 10
+        rows["policy_top_idx"][:, 0] = 3
+        rows["policy_top_prob"][:, 0] = 65535
+        rows["game_result"] = result
+        rows.tofile(folder / "central_weakness_00000.bin")
+        meta = np.zeros(2, dtype=METADATA_DTYPE)
+        meta["game"] = game
+        meta["root"] = root
+        meta["flags"] = 2
+        meta["length"] = 20
+        meta["plies"] = [19, 18]
+        meta.tofile(folder / "central_weakness_00000.meta")
+        entries.append({"source": name, "v3": f"{name}/central_weakness_00000.bin", "records": 2})
+    (tmp_path / "campaign_manifest.json").write_text(json.dumps({"shards": entries, "games_per_shard": 2}))
+    cfg = dict(CONFIG, source=str(tmp_path), max_positions=10,
+               stored_gamma=1.0, stored_outcome_weight=0.5, val_fraction=0.5)
+    data, report = sample_stored_states(cfg)
+    shared = np.where(data["own_pawn"] == 4)[0][0]
+    assert data["value"][shared] == pytest.approx(0.0, abs=1e-6)
+    assert data["network_source_count"][shared].tolist() == [1, 1]
+    assert report["states_seen_by_multiple_sources"] == 1
+    assert report["cross_source_root_value_mean_absolute_disagreement"] == pytest.approx(0.6)
+    assert report["corpus_raw_positions_by_source"] == {"production_bucketed": 2, "contact_bucketed": 2}

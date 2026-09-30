@@ -283,8 +283,26 @@ def sample_states(config, blocked=()):
 def sample_stored_states(config, blocked=()):
     """Load V3 states and aligned TrainingMetaV1 sidecars as whole-game groups."""
     source_root = Path(config["source"])
+    campaign_path = source_root / "campaign_manifest.json"
     manifest_path = source_root / "manifest.json"
-    if manifest_path.exists():
+    shard_details = {}
+    bank_rows = []
+    corpus_raw = {}
+    if campaign_path.exists():
+        campaign = json.loads(campaign_path.read_text(encoding="utf-8"))
+        files = []
+        for entry in campaign.get("shards", []):
+            corpus_raw[entry["source"]] = corpus_raw.get(entry["source"], 0) + int(entry["records"])
+            path = (source_root / entry["v3"]).resolve()
+            if source_root.resolve() not in path.parents:
+                raise ValueError("campaign shard leaves source directory")
+            files.append(path)
+            detail_path = path.with_suffix(".shard.json")
+            shard_details[path] = json.loads(detail_path.read_text(encoding="utf-8")) if detail_path.exists() else entry
+        bank_path = source_root / "opening_bank_8to10ply.jsonl"
+        if bank_path.exists():
+            bank_rows = [json.loads(line) for line in bank_path.read_text(encoding="utf-8").splitlines() if line.strip()]
+    elif manifest_path.exists():
         try:
             manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
             entries = manifest.get("accepted_shards")
@@ -316,12 +334,22 @@ def sample_stored_states(config, blocked=()):
     skipped_missing = 0
     skipped_no_visits = 0
     duplicates_merged = 0
+    source_raw = {}
+    source_unique = {}
+    profile_counts = {}
+    family_counts = {}
+    ply_counts = {}
     stop = False
 
     gamma = float(config.get("stored_gamma", 0.99))
     outcome_weight = float(config.get("stored_outcome_weight", 0.5))
 
     for path in files:
+        detail = shard_details.get(path, {})
+        source_name = detail.get("source", path.parent.name if campaign_path.exists() else "unknown")
+        profile = detail.get("profile", "unknown")
+        source_raw.setdefault(source_name, 0)
+        source_unique.setdefault(source_name, 0)
         dtype, size = _detect_format(path)
         if size != 64:
             raise ValueError(f"stored_search requires V3 64-byte shards: {path}")
@@ -336,6 +364,10 @@ def sample_stored_states(config, blocked=()):
             raise ValueError(f"stored_search shard and metadata counts differ: {path}")
         path_sha = sha(path)
         meta_sha = sha(meta_path)
+        if detail.get("bin_sha256") and path_sha != detail["bin_sha256"]:
+            raise ValueError(f"campaign V3 shard SHA mismatch: {path}")
+        if detail.get("meta_sha256") and meta_sha != detail["meta_sha256"]:
+            raise ValueError(f"campaign metadata shard SHA mismatch: {meta_path}")
         provenance.append(dict(path=str(path.resolve()), meta=str(meta_path.resolve()),
                                sha256=path_sha, meta_sha256=meta_sha, record_bytes=size))
         for index, (row, meta) in enumerate(zip(data, metadata)):
@@ -359,9 +391,23 @@ def sample_stored_states(config, blocked=()):
                 continue
             policy = normalize_visits(row["policy_top_idx"], visits)
             val_target = stored_value_target(root, row["game_result"], meta["plies"], gamma, outcome_weight)
+            source_raw[source_name] += 1
+            profile_counts[profile] = profile_counts.get(profile, 0) + 1
+            rollout_ply = int(meta["length"]) - int(meta["plies"])
+            ply_counts[str(rollout_ply)] = ply_counts.get(str(rollout_ply), 0) + 1
+            if bank_rows and detail.get("seed") is not None:
+                local_game = int(meta["game"]) % int(campaign["games_per_shard"])
+                bank_index = ((int(detail["seed"]) + local_game * 0x9E3779B97F4A7C15)
+                              & ((1 << 64) - 1)) % len(bank_rows)
+                bank_row = bank_rows[bank_index]
+                family = str(bank_row["opening_index"] if bank_row.get("opening_index") is not None else bank_row.get("source"))
+                family_counts[family] = family_counts.get(family, 0) + 1
 
             if key in unique_records:
                 rec = unique_records[key]
+                sums = rec["source_roots"].setdefault(source_name, [0.0, 0])
+                sums[0] += root
+                sums[1] += 1
                 rec["count"] += 1
                 rec["policy_sum"] += policy
                 rec["value_sum"] += val_target
@@ -382,8 +428,10 @@ def sample_stored_states(config, blocked=()):
                 "root_sum": float(root),
                 "plies_sum": int(meta["plies"]),
                 "result_sum": int(row["game_result"]),
+                "source_roots": {source_name: [root, 1]},
             }
             unique_records[key] = rec
+            source_unique[source_name] += 1
             game = int(meta["game"])
             groups.setdefault(game, []).append(rec)
             accepted += 1
@@ -422,8 +470,12 @@ def sample_stored_states(config, blocked=()):
     game_results = np.empty(n_samples, dtype=np.float32)
     policy_top_idx = np.zeros((n_samples, 8), dtype=np.uint16)
     policy_top_prob = np.zeros((n_samples, 8), dtype=np.uint16)
+    network_names = sorted(source_raw)
+    network_source_count = np.zeros((n_samples, len(network_names)), dtype=np.int32)
 
     for i, rec in enumerate(records):
+        for source_index, source_name in enumerate(network_names):
+            network_source_count[i, source_index] = rec["source_roots"].get(source_name, [0, 0])[1]
         cnt = rec["count"]
         p_avg = (rec["policy_sum"] / cnt).astype(np.float32)
         p_sum = float(p_avg.sum())
@@ -458,8 +510,33 @@ def sample_stored_states(config, blocked=()):
         policy_top_idx=policy_top_idx,
         policy_top_prob=policy_top_prob,
         duplicate_count=np.asarray([rec["count"] for rec in records], dtype=np.int32),
+        network_source_names=np.asarray(network_names, dtype="S64"),
+        network_source_count=network_source_count,
     )
+    shared_states = 0
+    disagreement_sum = 0.0
+    disagreement_pairs = 0
+    source_contributions = {name: 0 for name in source_raw}
+    for rec in records:
+        roots = rec["source_roots"]
+        for name in roots:
+            source_contributions[name] += 1
+        if len(roots) > 1:
+            shared_states += 1
+            means = [total / count for total, count in roots.values()]
+            for i in range(len(means)):
+                for j in range(i + 1, len(means)):
+                    disagreement_sum += abs(means[i] - means[j])
+                    disagreement_pairs += 1
     return arrays, dict(shards=provenance, samples=n_samples, games=len(groups), stored_search=True,
+                        corpus_raw_positions_by_source=corpus_raw,
+                        source_raw_positions=source_raw, source_first_unique_positions=source_unique,
+                        source_unique_contributions=source_contributions,
+                        states_seen_by_multiple_sources=shared_states,
+                        cross_source_root_value_mean_absolute_disagreement=(disagreement_sum/disagreement_pairs if disagreement_pairs else None),
+                        cross_source_root_value_disagreement_pairs=disagreement_pairs,
+                        opening_family_positions=family_counts, rollout_ply_positions=ply_counts,
+                        profile_positions=profile_counts,
                         duplicates_merged=duplicates_merged,
                         skipped_missing_root=skipped_missing, skipped_zero_visits=skipped_no_visits)
 
