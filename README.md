@@ -50,10 +50,10 @@ or `build\build_wasm.bat` after activating emsdk.
 
 ## NNUE architecture
 
-The production network is `multipath_phase:512`. It has 504 sparse inputs, a
-512-unit SCReLU accumulator, a WL value head (`512 → 32 → 1`), and a 209-action
+The production network is `multipath_phase_bucketed:512`. It has 504 sparse inputs, a
+512-unit SCReLU accumulator, 6 wall-count value heads with 2-layer MLPs, and a 209-action
 policy head. The inputs describe both pawns, wall occupancy, shortest-path and
-wall-stock buckets, race margin, game phase, and inexpensive multi-path/contact
+wall-stock buckets, race margin, game phase, and inexpensive multi-path
 geometry. It is trained with quantization-aware training and evaluated as int8
 in the native and WebAssembly engines.
 
@@ -86,13 +86,13 @@ and NNUE parity. Browser tests live in `gui_web/` and use Playwright.
 | `docs/` | Technical status, roadmap, and operational guides |
 | `data/` | Production weights and local data assets |
 
-## Release 2.02
+## Release 2.10
 
+- Promotes the `multipath_phase_bucketed:512` unified champion architecture with 6 wall-count value heads and 2-layer MLPs.
 - The engine returns an immediate winning pawn move before any search work.
 - The exact no-wall pawn-race solver and the MCAB equivalence checks are
-  unchanged.
-- The browser acceptance tests restore the board orientation through the
-  production path before the wall-gesture checks.
+  maintained.
+- WebAssembly engine and standalone browser bundle updated with production weights.
 
 ## Documentation
 
