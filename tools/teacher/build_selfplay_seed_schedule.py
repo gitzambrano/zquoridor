@@ -83,10 +83,14 @@ def _edge_blocked(state: _ReplayState, first: int, second: int) -> bool:
     row_b, col_b = _coords(second)
     if row_a == row_b:
         slot_col = min(col_a, col_b)
-        return slot_col < 0 or slot_col >= 8 or (row_a * 8 + slot_col) in state.walls_h
+        return (slot_col < 0 or slot_col >= 8
+                or (row_a < 8 and row_a * 8 + slot_col in state.walls_v)
+                or (row_a > 0 and (row_a - 1) * 8 + slot_col in state.walls_v))
     if col_a == col_b:
         slot_row = min(row_a, row_b)
-        return slot_row < 0 or slot_row >= 8 or (slot_row * 8 + col_a) in state.walls_v
+        return (slot_row < 0 or slot_row >= 8
+                or (col_a < 8 and slot_row * 8 + col_a in state.walls_h)
+                or (col_a > 0 and slot_row * 8 + col_a - 1 in state.walls_h))
     return True
 
 

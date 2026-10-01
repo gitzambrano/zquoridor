@@ -216,6 +216,8 @@ def test_runner_recovers_interrupted_admission_before_counting(tmp_path: Path, m
                         {"fingerprint": "test-bank", "bank_sha256": "test-bank-sha"})
 
     def fake_selfplay(command, **kwargs):
+        if "--validate-positions" in command:
+            return argparse.Namespace(returncode=0)
         rows = np.zeros(1, dtype=V3_DTYPE)
         rows["policy_top_prob"][:, 0] = 65535
         rows.tofile(command[command.index("--out") + 1])
@@ -232,3 +234,9 @@ def test_runner_recovers_interrupted_admission_before_counting(tmp_path: Path, m
     preserved = list((source_dir / "staging").rglob("central_weakness_00000.bin"))
     assert len(preserved) == 1 and preserved[0].read_bytes() == b"partial"
     assert campaign.CONFIG["threads"] == 10
+
+
+def test_opening_bank_rejects_move_through_second_half_of_wall():
+    history = ("e2", "e8", "e3", "e7", "e4", "e6", "b3h", "e3v")
+    assert campaign._replay_history(history) is not None
+    assert campaign._replay_history((*history, "f4")) is None
