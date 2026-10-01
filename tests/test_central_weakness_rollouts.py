@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import argparse
+import json
 from pathlib import Path
 
 import numpy as np
+import pytest
 
 from tools.teacher import run_central_weakness_rollouts as campaign
 from tools.teacher.selfplay_unique_store import V3_DTYPE
@@ -158,6 +160,64 @@ def test_contact_manifest_matches_weights_and_flags():
     assert artifacts["architecture_manifest_sha256"]
 
 
+def _pinned_resume_fixture(tmp_path, monkeypatch):
+    source = dict(campaign.SELFPLAY_SOURCES[0])
+    executable = tmp_path / "pinned-selfplay"
+    executable.write_bytes(b"pinned executable")
+    expected_path = campaign._source_path
+    monkeypatch.setattr(campaign, "_source_path",
+                        lambda value: executable if value == source["executable"] else expected_path(value))
+    artifacts = {"weights": tmp_path / "weights.bin", "weights_sha256": "weights-sha",
+                 "architecture_manifest": None, "architecture_manifest_sha256": None,
+                 "cpp_flags": ["-DZQ_NNUE_VALUE_BUCKETS=6"]}
+    inputs = {"source_commit": "original-commit", "headers_sha256": {"src/nnue.hpp": "original-header"},
+              "architecture": source["architecture"], "features": source["features"],
+              "cpp_flags": artifacts["cpp_flags"], "weights_sha256": artifacts["weights_sha256"],
+              "architecture_manifest_sha256": artifacts["architecture_manifest_sha256"]}
+    build = {"inputs": inputs, "command": ["original compiler command"],
+             "build_timestamp": 123.0,
+             "executable_sha256": campaign._sha256(executable)}
+    pinned = {**source, "executable": str(executable),
+              "executable_sha256": build["executable_sha256"],
+              "weights_sha256": artifacts["weights_sha256"],
+              "architecture_manifest_sha256": artifacts["architecture_manifest_sha256"],
+              "cpp_flags": artifacts["cpp_flags"], "build": build}
+    return source, artifacts, pinned, executable
+
+
+def test_resume_uses_pinned_build_without_current_header_or_commit_checks(tmp_path, monkeypatch):
+    source, artifacts, pinned, executable = _pinned_resume_fixture(tmp_path, monkeypatch)
+    monkeypatch.setattr(campaign, "_ensure_executable",
+                        lambda *_: (_ for _ in ()).throw(AssertionError("resume attempted a rebuild")))
+
+    actual_path, build = campaign._resume_executable(source, artifacts, pinned)
+
+    assert actual_path == executable
+    assert build is pinned["build"]
+    assert build["inputs"]["source_commit"] == "original-commit"
+    assert build["inputs"]["headers_sha256"] == {"src/nnue.hpp": "original-header"}
+    assert build["build_timestamp"] == 123.0
+
+
+@pytest.mark.parametrize("artifact_change", ["weights_sha256", "cpp_flags", "architecture_manifest_sha256"])
+def test_resume_rejects_changed_pinned_build_artifacts(tmp_path, monkeypatch, artifact_change):
+    source, artifacts, pinned, _ = _pinned_resume_fixture(tmp_path, monkeypatch)
+    changed = dict(artifacts)
+    changed[artifact_change] = "changed"
+
+    with pytest.raises(ValueError, match="pinned build|pinned source artifacts"):
+        campaign._resume_executable(source, changed, pinned)
+
+
+def test_resume_rejects_overwritten_build_sidecar(tmp_path, monkeypatch):
+    source, artifacts, pinned, executable = _pinned_resume_fixture(tmp_path, monkeypatch)
+    sidecar = executable.with_name(executable.name + ".build.json")
+    sidecar.write_text('{"build_timestamp": 999}', encoding="utf-8")
+
+    with pytest.raises(ValueError, match="sidecar was overwritten"):
+        campaign._resume_executable(source, artifacts, pinned)
+
+
 def test_campaign_identity_tracks_reserve_and_provenance():
     args = _args()
     args.games_per_shard = 512
@@ -209,9 +269,31 @@ def test_runner_recovers_interrupted_admission_before_counting(tmp_path: Path, m
     source_dir = tmp_path / "production_bucketed"
     source_dir.mkdir()
     (source_dir / "central_weakness_00000.bin").write_bytes(b"partial")
-    executable = campaign._source_path(campaign.SELFPLAY_SOURCES[0]["executable"])
-    monkeypatch.setattr(campaign, "_ensure_executable", lambda source, artifacts:
-                        (executable, {"executable_sha256": "test-build"}))
+    source = campaign.SELFPLAY_SOURCES[0]
+    executable = tmp_path / "pinned-selfplay"
+    executable.write_bytes(b"pinned executable")
+    original_source_path = campaign._source_path
+    monkeypatch.setattr(campaign, "_source_path",
+                        lambda value: executable if value == source["executable"] else original_source_path(value))
+    weights = tmp_path / "weights.bin"
+    weights.write_bytes(b"pinned weights")
+    artifacts = {"weights": weights, "weights_sha256": campaign._sha256(weights),
+                 "architecture_manifest": None, "architecture_manifest_sha256": None,
+                 "cpp_flags": ["-DZQ_NNUE_VALUE_BUCKETS=6"]}
+    monkeypatch.setattr(campaign, "_source_artifacts", lambda _source: dict(artifacts))
+
+    def ensure_executable(source, current_artifacts):
+        build = {"inputs": {"source_commit": "original-commit",
+                            "headers_sha256": {"src/nnue.hpp": "original-header"},
+                            "architecture": source["architecture"], "features": source["features"],
+                            "cpp_flags": current_artifacts["cpp_flags"],
+                            "weights_sha256": current_artifacts["weights_sha256"],
+                            "architecture_manifest_sha256": current_artifacts["architecture_manifest_sha256"]},
+                 "command": ["original compiler command"], "build_timestamp": 123.0,
+                 "executable_sha256": campaign._sha256(executable)}
+        return executable, build
+
+    monkeypatch.setattr(campaign, "_ensure_executable", ensure_executable)
     monkeypatch.setattr(campaign, "_generate_opening_bank", lambda *args:
                         {"fingerprint": "test-bank", "bank_sha256": "test-bank-sha"})
 
@@ -234,6 +316,15 @@ def test_runner_recovers_interrupted_admission_before_counting(tmp_path: Path, m
     preserved = list((source_dir / "staging").rglob("central_weakness_00000.bin"))
     assert len(preserved) == 1 and preserved[0].read_bytes() == b"partial"
     assert campaign.CONFIG["threads"] == 10
+    pinned_manifest = json.loads((tmp_path / "campaign_manifest.json").read_text(encoding="utf-8"))
+    pinned_build = pinned_manifest["sources"][0]["build"]
+    monkeypatch.setattr(campaign, "_ensure_executable",
+                        lambda *_: pytest.fail("existing campaign attempted a rebuild"))
+    assert campaign.main(["--no-dry-run", "--no-prepare-replay", "--source", "production_bucketed",
+                          "--target-positions", "1", "--out", str(tmp_path)]) == 0
+    resumed_manifest = json.loads((tmp_path / "campaign_manifest.json").read_text(encoding="utf-8"))
+    assert resumed_manifest["sources"][0]["build"] == pinned_build
+    assert resumed_manifest["sources"][0]["build"]["inputs"]["source_commit"] == "original-commit"
 
 
 def test_opening_bank_rejects_move_through_second_half_of_wall():

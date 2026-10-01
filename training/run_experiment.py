@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Train, export, and build one compact NNUE experiment.
 
-Input is a teaching ``dataset.npz``.  ``base`` uses 354 features and ``race``
-uses 456; hidden widths 128, 256, 384, and 512 are supported.  The output
+Input is a teaching NPZ or a manifest-verified memory-map directory. Hidden
+widths 128, 256, 384, 512, 768, and 1024 are supported. The output
 directory receives float and int8 weights, an architecture manifest, a
 restart checkpoint, a training report, and a native executable compiled with
 matching feature and width flags.  The top-level ``CONFIG`` supplies defaults
@@ -62,6 +62,7 @@ CONFIG = {
     "device": "cuda",
     "cpu_threads": 4,
     "resume": True,
+    "checkpoint_every": 0,
     "teaching": False,
     "teaching_args": [],
     "build": True,
@@ -91,17 +92,53 @@ def split_indices(data):
     val = np.asarray(data["is_val"], dtype=bool)
     if not val.any() or val.all():
         raise ValueError("both training and validation groups are required; no random row split")
-    for key in (("group_id",) if "group_id" in data else ("opening_index",)):
-        if key in data:
-            groups = np.asarray(data[key]).astype(str)
-            if set(groups[val]) & set(groups[~val]):
+    for key in ("group_id", "opening_index"):
+        if key in data and not data.get("_group_separation_verified", False):
+            groups = np.asarray(data[key])
+            if set(groups[val].tolist()) & set(groups[~val].tolist()):
                 raise ValueError(f"training/validation group overlap in {key}")
     return np.flatnonzero(~val), np.flatnonzero(val)
 
 
 def load_dataset(path):
-    with np.load(path, allow_pickle=False) as archive:
-        data = {key: archive[key] for key in archive.files}
+    path = Path(path)
+    if path.is_dir():
+        manifest_path = path / "dataset.manifest.json"
+        if not manifest_path.is_file():
+            raise ValueError("dataset directory lacks dataset.manifest.json")
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        if manifest.get("complete") is not True:
+            raise ValueError("dataset manifest is not complete")
+        arrays = manifest.get("arrays")
+        if not isinstance(arrays, dict):
+            raise ValueError("dataset manifest lacks an arrays map")
+        data = {}
+        root = path.resolve()
+        for key, entry in arrays.items():
+            if not isinstance(entry, dict) or not entry.get("filename") or not entry.get("sha256"):
+                raise ValueError(f"invalid dataset array entry: {key}")
+            array_path = (path / entry["filename"]).resolve()
+            try:
+                array_path.relative_to(root)
+            except ValueError as error:
+                raise ValueError(f"dataset array path escapes directory: {key}") from error
+            if not array_path.is_file() or _hash(array_path) != entry["sha256"]:
+                raise ValueError(f"dataset array is missing or has a hash mismatch: {key}")
+            if key == "source_names" and "source_names" in manifest:
+                continue
+            data[key] = np.load(array_path, mmap_mode="r", allow_pickle=False)
+        if "source_names" in manifest:
+            data["source_names"] = manifest["source_names"]
+        elif "source_names" in data:
+            names = data["source_names"]
+            data["source_names"] = names.tolist()
+            if isinstance(names, np.memmap):
+                names._mmap.close()
+        if manifest.get("group_separation_verified") is True:
+            data["_group_separation_verified"] = True
+    else:
+        with np.load(path, allow_pickle=False) as archive:
+            data = {key: archive[key] for key in archive.files}
     required = ("own_pawn", "opp_pawn", "walls_h", "walls_v", "own_dist", "opp_dist",
                 "walls_left_own", "walls_left_opp", "policy", "value", "weight", "is_val")
     if any(key not in data for key in required):
@@ -112,7 +149,7 @@ def load_dataset(path):
     policy_arr = data["policy"]
     if policy_arr.shape != (n, 209):
         raise ValueError("policy must contain 209-action rows")
-    chunk_size = 500_000
+    chunk_size = 65_536
     for start_idx in range(0, n, chunk_size):
         chunk = policy_arr[start_idx:start_idx + chunk_size].astype(np.float32)
         if not np.isfinite(chunk).all() or (chunk < 0).any():
@@ -129,7 +166,24 @@ def load_dataset(path):
                          ("own_dist", 81), ("opp_dist", 81)):
         if (data[key] < 0).any() or (data[key] > maximum).any():
             raise ValueError(f"invalid state field {key}")
-    split_indices(data)
+    if data.get("source_mass") is not None:
+        source_mass = data["source_mass"]
+        if source_mass.ndim != 2 or source_mass.shape[0] != n:
+            raise ValueError("source_mass must have shape (samples, sources)")
+        for start_idx in range(0, n, 500_000):
+            stop_idx = start_idx + 500_000
+            chunk = source_mass[start_idx:stop_idx]
+            if not np.isfinite(chunk).all() or (chunk < 0).any():
+                raise ValueError("source_mass must contain finite nonnegative values")
+            mass_sum = chunk.sum(axis=1, dtype=np.float64)
+            sample_weight = np.asarray(data["weight"][start_idx:stop_idx], dtype=np.float64)
+            if not np.allclose(mass_sum, sample_weight, rtol=2e-5, atol=2e-6):
+                raise ValueError("source_mass row sums must match sample weights")
+        names = data.get("source_names", [])
+        if len(names) != source_mass.shape[1]:
+            raise ValueError("source_names must match the source_mass columns")
+    if not data.get("_group_separation_verified", False):
+        split_indices(data)
     if "group_id" in data:
         del data["group_id"]
     return data
@@ -166,6 +220,21 @@ def _hash(path):
         for block in iter(lambda: stream.read(1 << 20), b""):
             h.update(block)
     return h.hexdigest()
+
+
+def _dataset_hash(path):
+    path = Path(path)
+    if path.is_dir():
+        return _hash(path / "dataset.manifest.json")
+    return _hash(path)
+
+
+def _atomic_torch_save(state, path):
+    """Write a checkpoint without exposing a partial file."""
+    path = Path(path)
+    temp = path.with_name(path.name + ".tmp")
+    torch.save(state, temp)
+    temp.replace(path)
 
 
 def learning_rate(config, epoch: int) -> float:
@@ -213,7 +282,11 @@ def weight_decay(config, epoch: int) -> float:
 def _epoch(model, data, indices, config, device, optimizer=None, rng=None):
     model.train(optimizer is not None)
     order = rng.permutation(indices) if optimizer is not None else indices
-    totals = np.zeros(4, dtype=np.float64)
+    totals = np.zeros(6, dtype=np.float64)
+    source_totals = None
+    source_names = data.get("source_names", [])
+    if optimizer is None and "source_mass" in data:
+        source_totals = np.zeros((len(source_names), 5), dtype=np.float64)
     mirror_h = config.get("mirror_h", True) and (optimizer is not None)
     bucket_counts = np.zeros(model.value_buckets, dtype=np.int64) if model.value_buckets > 1 else None
     bucket_mae_sums = np.zeros(model.value_buckets, dtype=np.float64) if model.value_buckets > 1 else None
@@ -223,7 +296,10 @@ def _epoch(model, data, indices, config, device, optimizer=None, rng=None):
         idx = order[start:start + config["batch_size"]]
         if mirror_h:
             flip_mask = rng.random(len(idx)) < 0.5
-            batch_data = stochastic_mirror_dict_h(data, idx, flip_mask)
+            mirror_fields = ("own_pawn", "opp_pawn", "walls_h", "walls_v", "own_dist", "opp_dist",
+                             "walls_left_own", "walls_left_opp", "policy", "value", "weight")
+            batch_data = stochastic_mirror_dict_h(
+                {key: data[key] for key in mirror_fields}, idx, flip_mask)
             b_idx = np.arange(len(idx))
             x = torch.from_numpy(encode_features(batch_data, b_idx, config["architecture"])).to(device)
             p = torch.as_tensor(batch_data["policy"].astype(np.float32), device=device)
@@ -238,8 +314,12 @@ def _epoch(model, data, indices, config, device, optimizer=None, rng=None):
         with torch.set_grad_enabled(optimizer is not None):
             logits, policy = model(x)
             kl = (p * (p.clamp_min(1e-12).log() - F.log_softmax(policy, dim=1))).sum(1)
-            vloss = F.binary_cross_entropy_with_logits(logits, (v + 1) / 2, reduction="none")
-            loss = ((config["policy_weight"] * kl + config["value_weight"] * vloss) * w).sum() / w.sum()
+            target = (v + 1) / 2
+            vloss = F.binary_cross_entropy_with_logits(logits, target, reduction="none")
+            probability = logits.sigmoid()
+            brier = (probability - target).square()
+            per_sample_loss = config["policy_weight"] * kl + config["value_weight"] * vloss
+            loss = (per_sample_loss * w).sum() / w.sum()
             if not torch.isfinite(loss):
                 raise ValueError("non-finite training loss")
             if optimizer is not None:
@@ -251,7 +331,16 @@ def _epoch(model, data, indices, config, device, optimizer=None, rng=None):
         mass = w.sum().item()
         val_diff = (2 * logits.sigmoid() - 1 - v).abs()
         totals += [loss.item() * mass, (kl * w).sum().item(),
-                   (val_diff * w).sum().item(), mass]
+                   (val_diff * w).sum().item(), mass,
+                   (vloss * w).sum().item(), (brier * w).sum().item()]
+
+        if source_totals is not None:
+            source_weight = torch.as_tensor(data["source_mass"][idx].astype(np.float32), device=device)
+            for source_index in range(len(source_names)):
+                sw = source_weight[:, source_index]
+                source_totals[source_index] += [
+                    (per_sample_loss * sw).sum().item(), (val_diff * sw).sum().item(),
+                    (vloss * sw).sum().item(), (brier * sw).sum().item(), sw.sum().item()]
 
         if model.value_buckets > 1 and optimizer is None:
             b_indices = model._extract_buckets(x).cpu().numpy()
@@ -265,7 +354,18 @@ def _epoch(model, data, indices, config, device, optimizer=None, rng=None):
                     bucket_weights[b] += float(w_np[mask].sum())
 
     res = dict(loss=float(totals[0] / totals[3]), policy_kl=float(totals[1] / totals[3]),
-               value_mae=float(totals[2] / totals[3]))
+               value_mae=float(totals[2] / totals[3]), value_bce=float(totals[4] / totals[3]),
+               value_brier=float(totals[5] / totals[3]))
+    if source_totals is not None:
+        res["by_source"] = {
+            name: dict(loss=float(row[0] / row[4]) if row[4] else 0.0,
+                       value_mae=float(row[1] / row[4]) if row[4] else 0.0,
+                       value_bce=float(row[2] / row[4]) if row[4] else 0.0,
+                       value_brier=float(row[3] / row[4]) if row[4] else 0.0,
+                       mass=float(row[4]))
+            for name, row in zip(source_names, source_totals)
+        }
+        res["by_source_target_basis"] = "blended_global_targets"
     if bucket_counts is not None:
         res["bucket_counts"] = bucket_counts.tolist()
         res["bucket_mae"] = [
@@ -276,9 +376,14 @@ def _epoch(model, data, indices, config, device, optimizer=None, rng=None):
 
 
 def train(config):
-    for key in ("epochs", "batch_size", "patience", "cpu_threads", "warmup_epochs"):
+    for key in ("epochs", "batch_size", "cpu_threads"):
         if config[key] <= 0:
             raise ValueError(f"{key} must be positive")
+    if config["checkpoint_every"] < 0:
+        raise ValueError("checkpoint_every must be nonnegative")
+    for key in ("patience", "warmup_epochs"):
+        if config[key] < 0:
+            raise ValueError(f"{key} must be nonnegative")
     for key in ("lr", "min_lr", "trunk_lr_scale", "grad_clip"):
         if not math.isfinite(config[key]) or config[key] <= 0:
             raise ValueError(f"{key} must be finite and positive")
@@ -298,6 +403,9 @@ def train(config):
     if config["train_scope"] not in ("full", "policy", "heads"):
         raise ValueError("train_scope must be full, policy, or heads")
     path, folder = _path(config["data"]), _path(config["out_dir"])
+    checkpoint = folder / "resume.pt"
+    if not config["resume"] and checkpoint.exists():
+        raise ValueError("resume.pt exists; choose a new out_dir or enable resume")
     folder.mkdir(parents=True, exist_ok=True)
     data = load_dataset(path)
     data["weight"] = apply_weight_boosts(
@@ -327,14 +435,17 @@ def train(config):
     optimizer = torch.optim.AdamW(groups, weight_decay=config["weight_decay"])
     identity_config = {k: v for k, v in config.items() if k not in
                        ("resume", "build", "benchmark", "benchmark_args", "dry_run", "teaching", "teaching_args")}
-    identity = dict(config=identity_config, data_sha256=_hash(path),
+    identity = dict(config=identity_config, data_sha256=_dataset_hash(path),
                     init_sha256=None if config["from_scratch"] else _hash(_path(config["init_from"])),
                     trainer_sha256=_hash(__file__), model_sha256=_hash(Path(__file__).with_name("student_model.py")))
     fingerprint = hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()
-    checkpoint = folder / "resume.pt"
+    initial_checkpoint = folder / "initial.pt"
+    best_checkpoint = folder / "best.pt"
+    checkpoint_every = int(config["checkpoint_every"])
     history, start, bad = [], 0, 0
     initial = _epoch(model, data, val_idx, config, device)
     best_loss = initial["loss"]
+    best_epoch = 0
     best = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
     if config["resume"] and checkpoint.exists():
         state = torch.load(checkpoint, map_location="cpu", weights_only=False)
@@ -348,9 +459,21 @@ def train(config):
             torch.cuda.set_rng_state_all(state["cuda_rng"])
         best, best_loss, bad = state["best"], state["best_loss"], state["bad"]
         history, start, initial = state["history"], state["epoch"], state["initial"]
+        best_epoch = state.get("best_epoch", min(
+            (row["epoch"] for row in history if row["val"]["loss"] == best_loss), default=0))
     (folder / "config.json").write_text(json.dumps(identity, indent=2) + "\n", encoding="utf-8")
+    if start == 0 and not initial_checkpoint.exists():
+        initial_state = dict(fingerprint=fingerprint, model=model.state_dict(),
+                             optimizer=optimizer.state_dict(), best=best, best_loss=best_loss,
+                             best_epoch=best_epoch, bad=0, history=[], epoch=0, initial=initial,
+                             rng=rng.bit_generator.state, torch_rng=torch.get_rng_state(),
+                             cuda_rng=torch.cuda.get_rng_state_all() if device.startswith("cuda") else None)
+        _atomic_torch_save(initial_state, initial_checkpoint)
+        _atomic_torch_save(initial_state, best_checkpoint)
+    stopped_early = False
     for epoch in range(start, config["epochs"]):
-        if bad >= config["patience"]:
+        if config["patience"] > 0 and bad >= config["patience"]:
+            stopped_early = True
             break
         base_lr = learning_rate(config, epoch)
         epoch_weight_decay = weight_decay(config, epoch)
@@ -365,21 +488,29 @@ def train(config):
         print(json.dumps(row), flush=True)
         if validation["loss"] < best_loss:
             best_loss, bad = validation["loss"], 0
+            best_epoch = epoch + 1
             best = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
         else:
             bad += 1
         state = dict(fingerprint=fingerprint, model=model.state_dict(), optimizer=optimizer.state_dict(),
-                     best=best, best_loss=best_loss, bad=bad, history=history, epoch=epoch + 1,
+                     best=best, best_loss=best_loss, best_epoch=best_epoch, bad=bad, history=history, epoch=epoch + 1,
                      initial=initial, rng=rng.bit_generator.state, torch_rng=torch.get_rng_state(),
                      cuda_rng=torch.cuda.get_rng_state_all() if device.startswith("cuda") else None)
-        temp = checkpoint.with_suffix(".tmp")
-        torch.save(state, temp)
-        temp.replace(checkpoint)
+        _atomic_torch_save(state, checkpoint)
+        if best_epoch == epoch + 1:
+            best_state = dict(state, model=best, epoch=best_epoch)
+            _atomic_torch_save(best_state, best_checkpoint)
+        if checkpoint_every and (epoch + 1) % checkpoint_every == 0:
+            _atomic_torch_save(state, folder / f"epoch_{epoch + 1:04d}.pt")
+    if config["patience"] > 0 and bad >= config["patience"] and len(history) < config["epochs"]:
+        stopped_early = True
     model.load_state_dict(best)
     architecture = export(model, folder / "student.bin")
     report = dict(fingerprint=fingerprint, architecture=architecture, initial_val=initial,
-                  best_val_loss=best_loss, samples=len(data["value"]), train_samples=len(train_idx),
-                  val_samples=len(val_idx), epochs=len(history), history=history,
+                  best_val_loss=best_loss, best_epoch=best_epoch,
+                  samples=len(data["value"]), train_samples=len(train_idx),
+                  val_samples=len(val_idx), epochs=len(history), configured_epochs=config["epochs"],
+                  training_status="early_stopped" if stopped_early else "complete", history=history,
                   schedule=dict(name=config["schedule"], warmup_epochs=config["warmup_epochs"],
                                 initial_lr=config["lr"], min_lr=config["min_lr"]),
                   improved_validation=best_loss < initial["loss"], promoted=False)

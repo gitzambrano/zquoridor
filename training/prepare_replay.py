@@ -339,6 +339,7 @@ def sample_stored_states(config, blocked=()):
     profile_counts = {}
     family_counts = {}
     ply_counts = {}
+    game_namespaces = {}
     stop = False
 
     gamma = float(config.get("stored_gamma", 0.99))
@@ -346,7 +347,7 @@ def sample_stored_states(config, blocked=()):
 
     for path in files:
         detail = shard_details.get(path, {})
-        source_name = detail.get("source", path.parent.name if campaign_path.exists() else "unknown")
+        source_name = detail.get("source", path.parent.name)
         profile = detail.get("profile", "unknown")
         source_raw.setdefault(source_name, 0)
         source_unique.setdefault(source_name, 0)
@@ -364,6 +365,7 @@ def sample_stored_states(config, blocked=()):
             raise ValueError(f"stored_search shard and metadata counts differ: {path}")
         path_sha = sha(path)
         meta_sha = sha(meta_path)
+        local_games = {}
         if detail.get("bin_sha256") and path_sha != detail["bin_sha256"]:
             raise ValueError(f"campaign V3 shard SHA mismatch: {path}")
         if detail.get("meta_sha256") and meta_sha != detail["meta_sha256"]:
@@ -417,9 +419,22 @@ def sample_stored_states(config, blocked=()):
                 duplicates_merged += 1
                 continue
 
+            game = int(meta["game"])
+            if not campaign_path.exists():
+                if game not in local_games:
+                    token = (str(path.resolve()), game)
+                    digest = hashlib.sha256(f"{path_sha}:{meta_sha}:{game}".encode()).digest()
+                    namespaced = int.from_bytes(digest[:8], "little")
+                    if namespaced in game_namespaces and game_namespaces[namespaced] != token:
+                        raise ValueError("stored replay game namespace collision")
+                    game_namespaces[namespaced] = token
+                    local_games[game] = namespaced
+                game = local_games[game]
+            record_meta = meta.copy()
+            record_meta["game"] = game
             rec = {
                 "row": row.copy(),
-                "meta": meta.copy(),
+                "meta": record_meta,
                 "index": index,
                 "path": path,
                 "count": 1,
@@ -432,7 +447,6 @@ def sample_stored_states(config, blocked=()):
             }
             unique_records[key] = rec
             source_unique[source_name] += 1
-            game = int(meta["game"])
             groups.setdefault(game, []).append(rec)
             accepted += 1
             if accepted >= config["max_positions"] and len(groups) >= 2:

@@ -1,6 +1,6 @@
 # Zquoridor: project state, results, and roadmap
 
-Last reviewed: 2026-09-27. This is the single canonical project document.
+Last reviewed: 2026-10-01. This is the single canonical project document.
 It answers four questions in order: what is in production, what has already
 been measured, what is running now, and what happens next. Raw datasets,
 self-play shards, logs, opponent checkouts, and transient checkpoints are local
@@ -165,7 +165,7 @@ directly on Colab against the production baseline (`nnue_weights_int8.bin`).
 - **Arm B2 (Mirror Anneal, 60ep)**: 30.2% score, Elo -145.8 (paired bootstrap 95% [-187.8, -106.3]), 2344.6s. Mirror data augmentation arrested the progressive collapse seen in the control arm (-144.4 Elo at 20ep vs -145.8 Elo at 60ep, delta -1.4 Elo), demonstrating substantial regularization value. However, both arms remain ~145-160 Elo below baseline due to 50% terminal outcome weight and the exclusion of the 11M weakness/tactical corpus.
 - **Arm C2 (Bucketed Anneal, 60ep)**: 31.8% score, Elo -132.3 (paired bootstrap 95% [-175.7, -91.2]), 2317.8s. First positive Elo gain (+10.8 Elo, +1.3% score vs Arm C 20ep at -143.1 Elo) in the annealing series. Regime-specific specialization across the 6 wall-count heads effectively absorbed extended training without catastrophic collapse.
 - **Arm D2 (Deep Anneal, 60ep)**: 32.3% score, Elo -128.3 (paired bootstrap 95% [-168.4, -91.2]), 2325.7s. Regressed -19.5 Elo vs the 20-epoch Arm D checkpoint (-108.8 Elo). Isolates the bucketed architecture: depth alone without wall-count regime buckets remains prone to overfitting across disparate game phases.
-- **Arm E2 (Contact Anneal, 60ep)**: Incremental accumulator verified (4,758 positions, 0 differences). Arena match actively in progress.
+- **Arm E2 (Contact Anneal, 60ep)**: Incremental accumulator verified (4,758 positions, 0 differences). The completed E2 arena scored 30.0% against the historical baseline.
 
 
 ## 3. Architecture facts
@@ -233,42 +233,11 @@ Every completed training has its exact command settings in its local
 `train_report.json`. Only production provenance and one research checkpoint are
 versioned; the rest are intentionally local.
 
-## 5. Work running now
-
-`tools/teacher/run_four_million_selfplay.py` is the generic controller for the
-local `corpus-contact-4m-50ms` V3 corpus with the selected executable and weights.
-The audit snapshot contains 4,329,982 unique states, approximately 55% central.
-Preserve these states and correct the composition through subsequent shards:
-
-- 50 ms per move and configurable self-play threads;
-- final target: 10,000,000 admitted unique states;
-- planned final mix: approximately 75% main Stage A data and 25% contact data;
-- planned state mix: approximately 75% central states and 25% broad states;
-- balanced minimum coverage across required opening families;
-- aligned metadata sidecars, manifests, deduplication, and safe resume.
-
-After the corpus reaches 5,000,000 admitted states, the next self-play phase
-uses a low-to-high-to-low temperature schedule over MCAB root visits. The
-generator records the untempered top-eight visits, renormalized as the policy target.
-This keeps search supervision for the policy head while the temperature adds
-plausible opening variation.
-
-The local `progress.json` beside that corpus is the source of truth. Never run
-a second controller against the same output directory.
-The current baseline phase stops at 8,516,655 unique states. Then the contact
-phase completes the final targets. Audit producer shares from unique-state
-references before that transition. Raw shard row counts include duplicates.
-
-The corrected generators honor full and cheap search budgets on temperature
-plies. They label policy and root value only after a search on that ply.
-The updated controller records generator hashes and supports a threshold-based
-transition. These source changes do not alter the already-running process.
-
-### NNUE experimental candidate training (active)
+### Historical five-arm training and annealing
 
 The five-arm study on 4,262,204 canonical stored-search samples (3,411,166 train,
 851,038 validation) warm-started from the production `multipath-phase512-searchboost-100ep`
-checkpoint is underway:
+checkpoint completed:
 
 - Arm A (Control): `multipath_phase` without mirror. 20 epochs completed.
   Val loss: 0.92044, Policy KL: 0.62121, Value MAE: 0.13108.
@@ -316,7 +285,7 @@ Analytical conclusions from the 60-epoch annealing arena:
 3. **Bucketing insulation victory**: Arm C2 was the **only architecture to achieve a positive gain (+10.8 Elo, +1.3% score)** under extended annealing. The 6 wall-count regime heads isolated phase-specific gradients and resisted catastrophic forgetting.
 4. **Deep ablation contrast**: Arm D2 regression (-19.5 Elo) proves that head depth alone without phase bucketing cannot prevent cross-regime interference during extended training.
 
-### Canonical self-play corpus completion (8,516,655 states)
+### Historical canonical corpus (8,516,655 states)
 
 The large-scale canonical self-play generation run (`tools/teacher/run_four_million_selfplay.py`) has **fully achieved its target of 8,516,655 unique states**:
 - **Total Unique States**: Exactly **8,516,655** (target: 8,516,655; 100.0% satisfied).
@@ -332,9 +301,9 @@ The large-scale canonical self-play generation run (`tools/teacher/run_four_mill
 - **Store Counters**: 14,877,910 raw records evaluated; 6,361,255 duplicates; 96,148 replaced; 6,265,107 equal; 0 rejected.
 - **Durable Store**: `data/selfplay/corpus-contact-4m-50ms/states.sqlite` (2.89 GB).
 
-### Unified champion training (`multipath_unified_champion`)
+### Historical unified champion training (`multipath_unified_champion`)
 
-Following the findings from the 60-epoch annealing study (where Arm C2 bucketed architecture demonstrated superior retention and the only positive Elo delta), a unified master training dataset combining the 11.065M master weakness-boosted positions with the 4.572M clean stored-search replay corpus (`stored_outcome_weight: 0.0`, eliminating fast 50ms blunder contamination) was assembled into `data/teaching/multipath_unified_clean_15m/dataset.npz` (15,637,120 samples: 12,893,910 train / 2,743,210 validation). The exact relabeling provenance, teacher models, and anti-forgetting roles across all eight curriculum tiers are cataloged in `docs/datasets.md` and `data/teaching/multipath_unified_clean_15m/dataset.manifest.json`.
+Following the findings from the 60-epoch annealing study (where Arm C2 bucketed architecture demonstrated superior retention and the only positive Elo delta), a unified master training dataset combining the 11.065M master weakness-boosted positions with the 4.572M clean stored-search replay corpus (`stored_outcome_weight: 0.0`, excluding terminal results from that replay target) was assembled into `data/teaching/multipath_unified_clean_15m/dataset.npz` (15,637,120 samples: 12,893,910 train / 2,743,210 validation). The exact relabeling provenance, teacher models, and anti-forgetting roles across all eight curriculum tiers are cataloged in `docs/datasets.md` and `data/teaching/multipath_unified_clean_15m/dataset.manifest.json`.
 
 The champion model (`multipath_phase_bucketed`, 512 hidden, 6 wall-count value heads, 2 dense layers per head, `mirror_h: True`, QAT, warm-started from production float) completed 13 epochs of training on local CUDA (NVIDIA RTX 4050 Laptop GPU):
 
@@ -384,79 +353,7 @@ Validation MAE by wall-count bucket at Epoch 12 (all-time low 0.19615):
   Therefore, no speed loss is measurable. An earlier report of 82.9% did not
   use equal weights.
 
-## 6. Promotion protocol
-
-1. Build the exact candidate executable and verify native/Python feature parity.
-2. Screen against the frozen production baseline with paired colours, one book,
-   one seed, equal cores, and **200 ms per move**.
-3. Confirm a screening winner with fresh openings and at least 100 complete
-   pairs.
-4. Run the same fixed-time protocol against Titanium and Claustrophobia,
-   including each required opening family.
-5. Promote only when there are no unresolved failures and the confidence
-   interval supports the claim. Promotion is never automatic.
-
-## 7. Roadmap
-
-1. Confirm the long-clock search candidate now. This step does not need the
-   corpus. Compare 96 nodes/ms with a 1.28M ceiling, alone and with
-   progressive widening, against the frozen production baseline and
-   Claustrophobia with paired openings. The candidate must also keep the
-   fixed-200 ms production gate.
-2. Finish and audit the active corpus at 10,000,000 unique states. Preserve all
-   existing data. Use corrected visit-temperature generation for the final
-   five million states. Start experimental training only after this audit.
-3. Train the experimental network matrix on the same data and recipe:
-   - A (control): `multipath_phase`, no mirror;
-   - B (ablation): `multipath_phase` with mirror augmentation;
-   - C (candidate): `multipath_phase_bucketed` (6 heads, 2-layer value) with mirror;
-   - D (ablation): `multipath_phase_deep` (1 head, 2-layer value) with mirror;
-   - E (candidate): `multipath_phase_contact_bucketed` (858 features, 6 heads, 2 layers) with mirror.
-
-   Follow each arm with a low-rate simulated annealing (recozimento) QAT pass:
-   - A2, B2, C2, D2, E2: warm-started from A, B, C, D, E checkpoints respectively;
-   - Reduced learning rate (peak `1e-5`, cosine decay to `1e-7`, 20 epochs);
-   - Constrained trunk updates (`trunk_lr_scale=0.05`);
-   - Test whether simulated annealing improves validation error and int8 stability.
-4. Blend root and result targets with a measured discount. Keep genuine
-   search-policy labels separate from replay labels. Use the generic
-   stored-search replay mode. Retain a broad anchor and cap critical-source
-   weights. Report sample counts, effective weight per source, policy KL,
-   value loss, value error per bucket, and family holdouts.
-5. Use an explicit cosine weight-decay schedule to its minimum, warm up the
-   learning rate, retain a sufficient QAT tail, and set patience for the full
-   80 to 160 epoch schedule.
-6. Run parity and holdout checks, then fixed-200 ms screening. Keep search
-   settings unchanged in the comparison.
-7. Require paired evidence against production, Titanium, and Claustrophobia.
-   Require a point score above 60% in each of the five Claustrophobia families
-   at 200 ms before promotion. Use four 3+2 games only to check clock safety.
-8. Test low-cost cached BFS and local wall geometry before adding a network
-   architecture. Do not add a network without a specific weakness hypothesis
-   and a reproducible configuration.
-
-## 8. Durable lessons
-
-- Broad direct labels alone have not solved Claustrophobia corridor and Center
-  Rush weaknesses.
-- Expensive search labels help most when selected from disagreement or unstable
-  positions. Blind self-distillation can reinforce wandering.
-- Cached BFS features and local wall geometry are cheap to evaluate, but an
-  architecture is only useful if the paired arena shows a gain.
-- Neither contact nor reliable-search FT demonstrated a promotion-level gain.
-- At 180+2, a larger node budget raised the score from 39.0% to 46.0%. No
-  network change produced a comparable screening gain.
-- The active corpus is below the 10M target. The 5M root-visit schedule is a
-  planned transition, not a completed result.
-- Keep raw data and transient artifacts local. Version source, reproducible
-  provenance, concise results, and the current roadmap.
-
-## 9. Operating scripts
-
-See [scripts.md](scripts.md) for the canonical runners, internal stages, and
-input/output contracts. `docs/datasets.md` remains local-only and must not be
-added to Git.
-
+### Historical follow-up measurements
 
 #### 2026-09-23 long-clock finalist confirmation
 
@@ -517,3 +414,165 @@ against production baseline `multipath_phase_bucketed` (`data/nnue/nnue_weights_
     (>4.1 million valid V3 positions, >27% of target) saved to Drive.
 
 
+
+## 5. Current data generation
+
+The local campaign uses `tools/teacher/run_central_weakness_rollouts.py`.
+Its design assigns 8M positions to production bucketed and 4M to contact
+bucketed. A further 4M remain unassigned. The controller uses 10 workers,
+one shared 50,000-root opening bank, and wide, balanced, and sharp profiles.
+Each rollout searches its first 16 plies after the seed at 200 ms. Later
+plies use profile-specific full-search probabilities and a 20-ms cheap budget.
+Only valid full-search records contribute training targets.
+
+At the 2026-10-01 inspection, the local process was active with more than
+1.05M accepted production records. The contact phase had not started.
+The campaign manifest and live process are the current progress sources.
+
+Colab workers 3, 4, and 5 use `tools/selfplay/run_colab_worker.py` to generate
+production self-play at 100 ms with two threads and 250-game shards.
+They write V3 binaries and aligned metadata to Drive. Workers 3 and 5
+had live progress at inspection. Worker 4 had no confirmed live connection.
+These workers generate data. They do not train experimental networks.
+
+Freeze completed binary and metadata pairs before replay preparation.
+Retain hashes and accepted-shard manifests. Partial shards do not enter training.
+
+## 6. Promotion protocol
+
+1. Build the exact candidate executable and verify native/Python feature parity.
+2. Screen against the frozen production baseline with paired colours, one book,
+   one seed, equal cores, and **200 ms per move**.
+3. Confirm a screening winner with fresh openings and at least 100 complete
+   pairs.
+4. Run the same fixed-time protocol against Titanium and Claustrophobia,
+   including each required opening family.
+5. Promote only when there are no unresolved failures and the confidence
+   interval supports the claim. Promotion is never automatic.
+
+## 7. Future experimental training
+
+This section defines the next campaign. The completed five-arm experiments
+remain in Section 4. The new campaign has not started training.
+`training/run_experimental_anneal.py` initializes four candidates, prepares a
+shared mixture, and trains candidates sequentially. Its default is a dry run.
+
+### Data and supervision decisions
+
+Use every eligible new local and Colab record. Apply no per-worker quota
+and no selection cap. Deduplicate canonical states and average repeated targets.
+Preserve each prepared dataset's game split. Remove states that occur in both
+splits across input datasets. Record all removals and source contributions.
+Colab shards receive a namespace for local game IDs during replay preparation.
+
+The frozen champion dataset contains 15,637,120 samples. It combines
+11,065,000 weakness-master samples and 4,572,120 clean stored-search samples.
+Keep its targets and effective internal weight ratios. The previous trainer
+capped weights at 30, so apply that cap before global normalization.
+The historical nominal tier weights are 1.0, 2.49, 25.01, 34.10, 30.13,
+6.0, and 6.0. The clean stored-search population has weight 1.0.
+
+Normalize the historical block to 25% of total sample-weight mass. Normalize
+all new populations together to 75%. Apply this normalization independently
+in train and validation. New inputs have unit replay weights, so their shares
+follow their eligible counts. Do not allocate equal shares to local and Colab
+or to separate Colab accounts. High historical tier weights cannot increase
+the aggregate historical share above 25%.
+
+The historical multiplier is `0.25 * total_mass / sum(clipped_old_weights)`.
+The new multiplier is `0.75 * total_mass / sum(all_new_weights)`.
+The final mixture manifest records these multipliers and effective shares.
+Percentages describe weight mass, not raw row counts. Historical preservation
+contains tactical tiers as well as general background. Therefore, the 25%
+historical share does not imply 25% pure general-background supervision.
+
+For new data, use `stored_search`, `stored_outcome_weight=0.5`, and
+`stored_gamma=1.0`. The signed value target is
+`0.5 * (2 * MCAB_root_value - 1) + 0.5 * terminal_result`.
+Replay values stay in `[-1, 1]`. The trainer maps them to `[0, 1]` through
+`(value + 1) / 2` and uses BCE with logits. It applies no further calibration
+transform. It reports BCE, soft-target Brier error, MAE, and source metrics.
+The stored raw NNUE forward evaluation does not replace searched root value.
+
+Train policy and value jointly with loss coefficients of 1.0 each. Policy
+uses untempered root visits, with the stored top eight actions renormalized.
+No additional teaching pass is scheduled. Stored search already supplies
+supervision. A later disagreement-focused teaching pass requires a separate
+recipe and budget.
+
+### Candidate and optimizer decisions
+
+Initialize all four candidates from the current production champion float
+weights. The contact candidate from the previous experiment is historical
+evidence, not the initializer. Feature and width expansion preserve the
+champion's initial function. New outgoing columns start at zero, while new
+neurons retain trainable activations. Preserve six value buckets, depth 2,
+32 value-hidden units, 209 policy actions, and QAT throughout the matrix.
+
+| Decision | Future campaign configuration |
+| --- | --- |
+| Control | `multipath_phase_bucketed:512`, 504 features |
+| Contact comparison | `multipath_phase_contact_bucketed:512`, 858 features |
+| Larger contact | `multipath_phase_contact_bucketed:768`, 858 features |
+| Largest contact | `multipath_phase_contact_bucketed:1024`, 858 features |
+| Initial weights | `results/experiments/multipath_unified_champion/student.bin`; SHA must match production float weights |
+| Historical data | Entire frozen 15.637M recipe; existing targets and clipped tier ratios; 25% effective mass |
+| New data | All eligible local and Colab data together; 75% effective mass; source shares follow eligible counts |
+| Local generation | 8M production, 4M contact, 4M unassigned reserve; the reserve supplies no training rows |
+| New value target | 50% signed MCAB search value and 50% terminal result; gamma 1.0 |
+| Policy target | Untempered top-eight root visits, renormalized |
+| Teaching | Stored search only; no additional relabeling in this campaign |
+| Loss | Policy KL coefficient 1.0; value BCE coefficient 1.0 |
+| Duration | 120 epochs; patience 0 keeps the full annealing schedule |
+| Head LR | Start at `1e-5`; cosine decay to `1e-7`; no increasing warmup |
+| Trunk LR | Scale 0.05; start at `5e-7`; decay to `5e-9` |
+| Optimizer | AdamW; weight decay `1e-5`; gradient clip 1.0 |
+| Batch and resources | Batch 1024; CUDA; two CPU threads; one candidate at a time |
+| Regularization | QAT throughout; horizontal mirror probability 0.5 in training only |
+| Dataset storage | Read-only NumPy memory maps; source mass and hashes remain available |
+| Full replay preparation | Disk-backed aggregation of every accepted record; whole-game split assignment and cross-split state removal |
+| Checkpoints | Initial state, last resume state each epoch, best state, and retained states every 10 epochs |
+| Resume | Restore weights, optimizer, RNGs, history, best epoch, and schedule position; reject changed inputs |
+| Final export | Best validation checkpoint, which may be epoch 0; retain later checkpoints for arena screening |
+| Retention report | Compare initial and best candidates on unchanged historical validation targets; record `frozen_retention.json` |
+| Evaluation | Source and bucket holdouts, then paired production, Titanium, and Claustrophobia games at 200 ms |
+| Promotion | Require strength evidence and general-game retention; no automatic promotion |
+
+Low LR and replay preservation reduce distribution drift. They do not prove
+that forgetting or overfitting cannot occur. Keep the historical holdout and
+normal-book arena as explicit retention gates. Compare larger networks at
+the same search time because inference cost can offset better evaluation.
+
+Before training, finish the assigned local sources, download complete Colab
+pairs, freeze provenance, and prepare all eligible replay records. The Colab
+accepted manifest must contain `complete: true`, `accepted_shards`, and binary
+and metadata SHAs for every entry. Keep missing sources explicit. Do not
+redistribute their share silently.
+
+Run `python training/run_experimental_anneal.py` to inspect the plan.
+Run with `--no-dry-run --initialize-only` to export initial candidate artifacts.
+Run with `--no-dry-run --prepare-only --prepare-replays` to prepare frozen data.
+Run with `--no-dry-run` only when the prepared datasets are ready.
+Change `out_dir` when a frozen input or the recipe changes.
+
+## 8. Durable lessons
+
+- Broad direct labels alone have not solved Claustrophobia corridor and Center
+  Rush weaknesses.
+- Expensive search labels help most when selected from disagreement or unstable
+  positions. Blind self-distillation can reinforce wandering.
+- Cached BFS features and local wall geometry are cheap to evaluate, but an
+  architecture is only useful if the paired arena shows a gain.
+- Neither contact nor reliable-search FT demonstrated a promotion-level gain.
+- At 180+2, a larger node budget raised the score from 39.0% to 46.0%. No
+  network change produced a comparable screening gain.
+- The new central campaign assigns 12M records and reserves 4M.
+  Its completion status must preserve that distinction.
+- Keep raw data and transient artifacts local. Version source, reproducible
+  provenance, concise results, and the current roadmap.
+
+## 9. Operating scripts
+
+See [scripts.md](scripts.md) for the canonical runners, internal stages, and
+input/output contracts. `docs/datasets.md` remains local-only and must not be
+added to Git.
