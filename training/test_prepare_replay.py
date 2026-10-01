@@ -71,6 +71,27 @@ def test_zero_mass_unused_indices_and_invalid_visits():
         normalize_visits([13], [float("nan")])
 
 
+def test_flat_colab_shards_namespace_repeated_local_game_ids(tmp_path):
+    from tools.teacher.selfplay_unique_store import V3_DTYPE
+    for shard, pawn in enumerate((4, 5)):
+        rows = np.zeros(1, dtype=V3_DTYPE)
+        rows["own_pawn"], rows["opp_pawn"] = pawn, 76
+        rows["walls_left_own"] = rows["walls_left_opp"] = 10
+        rows["own_dist"] = rows["opp_dist"] = 8
+        rows["policy_top_idx"][:, 0] = 13
+        rows["policy_top_prob"][:, 0] = 65535
+        rows["game_result"] = 1
+        meta = np.zeros(1, dtype=METADATA_DTYPE)
+        meta["game"] = 0
+        meta["root"], meta["flags"], meta["plies"], meta["length"] = 0.6, 2, 3, 10
+        rows.tofile(tmp_path / f"c3_shard_{shard:04d}.bin")
+        meta.tofile(tmp_path / f"c3_shard_{shard:04d}.meta")
+    data, report = sample_stored_states(dict(CONFIG, source=str(tmp_path), max_positions=10))
+    assert report["games"] == 2
+    assert len(set(data["group_id"])) == 2
+    assert data["is_val"].sum() == 1
+
+
 def test_stored_replay_averages_duplicates_without_bias(tmp_path):
     import json
     from tools.teacher.selfplay_unique_store import V3_DTYPE

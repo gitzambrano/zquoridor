@@ -777,6 +777,48 @@ def _ensure_executable(source: Mapping, artifacts: dict) -> tuple[Path, dict]:
     return executable, build
 
 
+def _resume_executable(source: Mapping, artifacts: dict, pinned_source: Mapping) -> tuple[Path, dict]:
+    """Reuse the executable pinned by an existing campaign manifest."""
+    expected = _source_path(source["executable"])
+    pinned_path = Path(pinned_source.get("executable", "")).resolve()
+    if pinned_path != expected:
+        raise ValueError(f"pinned executable path disagrees with source {source['name']}")
+    build = pinned_source.get("build")
+    if not isinstance(build, dict) or not isinstance(build.get("inputs"), dict):
+        raise ValueError(f"campaign manifest lacks pinned build inputs for {source['name']}")
+    inputs = build["inputs"]
+    executable_sha = pinned_source.get("executable_sha256")
+    if not executable_sha or executable_sha != build.get("executable_sha256"):
+        raise ValueError(f"campaign manifest has inconsistent executable hashes for {source['name']}")
+    if not expected.is_file() or _sha256(expected) != executable_sha:
+        raise ValueError(f"pinned executable is missing or changed: {expected}")
+
+    expected_inputs = {
+        "architecture": source["architecture"],
+        "features": source["features"],
+        "cpp_flags": artifacts["cpp_flags"],
+        "weights_sha256": artifacts["weights_sha256"],
+        "architecture_manifest_sha256": artifacts["architecture_manifest_sha256"],
+    }
+    for key, value in expected_inputs.items():
+        if inputs.get(key) != value:
+            raise ValueError(f"pinned build {key} disagrees with current source {source['name']}")
+    if pinned_source.get("architecture") != source["architecture"] or \
+            pinned_source.get("features") != source["features"]:
+        raise ValueError(f"pinned source architecture disagrees for {source['name']}")
+    if pinned_source.get("cpp_flags") != artifacts["cpp_flags"] or \
+            pinned_source.get("weights_sha256") != artifacts["weights_sha256"] or \
+            pinned_source.get("architecture_manifest_sha256") != artifacts["architecture_manifest_sha256"]:
+        raise ValueError(f"pinned source artifacts changed for {source['name']}")
+
+    sidecar = expected.with_name(expected.name + ".build.json")
+    if sidecar.is_file():
+        current_build = json.loads(sidecar.read_text(encoding="utf-8"))
+        if current_build != build:
+            raise ValueError(f"pinned build sidecar was overwritten: {sidecar}")
+    return expected, build
+
+
 def _campaign_identity(args: argparse.Namespace, sources: list[dict], bank_manifest: dict) -> dict:
     return {
         "schema": SCHEMA,
@@ -952,13 +994,26 @@ def main(argv=None) -> int:
 
     if not opening_book.exists():
         raise FileNotFoundError(opening_book)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    manifest_path = out_dir / "campaign_manifest.json"
+    pinned_sources = {}
+    if manifest_path.is_file():
+        prior_manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        prior_source_list = prior_manifest.get("sources", [])
+        if not isinstance(prior_source_list, list):
+            raise ValueError("existing campaign manifest has an invalid sources list")
+        pinned_sources = {entry.get("name"): entry for entry in prior_source_list
+                          if isinstance(entry, dict) and entry.get("name")}
     runtime = {}
     for s in selected:
         artifacts = _source_artifacts(s)
-        executable, build = _ensure_executable(s, artifacts)
+        pinned = pinned_sources.get(s["name"])
+        if pinned is not None:
+            executable, build = _resume_executable(s, artifacts, pinned)
+        else:
+            executable, build = _ensure_executable(s, artifacts)
         runtime[s["name"]] = (artifacts, executable, build)
 
-    out_dir.mkdir(parents=True, exist_ok=True)
     bank_path = out_dir / "opening_bank_8to10ply.jsonl"
     bank_manifest_path = out_dir / "opening_bank.manifest.json"
 
@@ -980,7 +1035,6 @@ def main(argv=None) -> int:
                                     "cpp_flags": artifacts["cpp_flags"], "build": build})
         identity = _campaign_identity(args, source_manifest, bank_manifest)
         identity_fingerprint = _stable_fingerprint(identity)
-        manifest_path = out_dir / "campaign_manifest.json"
         if manifest_path.exists():
             previous = json.loads(manifest_path.read_text(encoding="utf-8"))
             if previous.get("identity_fingerprint") != identity_fingerprint:

@@ -86,6 +86,9 @@ inline int wallsLeftBucket(int n) {
 #ifndef ZQ_NNUE_HIDDEN
 #define ZQ_NNUE_HIDDEN 512
 #endif
+#ifndef ZQ_NNUE_EXPERIMENTAL_WIDTHS
+#define ZQ_NNUE_EXPERIMENTAL_WIDTHS 0
+#endif
 #ifndef ZQ_NNUE_VALUE_BUCKETS
 #define ZQ_NNUE_VALUE_BUCKETS 6
 #endif
@@ -127,8 +130,9 @@ constexpr int NUM_FEATURES = BASE_FEATURES
     + (ZQ_NNUE_MULTIPATH_FEATURES ? MULTIPATH_EXTRA_FEATURES : 0)
     + (ZQ_NNUE_CONTACT_FEATURES ? CONTACT_EXTRA_FEATURES : 0);
 constexpr int HIDDEN = ZQ_NNUE_HIDDEN;
-static_assert(HIDDEN == 128 || HIDDEN == 256 || HIDDEN == 384 || HIDDEN == 512,
-              "unsupported NNUE width");
+static_assert(HIDDEN == 128 || HIDDEN == 256 || HIDDEN == 384 || HIDDEN == 512
+              || (ZQ_NNUE_EXPERIMENTAL_WIDTHS == 1 && (HIDDEN == 768 || HIDDEN == 1024)),
+              "unsupported NNUE width (768/1024 require ZQ_NNUE_EXPERIMENTAL_WIDTHS=1)");
 
 // These relations use the cached distance buckets, without additional BFS.
 inline std::array<int, 3> raceFeatureIndices(int ownDist, int oppDist, int ownWalls, int oppWalls) {

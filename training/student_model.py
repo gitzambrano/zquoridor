@@ -38,6 +38,7 @@ ARCH_CONFIGS = {
     "multipath_phase_contact_bucketed": {"buckets": 6, "depth": 2, "base_feature": "multipath_phase_contact"},
 }
 LAYOUT = ("w1", "b1", "wv1_wl", "bv1_wl", "wv2_wl", "bv2_wl", "wp", "bp")
+SUPPORTED_HIDDEN = (128, 256, 384, 512, 768, 1024)
 
 
 # Value-head bucket for 0 to 20 remaining walls. The boundaries match the
@@ -260,8 +261,9 @@ class Student(nn.Module):
     def __init__(self, architecture="base", hidden=256, qat=False,
                  value_buckets=None, value_depth=None):
         super().__init__()
-        if architecture not in FEATURES or hidden not in (128, 256, 384, 512):
-            raise ValueError(f"architecture must be one of {list(FEATURES.keys())}; hidden must be 128/256/384/512")
+        if architecture not in FEATURES or hidden not in SUPPORTED_HIDDEN:
+            widths = "/".join(str(width) for width in SUPPORTED_HIDDEN)
+            raise ValueError(f"architecture must be one of {list(FEATURES.keys())}; hidden must be {widths}")
         cfg = ARCH_CONFIGS.get(architecture, {"buckets": 1, "depth": 1})
         self.architecture = architecture
         self.hidden = hidden
@@ -511,5 +513,7 @@ def export(model, path):
                                f"-DZQ_NNUE_VALUE_DEPTH={model.value_depth}"],
                     float_sha256=hashlib.sha256(path.read_bytes()).hexdigest(),
                     int8_sha256=hashlib.sha256(quant_path.read_bytes()).hexdigest())
+    if model.hidden in (768, 1024):
+        manifest["cpp_flags"].append("-DZQ_NNUE_EXPERIMENTAL_WIDTHS=1")
     path.with_suffix(".architecture.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
     return manifest

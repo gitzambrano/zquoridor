@@ -16,6 +16,7 @@ The public runners currently following this convention are `tools/setup_bots.py`
 `tools/run_benchmark.py`, `tools/run_clock_smoke.py`,
 `tools/run_full_candidate_suite.py`, `tools/benchmark_candidate.py`,
 `training/run_teaching.py`, `training/run_experiment.py`,
+`training/run_experimental_anneal.py`,
 `training/run_campaign.py`, `tools/teacher/run_four_million_selfplay.py`,
 `tools/teacher/run_weakness_selfplay.py`, and
 `tools/teacher/run_central_weakness_rollouts.py`. `tools/selfplay/run_selfplay.py`
@@ -38,7 +39,10 @@ campaigns.
 | Central weakness rollouts | `tools/teacher/run_central_weakness_rollouts.py` | Center-Rush catalog plus production and contact-bucketed self-play executables/NNUEs | source-separated V3 + metadata corpus and optional stored-search replay | Shared network-independent 8-10-ply bank; identical wide/balanced/sharp profile cycle per source. |
 | Convert and audit old self-play | `training/migrate_selfplay_v3.py`, then `training/audit_selfplay.py` | old shards | canonical V3 shards and manifest | Migration preserves original files. |
 | Build replay/teaching data | `training/prepare_replay.py` or `training/run_teaching.py` | V3 shards or JSONL trajectories | one `dataset.npz` plus manifest | The dataset contains mover-relative policy and value targets. |
-| Train one network | `training/run_experiment.py` | one `dataset.npz` | float/int8 weights, manifest, matching executable | QAT and resume are configured here. |
+| Train one network | `training/run_experiment.py` | a canonical NPZ or a manifest-verified memory-map directory | float/int8 weights, checkpoints, manifest, matching executable | QAT, source metrics, and resume are configured here. |
+| Prepare and anneal the experimental matrix | `training/run_experimental_anneal.py` | frozen champion, complete local and Colab replays | four initialized candidates, shared mixture, sequential training runs | Dry run by default; 120 epochs; low LR; 75% new and 25% historical effective mass. |
+| Mix frozen experimental data | `training/mix_experimental_datasets.py` | canonical datasets and explicit source or pool shares | memory-mapped arrays and a hashed manifest | Internal stage; weighted duplicate averages, group-safe splits, and exact effective shares. |
+| Prepare all stored-search records | `training/prepare_stored_replay_all.py` | frozen accepted-shard manifests | memory-mapped 50/50 replay and source audit | Internal stage; disk aggregation, no sampling cap, and whole-game splits. |
 | Train an architecture matrix | `training/run_architecture_matrix.py` | one dataset and matrix settings | one experiment directory per candidate | Auxiliary batch wrapper; use only when its matrix matches the experiment. |
 | Complete campaign | `training/run_campaign.py` | configuration, data and optional teaching | data, candidates and arenas | Generic orchestration for a reproducible experiment. |
 | Resilient remote/Colab self-play | `tools/selfplay/run_colab_worker.py` | seed openings, executable, NNUE | chunked V3 shards and metadata in Google Drive | Auto-resumes from existing Drive shards, unique worker seeds. |
@@ -125,6 +129,57 @@ count. This is a bounded sample, not a globally uniform sample or an export of
 the strongest reference in `states.sqlite`. Audit source proportions before
 training and use a frozen corpus for reproducible datasets.
 Use a new output directory when the input or configuration changes.
+
+## Experimental annealing matrix
+
+Use `training/run_experimental_anneal.py` for the four-candidate campaign.
+The default command reports the recipe and missing inputs without starting
+training. The matrix contains production bucketed 512 and contact bucketed
+512, 768, and 1024. All candidates start from the frozen production champion.
+
+Use `--no-dry-run --initialize-only` to export initial float and int8 weights,
+architecture manifests, and `initial.pt` files. These files stay under the
+ignored experiment directory. The wider candidates require the experimental
+width flag in their architecture manifests.
+
+Use `--no-dry-run --prepare-only --prepare-replays` after the raw sources
+finish. Configure the download paths in `data_sources`. Each Colab source
+needs a frozen `manifest.json` with `complete: true` and `accepted_shards`.
+Each accepted entry contains `v3`, `bin_sha256`, and `meta_sha256`.
+The local campaign already provides its accepted-shard manifest.
+Preparation uses `training/prepare_stored_replay_all.py`. It consumes all
+accepted records through a disk-backed aggregation store, filters invalid search
+targets, and averages duplicate states. It assigns whole games to a split and
+removes states that occur in both splits. Flat Colab shards receive distinct
+game namespaces. Replay output, the mixer, and the trainer use memory maps.
+
+The mixer assigns all new local and Colab data to one pool with 75% effective
+sample-weight mass. It assigns the frozen historical recipe to the remaining
+25%. It preserves historical ratios after the previous weight cap of 30.
+Global normalization prevents high historical weights from exceeding 25%.
+New source shares follow eligible counts. No source receives an equal-account
+quota, and no new population has a sampling cap. Invalid records and split
+conflicts remain explicit exclusions in manifests.
+
+The mixer writes `fields/*.npy`, per-source mass, and `dataset.manifest.json`.
+It validates hashes, filters cross-split states, and averages duplicate targets
+by normalized weight. It preserves the train and validation assignments.
+Changed inputs require a new output directory.
+
+Use `--no-dry-run` to train prepared candidates sequentially. Training uses
+120 epochs, cosine head LR `1e-5` to `1e-7`, trunk scale 0.05, QAT, horizontal
+mirror augmentation, and policy and value loss coefficients of 1.0.
+The new replay value target mixes searched MCAB root and terminal result
+equally, with gamma 1. Historical targets remain frozen.
+
+Each run writes `initial.pt`, `resume.pt` each epoch, `best.pt`, and retained
+`epoch_NNNN.pt` files every ten epochs. Resume restores the optimizer, RNGs,
+history, and schedule position. Exports use the best validation state,
+including epoch zero when later states do not improve validation.
+Reports include source and bucket metrics. Native builds use each architecture
+manifest. The orchestrator also compares initial and best networks against
+unchanged historical validation targets in `frozen_retention.json`.
+Promotion requires the documented paired arena gates.
 
 ## Folder map
 
