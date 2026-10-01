@@ -15,6 +15,17 @@ static int failures = 0;
     } while (0)
 
 int main() {
+    {
+        qr::State state = qr::initialState();
+        const char* history[] = {"e2", "e8", "e3", "e7", "e4", "e6", "b3h", "e3v"};
+        for (const char* text : history) {
+            qr::Move move;
+            CHECK(qr::parseSeedMove(state, text, move), "regression prefix is legal");
+            state = qr::applyMove(state, move);
+        }
+        qr::Move illegal;
+        CHECK(!qr::parseSeedMove(state, "f4", illegal), "second half of vertical wall blocks f4");
+    }
     const std::string path = "tests/tmp_selfplay_seed_positions.jsonl";
     {
         std::ofstream out(path);

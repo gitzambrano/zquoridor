@@ -3,6 +3,20 @@ import copy
 import pytest
 
 from tools.teacher.build_selfplay_seed_schedule import REQUIRED_FAMILIES, build_schedule, canonical_key
+from tools.teacher.build_selfplay_seed_schedule import _ReplayState, _edge_blocked
+
+
+@pytest.mark.parametrize("orientation,edges,clear_edge", [
+    ("h", ((22, 31), (23, 32)), (22, 23)),
+    ("v", ((22, 23), (31, 32)), (22, 31)),
+])
+def test_wall_blocks_both_halves_in_correct_direction(orientation, edges, clear_edge):
+    state = _ReplayState([4, 76], {20} if orientation == "h" else set(),
+                         {20} if orientation == "v" else set(), [10, 10])
+    for first, second in edges:
+        assert _edge_blocked(state, first, second)
+        assert _edge_blocked(state, second, first)
+    assert not _edge_blocked(state, *clear_edge)
 
 
 def _row(index, family=None, color=0, side=0):
@@ -65,11 +79,11 @@ def test_canonical_key_replays_a_legal_jump():
 
 def test_canonical_key_replays_a_wall_blocked_diagonal():
     row = {
-        "history": ["e2", "e8", "f5h", "e7", "e3", "f7", "e4", "f6", "e5", "f5", "f4"],
+        "history": ["e2", "e8", "f5v", "e7", "e3", "f7", "e4", "f6", "e5", "f5", "f4"],
         "side_to_move": 1,
     }
 
-    assert canonical_key(row) == "state:41,32,137438953472,0,10,9,turn=1"
+    assert canonical_key(row) == "state:41,32,0,137438953472,10,9,turn=1"
 
 
 def test_central_schedule_balances_assigned_color_and_side():

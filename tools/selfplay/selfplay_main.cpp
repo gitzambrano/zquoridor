@@ -132,6 +132,7 @@ static void printUsage(const char* prog) {
         "  --depth N           profundidade maxima da busca (default 40)\n"
         "  --time-ms N         orcamento de tempo por lance em ms (default 100)\n"
         "  --positions PATH    start games from zquoridor.position.v1 JSONL snapshots\n"
+        "  --validate-positions  validate all supplied histories and exit without self-play\n"
         "  --playout-cap       liga datagen cheap/full: so buscas completas viram amostras\n"
         "  --full-search-prob F fracao de buscas reais completas/gravadas (default 1.0)\n"
         "  --cheap-time-ms N   tempo dos plies baratos, trajectory-only (default 20ms)\n"
@@ -246,6 +247,7 @@ int main(int argc, char** argv) {
     int chunkGames  = 2000;
     int startShard  = 0;
     std::string positionsPath;
+    bool validatePositionsOnly = false;
     std::string metaOutTemplate;
 
     for (int i = 1; i < argc; i++) {
@@ -262,6 +264,7 @@ int main(int argc, char** argv) {
         else if (a == "--depth")           cfg.maxDepth              = std::atoi(next("--depth").c_str());
         else if (a == "--time-ms")         cfg.timeBudgetMs          = std::atoi(next("--time-ms").c_str());
         else if (a == "--positions")       positionsPath             = next("--positions");
+        else if (a == "--validate-positions") validatePositionsOnly   = true;
         else if (a == "--playout-cap")      cfg.playoutCapEnabled     = true;
         else if (a == "--full-search-prob") cfg.fullSearchProb        = std::atof(next("--full-search-prob").c_str());
         else if (a == "--cheap-time-ms")    cfg.cheapTimeBudgetMs     = std::atoi(next("--cheap-time-ms").c_str());
@@ -338,7 +341,7 @@ int main(int argc, char** argv) {
         }
     }
 
-    if (outTemplate.empty()) {
+    if (outTemplate.empty() && !validatePositionsOnly) {
         std::fprintf(stderr, "erro: --out e obrigatorio\n");
         printUsage(argv[0]);
         return 1;
@@ -350,6 +353,14 @@ int main(int argc, char** argv) {
             std::fprintf(stderr, "error: %s\n", seedError.c_str());
             return 1;
         }
+    }
+    if (validatePositionsOnly) {
+        if (positionsPath.empty()) {
+            std::fprintf(stderr, "error: --validate-positions requires --positions\n");
+            return 1;
+        }
+        std::printf("validated %zu nonterminal seed positions\n", cfg.startPositions.size());
+        return 0;
     }
     if (chunkGames <= 0) {
         std::fprintf(stderr, "erro: --chunk-games deve ser > 0\n");

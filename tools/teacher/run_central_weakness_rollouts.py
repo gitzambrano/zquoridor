@@ -406,6 +406,7 @@ def _generate_opening_bank(args: argparse.Namespace, bank_path: Path, manifest_p
         "schema": BANK_SCHEMA,
         "book": str(book_path),
         "book_sha256": _sha256(book_path),
+        "seed_rules_sha256": _sha256(ROOT / "tools/teacher/build_selfplay_seed_schedule.py"),
         "classic_prefix_catalog_rows": len(classic_rows),
         "size": args.seed_bank_size,
         "seed": args.seed,
@@ -964,6 +965,9 @@ def main(argv=None) -> int:
     with OutputLock(out_dir):
         print(f"[central-weakness] preparing shared opening bank ({args.seed_bank_size:,} roots)", flush=True)
         bank_manifest = _generate_opening_bank(args, bank_path, bank_manifest_path)
+        for source in selected:
+            subprocess.run([str(runtime[source["name"]][1]), "--positions", str(bank_path),
+                            "--validate-positions"], cwd=ROOT, check=True)
         source_manifest = []
         for s in selected:
             artifacts, executable, build = runtime[s["name"]]
@@ -1036,7 +1040,11 @@ def main(argv=None) -> int:
                 print(f"[central-weakness] source={source['name']} shard={next_shard:05d} "
                       f"profile={profile.name} positions={total:,}/{source['target_positions']:,}", flush=True)
                 started = time.time()
-                subprocess.run(command, cwd=ROOT, check=True)
+                try:
+                    subprocess.run(command, cwd=ROOT, check=True)
+                except subprocess.CalledProcessError:
+                    snapshot("failed")
+                    raise
                 dropped = _retain_complete_search_records(stage_bin, stage_meta)
                 produced = _pair_record_count(stage_bin, stage_meta)
                 if produced == 0:
