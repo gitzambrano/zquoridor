@@ -467,7 +467,7 @@ Train for 120 epochs with batch size 1024. Use CUDA and two CPU threads. Decay t
 
 Arena evaluation is deferred. Do not start arena matches automatically after training. Resume the arena gates only after explicit user authorization. When resumed, play 200 pairs against Claustrophobia and 200 pairs against the frozen current main. This is 400 games per opponent at 200 ms per move. Use one arena worker by default. Increase concurrency to at most four workers only when memory permits. Keep total search use at or below 10 cores. Require measured improvement against both opponents before promotion. If either gate fails, revise the target or mixture, freeze a new dataset identity, and repeat the fine-tune.
 
-At the 2026-10-02 audit, replay preparation had read 143 of 756 shard pairs, or approximately 2.1M records. Training epochs had not started. Arena evaluation was deferred, and no arena process was active. No candidate result was available.
+At 2026-10-02 13:53 local replay and the weighted mixture were complete. Training was active in epoch one. No full training epoch had completed. Arena evaluation and self-play were stopped. No candidate strength result was available.
 
 Use `training/run_production_finetune.py` for this single-network run. It writes artifacts under `results/experiments/production-central-finetune-20261002`. Keep local self-play stopped.
 

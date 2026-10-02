@@ -201,7 +201,7 @@ Run `training/run_production_finetune.py` to prepare the accepted sources and fi
 
 Arena evaluation is deferred. Do not start arena matches automatically after training. Resume only after explicit user authorization. When resumed, run 200 pairs (400 games) against Claustrophobia and 200 pairs (400 games) against the frozen current main, at 200 ms per move. Use one arena worker by default; increase to at most four only if memory permits, and keep total search use at or below 10 cores.
 
-At the 2026-10-02 audit, preparation had read 143 of 756 shard pairs, or approximately 2.1M records. Training epochs had not started. Arena evaluation was deferred and no arena process was active. No candidate result was available.
+At 2026-10-02 13:53 replay preparation and mixing were complete. The CUDA training process was active in epoch one. No full training epoch had completed. Arena evaluation and self-play were stopped.
 
 ## Folder map
 
