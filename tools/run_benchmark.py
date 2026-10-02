@@ -118,6 +118,10 @@ def resolve_config(args: argparse.Namespace) -> dict:
 
 
 def _read_openings(path: Path, pairs: int, seed: int) -> list[tuple[int, list[str]]]:
+    # Parse and shape-check every row, then select deterministically before
+    # applying the expensive game-rule referee (wall legality uses path BFS).
+    # This preserves the historical shuffled subset while avoiding thousands
+    # of unused legality checks for large opening books.
     rows = []
     for index, line in enumerate(path.read_text(encoding="utf-8").splitlines()):
         if not line.strip():
@@ -126,16 +130,21 @@ def _read_openings(path: Path, pairs: int, seed: int) -> list[tuple[int, list[st
         moves = value.get("moves")
         if not isinstance(moves, list) or not all(isinstance(move, str) for move in moves):
             raise ValueError(f"{path}:{index + 1}: expected a string list in 'moves'")
-        referee = local_arena.Referee()
-        for move in moves:
-            referee.apply(move)
-        if referee.winner is not None:
-            raise ValueError(f"{path}:{index + 1}: the opening is terminal")
         rows.append((index, moves))
     if len(rows) < pairs:
         raise ValueError(f"the opening file has {len(rows)} rows but the run needs {pairs}")
     random.Random(seed).shuffle(rows)
-    return rows[:pairs]
+    selected = rows[:pairs]
+    for row_index, moves in selected:
+        referee = local_arena.Referee()
+        try:
+            for move in moves:
+                referee.apply(move)
+        except local_arena.IllegalMove as error:
+            raise ValueError(f"{path}:{row_index + 1}: invalid opening: {error}") from error
+        if referee.winner is not None:
+            raise ValueError(f"{path}:{row_index + 1}: the opening is terminal")
+    return selected
 
 
 def _read_opening_categories(path: Path) -> dict[int, str]:

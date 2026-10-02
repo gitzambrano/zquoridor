@@ -417,26 +417,15 @@ against production baseline `multipath_phase_bucketed` (`data/nnue/nnue_weights_
 
 ## 5. Current data generation
 
-The local campaign uses `tools/teacher/run_central_weakness_rollouts.py`.
-Its design assigns 8M positions to production bucketed and 4M to contact
-bucketed. A further 4M remain unassigned. The controller uses 10 workers,
-one shared 50,000-root opening bank, and wide, balanced, and sharp profiles.
-Each rollout searches its first 16 plies after the seed at 200 ms. Later
-plies use profile-specific full-search probabilities and a 20-ms cheap budget.
-Only valid full-search records contribute training targets.
+The local rollout controller targets 8,000,000 production records and 4,000,000 contact records. The campaign reserves another 4,000,000 positions outside the assigned sources. The controller uses 10 threads, a shared 50,000-root opening bank, and wide, balanced, and sharp profiles. It searches the first 16 plies after each seed at 200 ms. Later plies use profile-specific full-search rates and a 20 ms steering search. Only full-search records enter the training data.
 
-At the 2026-10-01 inspection, the local process was active with more than
-1.05M accepted production records. The contact phase had not started.
-The campaign manifest and live process are the current progress sources.
+The 2026-10-02 local snapshot contains 85 accepted production shards and 1,388,686 records. Every binary and metadata SHA-256 matches. Each binary record uses 64 bytes. Each metadata row uses 20 bytes. The contact source has no accepted shards. The campaign manifest still reports `running`, but no local self-play process is active. The campaign remains incomplete. Keep local self-play stopped.
 
-Colab workers 3, 4, and 5 use `tools/selfplay/run_colab_worker.py` to generate
-production self-play at 100 ms with two threads and 250-game shards.
-They write V3 binaries and aligned metadata to Drive. Workers 3 and 5
-had live progress at inspection. Worker 4 had no confirmed live connection.
-These workers generate data. They do not train experimental networks.
+The complete Colab manifests for workers 3, 4, and 5 list 671 accepted shard pairs, 8,704,079 records, and 167,750 game groups. Every listed binary and metadata SHA-256 matches. The unlisted `c4_shard_0229` pair contains 157 records. It is excluded from the accepted snapshot.
 
-Freeze completed binary and metadata pairs before replay preparation.
-Retain hashes and accepted-shard manifests. Partial shards do not enter training.
+Of the accepted Colab records, 943,318 set `META_ROOT_MISSING` and have zero policy visits. Stored-search replay excludes these records. The remaining 7,760,761 records have valid root values and nonzero policy visits. Their terminal results use only -1, 0, and 1.
+
+The frozen new-data snapshot contains 10,092,765 raw records. This total includes the partial local source and all accepted Colab shards. It contains 9,149,447 records with valid stored-search targets before duplicate-state aggregation and cross-split conflict removal. Use only the accepted entries in the frozen manifests. Do not use unlisted staging files.
 
 ## 6. Promotion protocol
 
@@ -450,110 +439,61 @@ Retain hashes and accepted-shard manifests. Partial shards do not enter training
 5. Promote only when there are no unresolved failures and the confidence
    interval supports the claim. Promotion is never automatic.
 
-## 7. Future experimental training
+## 7. Production fine-tune
 
-This section defines the next campaign. The completed five-arm experiments
-remain in Section 4. The new campaign has not started training.
-`training/run_experimental_anneal.py` initializes four candidates, prepares a
-shared mixture, and trains candidates sequentially. Its default is a dry run.
+### Current production run
 
-### Data and supervision decisions
+Train one `production_bucketed512` candidate with 504 features and 512 hidden units. Initialize the candidate from the frozen production champion. Keep QAT enabled. The contact architecture matrix remains deferred.
 
-Use every eligible new local and Colab record. Apply no per-worker quota
-and no selection cap. Deduplicate canonical states and average repeated targets.
-Preserve each prepared dataset's game split. Remove states that occur in both
-splits across input datasets. Record all removals and source contributions.
-Colab shards receive a namespace for local game IDs during replay preparation.
+### New-data source
 
-The frozen champion dataset contains 15,637,120 samples. It combines
-11,065,000 weakness-master samples and 4,572,120 clean stored-search samples.
-Keep its targets and effective internal weight ratios. The previous trainer
-capped weights at 30, so apply that cap before global normalization.
-The historical nominal tier weights are 1.0, 2.49, 25.01, 34.10, 30.13,
-6.0, and 6.0. The clean stored-search population has weight 1.0.
+The frozen snapshot contains 10,092,765 raw records. The local partial snapshot contributes 1,388,686 records from 85 accepted production shards. The complete Colab manifests contribute 8,704,079 records from 671 accepted shards. Exclude the unaccepted partial `c4_shard_0229` pair.
 
-Normalize the historical block to 25% of total sample-weight mass. Normalize
-all new populations together to 75%. Apply this normalization independently
-in train and validation. New inputs have unit replay weights, so their shares
-follow their eligible counts. Do not allocate equal shares to local and Colab
-or to separate Colab accounts. High historical tier weights cannot increase
-the aggregate historical share above 25%.
+The Colab manifests mark 943,318 records with `META_ROOT_MISSING`. These records also have zero policy visits. Stored-search replay excludes them. The remaining 7,760,761 Colab records have valid roots and nonzero policy visits. The combined sources contain 9,149,447 valid search records before duplicate aggregation and cross-split conflict removal.
 
-The historical multiplier is `0.25 * total_mass / sum(clipped_old_weights)`.
-The new multiplier is `0.75 * total_mass / sum(all_new_weights)`.
-The final mixture manifest records these multipliers and effective shares.
-Percentages describe weight mass, not raw row counts. Historical preservation
-contains tactical tiers as well as general background. Therefore, the 25%
-historical share does not imply 25% pure general-background supervision.
+### Historical source
 
-For new data, use `stored_search`, `stored_outcome_weight=0.5`, and
-`stored_gamma=1.0`. The signed value target is
-`0.5 * (2 * MCAB_root_value - 1) + 0.5 * terminal_result`.
-Replay values stay in `[-1, 1]`. The trainer maps them to `[0, 1]` through
-`(value + 1) / 2` and uses BCE with logits. It applies no further calibration
-transform. It reports BCE, soft-target Brier error, MAE, and source metrics.
-The stored raw NNUE forward evaluation does not replace searched root value.
+The frozen historical dataset contains 15,637,120 samples. It combines 11,065,000 weakness-master samples and 4,572,120 clean stored-search samples. The dataset contains 374,177 nonempty group IDs. It has 12,893,910 training samples and 2,743,210 validation samples. No group ID crosses the split.
 
-Train policy and value jointly with loss coefficients of 1.0 each. Policy
-uses untempered root visits, with the stored top eight actions renormalized.
-No additional teaching pass is scheduled. Stored search already supplies
-supervision. A later disagreement-focused teaching pass requires a separate
-recipe and budget.
+Preserve the historical targets and internal weight ratios. The historical tier weights are 1.0, 2.49, 25.01, 34.10, 30.13, 6.0, and 6.0. The clean stored-search source uses weight 1.0. Cap historical sample weights at 30 before normalization.
 
-### Candidate and optimizer decisions
+### Training and promotion
 
-Initialize all four candidates from the current production champion float
-weights. The contact candidate from the previous experiment is historical
-evidence, not the initializer. Feature and width expansion preserve the
-champion's initial function. New outgoing columns start at zero, while new
-neurons retain trainable activations. Preserve six value buckets, depth 2,
-32 value-hidden units, 209 policy actions, and QAT throughout the matrix.
+Assign 75% of effective sample-weight mass to all eligible new records. Assign 25% to the frozen historical dataset. Normalize the shares separately in train and validation. New source shares follow eligible records. Do not apply worker quotas or a sampling cap to new records.
 
-| Decision | Future campaign configuration |
+For new records, use the value target `0.5 * (2 * MCAB_root_value - 1) + 0.5 * terminal_result`. Set gamma to 1.0. Use untempered top-eight root visits for policy targets. The trainer maps values from `[-1, 1]` to `[0, 1]` and uses BCE with logits. It reports BCE, soft-target Brier error, MAE, and source metrics.
+
+Train for 120 epochs with batch size 1024. Use CUDA and two CPU threads. Decay the head learning rate from `1e-5` to `1e-7` with a cosine schedule. Set the trunk learning-rate scale to 0.05. Use AdamW, weight decay `1e-5`, gradient clipping at 1.0, QAT, and horizontal mirror probability 0.5. Save a resume state after each epoch. Retain checkpoints every 10 epochs. Export the best validation checkpoint, including epoch zero when later checkpoints do not improve.
+
+Arena evaluation is deferred. Do not start arena matches automatically after training. Resume the arena gates only after explicit user authorization. When resumed, play 200 pairs against Claustrophobia and 200 pairs against the frozen current main. This is 400 games per opponent at 200 ms per move. Use one arena worker by default. Increase concurrency to at most four workers only when memory permits. Keep total search use at or below 10 cores. Require measured improvement against both opponents before promotion. If either gate fails, revise the target or mixture, freeze a new dataset identity, and repeat the fine-tune.
+
+At the 2026-10-02 audit, replay preparation had read 143 of 756 shard pairs, or approximately 2.1M records. Training epochs had not started. Arena evaluation was deferred, and no arena process was active. No candidate result was available.
+
+Use `training/run_production_finetune.py` for this single-network run. It writes artifacts under `results/experiments/production-central-finetune-20261002`. Keep local self-play stopped.
+
+| Decision | Current configuration |
 | --- | --- |
-| Control | `multipath_phase_bucketed:512`, 504 features |
-| Contact comparison | `multipath_phase_contact_bucketed:512`, 858 features |
-| Larger contact | `multipath_phase_contact_bucketed:768`, 858 features |
-| Largest contact | `multipath_phase_contact_bucketed:1024`, 858 features |
-| Initial weights | `results/experiments/multipath_unified_champion/student.bin`; SHA must match production float weights |
-| Historical data | Entire frozen 15.637M recipe; existing targets and clipped tier ratios; 25% effective mass |
-| New data | All eligible local and Colab data together; 75% effective mass; source shares follow eligible counts |
-| Local generation | 8M production, 4M contact, 4M unassigned reserve; the reserve supplies no training rows |
-| New value target | 50% signed MCAB search value and 50% terminal result; gamma 1.0 |
-| Policy target | Untempered top-eight root visits, renormalized |
-| Teaching | Stored search only; no additional relabeling in this campaign |
-| Loss | Policy KL coefficient 1.0; value BCE coefficient 1.0 |
-| Duration | 120 epochs; patience 0 keeps the full annealing schedule |
-| Head LR | Start at `1e-5`; cosine decay to `1e-7`; no increasing warmup |
-| Trunk LR | Scale 0.05; start at `5e-7`; decay to `5e-9` |
-| Optimizer | AdamW; weight decay `1e-5`; gradient clip 1.0 |
-| Batch and resources | Batch 1024; CUDA; two CPU threads; one candidate at a time |
-| Regularization | QAT throughout; horizontal mirror probability 0.5 in training only |
-| Dataset storage | Read-only NumPy memory maps; source mass and hashes remain available |
-| Full replay preparation | Disk-backed aggregation of every accepted record; whole-game split assignment and cross-split state removal |
-| Checkpoints | Initial state, last resume state each epoch, best state, and retained states every 10 epochs |
-| Resume | Restore weights, optimizer, RNGs, history, best epoch, and schedule position; reject changed inputs |
-| Final export | Best validation checkpoint, which may be epoch 0; retain later checkpoints for arena screening |
-| Retention report | Compare initial and best candidates on unchanged historical validation targets; record `frozen_retention.json` |
-| Evaluation | Source and bucket holdouts, then paired production, Titanium, and Claustrophobia games at 200 ms |
-| Promotion | Require strength evidence and general-game retention; no automatic promotion |
+| Network | Production bucketed, 504 inputs, hidden 512, six value buckets, depth 2 |
+| Initialization | Frozen champion float weights; QAT enabled |
+| Effective mixture | 75% all eligible new data; 25% historical data with internal weights capped at 30 |
+| Value | 50% signed MCAB root value and 50% terminal result; gamma 1; historical targets unchanged |
+| Policy | Untempered top-eight visits, renormalized; policy and value loss coefficients both 1 |
+| Optimizer | AdamW; weight decay `1e-5`; gradient clip 1; mirror probability 0.5 |
+| Schedule | 120 epochs; cosine head LR `1e-5` to `1e-7`; trunk scale 0.05 |
+| Resources | CUDA; batch 1024; two CPU threads; one training process |
+| Checkpoints | Resume state each epoch; retained checkpoint each 10 epochs; best validation export |
+| Arena and self-play | Stopped; automatic evaluation disabled |
 
-Low LR and replay preservation reduce distribution drift. They do not prove
-that forgetting or overfitting cannot occur. Keep the historical holdout and
-normal-book arena as explicit retention gates. Compare larger networks at
-the same search time because inference cost can offset better evaluation.
+### Deferred architecture matrix
 
-Before training, finish the assigned local sources, download complete Colab
-pairs, freeze provenance, and prepare all eligible replay records. The Colab
-accepted manifest must contain `complete: true`, `accepted_shards`, and binary
-and metadata SHAs for every entry. Keep missing sources explicit. Do not
-redistribute their share silently.
+The current run uses only the production control. Defer the contact candidates until the production fine-tune passes both arena gates and retains historical validation performance.
 
-Run `python training/run_experimental_anneal.py` to inspect the plan.
-Run with `--no-dry-run --initialize-only` to export initial candidate artifacts.
-Run with `--no-dry-run --prepare-only --prepare-replays` to prepare frozen data.
-Run with `--no-dry-run` only when the prepared datasets are ready.
-Change `out_dir` when a frozen input or the recipe changes.
+| Candidate | Features | Hidden units | Status |
+| --- | ---: | ---: | --- |
+| `production_bucketed512` | 504 | 512 | Current run |
+| `contact_bucketed512` | 858 | 512 | Deferred |
+| `contact_bucketed768` | 858 | 768 | Deferred |
+| `contact_bucketed1024` | 858 | 1024 | Deferred |
 
 ## 8. Durable lessons
 

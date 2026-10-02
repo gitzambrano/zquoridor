@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import random
 import subprocess
 import sys
 import tempfile
@@ -221,6 +222,61 @@ class ProcessTests(unittest.TestCase):
 
 
 class ResumeAndConfigTests(unittest.TestCase):
+    def test_opening_selection_preserves_seeded_subset_and_row_indices(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            path = Path(raw) / "openings.jsonl"
+            source = [
+                (0, ["e2"]),
+                (2, ["e2", "e8"]),
+                (3, ["e2", "e8", "e3"]),
+                (5, ["e2", "e8", "e3", "e7"]),
+                (6, ["e2", "e8", "e3", "e7", "e4"]),
+            ]
+            rows_by_physical_index = dict(source)
+            path.write_text(
+                '\n'.join(
+                    json.dumps({"moves": rows_by_physical_index[index]})
+                    if index in rows_by_physical_index else ""
+                    for index in range(7)
+                ),
+                encoding="utf-8",
+            )
+            expected = list(source)
+            random.Random(73).shuffle(expected)
+            actual = run_benchmark._read_openings(path, pairs=3, seed=73)
+        self.assertEqual(actual, expected[:3])
+
+    def test_only_selected_openings_are_legality_checked(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            path = Path(raw) / "openings.jsonl"
+            rows = [
+                ["e2"],
+                ["e2", "e8"],
+                ["e2", "e8", "e3"],
+                ["e2", "e8", "e3", "e7"],
+            ]
+            shuffled = list(enumerate(rows))
+            random.Random(11).shuffle(shuffled)
+            selected_indices = {index for index, _ in shuffled[:3]}
+            invalid_index = next(index for index, _ in enumerate(rows)
+                                 if index not in selected_indices)
+            rows[invalid_index] = ["e3"]
+            path.write_text(
+                '\n'.join(json.dumps({"moves": moves}) for moves in rows),
+                encoding="utf-8",
+            )
+            chosen = run_benchmark._read_openings(path, pairs=3, seed=11)
+            self.assertNotIn(invalid_index, {index for index, _ in chosen})
+
+            rows[invalid_index] = ["e2"]
+            rows[selected_indices.pop()] = ["e3"]
+            path.write_text(
+                '\n'.join(json.dumps({"moves": moves}) for moves in rows),
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(ValueError, "invalid opening"):
+                run_benchmark._read_openings(path, pairs=3, seed=11)
+
     def test_run_id_hashes_complete_config_and_artifacts(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)
