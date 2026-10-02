@@ -17,6 +17,7 @@ The public runners currently following this convention are `tools/setup_bots.py`
 `tools/run_full_candidate_suite.py`, `tools/benchmark_candidate.py`,
 `training/run_teaching.py`, `training/run_experiment.py`,
 `training/run_experimental_anneal.py`,
+`training/run_production_finetune.py`,
 `training/run_campaign.py`, `tools/teacher/run_four_million_selfplay.py`,
 `tools/teacher/run_weakness_selfplay.py`, and
 `tools/teacher/run_central_weakness_rollouts.py`. `tools/selfplay/run_selfplay.py`
@@ -41,6 +42,7 @@ campaigns.
 | Build replay/teaching data | `training/prepare_replay.py` or `training/run_teaching.py` | V3 shards or JSONL trajectories | one `dataset.npz` plus manifest | The dataset contains mover-relative policy and value targets. |
 | Train one network | `training/run_experiment.py` | a canonical NPZ or a manifest-verified memory-map directory | float/int8 weights, checkpoints, manifest, matching executable | QAT, source metrics, and resume are configured here. |
 | Prepare and anneal the experimental matrix | `training/run_experimental_anneal.py` | frozen champion, complete local and Colab replays | four initialized candidates, shared mixture, sequential training runs | Dry run by default; 120 epochs; low LR; 75% new and 25% historical effective mass. |
+| Production-only fine-tune | `training/run_production_finetune.py` | frozen partial local snapshot, complete Colab manifests, historical dataset | one `production_bucketed512` candidate | 120 epochs; 75% new and 25% historical effective mass. |
 | Mix frozen experimental data | `training/mix_experimental_datasets.py` | canonical datasets and explicit source or pool shares | memory-mapped arrays and a hashed manifest | Internal stage; weighted duplicate averages, group-safe splits, and exact effective shares. |
 | Prepare all stored-search records | `training/prepare_stored_replay_all.py` | frozen accepted-shard manifests | memory-mapped 50/50 replay and source audit | Internal stage; disk aggregation, no sampling cap, and whole-game splits. |
 | Train an architecture matrix | `training/run_architecture_matrix.py` | one dataset and matrix settings | one experiment directory per candidate | Auxiliary batch wrapper; use only when its matrix matches the experiment. |
@@ -146,7 +148,7 @@ Use `--no-dry-run --prepare-only --prepare-replays` after the raw sources
 finish. Configure the download paths in `data_sources`. Each Colab source
 needs a frozen `manifest.json` with `complete: true` and `accepted_shards`.
 Each accepted entry contains `v3`, `bin_sha256`, and `meta_sha256`.
-The local campaign already provides its accepted-shard manifest.
+The production fine-tune uses the frozen partial manifest `data/selfplay/central-weakness-rollouts-16m/frozen_partial_manifest.json`. It lists only the 85 accepted local shards. The live campaign manifest remains incomplete.
 Preparation uses `training/prepare_stored_replay_all.py`. It consumes all
 accepted records through a disk-backed aggregation store, filters invalid search
 targets, and averages duplicate states. It assigns whole games to a split and
@@ -180,6 +182,26 @@ Reports include source and bucket metrics. Native builds use each architecture
 manifest. The orchestrator also compares initial and best networks against
 unchanged historical validation targets in `frozen_retention.json`.
 Promotion requires the documented paired arena gates.
+
+### Current production-only run
+
+#### New-data snapshot
+
+The 2026-10-02 freeze contains 10,092,765 raw records. Colab contributes 8,704,079 records from 671 accepted shards. The partial local campaign contributes 1,388,686 records from 85 accepted shards. Exclude the unaccepted `c4_shard_0229` pair. Every accepted binary and metadata hash matches.
+
+The Colab manifests mark 943,318 records with `META_ROOT_MISSING`. These records also have zero policy visits. Replay excludes them. The remaining 7,760,761 Colab records have valid roots and nonzero policy visits. The combined snapshot has 9,149,447 valid search records before duplicate aggregation and split-conflict removal.
+
+#### Historical source
+
+The historical dataset contains 15,637,120 samples and 374,177 game groups. The training split contains 12,893,910 samples. The validation split contains 2,743,210 samples. No group crosses the split. Preserve the historical targets and weight ratios.
+
+#### Training and evaluation
+
+Run `training/run_production_finetune.py` to prepare the accepted sources and fine-tune one `production_bucketed512` candidate. Assign 75% of effective sample-weight mass to new data. Assign 25% to historical data. Train for 120 epochs with a cosine head learning rate from `1e-5` to `1e-7` and a trunk scale of 0.05.
+
+Arena evaluation is deferred. Do not start arena matches automatically after training. Resume only after explicit user authorization. When resumed, run 200 pairs (400 games) against Claustrophobia and 200 pairs (400 games) against the frozen current main, at 200 ms per move. Use one arena worker by default; increase to at most four only if memory permits, and keep total search use at or below 10 cores.
+
+At the 2026-10-02 audit, preparation had read 143 of 756 shard pairs, or approximately 2.1M records. Training epochs had not started. Arena evaluation was deferred and no arena process was active. No candidate result was available.
 
 ## Folder map
 

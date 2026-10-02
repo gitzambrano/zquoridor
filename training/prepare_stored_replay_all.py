@@ -79,7 +79,8 @@ def _resolve_source(source):
         if root.name.endswith("campaign_manifest.json"):
             manifest_path = root
             root = root.parent
-        elif root.name in ("manifest.json", "replay_manifest.json", "dataset.manifest.json"):
+        elif root.name in ("manifest.json", "replay_manifest.json", "dataset.manifest.json",
+                           "frozen_partial_manifest.json"):
             manifest_path = root
             root = root.parent
         else:
@@ -88,7 +89,8 @@ def _resolve_source(source):
         campaign_path = root / "campaign_manifest.json"
         manifest_path = campaign_path if campaign_path.is_file() else None
         if manifest_path is None:
-            for name in ("manifest.json", "replay_manifest.json", "dataset.manifest.json"):
+            for name in ("frozen_partial_manifest.json", "manifest.json", "replay_manifest.json",
+                         "dataset.manifest.json"):
                 candidate = root / name
                 if candidate.is_file():
                     manifest_path = candidate
@@ -191,14 +193,20 @@ def _partition(seed: int, game_token: str, val_fraction: float) -> tuple[bool, s
 
 def _opening_bank(source_info):
     """Index opening-bank line offsets without retaining its rows in RAM."""
-    if not source_info["campaign"]:
-        return None
-    path = source_info["root"] / "opening_bank_8to10ply.jsonl"
+    manifest = source_info["manifest"]
+    if source_info["campaign"]:
+        path = source_info["root"] / "opening_bank_8to10ply.jsonl"
+        expected = manifest.get("bank_sha256")
+    else:
+        info = manifest.get("opening_bank")
+        if not isinstance(info, dict) or not info.get("available"):
+            return None
+        path = _safe_child(source_info["root"], str(info.get("path", "")))
+        expected = info.get("sha256")
     if not path.is_file():
         return None
-    expected = source_info["manifest"].get("bank_sha256")
     if expected and _sha(path) != expected:
-        raise ValueError(f"campaign opening-bank SHA mismatch: {path}")
+        raise ValueError(f"opening-bank SHA mismatch: {path}")
     offsets = array("Q")
     with path.open("rb") as stream:
         while True:
@@ -516,6 +524,13 @@ def prepare(source, out_dir, seed=20261001, val_fraction=0.2, chunk_size=8192):
                                   "skipped_zero_visits": shard_zero})
             skipped_missing += shard_missing
             skipped_zero_visits += shard_zero
+            progress = dict(status="aggregating", shards_completed=len(shard_reports),
+                            shards_total=len(shard_entries), raw_records_processed=total_raw,
+                            accepted_records=accepted, skipped_missing_root=skipped_missing,
+                            skipped_zero_visits=skipped_zero_visits,
+                            last_shard=str(shard["path"]), identity_sha256=identity_sha)
+            _atomic_json(out_dir / "prepare_progress.json", progress)
+            print(json.dumps(progress), flush=True)
         conflicts = db.execute("SELECT COUNT(*) FROM states WHERE split_mask=3").fetchone()[0]
         bad_distances = db.execute("SELECT COUNT(*) FROM states WHERE distance_conflict=1").fetchone()[0]
         if bad_distances:
@@ -594,6 +609,10 @@ def prepare(source, out_dir, seed=20261001, val_fraction=0.2, chunk_size=8192):
         # SQLite was closed above; query game split totals from the exported group IDs.
         _atomic_json(manifest_path, manifest)
         _atomic_json(replay_path, _replay_manifest(manifest, manifest_path, out_dir, chunk_size))
+        _atomic_json(out_dir / "prepare_progress.json", dict(
+            status="complete", shards_completed=len(shard_reports), shards_total=len(shard_entries),
+            raw_records_processed=total_raw, accepted_records=accepted,
+            unique_states=counts["samples"], identity_sha256=identity_sha))
         return manifest
     except Exception:
         db.close()
