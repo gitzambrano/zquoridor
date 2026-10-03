@@ -1,4 +1,4 @@
-# Zquoridor 2.10
+# Zquoridor 3.0
 
 **[Play Zquoridor in your browser](https://gitzambrano.github.io/zquoridor/)**
 
@@ -85,6 +85,14 @@ and NNUE parity. Browser tests live in `gui_web/` and use Playwright.
 | `gui_web/` | Browser UI, worker, WASM binding, browser tests |
 | `docs/` | Technical status, roadmap, and operational guides |
 | `data/` | Production weights and local data assets |
+
+## Release 3.0
+
+- Updates production weights to the central fine-tune model (`multipath_phase_bucketed:512`), trained on 21.1M stored-search and balanced canonical positions.
+- Resolves historical Center Rush and central opening weaknesses across all external benchmark suites.
+- Outperforms historical baselines with +64.1 Elo against Claustrophobia (59.13% overall, including 59.00% on Center Rush) and +141.2 Elo against Titanium (69.00% overall).
+- Demonstrates statistically verified superiority over the previous production baseline in head-to-head testing (55.50%, +38.4 Elo).
+- Updates the WebAssembly engine and standalone browser bundle with the new quantized int8 weights.
 
 ## Release 2.10
 
