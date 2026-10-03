@@ -20,7 +20,7 @@ from config import WORKERS, resolve_worker_key
 from browser_utils import is_cdp_reachable, is_profile_in_use, get_notebook_dom_state, dismiss_modals
 
 CONFIG: Dict[str, Any] = {
-    "worker_ids": [3, 4, 5],
+    "worker_ids": [1, 2, 3, 4, 5],
     "headless": True,
     "page_timeout_ms": 45000,
     "load_delay_seconds": 8,

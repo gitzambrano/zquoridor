@@ -30,7 +30,7 @@ from browser_utils import (
 )
 
 CONFIG: Dict[str, Any] = {
-    "worker_ids": [3, 4, 5],
+    "worker_ids": [1, 2, 3, 4, 5],
     "check_interval_seconds": 60,
     "screenshot_interval_cycles": 10,
     "auto_reconnect": True,
