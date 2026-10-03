@@ -479,8 +479,12 @@ def generate_bank(config: dict) -> list[dict]:
         if state.pawns[0] // 9 == 8 or state.pawns[1] // 9 == 0:
             return False
         seen.add(moves_tuple)
+        idx = len(bank)
         bank.append({
-            "opening_index": len(bank),
+            "schema": "zquoridor.position.v1",
+            "id": f"tw_{idx:05d}",
+            "opening_index": idx,
+            "history": list(moves_tuple),
             "moves": list(moves_tuple),
             "category": category,
             "source_seed": seed_name,
