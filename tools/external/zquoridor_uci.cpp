@@ -10,6 +10,7 @@
 #include <vector>
 
 #include "search.hpp"
+#include "search_tuning.hpp"
 #include "mcab.hpp"
 #include "time_manager.hpp"
 
@@ -85,6 +86,7 @@ struct Options {
     int endgameMoverWallThreshold = -999;
     int endgameLeafDepth = -1;
     int moveOverheadMs = 20;
+    tuning::SearchTuning searchTuning;
 };
 
 static Options parseArgs(int argc, char** argv) {
@@ -127,6 +129,7 @@ static Options parseArgs(int argc, char** argv) {
         else if (a == "--endgame-mover-walls") o.endgameMoverWallThreshold = std::atoi(need("--endgame-mover-walls"));
         else if (a == "--endgame-leaf-depth") o.endgameLeafDepth = std::atoi(need("--endgame-leaf-depth"));
         else if (a == "--move-overhead") o.moveOverheadMs = std::max(0, std::atoi(need("--move-overhead")));
+        else if (tuning::parseSearchTuningArg(a.c_str(), argc, argv, i, "", o.searchTuning)) {}
         else {
             std::cerr << "unknown argument: " << a << "\n";
             std::exit(2);
@@ -159,6 +162,7 @@ int main(int argc, char** argv) {
     if (opt.lmrMinDepth != -999) engine.setLmrMinDepth(opt.lmrMinDepth);
     if (opt.lmrMinMoveIndex != -999) engine.setLmrMinMoveIndex(opt.lmrMinMoveIndex);
     if (opt.lmrDivisor > 0.0) engine.setLmrDivisor(opt.lmrDivisor);
+    tuning::applySearchTuning(engine, opt.searchTuning);
 
     Runner runner;
     mcab::McabParams params;
@@ -376,6 +380,12 @@ int main(int argc, char** argv) {
                       << " lmrDepth=" << engine.getLmrMinDepth()
                       << " lmrMove=" << engine.getLmrMinMoveIndex()
                       << " lmrDiv=" << engine.getLmrDivisor()
+                      << " policyLmr=" << (engine.isPolicyLmrEnabled() ? 1 : 0)
+                      << " policyLmrHot=" << engine.getPolicyLmrHotDelta()
+                      << " policyLmrCold=" << engine.getPolicyLmrColdDelta()
+                      << " policyLmp=" << (engine.isPolicyLmpEnabled() ? 1 : 0)
+                      << " policyLmpBase=" << engine.getPolicyLmpBaseMass()
+                      << " policyLmpMin=" << engine.getPolicyLmpMinCount()
                       << " pw=" << (params.progressiveWidening ? 1 : 0)
                       << " clearTT=" << (params.clearTTPerMove ? 1 : 0)
                       << " reuse=" << (params.treeReuse ? 1 : 0)
