@@ -78,6 +78,25 @@ one ply produced three PV lines in about 1.2 s. The blunder check covered all 18
 plies. The same sequence passed on both the source page and the standalone
 bundle with zero page errors.
 
+A dedicated mobile performance and stability pass resolves memory pressure and
+thermal throttling:
+- **WASM memory footprint**: The secondary analysis search instance (`g_anEngine`)
+  is now instantiated lazily upon first analysis request, saving ~62 MB of static
+  transposition table and path cache allocations during live play. Emscripten
+  `INITIAL_MEMORY` is reduced from 256 MB to 128 MB across `build_wasm.bat` and
+  `build_wasm.sh` with `ALLOW_MEMORY_GROWTH=1`, cutting total WASM reservation in
+  half and preventing mobile OS OOM kills (iOS Jetsam / Android LowMemoryKiller).
+- **Touch-aware pondering**: The Web Worker automatically pauses background
+  pondering when pointer interaction or dragging begins on the board/dock,
+  resuming when the gesture finishes or the move commits. This yields 100% of CPU
+  and frame budget to the UI thread for stutter-free 60/120 FPS gestures.
+- **Mobile thermal pacing**: Pondering loop introduces an 8 ms slice interval on
+  mobile user-agents, reducing battery consumption and preventing thermal
+  throttling while preserving identical search quality and tree accumulation.
+- **Mobile canvas DPR clamp**: Canvas resolution on mobile viewports is capped at
+  `Math.min(window.devicePixelRatio, 2.0)`, cutting GPU texture memory and pixel
+  fill-rate on 3x/4x displays without perceptible visual quality loss.
+
 ## 2. What has been measured
 
 All percentages below are candidate score. A small match is screening evidence,

@@ -339,11 +339,14 @@ class QBoard {
   ds() { return document.documentElement.dataset; }
 
   fit() {
+    const isMobile = typeof navigator !== 'undefined' &&
+      /Mobi|Android|iPhone|iPad/i.test(navigator.userAgent || '');
+    const dpr = Math.min(window.devicePixelRatio || 1, isMobile ? 2 : 2.5);
     let side;
     if (this.fixedSide) {
       side = this.fixedSide;
-      this.cv.width = Math.round(side * (window.devicePixelRatio || 1));
-      this.cv.height = Math.round(side * (window.devicePixelRatio || 1));
+      this.cv.width = Math.round(side * dpr);
+      this.cv.height = Math.round(side * dpr);
       this.cv.style.width = side + 'px';
       this.cv.style.height = side + 'px';
     } else {
@@ -386,7 +389,6 @@ class QBoard {
       wrap.style.height = side + 'px';
     }
     this._sideApplied = side;
-    const dpr = Math.min(window.devicePixelRatio || 1, 3);
     this.cssSide = side;
     this.S = side;   // paintStatic destructures S
     if (!this.fixedSide) {

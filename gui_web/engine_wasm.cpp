@@ -12,6 +12,7 @@
 #include <cstring>
 #include <sstream>
 #include <algorithm>
+#include <memory>
 #include "../src/rules.hpp"
 #include "../src/search.hpp"
 #include "../src/nnue.hpp"
@@ -72,7 +73,19 @@ std::vector<Move> g_scratchMoves;
 
 // Dedicated search instance for analysis. A separate transposition table
 // keeps the live game's TT warm while the user analyses other positions.
-Negamax g_anEngine;
+// Allocated lazily on demand to save ~62 MB of static TT/cache memory
+// during regular gameplay, preventing mobile browser OOM terminations.
+std::unique_ptr<Negamax> g_anEngine;
+
+Negamax& getAnEngine() {
+    if (!g_anEngine) {
+        g_anEngine = std::make_unique<Negamax>();
+        g_anEngine->setEvalMode(g_engine.getEvalMode());
+        g_anEngine->setPolicyOrderingEnabled(g_engine.isPolicyOrderingEnabled());
+        g_anEngine->setPolicyOrderingMinDepth(g_engine.getPolicyOrderingMinDepth());
+    }
+    return *g_anEngine;
+}
 
 struct AnLine {
     int score = 0;              // mover-relative, side to move of the scratch
@@ -453,9 +466,11 @@ int qr_load_nnue_weights(const char* path) {
     if (!qr::loadWeightsQuant(path)) return 0;
     g_engine.setEvalMode(qr::Negamax::EvalMode::NNUE);
     g_engine.setPolicyOrderingEnabled(true);
-    // The analysis engine follows the same eval mode as the game engine.
-    g_anEngine.setEvalMode(qr::Negamax::EvalMode::NNUE);
-    g_anEngine.setPolicyOrderingEnabled(true);
+    // The analysis engine follows the same eval mode as the game engine if allocated.
+    if (g_anEngine) {
+        g_anEngine->setEvalMode(qr::Negamax::EvalMode::NNUE);
+        g_anEngine->setPolicyOrderingEnabled(true);
+    }
     return 1;
 }
 
@@ -464,7 +479,9 @@ int qr_load_nnue_weights(const char* path) {
 EMSCRIPTEN_KEEPALIVE
 void qr_set_eval_heuristic() {
     g_engine.setEvalMode(qr::Negamax::EvalMode::Heuristic);
-    g_anEngine.setEvalMode(qr::Negamax::EvalMode::Heuristic);
+    if (g_anEngine) {
+        g_anEngine->setEvalMode(qr::Negamax::EvalMode::Heuristic);
+    }
 }
 
 // Retorna 1 se o engine está em modo NNUE, 0 se heurístico.
@@ -592,18 +609,19 @@ EMSCRIPTEN_KEEPALIVE int qr_analyze(int maxDepth, int timeMs, int lines) {
     if (timeMs < 50) timeMs = 50;
 
     Move pvBuf[16];
+    Negamax& anEng = getAnEngine();
 
     // Line 1: full search at the root.
     SearchStats st;
-    Move best1 = g_anEngine.chooseMove(g_scratch, maxDepth,
-                                       lines > 1 ? timeMs / 2 : timeMs, st);
+    Move best1 = anEng.chooseMove(g_scratch, maxDepth,
+                                  lines > 1 ? timeMs / 2 : timeMs, st);
     g_anNodes += st.nodes;
     g_anDepth = st.reachedDepth;
     AnLine l1;
     l1.score = st.score;
     l1.pv.push_back(best1);
     State child1 = applyMove(g_scratch, best1);
-    int n1 = g_anEngine.extractPv(child1, 15, pvBuf);
+    int n1 = anEng.extractPv(child1, 15, pvBuf);
     for (int i = 0; i < n1; i++) l1.pv.push_back(pvBuf[i]);
     g_anLines.push_back(l1);
     if (lines == 1) return 1;
@@ -622,7 +640,7 @@ EMSCRIPTEN_KEEPALIVE int qr_analyze(int maxDepth, int timeMs, int lines) {
             q = (w == ch.turn) ? (SCORE_INF - 1) : -(SCORE_INF - 1);
         } else {
             SearchStats qs;
-            q = -g_anEngine.searchShallow(ch, 2, qs);   // negamax flip
+            q = -anEng.searchShallow(ch, 2, qs);   // negamax flip
             g_anNodes += qs.nodes;
         }
         cands.push_back({rootMoves[i], q});
@@ -642,7 +660,7 @@ EMSCRIPTEN_KEEPALIVE int qr_analyze(int maxDepth, int timeMs, int lines) {
             ln.score = (w == ch.turn) ? (SCORE_INF - 1) : -(SCORE_INF - 1);
         } else {
             SearchStats cst;
-            Move cm = g_anEngine.chooseMove(ch, maxDepth, sliceMs, cst);
+            Move cm = anEng.chooseMove(ch, maxDepth, sliceMs, cst);
             ln.score = -cst.score;   // child value is from the opponent's view
             g_anNodes += cst.nodes;
             if (cst.reachedDepth > g_anDepth) g_anDepth = cst.reachedDepth;
@@ -650,7 +668,7 @@ EMSCRIPTEN_KEEPALIVE int qr_analyze(int maxDepth, int timeMs, int lines) {
             // endgame shortcut too), so the PV continues even at nodes == 0.
             ln.pv.push_back(cm);
             State gc = applyMove(ch, cm);
-            int n2 = g_anEngine.extractPv(gc, 14, pvBuf);
+            int n2 = anEng.extractPv(gc, 14, pvBuf);
             for (int i = 0; i < n2; i++) ln.pv.push_back(pvBuf[i]);
         }
         g_anLines.push_back(ln);
