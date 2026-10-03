@@ -15,7 +15,7 @@ WORKERS: Dict[int, Dict[str, Any]] = {
         "profile_dir": r"COLAB_PRIVATE_PROFILE_3",
         "notebook_url": "https://colab.research.google.com/drive/NOTEBOOK_ID_3",
         "cdp_port": 9003,
-        "target_keywords": ["run_colab_worker.py", "selfplay_15m", "zquoridor"],
+        "target_keywords": ["run_colab_worker.py", "selfplay_targeted_weakness", "selfplay_15m", "zquoridor"],
         "target_shard_prefix": "c3_",
     },
     4: {
@@ -25,7 +25,7 @@ WORKERS: Dict[int, Dict[str, Any]] = {
         "profile_dir": r"COLAB_PRIVATE_PROFILE_4",
         "notebook_url": "https://colab.research.google.com/drive/NOTEBOOK_ID_4",
         "cdp_port": 9004,
-        "target_keywords": ["run_colab_worker.py", "selfplay_15m", "zquoridor"],
+        "target_keywords": ["run_colab_worker.py", "selfplay_targeted_weakness", "selfplay_15m", "zquoridor"],
         "target_shard_prefix": "c4_",
     },
     5: {
@@ -35,7 +35,7 @@ WORKERS: Dict[int, Dict[str, Any]] = {
         "profile_dir": r"COLAB_PRIVATE_PROFILE_5",
         "notebook_url": "https://colab.research.google.com/drive/NOTEBOOK_ID_5",
         "cdp_port": 9005,
-        "target_keywords": ["run_colab_worker.py", "selfplay_15m", "zquoridor"],
+        "target_keywords": ["run_colab_worker.py", "selfplay_targeted_weakness", "selfplay_15m", "zquoridor"],
         "target_shard_prefix": "c5_",
     },
 }

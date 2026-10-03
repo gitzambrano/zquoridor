@@ -91,7 +91,7 @@ def connect_runtime_if_needed(page: Any) -> bool:
 def get_notebook_dom_state(page: Any, target_keywords: Optional[List[str]] = None) -> Dict[str, Any]:
     """Inspect the Colab notebook DOM and extract runtime and cell execution state."""
     if target_keywords is None:
-        target_keywords = ["run_colab_worker.py", "selfplay_15m", "Remessa 2", "selfplay"]
+        target_keywords = ["run_colab_worker.py", "selfplay_targeted_weakness", "selfplay_15m", "Remessa 2", "selfplay"]
 
     return page.evaluate("""(keywords) => {
         const curUrl = window.location.href || '';
@@ -208,7 +208,7 @@ def trigger_cell_execution(
         if isinstance(worker_or_id, dict) and "target_keywords" in worker_or_id:
             target_keywords = worker_or_id["target_keywords"]
         else:
-            target_keywords = ["run_colab_worker.py", "selfplay_15m", "zquoridor", "Remessa 2", "zchezz"]
+            target_keywords = ["run_colab_worker.py", "selfplay_targeted_weakness", "selfplay_15m", "zquoridor", "Remessa 2", "zchezz"]
 
     try:
         res = page.evaluate("""(data) => {
