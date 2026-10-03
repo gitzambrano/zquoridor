@@ -72,7 +72,11 @@ em++ -O3 -std=c++17 -msimd128 \
   -s EXPORTED_FUNCTIONS="${EXPORTED_FUNCS}" \
   -s EXPORTED_RUNTIME_METHODS='["ccall","cwrap","HEAPU8"]' \
   -s ALLOW_MEMORY_GROWTH=1 \
-  -s ENVIRONMENT=web \
+  -s INITIAL_MEMORY=134217728 \
+  -s MAXIMUM_MEMORY=536870912 \
+  -s STACK_SIZE=4194304 \
+  -s "ENVIRONMENT=web,worker" \
+  -s NO_EXIT_RUNTIME=1 \
   "${PRELOAD_ARGS[@]}" \
   -o zquoridor.js
 

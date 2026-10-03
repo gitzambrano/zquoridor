@@ -23,6 +23,10 @@ let ponderSpentMs = 0;
 
 const PONDER_CHUNK_MS = 24;
 const PONDER_MAX_MS = 1200;
+const IS_MOBILE = (typeof navigator !== 'undefined' &&
+  /Mobi|Android|iPhone|iPad/i.test(navigator.userAgent || ''));
+const PONDER_GAP_MS = IS_MOBILE ? 8 : 0;
+let ponderPaused = false;
 
 function readCStr(buf) {
   const u8 = M.HEAPU8; let s = '';
@@ -104,22 +108,40 @@ function syncIntoLive(moves) {
 function cancelPonder() {
   ponderEpoch++;
   ponderSpentMs = 0;
+  ponderPaused = false;
   if (ponderTimer !== null) {
     clearTimeout(ponderTimer);
     ponderTimer = null;
   }
 }
 
+function pausePonder() {
+  ponderPaused = true;
+  if (ponderTimer !== null) {
+    clearTimeout(ponderTimer);
+    ponderTimer = null;
+  }
+}
+
+function resumePonder() {
+  if (!ponderPaused) return;
+  ponderPaused = false;
+  if (M && typeof M._qr_engine_ponder === 'function' && ponderSpentMs < PONDER_MAX_MS) {
+    startPonder();
+  }
+}
+
 function startPonder() {
   if (!M || typeof M._qr_engine_ponder !== 'function') return;
   if (typeof M._qr_mcab_active === 'function' && !M._qr_mcab_active()) return;
+  if (ponderPaused) return;
 
   const epoch = ++ponderEpoch;
   ponderSpentMs = 0;
 
   const step = () => {
     ponderTimer = null;
-    if (!M || epoch !== ponderEpoch || ponderSpentMs >= PONDER_MAX_MS) return;
+    if (!M || epoch !== ponderEpoch || ponderSpentMs >= PONDER_MAX_MS || ponderPaused) return;
 
     const slice = Math.max(1, Math.min(PONDER_CHUNK_MS,
       Math.ceil(PONDER_MAX_MS - ponderSpentMs)));
@@ -131,12 +153,12 @@ function startPonder() {
     }
     ponderSpentMs += performance.now() - t0;
 
-    if (epoch === ponderEpoch && ponderSpentMs < PONDER_MAX_MS) {
-      ponderTimer = setTimeout(step, 0);
+    if (epoch === ponderEpoch && ponderSpentMs < PONDER_MAX_MS && !ponderPaused) {
+      ponderTimer = setTimeout(step, PONDER_GAP_MS);
     }
   };
 
-  ponderTimer = setTimeout(step, 0);
+  ponderTimer = setTimeout(step, PONDER_GAP_MS);
 }
 
 function handleBestMove(req) {
@@ -178,6 +200,14 @@ self.onmessage = ev => {
 
   try {
     if (req.cmd === 'init') return;
+    if (req.cmd === 'pause_ponder') {
+      pausePonder();
+      return;
+    }
+    if (req.cmd === 'resume_ponder') {
+      resumePonder();
+      return;
+    }
 
     // Any real request has priority over background pondering. The current
     // slice may finish first, but it is bounded by PONDER_CHUNK_MS.

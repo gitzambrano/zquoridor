@@ -791,6 +791,7 @@ function clearGhost() {
   if (B.setHover) B.setHover(null);
   $('confirmChip').style.display = 'none';
   releaseForced();
+  ANW.resumePonder();
 }
 function armWall(o) {
   if ($(o === 0 ? 'wallH' : 'wallV').classList.contains('off')) return;
@@ -1032,6 +1033,7 @@ function onBoardPointerDown(ev) {
     const mine = B.engPawnToDisp(W.pawn(humanSide));
     if (hit.cell === mine && humanCanAct()) {
       pawnDrag = { ptr: ev.pointerId, from: hit.cell, moved: false };
+      ANW.pausePonder();
       try { B.cv.setPointerCapture(ev.pointerId); } catch (e) { /* no capture: taps still work */ }
       ev.preventDefault();
     }
@@ -1040,6 +1042,7 @@ function onBoardPointerDown(ev) {
   armedO = forcedO != null ? forcedO : hit.o;
   dragFromDock = false;
   wallState = 'DRAGGING'; dragPtr = ev.pointerId; dragFrom = pt;
+  ANW.pausePonder();
   try { B.cv.setPointerCapture(ev.pointerId); } catch (e) { /* no capture: still works */ }
   snapGhost(pt.x, pt.y);
   ev.preventDefault();
@@ -1134,6 +1137,7 @@ for (const pair of [['wallH', 0], ['wallV', 1]]) {
       if ($(pair[0]).classList.contains('off')) return;
       armedO = o; dragFromDock = true;
       wallState = 'DRAGGING'; dragPtr = ev.pointerId; dragFrom = null;
+      ANW.pausePonder();
     }
     if (wallState === 'DRAGGING' && ev.pointerId === dragPtr) {
       const br = B.cv.getBoundingClientRect();
@@ -2157,6 +2161,14 @@ const ANW = {
       qfen: g_startedFromCustom() ? g_rootQfen : null,
       moves: req.moves, depth: req.depth, timeMs: req.timeMs, lines: req.lines });
     return true;
+  },
+  pausePonder() {
+    if (!this.wk || !this.ready) return;
+    this.wk.postMessage({ cmd: 'pause_ponder' });
+  },
+  resumePonder() {
+    if (!this.wk || !this.ready) return;
+    this.wk.postMessage({ cmd: 'resume_ponder' });
   },
 };
 function allPliesPacked() {
