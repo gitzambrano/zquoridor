@@ -7,9 +7,13 @@ bootstrap, monitor, and manage remote Google Colab self-play workers for Zquorid
 
 | Worker ID | Name | Google Account | Notebook URL | Shard Prefix |
 | :---: | :---: | :---: | :---: | :---: |
+| 1 | Colab 1 | `gustavozambrano@gmail.com` | [Notebook Colab 1](https://colab.research.google.com/drive/13O4yYpM8ElgOFzo774Jps488DAPzIbDT) | `c1_shard_*.bin` |
+| 2 | Colab 2 | `flightdyn@gmail.com` | [Notebook Colab 2](https://colab.research.google.com/drive/1rPSnvqg7stxwU5V8ITgpGVv02j7qVsD1) | `c2_shard_*.bin` |
 | 3 | Colab 3 | `zambraprojects@gmail.com` | [Notebook Colab 3](https://colab.research.google.com/drive/1tTPVhIs4Jq0Qr1yHNPRfBDtohE3EjX9E) | `c3_shard_*.bin` |
 | 4 | Colab 4 | `zquoridor@gmail.com` | [Notebook Colab 4](https://colab.research.google.com/drive/1nC1LOjwFm1LyeJtx4kxg6T7wQXym9FnA) | `c4_shard_*.bin` |
 | 5 | Colab 5 | `gustati2201@gmail.com` | [Notebook Colab 5](https://colab.research.google.com/drive/1cPMl8_zEi-el5GAE8sv2Bw3T6uKDwK1i) | `c5_shard_*.bin` |
+| 6 | Colab 6 | `zchezzproject@gmail.com` | [Notebook Colab 6](https://colab.research.google.com/drive/1j8-gG7qApv--t2DBM8tf1gmgKjuUXiLC) | `c6_shard_*.bin` |
+| 7 | Colab 7 | `zbrainproject@gmail.com` | [Notebook Colab 7](https://colab.research.google.com/drive/1WaoYFjPIl70cECrs9CGZEwEoMxVzBEp8) | `c7_shard_*.bin` |
 
 ## The 3 Core Tools
 

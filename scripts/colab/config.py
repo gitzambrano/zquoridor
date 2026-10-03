@@ -68,6 +68,30 @@ WORKERS: Dict[int, Dict[str, Any]] = {
         "drive_dir": "/content/drive/MyDrive/zquoridor_data/selfplay_targeted_weakness",
         "positions": "tools/external/openings_targeted_weakness_bank.jsonl",
     },
+    6: {
+        "name": "Colab 6",
+        "worker_id": 6,
+        "account": "zchezzproject@gmail.com",
+        "profile_dir": r"C:\Projetos\TikTok\profiles\zchezzproject",
+        "notebook_url": "https://colab.research.google.com/drive/1j8-gG7qApv--t2DBM8tf1gmgKjuUXiLC",
+        "cdp_port": 9006,
+        "target_keywords": ["run_colab_worker.py", "selfplay_targeted_weakness", "selfplay_15m", "zquoridor", "Remessa 2", "zchezz"],
+        "target_shard_prefix": "c6_",
+        "drive_dir": "/content/drive/MyDrive/zquoridor_data/selfplay_targeted_weakness",
+        "positions": "tools/external/openings_targeted_weakness_bank.jsonl",
+    },
+    7: {
+        "name": "Colab 7",
+        "worker_id": 7,
+        "account": "zbrainproject@gmail.com",
+        "profile_dir": r"C:\Projetos\TikTok\profiles\zbrainproject",
+        "notebook_url": "https://colab.research.google.com/drive/1WaoYFjPIl70cECrs9CGZEwEoMxVzBEp8",
+        "cdp_port": 9007,
+        "target_keywords": ["run_colab_worker.py", "selfplay_targeted_weakness", "selfplay_15m", "zquoridor", "Remessa 2", "zchezz"],
+        "target_shard_prefix": "c7_",
+        "drive_dir": "/content/drive/MyDrive/zquoridor_data/selfplay_targeted_weakness",
+        "positions": "tools/external/openings_targeted_weakness_bank.jsonl",
+    },
 }
 
 # Aliases mapping worker strings/names to canonical integer IDs
@@ -92,6 +116,18 @@ WORKER_ALIASES: Dict[Any, int] = {
     "5": 5,
     "c5": 5,
     "colab5": 5,
+    6: 6,
+    "6": 6,
+    "c6": 6,
+    "colab6": 6,
+    "zchezz": 6,
+    "zchezzproject": 6,
+    7: 7,
+    "7": 7,
+    "c7": 7,
+    "colab7": 7,
+    "zbrain": 7,
+    "zbrainproject": 7,
 }
 
 
