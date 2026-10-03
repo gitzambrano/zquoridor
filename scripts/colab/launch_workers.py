@@ -123,7 +123,7 @@ def launch_worker(
                 return result
 
             # Step 3: Trigger cell execution
-            ok = trigger_cell_execution(page, wid, BOOTLOADER_TEMPLATE, target_keywords=keywords)
+            ok = trigger_cell_execution(page, worker, BOOTLOADER_TEMPLATE, target_keywords=keywords)
             if not ok:
                 result["error"] = "Failed to trigger execution"
                 if not cdp_active and browser_to_close:

@@ -202,7 +202,18 @@ def trigger_cell_execution(
             fmt_kwargs = {**worker_or_id, "worker_id": wid, "profile": profile, "account_id": account_id}
             new_code = bootloader_template.format(**fmt_kwargs)
         else:
-            new_code = bootloader_template.format(worker_id=worker_or_id, profile=worker_or_id)
+            try:
+                from config import WORKERS
+                w = WORKERS.get(worker_or_id, {})
+            except Exception:
+                w = {}
+            fmt_kwargs = {
+                "worker_id": worker_or_id,
+                "profile": worker_or_id,
+                "drive_dir": w.get("drive_dir", "/content/drive/MyDrive/zquoridor_data/selfplay_targeted_weakness"),
+                "positions": w.get("positions", "tools/external/openings_targeted_weakness_bank.jsonl"),
+            }
+            new_code = bootloader_template.format(**fmt_kwargs)
 
     if target_keywords is None:
         if isinstance(worker_or_id, dict) and "target_keywords" in worker_or_id:
