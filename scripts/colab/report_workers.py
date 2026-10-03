@@ -132,7 +132,7 @@ def report_single_worker(worker: Dict[str, Any], headless: bool, timeout_ms: int
                     let targetCell = null;
                     for (let i = cells.length - 1; i >= 0; i--) {
                         const txt = cells[i].getText();
-                        if (txt.includes('run_colab_worker.py') || txt.includes('selfplay_15m')) {
+                        if (txt.includes('run_colab_worker.py') || txt.includes('selfplay_targeted_weakness') || txt.includes('selfplay_15m')) {
                             targetCell = cells[i];
                             break;
                         }

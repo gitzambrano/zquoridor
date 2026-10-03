@@ -151,7 +151,7 @@ def run_watchdog(cfg: Dict[str, Any]) -> None:
                             continue
 
                     page = sess["page"]
-                    keywords = ["run_colab_worker.py", "selfplay_15m", "zquoridor"]
+                    keywords = w.get("target_keywords", ["run_colab_worker.py", "selfplay_targeted_weakness", "selfplay_15m", "zquoridor"])
 
                     try:
                         dismiss_modals(page)

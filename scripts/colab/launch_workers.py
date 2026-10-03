@@ -59,7 +59,7 @@ def launch_worker(
     profile = worker["profile_dir"]
     url = worker["notebook_url"]
     cdp_port = worker.get("cdp_port", 9000 + wid)
-    keywords = ["run_colab_worker.py", "selfplay_15m", "zquoridor"]
+    keywords = worker.get("target_keywords", ["run_colab_worker.py", "selfplay_targeted_weakness", "zquoridor"])
 
     result: Dict[str, Any] = {
         "worker_id": wid,
