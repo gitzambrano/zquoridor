@@ -27,7 +27,10 @@ from browser_utils import (
     connect_runtime_if_needed,
     get_notebook_dom_state,
     trigger_cell_execution,
+    launch_stealth_context,
+    save_profile_cookies,
 )
+from human_actions import random_human_idle
 
 CONFIG: Dict[str, Any] = {
     "worker_ids": [1, 2, 3, 4, 5],
@@ -67,16 +70,12 @@ def init_worker_session(p: Any, worker: Dict[str, Any], headless: bool, timeout_
             page = ctx.pages[0] if ctx.pages else ctx.new_page()
             is_cdp = True
         else:
-            ctx = p.chromium.launch_persistent_context(
-                user_data_dir=worker["profile_dir"],
+            ctx = launch_stealth_context(
+                p,
+                profile_dir=worker["profile_dir"],
                 headless=headless,
-                channel="chrome",
-                args=[
-                    f"--remote-debugging-port={cdp_port}",
-                    "--no-sandbox",
-                    "--disable-gpu",
-                    "--remote-allow-origins=*",
-                ],
+                cdp_port=cdp_port,
+                extra_args=["--disable-gpu"],
             )
             page = ctx.pages[0] if ctx.pages else ctx.new_page()
             page.goto(worker["notebook_url"], wait_until="commit", timeout=timeout_ms)
@@ -165,8 +164,11 @@ def run_watchdog(cfg: Dict[str, Any]) -> None:
                         current_progress = progress_lines[-1] if progress_lines else (lines[-1] if lines else "No output")
                         sess["last_progress"] = current_progress
 
-                        # Keep-alive micro interaction: subtle mouse movement prevents idle timeout
-                        page.mouse.move(60 + (cycle % 40), 60 + (cycle % 40))
+                        # Keep-alive micro interaction: human-like glide and subtle scroll via Fitts & Bezier
+                        try:
+                            random_human_idle(page)
+                        except Exception:
+                            page.mouse.move(60 + (cycle % 40), 60 + (cycle % 40))
 
                         run_tag = "[RUNNING]" if state["running"] else ("[PENDING]" if state["pending"] else "[IDLE]")
                         print(f"[{w['name']}] {run_tag} (VM: {state['statusText']}) -> {current_progress[:90]}")
@@ -191,6 +193,7 @@ def run_watchdog(cfg: Dict[str, Any]) -> None:
                         if cycle % cfg["screenshot_interval_cycles"] == 0:
                             shot_file = artifacts_path / f"colab_{wid}_watchdog.png"
                             page.screenshot(path=str(shot_file))
+                            save_profile_cookies(sess["ctx"], w["profile_dir"])
 
                             status_data = {
                                 "worker_id": wid,

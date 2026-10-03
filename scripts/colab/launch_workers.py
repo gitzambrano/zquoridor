@@ -24,6 +24,7 @@ from browser_utils import (
     connect_runtime_if_needed,
     get_notebook_dom_state,
     trigger_cell_execution,
+    launch_stealth_context,
 )
 
 CONFIG: Dict[str, Any] = {
@@ -91,16 +92,12 @@ def launch_worker(
                 page = ctx.pages[0] if ctx.pages else ctx.new_page()
                 browser_to_close = browser
             else:
-                ctx = p.chromium.launch_persistent_context(
-                    user_data_dir=profile,
+                ctx = launch_stealth_context(
+                    p,
+                    profile_dir=profile,
                     headless=headless,
-                    channel="chrome",
-                    args=[
-                        f"--remote-debugging-port={cdp_port}",
-                        "--no-sandbox",
-                        "--disable-gpu",
-                        "--remote-allow-origins=*",
-                    ],
+                    cdp_port=cdp_port,
+                    extra_args=["--disable-gpu"],
                 )
                 page = ctx.pages[0] if ctx.pages else ctx.new_page()
                 page.goto(url, wait_until="commit", timeout=timeout_ms)
