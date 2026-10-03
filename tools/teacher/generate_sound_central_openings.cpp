@@ -1,5 +1,5 @@
 // Generate high-diversity, strictly sound central openings (3 White + 3 Black moves)
-// using level-by-level BFS expansion and the Zquoridor 2.10 NNUE evaluator.
+// using level-by-level BFS expansion and the Zquoridor 3.0 NNUE evaluator.
 #include <algorithm>
 #include <cmath>
 #include <cstdint>

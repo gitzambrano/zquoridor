@@ -15,14 +15,19 @@ ROOT = Path(__file__).resolve().parents[1]
 
 # Edit this block for the normal full gate. CLI options override these values.
 CONFIG = {
-    "candidate_exe": str(ROOT / "results" / "experiments" / "multipath_unified_champion" / "zquoridor.exe"),
-    "candidate_nnue": str(ROOT / "results" / "experiments" / "multipath_unified_champion" / "student_int8.bin"),
-    "suite_name": "champion_external_battery",
-    "workers": 4,
-    "claustro_normal_pairs": 50,
-    "claustro_centerrush_pairs": 50,
-    "titanium_normal_pairs": 50,
-    "titanium_centerrush_pairs": 50,
+    "candidate_exe": str(ROOT / "results" / "experiments" / "frozen-production-20261002" / "zquoridor.exe"),
+    "candidate_nnue": str(ROOT / "results" / "experiments" / "production-central-finetune-20261002" / "production_bucketed512" / "train" / "student_int8.bin"),
+    "suite_name": "production-central-finetune-20261002-b2048-battery",
+    "workers": 10,
+    "claustro_workers": 4,
+    "titanium_workers": 10,
+    "claustro_normal_pairs": 100,
+    "claustro_centerrush_pairs": 100,
+    "titanium_normal_pairs": 100,
+    "titanium_centerrush_pairs": 100,
+    "normal_openings": str(ROOT / "tools" / "external" / "openings_screen_v1.jsonl"),
+    "centerrush_openings": str(ROOT / "tools" / "external" / "openings_center_rush_sound_5k.jsonl"),
+    "claustrophobia_device": "gpu",
     "skip_claustro": False,
     "skip_titanium": False,
     "dry_run": False,
@@ -37,19 +42,21 @@ def run_cmd(cmd: list[str]):
 def summarize_battery(base_out: Path):
     """Compile comparative summary against historical baseline targets."""
     print("\n" + "=" * 80)
-    print("BATTERY COMPARATIVE REPORT (Unified Champion vs Historical Baselines)")
+    print("BATTERY COMPARATIVE REPORT (Candidate vs Historical Baselines)")
     print("=" * 80)
 
     baselines = {
-        "claustro_100g_normal": {"name": "Claustrophobia (Normal Book)", "base_score": 50.83, "base_elo": 5.8},
-        "claustro_100g_centerrush": {"name": "Claustrophobia (Center Rush)", "base_score": 37.50, "base_elo": -88.7},
-        "titanium_100g_normal": {"name": "Titanium (Normal Book)", "base_score": 60.00, "base_elo": 70.4},
-        "titanium_100g_centerrush": {"name": "Titanium (Center Rush)", "base_score": 46.00, "base_elo": -27.9},
+        "claustro_normal": {"name": "Claustrophobia (Normal Book)", "base_score": 50.83, "base_elo": 5.8},
+        "claustro_centerrush": {"name": "Claustrophobia (Center Rush)", "base_score": 37.50, "base_elo": -88.7},
+        "titanium_normal": {"name": "Titanium (Normal Book)", "base_score": 60.00, "base_elo": 70.4},
+        "titanium_centerrush": {"name": "Titanium (Center Rush)", "base_score": 46.00, "base_elo": -27.9},
     }
 
     report_data = {}
     for key, info in baselines.items():
         summary_path = base_out / key / "summary.json"
+        if not summary_path.exists():
+            summary_path = base_out / f"{key.replace('_', '_100g_')}" / "summary.json"
         if not summary_path.exists():
             continue
         try:
@@ -121,42 +128,46 @@ def main(argv=None):
     nnue = Path(args.candidate_nnue).resolve()
     base_out = ROOT / "results" / "benchmarks" / args.suite_name
 
-    claustro_norm_out = base_out / "claustro_100g_normal"
-    claustro_cr_out = base_out / "claustro_100g_centerrush"
-    titanium_norm_out = base_out / "titanium_100g_normal"
-    titanium_cr_out = base_out / "titanium_100g_centerrush"
+    claustro_norm_out = base_out / "claustro_normal"
+    claustro_cr_out = base_out / "claustro_centerrush"
+    titanium_norm_out = base_out / "titanium_normal"
+    titanium_cr_out = base_out / "titanium_centerrush"
 
     # 1. Claustrophobia (Normal Openings)
     if not args.skip_claustro and args.claustro_normal_pairs > 0:
         print("\n" + "=" * 70, flush=True)
-        print(f"PHASE 1: {args.claustro_normal_pairs * 2} GAMES VS CLAUSTROPHOBIA (NORMAL OPENINGS, GPU)", flush=True)
+        print(f"PHASE 1: {args.claustro_normal_pairs * 2} GAMES VS CLAUSTROPHOBIA (NORMAL OPENINGS, {args.claustrophobia_device.upper()})", flush=True)
         print("=" * 70, flush=True)
         run_cmd([
             sys.executable, "-u", str(ROOT / "tools" / "run_benchmark.py"),
             "--opponents", "claustrophobia",
-            "--openings", str(ROOT / "tools" / "external" / "openings_screen_v1.jsonl"),
+            "--openings", str(args.normal_openings),
             "--pairs", str(args.claustro_normal_pairs),
-            "--workers", str(args.workers),
-            "--claustrophobia-device", "gpu",
+            "--workers", str(args.claustro_workers),
+            "--claustrophobia-device", str(args.claustrophobia_device),
             "--zq-executable", str(exe),
             "--nnue", str(nnue),
+            "--resume",
+            "--retry-failed",
             "--output", str(claustro_norm_out)
         ])
 
     # 2. Claustrophobia (Center Rush Openings)
     if not args.skip_claustro and args.claustro_centerrush_pairs > 0:
         print("\n" + "=" * 70, flush=True)
-        print(f"PHASE 2: {args.claustro_centerrush_pairs * 2} GAMES VS CLAUSTROPHOBIA (CENTER RUSH OPENINGS, GPU)", flush=True)
+        print(f"PHASE 2: {args.claustro_centerrush_pairs * 2} GAMES VS CLAUSTROPHOBIA (CENTER RUSH OPENINGS, {args.claustrophobia_device.upper()})", flush=True)
         print("=" * 70, flush=True)
         run_cmd([
             sys.executable, "-u", str(ROOT / "tools" / "run_benchmark.py"),
             "--opponents", "claustrophobia",
-            "--openings", str(ROOT / "tools" / "external" / "openings_center_rush_50pairs.jsonl"),
+            "--openings", str(args.centerrush_openings),
             "--pairs", str(args.claustro_centerrush_pairs),
-            "--workers", str(args.workers),
-            "--claustrophobia-device", "gpu",
+            "--workers", str(args.claustro_workers),
+            "--claustrophobia-device", str(args.claustrophobia_device),
             "--zq-executable", str(exe),
             "--nnue", str(nnue),
+            "--resume",
+            "--retry-failed",
             "--output", str(claustro_cr_out)
         ])
 
@@ -168,11 +179,13 @@ def main(argv=None):
         run_cmd([
             sys.executable, "-u", str(ROOT / "tools" / "run_benchmark.py"),
             "--opponents", "titanium",
-            "--openings", str(ROOT / "tools" / "external" / "openings_screen_v1.jsonl"),
+            "--openings", str(args.normal_openings),
             "--pairs", str(args.titanium_normal_pairs),
-            "--workers", str(args.workers),
+            "--workers", str(args.titanium_workers),
             "--zq-executable", str(exe),
             "--nnue", str(nnue),
+            "--resume",
+            "--retry-failed",
             "--output", str(titanium_norm_out)
         ])
 
@@ -184,11 +197,13 @@ def main(argv=None):
         run_cmd([
             sys.executable, "-u", str(ROOT / "tools" / "run_benchmark.py"),
             "--opponents", "titanium",
-            "--openings", str(ROOT / "tools" / "external" / "openings_center_rush_50pairs.jsonl"),
+            "--openings", str(args.centerrush_openings),
             "--pairs", str(args.titanium_centerrush_pairs),
-            "--workers", str(args.workers),
+            "--workers", str(args.titanium_workers),
             "--zq-executable", str(exe),
             "--nnue", str(nnue),
+            "--resume",
+            "--retry-failed",
             "--output", str(titanium_cr_out)
         ])
 

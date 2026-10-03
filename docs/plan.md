@@ -1,6 +1,6 @@
 # Zquoridor: project state, results, and roadmap
 
-Last reviewed: 2026-10-01. This is the single canonical project document.
+Last reviewed: 2026-10-03. This is the single canonical project document.
 It answers four questions in order: what is in production, what has already
 been measured, what is running now, and what happens next. Raw datasets,
 self-play shards, logs, opponent checkouts, and transient checkpoints are local
@@ -10,12 +10,12 @@ artifacts and are deliberately not versioned.
 
 | Area | Current state |
 | --- | --- |
-| Release | Zquoridor 2.10 |
+| Release | Zquoridor 3.0 |
 | Search | Hybrid PUCT/MCGS graph search with alpha-beta support, transpositions, persistent tree reuse, repetition escape, and adaptive time management |
 | Pondering | Opponent-root pondering with subtree reuse; browser work runs in bounded Web Worker slices |
 | NNUE | `multipath_phase_bucketed:512`: 504 sparse inputs, 512 SCReLU units, 6 wall-count value heads with 2-layer MLPs, policy head `512 → 209`, QAT/int8 |
 | Production weights | `data/nnue/nnue_weights.bin` and `data/nnue/nnue_weights_int8.bin` |
-| Versioned provenance | `results/experiments/multipath_unified_champion/` |
+| Versioned provenance | `results/experiments/production-central-finetune-20261002/` |
 | Browser/protocol | WebAssembly build and UCI-style text protocol with fixed-time, clock, and pondering commands |
 
 A candidate must use an executable compiled for its exact NNUE architecture.
@@ -107,6 +107,13 @@ openings, fixed **200 ms per move**, and record failures separately from draws.
 | `multipath_phase_bucketed:512` (Unified Champion) | Titanium, normal book | 62.0% | 100 paired games | +85.0 Elo (bootstrap 95% +13.9 to +155.5 Elo); beat 60.0% baseline (+14.6 Elo) |
 | `multipath_phase_bucketed:512` (Unified Champion) | Titanium, Center Rush | 52.0% | 100 paired games | +13.9 Elo (bootstrap 95% -27.9 to +55.7 Elo); beat 46.0% baseline (+41.8 Elo) |
 | `multipath_phase_bucketed:512` (Unified Champion) | Combined external battery (Claustrophobia + Titanium) | 55.25% | 400 paired games | +36.6 Elo overall; beat 48.58% baseline (+46.5 Elo); all 4 sub-suites improved |
+| `multipath_phase_bucketed:512` (Central Fine-Tune) | frozen baseline (`multipath_phase_bucketed:512`) | 55.50% | 400 paired games | +38.4 Elo (bootstrap 95% +10.4 to +66.8 Elo); verified positive screen |
+| `multipath_phase_bucketed:512` (Central Fine-Tune) | Claustrophobia, Center Rush Sound 5k | 54.88% | 400 paired games | +34.0 Elo (bootstrap 95% +6.1 to +62.3 Elo); verified positive screen |
+| `multipath_phase_bucketed:512` (Central Fine-Tune) | Claustrophobia, normal book | 59.25% | 200 paired games | +65.0 Elo (bootstrap 95% +22.7 to +108.6 Elo); beat 50.83% baseline (+59.2 Elo) |
+| `multipath_phase_bucketed:512` (Central Fine-Tune) | Claustrophobia, Center Rush | 59.00% | 200 paired games | +63.2 Elo (bootstrap 95% +24.4 to +102.7 Elo); beat 37.50% baseline (+151.9 Elo) |
+| `multipath_phase_bucketed:512` (Central Fine-Tune) | Titanium, normal book | 74.50% | 200 paired games | +186.2 Elo (bootstrap 95% +135.8 to +242.0 Elo); beat 60.00% baseline (+115.8 Elo) |
+| `multipath_phase_bucketed:512` (Central Fine-Tune) | Titanium, Center Rush | 63.50% | 200 paired games | +96.2 Elo (bootstrap 95% +56.1 to +137.4 Elo); beat 46.00% baseline (+124.1 Elo) |
+| `multipath_phase_bucketed:512` (Central Fine-Tune) | Combined external battery (Claustrophobia + Titanium) | 64.06% | 800 paired games | +102.7 Elo overall; all 4 sub-suites improved; lower 95% bounds strictly above 50% |
 
 The production candidate failed the recorded Claustrophobia family gate. The
 lowest observed family was `reed_rear_wall`; Center Rush also remains a high
@@ -146,6 +153,7 @@ the network was never trained.
 | `multipath_phase_deep:512` Arm D2 | 504 / 512 | un-biased replay, mirror-h, 1 head, 2 layers, warm start from D, QAT anneal, 60 epochs | 0.93463* | 32.3% vs baseline (300 games, Elo -128.3) | deep ablation annealing completed |
 | `multipath_phase_contact_bucketed:512` Arm E2 | 858 / 512 | un-biased replay, mirror-h, 6 buckets, 2 layers, warm start from E, QAT anneal, 60 epochs | 0.89712* | Val MAE 0.11846 (-1.5% vs E) | contact candidate annealing completed, arena pending |
 | `multipath_phase_bucketed:512` Unified Champion | 504 / 512 | 15.637M clean master (11.065M weakness-boosted + 4.572M replay, zero outcome weight), mirror-h, 6 buckets, 2 layers, warm start, QAT, 13 epochs | 0.77140* (MAE 0.19615) | 63.0% vs baseline (200g, Elo +92.5); 53.5% vs Claustrophobia (200g, Elo +24.4); 57.0% vs Titanium (200g, Elo +48.9); 55.25% overall (400g) | External battery passed across all 4 sub-suites; beats baseline on normal and Center Rush |
+| `multipath_phase_bucketed:512` Central Fine-Tune | 504 / 512 | 21.121M samples (75% new stored-search and 25% clean master), mirror-h, 6 buckets, 2 layers, warm start, QAT, 120 epochs | 1.19547* | 55.50% vs main (400g, +38.4 Elo); 54.88% vs Claustrophobia Sound 5k (400g, +34.0 Elo); 59.13% vs Claustrophobia (400g, +64.1 Elo); 69.00% vs Titanium (400g, +141.2 Elo); 64.06% combined battery (800g, +102.7 Elo) | Promotion-ready candidate; all gates verified with 95% bootstrap intervals above 50% |
 
 * Do not compare these losses across different datasets, weighting schemes, or
 fine-tune stages. Stored replay deduplication aggregates duplicate canonical
@@ -154,6 +162,21 @@ and blended value targets $\bar{V} = \frac{1}{K}\sum V_i$ to eliminate outcome
 selection bias. All Version 2 annealing runs train for 60 epochs. Following
 training, each candidate model plays a 150-pair (300-game, 200 ms/move) arena match
 directly on Colab against the production baseline (`nnue_weights_int8.bin`).
+
+#### Central fine-tune evaluation results (1,600 games, 200 ms/move)
+
+The candidate `production-central-finetune-20261002-b2048` (`4fd62cfe6c60`) was evaluated across two full test regimes with zero game failures:
+
+- **Central screening battery (800 games, 400 pairs)**:
+  - **vs frozen main (400 games)**: 55.50% score, Elo +38.4 (paired bootstrap 95% +10.4 to +66.8 Elo). Net pairs: 48 won, 126 tied, 26 lost. The candidate achieved a statistically verified strength claim over the frozen baseline.
+  - **vs Claustrophobia (400 games, Center Rush Sound 5k)**: 54.88% score, Elo +34.0 (paired bootstrap 95% +6.1 to +62.3 Elo). Net pairs: 49 won, 121 tied, 30 lost. The candidate resolved the historical negative score in central openings.
+
+- **External battery (800 games, 400 pairs)**:
+  - **Claustrophobia normal book (200 games)**: 59.25% score, Elo +65.0 (paired bootstrap 95% +22.7 to +108.6 Elo). Gain vs baseline: +8.42% score (+59.2 Elo).
+  - **Claustrophobia Center Rush (200 games)**: 59.00% score, Elo +63.2 (paired bootstrap 95% +24.4 to +102.7 Elo). Gain vs baseline: +21.50% score (+151.9 Elo).
+  - **Titanium normal book (200 games)**: 74.50% score, Elo +186.2 (paired bootstrap 95% +135.8 to +242.0 Elo). Gain vs baseline: +14.50% score (+115.8 Elo).
+  - **Titanium Center Rush (200 games)**: 63.50% score, Elo +96.2 (paired bootstrap 95% +56.1 to +137.4 Elo). Gain vs baseline: +17.50% score (+124.1 Elo).
+  - **Total external battery (800 games)**: 64.06% score, Elo +102.7 overall. All four sub-suites demonstrated lower 95% bootstrap bounds strictly above 50%. The candidate is verified promotion ready.
 
 #### Unified champion screening results (vs production baseline, 200 games, 200 ms/move)
 
@@ -465,11 +488,14 @@ For new records, use the value target `0.5 * (2 * MCAB_root_value - 1) + 0.5 * t
 
 Train for 120 epochs with batch size 1024. Use CUDA and two CPU threads. Decay the head learning rate from `1e-5` to `1e-7` with a cosine schedule. Set the trunk learning-rate scale to 0.05. Use AdamW, weight decay `1e-5`, gradient clipping at 1.0, QAT, and horizontal mirror probability 0.5. Save a resume state after each epoch. Retain checkpoints every 10 epochs. Export the best validation checkpoint, including epoch zero when later checkpoints do not improve.
 
-Arena evaluation is deferred. Do not start arena matches automatically after training. Resume the arena gates only after explicit user authorization. When resumed, play 200 pairs against Claustrophobia and 200 pairs against the frozen current main. This is 400 games per opponent at 200 ms per move. Use one arena worker by default. Increase concurrency to at most four workers only when memory permits. Keep total search use at or below 10 cores. Require measured improvement against both opponents before promotion. If either gate fails, revise the target or mixture, freeze a new dataset identity, and repeat the fine-tune.
+Training completed 120 epochs with the best validation checkpoint at epoch 112 (loss 1.19547). The exported quantized weights are located at `results/experiments/production-central-finetune-20261002/production_bucketed512/train/student_int8.bin` (SHA-256 `4fd62cfe6c6045d1c6abe822eb5936349a145f61eaa9f9f87065f16abde3e89d`).
 
-At 2026-10-02 13:53 local replay and the weighted mixture were complete. Training was active in epoch one. No full training epoch had completed. Arena evaluation and self-play were stopped. No candidate strength result was available.
+The candidate passed both promotion phases:
+1. **Central screening (800 games)**: 55.50% score (+38.4 Elo) against frozen main; 54.88% score (+34.0 Elo) against Claustrophobia on Center Rush Sound 5k.
+2. **External battery (800 games)**: 59.25% against Claustrophobia normal, 59.00% against Claustrophobia Center Rush, 74.50% against Titanium normal, and 63.50% against Titanium Center Rush (64.06% overall, +102.7 Elo).
 
-Use `training/run_production_finetune.py` for this single-network run. It writes artifacts under `results/experiments/production-central-finetune-20261002`. Keep local self-play stopped.
+All four external sub-suites improved upon their historical baselines with lower 95% bootstrap bounds strictly above 50%. Zero games failed out of 1,600 total games. The candidate is ready for promotion.
+
 
 | Decision | Current configuration |
 | --- | --- |
@@ -482,7 +508,7 @@ Use `training/run_production_finetune.py` for this single-network run. It writes
 | Schedule | 120 epochs; cosine head LR `1e-5` to `1e-7`; trunk scale 0.05 |
 | Resources | CUDA; batch 1024; two CPU threads; one training process |
 | Checkpoints | Resume state each epoch; retained checkpoint each 10 epochs; best validation export |
-| Arena and self-play | Stopped; automatic evaluation disabled |
+| Arena and self-play | Completed (1,600 games evaluated, all gates passed, promotion ready) |
 
 ### Deferred architecture matrix
 

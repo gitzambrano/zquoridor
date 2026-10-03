@@ -9,9 +9,11 @@ swapped (two games).
 from __future__ import annotations
 
 import argparse
+import concurrent.futures
 import hashlib
 import json
 import re
+import shutil
 import sys
 from pathlib import Path
 
@@ -43,6 +45,8 @@ CONFIG = {
     "claustrophobia_device": "cpu",
     "claustrophobia_max_sims": 4096,
     "bootstrap": 20000,
+    "concurrent": True,
+    "clean": False,
 }
 
 
@@ -125,7 +129,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     for key, value in CONFIG.items():
         kwargs: dict[str, object] = {"default": None}
-        if isinstance(value, int):
+        if isinstance(value, bool):
+            parser.add_argument("--" + key.replace("_", "-"), action=argparse.BooleanOptionalAction, default=None)
+            continue
+        elif isinstance(value, int):
             kwargs["type"] = int
         elif value is not None:
             kwargs["type"] = str
@@ -191,11 +198,13 @@ def run(config: dict) -> dict:
             f"candidate architecture manifest not found: {candidate_architecture_path}"
         )
     run_root = Path(config["output"]).resolve() / f"{_slug(config['candidate_name'])}-{candidate_sha[:12]}"
+    if config.get("clean") and run_root.exists():
+        shutil.rmtree(run_root)
     book = Path(config["openings"]).resolve()
     seed = int(config["seed"])
     pairs = int(config["pairs"])
     workers = int(config["workers"])
-    claustrophobia_workers = int(config["claustrophobia_workers"])
+    claustrophobia_workers = int(config.get("claustrophobia_workers", workers))
     move_ms = int(config["move_time_ms"])
 
     # Same binary on both sides deliberately isolates candidate weights.
@@ -214,8 +223,6 @@ def run(config: dict) -> dict:
         "output": str(run_root / "vs-frozen-main"),
         "bootstrap": int(config["bootstrap"]),
     }
-    main_summary = match_finalists.run(main_config)
-    _require_complete(main_summary, label="frozen main", pairs=pairs)
 
     claustro_config = dict(run_benchmark.CONFIG)
     claustro_config.update({
@@ -236,7 +243,25 @@ def run(config: dict) -> dict:
         "claustrophobia_device": str(config["claustrophobia_device"]),
         "bootstrap": int(config["bootstrap"]),
     })
-    claustro_report = run_benchmark.run(claustro_config)
+
+    if config.get("concurrent", True):
+        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+            future_main = executor.submit(match_finalists.run, main_config)
+            future_claustro = executor.submit(run_benchmark.run, claustro_config)
+            done, not_done = concurrent.futures.wait(
+                [future_main, future_claustro],
+                return_when=concurrent.futures.FIRST_EXCEPTION,
+            )
+            for future in done:
+                if future.exception() is not None:
+                    future.result()
+            main_summary = future_main.result()
+            claustro_report = future_claustro.result()
+    else:
+        main_summary = match_finalists.run(main_config)
+        claustro_report = run_benchmark.run(claustro_config)
+
+    _require_complete(main_summary.get("summary", main_summary), label="frozen main", pairs=pairs)
     claustro_summary = claustro_report.get("summaries", {}).get("claustrophobia", {})
     _require_complete(claustro_summary, label="Claustrophobia", pairs=pairs)
 
