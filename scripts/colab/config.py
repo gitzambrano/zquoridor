@@ -92,4 +92,4 @@ if not os.path.exists('/content/zquoridor'):
 %cd /content/zquoridor
 !git pull origin main
 !bash build/build_selfplay.sh
-!python tools/selfplay/run_colab_worker.py --worker-id {worker_id}"""
+!python tools/selfplay/run_colab_worker.py --worker-id {worker_id} --drive-dir /content/drive/MyDrive/zquoridor_data/selfplay_targeted_weakness --positions tools/external/openings_targeted_weakness_bank.jsonl"""

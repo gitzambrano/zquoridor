@@ -329,14 +329,15 @@ def _epoch(model, data, indices, config, device, optimizer=None, rng=None):
     bucket_weights = (torch.zeros(model.value_buckets, dtype=torch.float64, device=device)
                       if bucket_counts is not None else None)
 
-    n_blocks = (len(indices) + _EPOCH_BLOCK_SIZE - 1) // _EPOCH_BLOCK_SIZE
+    block_size = max(_EPOCH_BLOCK_SIZE, int(config["batch_size"]))
+    n_blocks = (len(indices) + block_size - 1) // block_size
     block_order = np.arange(n_blocks)
     if training:
         rng.shuffle(block_order)
 
     def submit_block(pool, slot):
-        start = int(block_order[slot]) * _EPOCH_BLOCK_SIZE
-        rows = np.asarray(indices[start:start + _EPOCH_BLOCK_SIZE]).copy()
+        start = int(block_order[slot]) * block_size
+        rows = np.asarray(indices[start:start + block_size]).copy()
         if training:
             row_order = rng.permutation(len(rows))
             flip_mask = rng.random(len(rows)) < 0.5 if config.get("mirror_h", True) else None

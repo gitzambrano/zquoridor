@@ -16,6 +16,8 @@ RUNNERS = [
     "tools.match_finalists",
     "tools.teacher.run_four_million_selfplay",
     "tools.teacher.run_weakness_selfplay",
+    "training.run_production_finetune",
+    "training.run_contact_finetune",
 ]
 
 

@@ -1,0 +1,16 @@
+{
+  "schema": "zquoridor.targeted_weakness_opening_bank.v1",
+  "file": "openings_targeted_weakness_bank.jsonl",
+  "total_rows": 2500,
+  "seed": 20261003,
+  "target_bank_size": 2500,
+  "sha256": "d4291e5b2d9fe9b8190862849a65d28bd251e1bc1c68e3b97fb1f297ede3c635",
+  "categories_distribution": {
+    "pure_center_rush_clash": 106,
+    "early_dev_4_flank": 178,
+    "early_dev_0_pawn_d2": 123,
+    "early_dev_1_f2h": 198,
+    "classic_rush_tactical": 1127,
+    "perimeter_wall_transition": 768
+  }
+}
