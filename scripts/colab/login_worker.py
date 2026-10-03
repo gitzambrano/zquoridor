@@ -23,6 +23,8 @@ from browser_utils import (
     dismiss_modals,
     connect_runtime_if_needed,
     trigger_cell_execution,
+    launch_stealth_context,
+    save_profile_cookies,
 )
 
 CONFIG: Dict[str, Any] = {
@@ -60,11 +62,11 @@ def login_and_wait(worker_id: int, timeout_s: int, trigger_after: bool) -> bool:
 
     with sync_playwright() as p:
         print("\nOpening visible Chrome browser window on your desktop...")
-        ctx = p.chromium.launch_persistent_context(
-            user_data_dir=profile,
+        ctx = launch_stealth_context(
+            p,
+            profile_dir=profile,
             headless=False,
-            channel="chrome",
-            args=[f"--remote-debugging-port={cdp_port}", "--no-sandbox"],
+            cdp_port=cdp_port,
         )
         page = ctx.new_page()
         page.goto(url)
@@ -93,6 +95,8 @@ def login_and_wait(worker_id: int, timeout_s: int, trigger_after: bool) -> bool:
                 if not state["isGoogleLogin"] and (state["hasConnectBtn"] or state["cellCount"] > 0):
                     logged_in = True
                     print(f"\n[SUCCESS] Notebook loaded successfully ({state['cellCount']} cells detected)!")
+                    save_profile_cookies(ctx, profile)
+                    print("  [SUCCESS] Permanent session cookies saved to cookies.json.")
                     break
 
             except Exception:

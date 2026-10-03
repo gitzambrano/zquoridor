@@ -5,11 +5,82 @@ DOM state inspection, and safe cell execution primitives without terminating
 active Chrome processes.
 """
 
+import json
 import os
 import socket
 import time
+from pathlib import Path
 from typing import Dict, Any, Optional, Tuple, List
 import psutil
+
+# Anti-bot stealth initialization script adapted from TikTok automation engine
+STEALTH_JS = """
+Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
+window.chrome = { runtime: {} };
+Object.defineProperty(navigator, 'languages', {get: () => ['pt-BR', 'pt', 'en-US', 'en']});
+Object.defineProperty(navigator, 'plugins', {get: () => [1, 2, 3, 4, 5]});
+"""
+DEFAULT_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36"
+
+
+def save_profile_cookies(ctx: Any, profile_dir: str) -> None:
+    """Save persistent cookies backup to cookies.json inside profile directory."""
+    try:
+        cookies = ctx.cookies()
+        if cookies:
+            out_path = Path(profile_dir) / "cookies.json"
+            out_path.parent.mkdir(parents=True, exist_ok=True)
+            with open(out_path, "w", encoding="utf-8") as f:
+                json.dump(cookies, f, indent=2)
+    except Exception:
+        pass
+
+
+def load_profile_cookies(ctx: Any, profile_dir: str) -> None:
+    """Load and inject persistent cookies backup from cookies.json."""
+    try:
+        in_path = Path(profile_dir) / "cookies.json"
+        if in_path.is_file():
+            with open(in_path, "r", encoding="utf-8") as f:
+                saved = json.load(f)
+            if saved:
+                ctx.add_cookies(saved)
+    except Exception:
+        pass
+
+
+def launch_stealth_context(
+    p: Any,
+    profile_dir: str,
+    headless: bool = True,
+    cdp_port: Optional[int] = None,
+    extra_args: Optional[List[str]] = None,
+) -> Any:
+    """Launch persistent Chrome context equipped with anti-bot detection and stealth flags."""
+    args = [
+        "--disable-blink-features=AutomationControlled",
+        "--no-sandbox",
+        "--disable-infobars",
+        "--disable-dev-shm-usage",
+        "--lang=pt-BR,pt,en-US,en",
+    ]
+    if cdp_port:
+        args.append(f"--remote-debugging-port={cdp_port}")
+        args.append("--remote-allow-origins=*")
+    if extra_args:
+        args.extend(extra_args)
+
+    ctx = p.chromium.launch_persistent_context(
+        user_data_dir=profile_dir,
+        headless=headless,
+        channel="chrome",
+        user_agent=DEFAULT_USER_AGENT,
+        viewport={"width": 1366, "height": 768},
+        args=args,
+    )
+    ctx.add_init_script(STEALTH_JS)
+    load_profile_cookies(ctx, profile_dir)
+    return ctx
 
 
 def is_cdp_reachable(port: int, host: str = "127.0.0.1", timeout: float = 1.0) -> bool:

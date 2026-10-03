@@ -17,7 +17,13 @@ if str(CURRENT_DIR) not in sys.path:
     sys.path.insert(0, str(CURRENT_DIR))
 
 from config import WORKERS, resolve_worker_key
-from browser_utils import is_cdp_reachable, is_profile_in_use, get_notebook_dom_state, dismiss_modals
+from browser_utils import (
+    is_cdp_reachable,
+    is_profile_in_use,
+    get_notebook_dom_state,
+    dismiss_modals,
+    launch_stealth_context,
+)
 
 CONFIG: Dict[str, Any] = {
     "worker_ids": [1, 2, 3, 4, 5],
@@ -67,11 +73,11 @@ def inspect_worker(worker: Dict[str, Any], headless: bool, timeout_ms: int, dela
                 page = ctx.pages[0] if ctx.pages else ctx.new_page()
                 browser_to_close = browser
             else:
-                ctx = p.chromium.launch_persistent_context(
-                    user_data_dir=profile,
+                ctx = launch_stealth_context(
+                    p,
+                    profile_dir=profile,
                     headless=headless,
-                    channel="chrome",
-                    args=[f"--remote-debugging-port={cdp_port}", "--no-sandbox"],
+                    cdp_port=cdp_port,
                 )
                 page = ctx.new_page()
                 page.goto(url, wait_until="commit", timeout=timeout_ms)
