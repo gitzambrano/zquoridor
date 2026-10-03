@@ -26,7 +26,7 @@ CONFIG = {
     "total_games": 80000,
     "chunk_games": 250,
     "time_ms": 100,
-    "threads": 2,
+    "threads": 0,  # 0 = auto-detect all available CPU cores (std::thread::hardware_concurrency)
     "positions": "tools/external/openings_targeted_weakness_bank.jsonl",
     "weights": "data/nnue/nnue_weights_int8.bin",
     "exe": "bin/selfplay",
@@ -109,7 +109,6 @@ def main(argv=None):
             str(exe_path),
             "--games", str(args.chunk_games),
             "--chunk-games", str(args.chunk_games),
-            "--threads", str(args.threads),
             "--time-ms", str(args.time_ms),
             "--positions", str(positions_path),
             "--nnue-weights", str(weights_path),
@@ -117,6 +116,8 @@ def main(argv=None):
             "--out", str(shard_bin),
             "--meta-out", str(shard_meta),
         ]
+        if args.threads > 0:
+            cmd += ["--threads", str(args.threads)]
 
         if CONFIG["mc_mode"]:
             cmd += [
