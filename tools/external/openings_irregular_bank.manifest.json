@@ -1,0 +1,8 @@
+{
+  "schema": "zquoridor.irregular_opening_bank.v1",
+  "file": "openings_irregular_bank.jsonl",
+  "total_rows": 2500,
+  "seed": 20261003,
+  "target_bank_size": 2500,
+  "sha256": "d11835ea5f8f6692c72c1a10b026cf19e0bdd1bedc1a65778c55f8b4a820fdb3"
+}
