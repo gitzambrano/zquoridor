@@ -27,7 +27,7 @@ from browser_utils import (
 )
 
 CONFIG: Dict[str, Any] = {
-    "worker_ids": [3, 4, 5],
+    "worker_ids": [1, 2, 3, 4, 5],
     "skip_if_running": True,
     "headless": True,
     "page_timeout_ms": 60000,
