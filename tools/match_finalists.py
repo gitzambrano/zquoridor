@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import concurrent.futures
 import json
+import shlex
 import sys
 from pathlib import Path
 
@@ -19,9 +20,11 @@ CONFIG = {
     "engine1_name": "multipath_unified_champion",
     "engine1_executable": str(ROOT / "results" / "experiments" / "multipath_unified_champion" / "zquoridor.exe"),
     "engine1_nnue": str(ROOT / "results" / "experiments" / "multipath_unified_champion" / "student_int8.bin"),
+    "engine1_args": "",
     "engine2_name": "production_baseline",
     "engine2_executable": str(ROOT / "results" / "experiments" / "multipath-phase512-searchboost-100ep" / "zquoridor.exe"),
     "engine2_nnue": str(ROOT / "data" / "nnue" / "nnue_weights_int8.bin"),
+    "engine2_args": "",
     "pairs": 100,
     "move_time_ms": 200,
     "workers": 4,
@@ -58,6 +61,12 @@ def resolve_config(args: argparse.Namespace) -> dict:
     return config
 
 
+def _split_engine_args(value) -> list[str]:
+    if isinstance(value, (list, tuple)):
+        return [str(item) for item in value]
+    return shlex.split(str(value or ""))
+
+
 def run(config: dict) -> dict:
     openings = run_benchmark._read_openings(Path(config["openings"]), int(config["pairs"]), int(config["seed"]))
     output = Path(config["output"]).resolve()
@@ -67,6 +76,8 @@ def run(config: dict) -> dict:
     e1_nnue = Path(config["engine1_nnue"]).resolve()
     e2_exe = Path(config["engine2_executable"]).resolve()
     e2_nnue = Path(config["engine2_nnue"]).resolve()
+    e1_args = _split_engine_args(config.get("engine1_args", ""))
+    e2_args = _split_engine_args(config.get("engine2_args", ""))
 
     manifest = local_arena.make_manifest(
         {
@@ -76,6 +87,8 @@ def run(config: dict) -> dict:
             "seed": int(config["seed"]),
             "engine1_name": config["engine1_name"],
             "engine2_name": config["engine2_name"],
+            "engine1_args": e1_args,
+            "engine2_args": e2_args,
             "openings": [index for index, _ in openings],
         },
         {
@@ -96,8 +109,8 @@ def run(config: dict) -> dict:
             opening_index=index,
             opening=opening,
             zq_player=side,
-            zq_factory=lambda: local_arena.UciPlayer([str(e1_exe), "--nnue", str(e1_nnue)], config["engine1_name"]),
-            opponent_factory=lambda: local_arena.UciPlayer([str(e2_exe), "--nnue", str(e2_nnue)], config["engine2_name"]),
+            zq_factory=lambda: local_arena.UciPlayer([str(e1_exe), "--nnue", str(e1_nnue), *e1_args], config["engine1_name"]),
+            opponent_factory=lambda: local_arena.UciPlayer([str(e2_exe), "--nnue", str(e2_nnue), *e2_args], config["engine2_name"]),
             zq_budget=int(config["move_time_ms"]),
             opponent_budget=int(config["move_time_ms"]),
             move_timeout_s=30.0,
@@ -131,6 +144,8 @@ def run(config: dict) -> dict:
         "engine1": config["engine1_name"],
         "engine2": config["engine2_name"],
         "move_time_ms": int(config["move_time_ms"]),
+        "engine1_args": e1_args,
+        "engine2_args": e2_args,
         "summary": summary,
     }
     (output / "summary.json").write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
