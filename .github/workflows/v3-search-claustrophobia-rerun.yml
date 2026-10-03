@@ -1,0 +1,139 @@
+name: V3 Search vs Claustrophobia Rerun
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/v3-search-claustrophobia-rerun.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  screen:
+    name: claustrophobia-${{ matrix.candidate }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      max-parallel: 5
+      matrix:
+        candidate:
+          - main
+          - lmr200
+          - lmr210
+          - lmr_lmp
+          - cpuct072
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      # Do NOT cache external_bots/claustrophobia/repo/target here.
+      # Restoring that path creates repo/ without its .git checkout and
+      # bot_setup intentionally refuses to replace such an unknown directory.
+      - name: Cache safe external dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            external_bots/claustrophobia/champion.pt
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: v3-claustrophobia-safe-${{ runner.os }}-${{ hashFiles('tools/external/bot_setup.py', 'tools/external/claustrophobia_benchmark_bridge.rs', 'training/teachers/claustrophobia_ipc_eval.rs', 'training/teachers/claustrophobia_inference_worker.py') }}
+          restore-keys: |
+            v3-claustrophobia-safe-${{ runner.os }}-
+
+      - name: Install CPU PyTorch
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
+
+      - name: Run Claustrophobia screen
+        run: |
+          python -u tools/run_v3_search_screening.py \
+            --candidate "${{ matrix.candidate }}" \
+            --pairs 50 \
+            --workers 1 \
+            --move-time-ms 200 \
+            --seed 20261003 \
+            --skip-v3
+
+      - name: Upload result
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: v3-claustrophobia-rerun-${{ matrix.candidate }}
+          path: results/benchmarks/v3-search-aggressive-20261003/${{ matrix.candidate }}/
+          if-no-files-found: warn
+          retention-days: 14
+
+  aggregate:
+    name: aggregate-claustrophobia
+    runs-on: ubuntu-latest
+    needs: screen
+    if: always()
+    steps:
+      - name: Download results
+        uses: actions/download-artifact@v4
+        with:
+          pattern: v3-claustrophobia-rerun-*
+          path: artifacts
+
+      - name: Summarize
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          rows = []
+          for path in Path("artifacts").rglob("screen_summary.json"):
+              data = json.loads(path.read_text(encoding="utf-8"))
+              cl = data.get("vs_claustrophobia") or {}
+              rows.append({
+                  "candidate": data["candidate"],
+                  "args": data.get("candidate_args", []),
+                  "score_pct": cl.get("score_pct"),
+                  "elo": cl.get("elo"),
+                  "elo_ci_95": cl.get("elo_ci_95"),
+                  "wins": cl.get("wins"),
+                  "draws": cl.get("draws"),
+                  "losses": cl.get("losses"),
+                  "failed_games": cl.get("failed_games"),
+              })
+
+          rows.sort(
+              key=lambda r: (
+                  1 if r["score_pct"] is None else 0,
+                  0 if r["score_pct"] is None else -float(r["score_pct"]),
+                  r["candidate"],
+              )
+          )
+          Path("aggregate").mkdir()
+          Path("aggregate/summary.json").write_text(
+              json.dumps({"schema": "zquoridor.v3_claustrophobia_screen.v1", "rows": rows}, indent=2) + "\n",
+              encoding="utf-8",
+          )
+          print("| candidate | score % | Elo | W-D-L | failed |")
+          print("|---|---:|---:|---:|---:|")
+          for r in rows:
+              score = "—" if r["score_pct"] is None else f"{float(r['score_pct']):.2f}"
+              elo = "—" if r["elo"] is None else f"{float(r['elo']):+.1f}"
+              wdl = f"{r['wins']}-{r['draws']}-{r['losses']}" if r["wins"] is not None else "—"
+              print(f"| {r['candidate']} | {score} | {elo} | {wdl} | {r['failed_games']} |")
+          PY
+
+      - name: Upload aggregate
+        uses: actions/upload-artifact@v4
+        with:
+          name: v3-claustrophobia-rerun-aggregate
+          path: aggregate/
+          retention-days: 14
