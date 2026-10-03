@@ -7,9 +7,13 @@ bootstrap, monitor, and manage remote Google Colab self-play workers for Zquorid
 
 | Worker ID | Name | Google Account | Notebook URL | Shard Prefix |
 | :---: | :---: | :---: | :---: | :---: |
+| 1 | Colab 1 | `worker-1@example.invalid` | [Notebook Colab 1](https://colab.research.google.com/drive/NOTEBOOK_ID_1) | `c1_shard_*.bin` |
+| 2 | Colab 2 | `worker-2@example.invalid` | [Notebook Colab 2](https://colab.research.google.com/drive/NOTEBOOK_ID_2) | `c2_shard_*.bin` |
 | 3 | Colab 3 | `worker-3@example.invalid` | [Notebook Colab 3](https://colab.research.google.com/drive/NOTEBOOK_ID_3) | `c3_shard_*.bin` |
 | 4 | Colab 4 | `worker-4@example.invalid` | [Notebook Colab 4](https://colab.research.google.com/drive/NOTEBOOK_ID_4) | `c4_shard_*.bin` |
 | 5 | Colab 5 | `worker-5@example.invalid` | [Notebook Colab 5](https://colab.research.google.com/drive/NOTEBOOK_ID_5) | `c5_shard_*.bin` |
+| 6 | Colab 6 | `worker-6@example.invalid` | [Notebook Colab 6](https://colab.research.google.com/drive/NOTEBOOK_ID_6) | `c6_shard_*.bin` |
+| 7 | Colab 7 | `worker-7@example.invalid` | [Notebook Colab 7](https://colab.research.google.com/drive/NOTEBOOK_ID_7) | `c7_shard_*.bin` |
 
 ## The 3 Core Tools
 

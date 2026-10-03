@@ -555,6 +555,9 @@ The current run uses only the production control. Defer the contact candidates u
   Its completion status must preserve that distinction.
 - Keep raw data and transient artifacts local. Version source, reproducible
   provenance, concise results, and the current roadmap.
+- Distributed Colab self-play workers use a unified 7-worker registry,
+  native Chrome interactive authentication to bypass automated browser blocks,
+  and local gitignored session cookie backups.
 
 ## 9. Operating scripts
 

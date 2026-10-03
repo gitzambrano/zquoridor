@@ -33,7 +33,7 @@ from browser_utils import (
 from human_actions import random_human_idle
 
 CONFIG: Dict[str, Any] = {
-    "worker_ids": [1, 2, 3, 4, 5],
+    "worker_ids": [1, 2, 3, 4, 5, 6, 7],
     "check_interval_seconds": 60,
     "screenshot_interval_cycles": 10,
     "auto_reconnect": True,

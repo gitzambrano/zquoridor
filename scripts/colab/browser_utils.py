@@ -15,37 +15,61 @@ import psutil
 
 # Anti-bot stealth initialization script adapted from TikTok automation engine
 STEALTH_JS = """
-Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
-window.chrome = { runtime: {} };
-Object.defineProperty(navigator, 'languages', {get: () => ['pt-BR', 'pt', 'en-US', 'en']});
-Object.defineProperty(navigator, 'plugins', {get: () => [1, 2, 3, 4, 5]});
+if (navigator.webdriver) {
+    try {
+        Object.defineProperty(Object.getPrototypeOf(navigator), 'webdriver', {
+            get: () => undefined,
+            configurable: true
+        });
+    } catch (e) {}
+}
+if (!window.chrome) {
+    window.chrome = { runtime: {} };
+}
 """
 DEFAULT_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36"
 
 
 def save_profile_cookies(ctx: Any, profile_dir: str) -> None:
-    """Save persistent cookies backup to cookies.json inside profile directory."""
+    """Save persistent cookies backup to cookies.json inside profile and project directory."""
     try:
         cookies = ctx.cookies()
-        if cookies:
-            out_path = Path(profile_dir) / "cookies.json"
-            out_path.parent.mkdir(parents=True, exist_ok=True)
-            with open(out_path, "w", encoding="utf-8") as f:
-                json.dump(cookies, f, indent=2)
+        if not cookies:
+            return
+
+        # 1. Primary save inside the profile directory
+        out_path = Path(profile_dir) / "cookies.json"
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(out_path, "w", encoding="utf-8") as f:
+            json.dump(cookies, f, indent=2)
+
+        # 2. Local mirror inside the project repository (gitignored)
+        mirror_dir = Path(__file__).resolve().parent / "cookies"
+        mirror_dir.mkdir(parents=True, exist_ok=True)
+        profile_name = Path(profile_dir).name
+        mirror_path = mirror_dir / f"{profile_name}_cookies.json"
+        with open(mirror_path, "w", encoding="utf-8") as f:
+            json.dump(cookies, f, indent=2)
     except Exception:
         pass
 
 
 def load_profile_cookies(ctx: Any, profile_dir: str) -> None:
-    """Load and inject persistent cookies backup from cookies.json."""
+    """Load and inject persistent cookies backup from profile or local project mirror."""
     try:
-        in_path = Path(profile_dir) / "cookies.json"
-        if in_path.is_file():
-            with open(in_path, "r", encoding="utf-8") as f:
-                saved = json.load(f)
-            if saved:
-                ctx.add_cookies(saved)
+        candidates = [
+            Path(profile_dir) / "cookies.json",
+            Path(__file__).resolve().parent / "cookies" / f"{Path(profile_dir).name}_cookies.json",
+        ]
+        for in_path in candidates:
+            if in_path.is_file():
+                with open(in_path, "r", encoding="utf-8") as f:
+                    saved = json.load(f)
+                if saved:
+                    ctx.add_cookies(saved)
+                    return
     except Exception:
+        pass
         pass
 
 
@@ -77,6 +101,7 @@ def launch_stealth_context(
         user_agent=DEFAULT_USER_AGENT,
         viewport={"width": 1366, "height": 768},
         args=args,
+        ignore_default_args=["--enable-automation"],
     )
     ctx.add_init_script(STEALTH_JS)
     load_profile_cookies(ctx, profile_dir)
