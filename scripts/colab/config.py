@@ -8,6 +8,30 @@ from typing import Dict, Any, List
 
 # Worker configurations for distributed Google Colab self-play generation.
 WORKERS: Dict[int, Dict[str, Any]] = {
+    1: {
+        "name": "Colab 1",
+        "worker_id": 1,
+        "account": "gustavozambrano@gmail.com",
+        "profile_dir": r"C:\Projetos\TikTok\profiles\gustavozambrano",
+        "notebook_url": "",
+        "cdp_port": 9001,
+        "target_keywords": ["run_colab_worker.py", "selfplay_central", "zquoridor"],
+        "target_shard_prefix": "c1_",
+        "drive_dir": "/content/drive/MyDrive/zquoridor_data/selfplay_central",
+        "positions": "tools/external/openings_center_rush_sound_5k.jsonl",
+    },
+    2: {
+        "name": "Colab 2",
+        "worker_id": 2,
+        "account": "flightdyn@gmail.com",
+        "profile_dir": r"C:\Projetos\TikTok\profiles\flightdyn",
+        "notebook_url": "",
+        "cdp_port": 9002,
+        "target_keywords": ["run_colab_worker.py", "selfplay_irregular", "zquoridor"],
+        "target_shard_prefix": "c2_",
+        "drive_dir": "/content/drive/MyDrive/zquoridor_data/selfplay_irregular",
+        "positions": "tools/external/openings_irregular_bank.jsonl",
+    },
     3: {
         "name": "Colab 3",
         "worker_id": 3,
@@ -17,6 +41,8 @@ WORKERS: Dict[int, Dict[str, Any]] = {
         "cdp_port": 9003,
         "target_keywords": ["run_colab_worker.py", "selfplay_targeted_weakness", "selfplay_15m", "zquoridor"],
         "target_shard_prefix": "c3_",
+        "drive_dir": "/content/drive/MyDrive/zquoridor_data/selfplay_targeted_weakness",
+        "positions": "tools/external/openings_targeted_weakness_bank.jsonl",
     },
     4: {
         "name": "Colab 4",
@@ -27,6 +53,8 @@ WORKERS: Dict[int, Dict[str, Any]] = {
         "cdp_port": 9004,
         "target_keywords": ["run_colab_worker.py", "selfplay_targeted_weakness", "selfplay_15m", "zquoridor"],
         "target_shard_prefix": "c4_",
+        "drive_dir": "/content/drive/MyDrive/zquoridor_data/selfplay_targeted_weakness",
+        "positions": "tools/external/openings_targeted_weakness_bank.jsonl",
     },
     5: {
         "name": "Colab 5",
@@ -37,11 +65,21 @@ WORKERS: Dict[int, Dict[str, Any]] = {
         "cdp_port": 9005,
         "target_keywords": ["run_colab_worker.py", "selfplay_targeted_weakness", "selfplay_15m", "zquoridor"],
         "target_shard_prefix": "c5_",
+        "drive_dir": "/content/drive/MyDrive/zquoridor_data/selfplay_targeted_weakness",
+        "positions": "tools/external/openings_targeted_weakness_bank.jsonl",
     },
 }
 
 # Aliases mapping worker strings/names to canonical integer IDs
 WORKER_ALIASES: Dict[Any, int] = {
+    1: 1,
+    "1": 1,
+    "c1": 1,
+    "colab1": 1,
+    2: 2,
+    "2": 2,
+    "c2": 2,
+    "colab2": 2,
     3: 3,
     "3": 3,
     "c3": 3,
@@ -92,4 +130,4 @@ if not os.path.exists('/content/zquoridor'):
 %cd /content/zquoridor
 !git pull origin main
 !bash build/build_selfplay.sh
-!python tools/selfplay/run_colab_worker.py --worker-id {worker_id} --drive-dir /content/drive/MyDrive/zquoridor_data/selfplay_targeted_weakness --positions tools/external/openings_targeted_weakness_bank.jsonl"""
+!python tools/selfplay/run_colab_worker.py --worker-id {worker_id} --drive-dir {drive_dir} --positions {positions}"""
