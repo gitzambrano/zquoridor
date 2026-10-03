@@ -36,6 +36,7 @@ CONFIG = {
     "pairs": 200,
     "move_time_ms": 200,
     "workers": 1,
+    "claustrophobia_workers": 1,
     "seed": 20261002,
     "openings": str(DEFAULT_BOOK),
     "output": str(DEFAULT_OUTPUT),
@@ -150,8 +151,11 @@ def resolve_config(argv: list[str] | None = None) -> dict:
         if key == "frozen_dir" and not path.is_dir():
             raise FileNotFoundError(f"frozen_dir not found: {path}")
         config[key] = str(path)
-    if int(config["pairs"]) <= 0 or not 1 <= int(config["workers"]) <= 4:
-        raise ValueError("pairs must be positive and workers must be between 1 and 4")
+    if int(config["pairs"]) <= 0:
+        raise ValueError("pairs must be positive")
+    for key in ("workers", "claustrophobia_workers"):
+        if not 1 <= int(config[key]) <= 16:
+            raise ValueError(f"{key} must be between 1 and 16")
     if int(config["move_time_ms"]) != 200:
         raise ValueError("the central fine-tune gate is fixed at 200 ms per move")
     if int(config["bootstrap"]) < 1000:
@@ -191,6 +195,7 @@ def run(config: dict) -> dict:
     seed = int(config["seed"])
     pairs = int(config["pairs"])
     workers = int(config["workers"])
+    claustrophobia_workers = int(config["claustrophobia_workers"])
     move_ms = int(config["move_time_ms"])
 
     # Same binary on both sides deliberately isolates candidate weights.
@@ -216,7 +221,7 @@ def run(config: dict) -> dict:
     claustro_config.update({
         "opponents": ["claustrophobia"],
         "pairs": pairs,
-        "workers": workers,
+        "workers": claustrophobia_workers,
         "seed": seed,
         "openings": str(book),
         "output": str(run_root / "vs-claustrophobia"),
@@ -254,6 +259,7 @@ def run(config: dict) -> dict:
         "games_per_opponent": 2 * pairs,
         "move_time_ms": move_ms,
         "workers": workers,
+        "claustrophobia_workers": claustrophobia_workers,
         "seed": seed,
         "vs_frozen_main": main_summary,
         "vs_claustrophobia": claustro_summary,
