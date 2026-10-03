@@ -19,6 +19,7 @@ from pathlib import Path
 import shutil
 import subprocess
 import sys
+from concurrent.futures import ThreadPoolExecutor
 import numpy as np
 import torch
 from torch.nn import functional as F
@@ -279,84 +280,132 @@ def weight_decay(config, epoch: int) -> float:
     ) * 0.5 * (1.0 + math.cos(math.pi * progress))
 
 
+_EPOCH_BLOCK_SIZE = 32_768
+_EPOCH_FIELDS = ("own_pawn", "opp_pawn", "walls_h", "walls_v", "own_dist", "opp_dist",
+                 "walls_left_own", "walls_left_opp", "policy", "value", "weight")
+
+
+def _pinned_tensor(array, use_cuda):
+    tensor = torch.from_numpy(np.ascontiguousarray(array))
+    return tensor.pin_memory() if use_cuda else tensor
+
+
+def _prepare_epoch_block(data, row_indices, config, use_cuda, training, row_order=None, flip_mask=None):
+    """Read one mostly-contiguous block and prepare it while the GPU trains the prior block."""
+    block = {key: np.asarray(data[key][row_indices]) for key in _EPOCH_FIELDS}
+    if training:
+        if flip_mask is not None:
+            block = stochastic_mirror_dict_h(block, row_order, flip_mask)
+        else:
+            block = {key: values[row_order] for key, values in block.items()}
+        feature_rows = np.arange(len(row_order))
+    else:
+        feature_rows = np.arange(len(row_indices))
+    features = encode_features(block, feature_rows, config["architecture"])
+    prepared = {
+        "x": _pinned_tensor(features, use_cuda),
+        "p": _pinned_tensor(block["policy"].astype(np.float32, copy=False), use_cuda),
+        "v": _pinned_tensor(block["value"].astype(np.float32, copy=False), use_cuda),
+        "w": _pinned_tensor(block["weight"].astype(np.float32, copy=False), use_cuda),
+    }
+    if not training and "source_mass" in data:
+        prepared["source_mass"] = _pinned_tensor(
+            np.asarray(data["source_mass"][row_indices], dtype=np.float32), use_cuda)
+    return prepared
+
+
 def _epoch(model, data, indices, config, device, optimizer=None, rng=None):
     model.train(optimizer is not None)
-    order = rng.permutation(indices) if optimizer is not None else indices
-    totals = np.zeros(6, dtype=np.float64)
-    source_totals = None
+    training = optimizer is not None
+    use_cuda = str(device).startswith("cuda")
+    totals = torch.zeros(6, dtype=torch.float64, device=device)
     source_names = data.get("source_names", [])
-    if optimizer is None and "source_mass" in data:
-        source_totals = np.zeros((len(source_names), 5), dtype=np.float64)
-    mirror_h = config.get("mirror_h", True) and (optimizer is not None)
-    bucket_counts = np.zeros(model.value_buckets, dtype=np.int64) if model.value_buckets > 1 else None
-    bucket_mae_sums = np.zeros(model.value_buckets, dtype=np.float64) if model.value_buckets > 1 else None
-    bucket_weights = np.zeros(model.value_buckets, dtype=np.float64) if model.value_buckets > 1 else None
+    source_totals = (torch.zeros((len(source_names), 5), dtype=torch.float64, device=device)
+                     if not training and "source_mass" in data else None)
+    bucket_counts = (torch.zeros(model.value_buckets, dtype=torch.int64, device=device)
+                     if model.value_buckets > 1 and not training else None)
+    bucket_mae_sums = (torch.zeros(model.value_buckets, dtype=torch.float64, device=device)
+                       if bucket_counts is not None else None)
+    bucket_weights = (torch.zeros(model.value_buckets, dtype=torch.float64, device=device)
+                      if bucket_counts is not None else None)
 
-    for start in range(0, len(order), config["batch_size"]):
-        idx = order[start:start + config["batch_size"]]
-        if mirror_h:
-            flip_mask = rng.random(len(idx)) < 0.5
-            mirror_fields = ("own_pawn", "opp_pawn", "walls_h", "walls_v", "own_dist", "opp_dist",
-                             "walls_left_own", "walls_left_opp", "policy", "value", "weight")
-            batch_data = stochastic_mirror_dict_h(
-                {key: data[key] for key in mirror_fields}, idx, flip_mask)
-            b_idx = np.arange(len(idx))
-            x = torch.from_numpy(encode_features(batch_data, b_idx, config["architecture"])).to(device)
-            p = torch.as_tensor(batch_data["policy"].astype(np.float32), device=device)
-            v = torch.as_tensor(batch_data["value"].astype(np.float32), device=device)
-            w = torch.as_tensor(batch_data["weight"].astype(np.float32), device=device)
+    n_blocks = (len(indices) + _EPOCH_BLOCK_SIZE - 1) // _EPOCH_BLOCK_SIZE
+    block_order = np.arange(n_blocks)
+    if training:
+        rng.shuffle(block_order)
+
+    def submit_block(pool, slot):
+        start = int(block_order[slot]) * _EPOCH_BLOCK_SIZE
+        rows = np.asarray(indices[start:start + _EPOCH_BLOCK_SIZE]).copy()
+        if training:
+            row_order = rng.permutation(len(rows))
+            flip_mask = rng.random(len(rows)) < 0.5 if config.get("mirror_h", True) else None
         else:
-            x = torch.from_numpy(encode_features(data, idx, config["architecture"])).to(device)
-            p = torch.as_tensor(data["policy"][idx].astype(np.float32), device=device)
-            v = torch.as_tensor(data["value"][idx].astype(np.float32), device=device)
-            w = torch.as_tensor(data["weight"][idx].astype(np.float32), device=device)
+            row_order = flip_mask = None
+        return pool.submit(_prepare_epoch_block, data, rows, config, use_cuda,
+                           training, row_order, flip_mask)
 
-        with torch.set_grad_enabled(optimizer is not None):
-            logits, policy = model(x)
-            kl = (p * (p.clamp_min(1e-12).log() - F.log_softmax(policy, dim=1))).sum(1)
-            target = (v + 1) / 2
-            vloss = F.binary_cross_entropy_with_logits(logits, target, reduction="none")
-            probability = logits.sigmoid()
-            brier = (probability - target).square()
-            per_sample_loss = config["policy_weight"] * kl + config["value_weight"] * vloss
-            loss = (per_sample_loss * w).sum() / w.sum()
-            if not torch.isfinite(loss):
-                raise ValueError("non-finite training loss")
-            if optimizer is not None:
-                optimizer.zero_grad(set_to_none=True)
-                loss.backward()
-                torch.nn.utils.clip_grad_norm_(model.parameters(), config["grad_clip"])
-                optimizer.step()
-                model.clip_weights()
-        mass = w.sum().item()
-        val_diff = (2 * logits.sigmoid() - 1 - v).abs()
-        totals += [loss.item() * mass, (kl * w).sum().item(),
-                   (val_diff * w).sum().item(), mass,
-                   (vloss * w).sum().item(), (brier * w).sum().item()]
+    with ThreadPoolExecutor(max_workers=1, thread_name_prefix="zq-data-prefetch") as pool:
+        pending = submit_block(pool, 0) if n_blocks else None
+        for block_slot in range(n_blocks):
+            prepared = pending.result()
+            pending = submit_block(pool, block_slot + 1) if block_slot + 1 < n_blocks else None
+            n_rows = len(prepared["v"])
+            for start in range(0, n_rows, config["batch_size"]):
+                end = min(start + config["batch_size"], n_rows)
+                x = prepared["x"][start:end].to(device, non_blocking=use_cuda)
+                p = prepared["p"][start:end].to(device, non_blocking=use_cuda)
+                v = prepared["v"][start:end].to(device, non_blocking=use_cuda)
+                w = prepared["w"][start:end].to(device, non_blocking=use_cuda)
 
-        if source_totals is not None:
-            source_weight = torch.as_tensor(data["source_mass"][idx].astype(np.float32), device=device)
-            for source_index in range(len(source_names)):
-                sw = source_weight[:, source_index]
-                source_totals[source_index] += [
-                    (per_sample_loss * sw).sum().item(), (val_diff * sw).sum().item(),
-                    (vloss * sw).sum().item(), (brier * sw).sum().item(), sw.sum().item()]
+                with torch.set_grad_enabled(training):
+                    logits, policy = model(x)
+                    kl = (p * (p.clamp_min(1e-12).log() - F.log_softmax(policy, dim=1))).sum(1)
+                    target = (v + 1) / 2
+                    vloss = F.binary_cross_entropy_with_logits(logits, target, reduction="none")
+                    probability = logits.sigmoid()
+                    brier = (probability - target).square()
+                    per_sample_loss = config["policy_weight"] * kl + config["value_weight"] * vloss
+                    mass = w.sum()
+                    loss = (per_sample_loss * w).sum() / mass
+                    if training:
+                        optimizer.zero_grad(set_to_none=True)
+                        loss.backward()
+                        torch.nn.utils.clip_grad_norm_(model.parameters(), config["grad_clip"])
+                        optimizer.step()
+                        model.clip_weights()
 
-        if model.value_buckets > 1 and optimizer is None:
-            b_indices = model._extract_buckets(x).cpu().numpy()
-            diff_np = val_diff.detach().cpu().numpy()
-            w_np = w.detach().cpu().numpy()
-            for b in range(model.value_buckets):
-                mask = (b_indices == b)
-                if mask.any():
-                    bucket_counts[b] += int(mask.sum())
-                    bucket_mae_sums[b] += float((diff_np[mask] * w_np[mask]).sum())
-                    bucket_weights[b] += float(w_np[mask].sum())
+                val_diff = (2 * probability - 1 - v).abs()
+                totals += torch.stack((loss.detach() * mass, (kl * w).sum(),
+                                       (val_diff * w).sum(), mass,
+                                       (vloss * w).sum(), (brier * w).sum())).detach().to(torch.float64)
 
+                if source_totals is not None:
+                    source_weight = prepared["source_mass"][start:end].to(device, non_blocking=use_cuda)
+                    source_totals += torch.stack((
+                        (per_sample_loss[:, None] * source_weight).sum(0),
+                        (val_diff[:, None] * source_weight).sum(0),
+                        (vloss[:, None] * source_weight).sum(0),
+                        (brier[:, None] * source_weight).sum(0),
+                        source_weight.sum(0),
+                    ), dim=1).detach().to(torch.float64)
+
+                if bucket_counts is not None:
+                    bucket_ids = model._extract_buckets(x)
+                    bucket_counts += torch.bincount(bucket_ids, minlength=model.value_buckets)
+                    bucket_mae_sums.scatter_add_(0, bucket_ids, val_diff.to(torch.float64) * w)
+                    bucket_weights.scatter_add_(0, bucket_ids, w.to(torch.float64))
+
+            del prepared
+
+    if not torch.isfinite(totals).all():
+        raise ValueError("non-finite training metrics")
+    totals = totals.cpu().numpy()
     res = dict(loss=float(totals[0] / totals[3]), policy_kl=float(totals[1] / totals[3]),
                value_mae=float(totals[2] / totals[3]), value_bce=float(totals[4] / totals[3]),
                value_brier=float(totals[5] / totals[3]))
     if source_totals is not None:
+        source_totals = source_totals.cpu().numpy()
         res["by_source"] = {
             name: dict(loss=float(row[0] / row[4]) if row[4] else 0.0,
                        value_mae=float(row[1] / row[4]) if row[4] else 0.0,
@@ -367,6 +416,8 @@ def _epoch(model, data, indices, config, device, optimizer=None, rng=None):
         }
         res["by_source_target_basis"] = "blended_global_targets"
     if bucket_counts is not None:
+        bucket_counts, bucket_mae_sums, bucket_weights = (
+            value.cpu().numpy() for value in (bucket_counts, bucket_mae_sums, bucket_weights))
         res["bucket_counts"] = bucket_counts.tolist()
         res["bucket_mae"] = [
             float(bucket_mae_sums[b] / bucket_weights[b]) if bucket_weights[b] > 0 else 0.0
@@ -443,10 +494,6 @@ def train(config):
     best_checkpoint = folder / "best.pt"
     checkpoint_every = int(config["checkpoint_every"])
     history, start, bad = [], 0, 0
-    initial = _epoch(model, data, val_idx, config, device)
-    best_loss = initial["loss"]
-    best_epoch = 0
-    best = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
     if config["resume"] and checkpoint.exists():
         state = torch.load(checkpoint, map_location="cpu", weights_only=False)
         if state["fingerprint"] != fingerprint:
@@ -461,6 +508,12 @@ def train(config):
         history, start, initial = state["history"], state["epoch"], state["initial"]
         best_epoch = state.get("best_epoch", min(
             (row["epoch"] for row in history if row["val"]["loss"] == best_loss), default=0))
+        print(f"[resume] checkpoint valido na epoca {start}; pulando avaliacao inicial", flush=True)
+    else:
+        initial = _epoch(model, data, val_idx, config, device)
+        best_loss = initial["loss"]
+        best_epoch = 0
+        best = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
     (folder / "config.json").write_text(json.dumps(identity, indent=2) + "\n", encoding="utf-8")
     if start == 0 and not initial_checkpoint.exists():
         initial_state = dict(fingerprint=fingerprint, model=model.state_dict(),
