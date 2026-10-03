@@ -22,12 +22,12 @@ ROOT = Path(__file__).resolve().parents[2]
 
 CONFIG = {
     "worker_id": 1,
-    "drive_dir": "/content/drive/MyDrive/zquoridor_data/selfplay_15m",
+    "drive_dir": "/content/drive/MyDrive/zquoridor_data/selfplay_targeted_weakness",
     "total_games": 80000,
     "chunk_games": 250,
     "time_ms": 100,
     "threads": 2,
-    "positions": "tools/external/openings_center_rush_sound_5k.jsonl",
+    "positions": "tools/external/openings_targeted_weakness_bank.jsonl",
     "weights": "data/nnue/nnue_weights_int8.bin",
     "exe": "bin/selfplay",
     "mc_mode": True,
@@ -36,7 +36,7 @@ CONFIG = {
     "mc_temp_opening": 0.35,
     "mc_temp_decay_plies": 45,
     "mc_temp_end": 0.12,
-    "base_seed": 20260925,
+    "base_seed": 20261003,
 }
 
 
