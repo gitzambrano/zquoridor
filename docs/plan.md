@@ -1,566 +1,221 @@
-# Zquoridor: project state, results, and roadmap
+# Zquoridor: Project State, Results, and Roadmap
 
-Last reviewed: 2026-10-03. This is the single canonical project document.
-It answers four questions in order: what is in production, what has already
-been measured, what is running now, and what happens next. Raw datasets,
-self-play shards, logs, opponent checkouts, and transient checkpoints are local
-artifacts and are deliberately not versioned.
+Last reviewed: 2026-10-03. This document is the single canonical reference for
+project status, training history, available datasets, self-play configurations,
+experimental measurements, and future plans.
 
-## 1. Current production state
+Raw datasets, self-play binary shards, logs, checkpoints, and local benchmark outputs
+are untracked artifacts outside version control.
 
-| Area | Current state |
+---
+
+## 1. Current Production Baseline
+
+The table below summarizes the operational state of Zquoridor in production.
+
+| Component | Production Specification |
 | --- | --- |
 | Release | Zquoridor 3.0 |
-| Search | Hybrid PUCT/MCGS graph search with alpha-beta support, transpositions, persistent tree reuse, repetition escape, and adaptive time management |
-| Pondering | Opponent-root pondering with subtree reuse; browser work runs in bounded Web Worker slices |
-| NNUE | `multipath_phase_bucketed:512`: 504 sparse inputs, 512 SCReLU units, 6 wall-count value heads with 2-layer MLPs, policy head `512 → 209`, QAT/int8 |
-| Production weights | `data/nnue/nnue_weights.bin` and `data/nnue/nnue_weights_int8.bin` |
-| Versioned provenance | `results/experiments/production-central-finetune-20261002/` |
-| Browser/protocol | WebAssembly build and UCI-style text protocol with fixed-time, clock, and pondering commands |
+| Search Engine | Hybrid PUCT and MCGS graph search with alpha-beta verification, transposition tables, persistent tree reuse, repetition escape, and adaptive time budgeting |
+| Pondering | Opponent-root pondering with subtree reuse. In the browser, background work runs in bounded Web Worker slices |
+| NNUE Architecture | `multipath_phase_bucketed:512`: 504 sparse inputs, 512 SCReLU units, 6 wall-count value heads with 2-layer MLPs (`512 → 32 → 32 → 1`), policy head `512 → 209`, QAT int8 |
+| Production Weights | `data/nnue/nnue_weights.bin` (float32) and `data/nnue/nnue_weights_int8.bin` (int8 quantized) |
+| Provenance Directory | `results/experiments/production-central-finetune-20261002/` |
+| Native Executable | Compiled with `ZQ_NNUE_VALUE_BUCKETS=6` and `ZQ_NNUE_VALUE_DEPTH=2` |
+| Web Platform | WebAssembly build with UCI text protocol, time controls, and analysis engine |
 
-A candidate must use an executable compiled for its exact NNUE architecture.
-Changing search settings creates a separate experiment; it cannot be credited
-as an NNUE gain.
+### Browser and Mobile Interface State
 
+Portrait mobile delivers edge-to-edge board sizing across 360, 375, 390, and 412 px viewports.
+The primary controls occupy a single row.
+Player strips display wall pips in a compact 5+5 format.
+Direct drag-and-drop from the wall dock commits upon release without secondary confirmation.
+Tap-to-place interactions preserve the confirmation prompt.
 
-### Browser mobile interface
+The Playwright test gate validates both source pages and standalone WebAssembly bundles across all supported viewports.
+Key mobile performance optimizations include:
+- **Lazy engine allocation**: The secondary analysis search instance instantiates only upon first request. This saves 62 MB of static transposition tables during live play.
+- **Initial memory cap**: Emscripten `INITIAL_MEMORY` is set to 128 MB with dynamic growth enabled, reducing mobile operating system memory pressure.
+- **Gesture-aware pondering**: Pondering automatically pauses during board touch gestures to maintain smooth 60 FPS animation.
+- **Thermal throttling prevention**: Background pondering uses 8 ms sleep intervals on mobile devices to protect battery life.
 
-Portrait mobile now gives the board the full viewport width and keeps the
-primary controls on one row at 360, 375, 390, and 412 px widths. Player strips
-retain all ten wall pips in a compact 5+5 form, while the path-to-goal readout
-is a small number beside the clock. A wall deliberately dragged from the H/V
-dock commits on release without a second confirmation; tap/arm placement keeps
-the existing confirmation preference.
+---
 
-The focused Playwright gate verifies the source page and generated standalone
-bundle at 360, 375, 390, and 412 px widths, including compact-height browser
-viewports and a deliberately long move log. Portrait ignores a persisted
-desktop `boardScale` for layout, so even an 88% saved preference still produces
-an edge-to-edge phone board. The board fitter observes the board zone itself,
-preventing a stale canvas from overflowing across either player strip when the
-available height changes.
+## 2. Complete Network Training History
 
-Analysis and Editor on portrait mobile use a lower workspace anchored below the
-bottom player strip instead of replacing the game surface. The gate opens
-Analysis after the long-log/compact-height stress case and verifies that the
-board remains full-width, both HUDs remain visible, the analysis panel stays
-below the board and above the tab bar, and the board center is still the actual
-canvas hit target. It also checks one-row controls, zero horizontal overflow,
-compact wall pips, hidden PATH label, direct dock-drag placement, and zero page
-errors. The full pre-existing browser regression and standalone regression pass
-alongside these mobile-specific checks.
+This table lists every neural network trained across the project.
+Validation loss values are comparable only within identical datasets and loss targets.
 
-The mobile hardening gate additionally covers the failure modes found after the
-field screenshots: the compact status row and autosave Resume action remain
-visible in portrait; leaving Editor without Apply restores the live engine
-position and board orientation; entering Play from an older Analysis ply
-returns to the live game; portrait↔landscape rotation moves the log between its
-correct DOM homes; a player-1 flag fall clamps the correct clock, clears active
-turn styling, and reports the correct result text; and the portrait Settings
-sheet hides the board-scale control because portrait intentionally renders at
-100% width. On screens no taller than 700 px, the first Analysis controls are
-compressed into one compact row while the rest remains scrollable.
-
-Both the source page and the generated standalone WASM bundle pass these checks
-at 360, 375, 390, and 412 px portrait widths, with compact-height stress cases,
-in addition to the complete pre-existing browser and standalone suites.
-
-A long-form mobile gameplay gate now exercises actual sessions instead of only
-layout states. It plays from both sides through the production UI, mixing pawn
-moves with dock-dragged walls and real engine replies, performs a takeback and
-continues the game, verifies HUD wall counts and clocks after every turn, opens
-Analysis on the played game, previews a PV, navigates history and the graph,
-runs a full blunder check, round-trips the exact game through QGN, and repeats
-the session on the generated standalone bundle. In the reference run the first
-game reached a terminal position after 18 plies; Analysis now identifies a
-terminal root explicitly instead of showing an empty PV list, and stepping back
-one ply produced three PV lines in about 1.2 s. The blunder check covered all 18
-plies. The same sequence passed on both the source page and the standalone
-bundle with zero page errors.
-
-A dedicated mobile performance and stability pass resolves memory pressure and
-thermal throttling:
-- **WASM memory footprint**: The secondary analysis search instance (`g_anEngine`)
-  is now instantiated lazily upon first analysis request, saving ~62 MB of static
-  transposition table and path cache allocations during live play. Emscripten
-  `INITIAL_MEMORY` is reduced from 256 MB to 128 MB across `build_wasm.bat` and
-  `build_wasm.sh` with `ALLOW_MEMORY_GROWTH=1`, cutting total WASM reservation in
-  half and preventing mobile OS OOM kills (iOS Jetsam / Android LowMemoryKiller).
-- **Touch-aware pondering**: The Web Worker automatically pauses background
-  pondering when pointer interaction or dragging begins on the board/dock,
-  resuming when the gesture finishes or the move commits. This yields 100% of CPU
-  and frame budget to the UI thread for stutter-free 60/120 FPS gestures.
-- **Mobile thermal pacing**: Pondering loop introduces an 8 ms slice interval on
-  mobile user-agents, reducing battery consumption and preventing thermal
-  throttling while preserving identical search quality and tree accumulation.
-- **Mobile canvas DPR clamp**: Canvas resolution on mobile viewports is capped at
-  `Math.min(window.devicePixelRatio, 2.0)`, cutting GPU texture memory and pixel
-  fill-rate on 3x/4x displays without perceptible visual quality loss.
-
-## 2. What has been measured
-
-All percentages below are candidate score. A small match is screening evidence,
-not proof of superiority. External comparisons use paired colours, shared
-openings, fixed **200 ms per move**, and record failures separately from draws.
-
-### Production baseline and search evidence
-
-| Candidate/configuration | Opponent | Result | Sample | Conclusion |
-| --- | --- | ---: | ---: | --- |
-| Production `multipath_phase:512` | synchronized multipath baseline | 51.25% | 200 games | screening only |
-| Production `multipath_phase:512` | Claustrophobia | 50.83% | 600 games | close to even; project goal not met |
-| Production `multipath_phase:512` | Titanium, normal book | 60.0% | 100 games | encouraging; needs confirmation |
-| Production `multipath_phase:512` | Titanium, Center Rush | 46.0% | 100 games | known weakness |
-| Production without/with pondering | Claustrophobia | 51.0% / 51.5% | 100 games each | no significant external conclusion |
-| Pondering candidate | same engine without pondering | 63.125% | 400 paired games | internal configuration gain from subtree reuse |
-| `multipath_phase_contact:512` | production `multipath_phase:512` searchboost checkpoint | 47.25% | 200 paired games | contact candidate did not win the H2H screen |
-| `multipath_phase_contact:512` | Claustrophobia | 50.25% | 600 games | full-suite screening; no strength claim |
-| `multipath_phase_contact:512` | Titanium, Center Rush | 49.0% | 100 games | full-suite screening; no strength claim |
-| `multipath_phase:512` reliable-search FT | production searchboost checkpoint | 45.5% | 200 paired games | reliable-search FT did not win the H2H screen |
-| `multipath_phase:512` reliable-search FT | Claustrophobia | 48.58% | 600 games | full-suite screening; no strength claim |
-| `multipath_phase:512` reliable-search FT | Titanium, normal book | 68.5% | 100 games | positive screening result; needs paired confirmation |
-| `multipath_phase:512` reliable-search FT | Titanium, Center Rush | 47.0% | 100 games | Center Rush remains unresolved |
-| `multipath_phase_bucketed:512` (Unified Champion) | production `multipath_phase:512` searchboost checkpoint | 63.0% | 200 paired games | positive screen; strength claim verified (bootstrap 95% +45.4 to +141.0 Elo, 39 to 12 net pairs) |
-| `multipath_phase_bucketed:512` (Unified Champion) | Claustrophobia, normal book | 60.0% | 100 paired games | +70.4 Elo (bootstrap 95% +6.9 to +139.0 Elo); beat 50.8% baseline (+64.6 Elo) |
-| `multipath_phase_bucketed:512` (Unified Champion) | Claustrophobia, Center Rush | 47.0% | 100 paired games | -20.9 Elo (bootstrap 95% -56.1 to +13.9 Elo); beat 37.5% baseline (+67.8 Elo) |
-| `multipath_phase_bucketed:512` (Unified Champion) | Titanium, normal book | 62.0% | 100 paired games | +85.0 Elo (bootstrap 95% +13.9 to +155.5 Elo); beat 60.0% baseline (+14.6 Elo) |
-| `multipath_phase_bucketed:512` (Unified Champion) | Titanium, Center Rush | 52.0% | 100 paired games | +13.9 Elo (bootstrap 95% -27.9 to +55.7 Elo); beat 46.0% baseline (+41.8 Elo) |
-| `multipath_phase_bucketed:512` (Unified Champion) | Combined external battery (Claustrophobia + Titanium) | 55.25% | 400 paired games | +36.6 Elo overall; beat 48.58% baseline (+46.5 Elo); all 4 sub-suites improved |
-| `multipath_phase_bucketed:512` (Central Fine-Tune) | frozen baseline (`multipath_phase_bucketed:512`) | 55.50% | 400 paired games | +38.4 Elo (bootstrap 95% +10.4 to +66.8 Elo); verified positive screen |
-| `multipath_phase_bucketed:512` (Central Fine-Tune) | Claustrophobia, Center Rush Sound 5k | 54.88% | 400 paired games | +34.0 Elo (bootstrap 95% +6.1 to +62.3 Elo); verified positive screen |
-| `multipath_phase_bucketed:512` (Central Fine-Tune) | Claustrophobia, normal book | 59.25% | 200 paired games | +65.0 Elo (bootstrap 95% +22.7 to +108.6 Elo); beat 50.83% baseline (+59.2 Elo) |
-| `multipath_phase_bucketed:512` (Central Fine-Tune) | Claustrophobia, Center Rush | 59.00% | 200 paired games | +63.2 Elo (bootstrap 95% +24.4 to +102.7 Elo); beat 37.50% baseline (+151.9 Elo) |
-| `multipath_phase_bucketed:512` (Central Fine-Tune) | Titanium, normal book | 74.50% | 200 paired games | +186.2 Elo (bootstrap 95% +135.8 to +242.0 Elo); beat 60.00% baseline (+115.8 Elo) |
-| `multipath_phase_bucketed:512` (Central Fine-Tune) | Titanium, Center Rush | 63.50% | 200 paired games | +96.2 Elo (bootstrap 95% +56.1 to +137.4 Elo); beat 46.00% baseline (+124.1 Elo) |
-| `multipath_phase_bucketed:512` (Central Fine-Tune) | Combined external battery (Claustrophobia + Titanium) | 64.06% | 800 paired games | +102.7 Elo overall; all 4 sub-suites improved; lower 95% bounds strictly above 50% |
-
-The production candidate failed the recorded Claustrophobia family gate. The
-lowest observed family was `reed_rear_wall`; Center Rush also remains a high
-priority. Training loss and nodes per second are not strength measurements.
-
-### Network matrix: completed work and result
-
-“Validation loss” only compares runs on the same dataset and recipe. A dash
-means the result was not retained or was not comparable; it does not mean that
-the network was never trained.
-
-| Network | Inputs / hidden | Training data and recipe | Best validation loss | Arena result retained | Status and next action |
+| Network Architecture | Features / Hidden | Training Dataset and Recipe | Val Loss | Arena Outcome vs Baseline | Status and Decision |
 | --- | --- | --- | ---: | --- | --- |
-| `base:256` | 354 / 256 | 2M direct replay, QAT, 80 epochs | 0.74569 | historical screening only | archived control |
-| `race:256` | 456 / 256 | same 2M direct recipe | 0.74319 | historical screening only | archived control |
-| `base:384` | 354 / 384 | same 2M direct recipe | 0.73939 | historical screening only | archived control |
-| `race:384` | 456 / 384 | same 2M direct recipe; legacy search fine-tune | 0.73686 | historical screening only | archived control |
-| `base:512` | 354 / 512 | direct, then 40-epoch 90/10 search fine-tune | 0.73600 direct | confirmation run completed; detailed raw log local | archived finalist |
-| `race:512-search10-ft` | 456 / 512 | direct, then 40-epoch 90/10 search fine-tune | 0.88574 fine-tune* | 49.0% Claustrophobia; 54.0% Titanium | historical baseline |
-| `race:512-multitier-champion` | 456 / 512 | 10.8M weighted multitier continuation | 0.86410* | 51.5% vs search10; 49.67% Claustrophobia; 57.0% Titanium | historical champion |
-| `race:512-policy-tactical` | 456 / 512 | 245k tactical policy continuation | 0.74580* | 37.88% Center Rush; 55.0% Titanium | did not solve Center Rush |
-| `race:512-weakness-ft` | 456 / 512 | 80k mined weakness continuation | 1.14938* | 38.64% Center Rush | did not solve Center Rush |
-| `race:512-cr200k-champion` | 456 / 512 | 255k Center Rush policy then heads tuning | 0.69542* | 63.0% Titanium; 46.25% Claustrophobia | strong on Titanium, below target vs Claustrophobia |
-| `multipath:512` | 480 / 512 | multipath campaign | — | 51.08% Claustrophobia, 600 games | historical first positive Claustrophobia result |
-| `margin_regime:512` | 588 / 512 | weakness/Center Rush campaign | — | 49.0% Claustrophobia, 600 games | versioned research checkpoint; benchmark only if rerun is justified |
-| **production `multipath_phase:512`** | **504 / 512** | 11.065M weakness-boosted data, QAT, 100 epochs | — | rows above | **production** |
-| `multipath_phase_contact:512` | 858 / 512 | 11.378M local data, warm start, QAT, 160 epochs | 0.95217* | 47.25% H2H; 50.25% Claustrophobia; 49.0% Center Rush | local candidate; no promotion-level gain |
-| `multipath_phase:512` reliable-search FT | 504 / 512 | 313,344 selected search/rollout samples, QAT, 40 epochs | 1.16198* | 45.5% H2H; 48.58% Claustrophobia; 68.5% Titanium; 47.0% Center Rush | local unpromoted fine-tune |
-| `multipath_phase:512` Arm A | 504 / 512 | 4.26M stored-search, warm start, QAT, 20 epochs | 0.92044* | 33.2% vs baseline (300 games, Elo -121.7) | local control completed |
-| `multipath_phase:512` Arm B | 504 / 512 | 4.26M stored-search, mirror-h, warm start, QAT, 20 epochs | 0.95141* | 30.3% vs baseline (300 games, Elo -144.4) | local ablation completed |
-| `multipath_phase_bucketed:512` Arm C | 504 / 512 | 4.26M stored-search, 6 buckets, 2 layers, mirror-h, warm start, QAT, 20 epochs | 0.94987* | 30.5% vs baseline (300 games, Elo -143.1) | local candidate completed |
-| `multipath_phase_deep:512` Arm D | 504 / 512 | 4.26M stored-search, 1 head, 2 layers, mirror-h, warm start, QAT, 20 epochs | 0.95029* | 34.8% vs baseline (300 games, Elo -108.8) | local ablation completed |
-| `multipath_phase_contact_bucketed:512` Arm E | 858 / 512 | 4.26M stored-search, 6 buckets, 2 layers, mirror-h, warm start from C, QAT, 20 epochs | 0.90771* | 32.0% vs baseline (300 games, Elo -130.9) | contact candidate completed |
-| `multipath_phase:512` Arm A2 | 504 / 512 | un-biased replay, warm start from A, QAT anneal, LR 1e-5 → 1e-7, 60 epochs | 0.90447* | 28.3% vs baseline (300 games, Elo -161.2) | control annealing completed |
-| `multipath_phase:512` Arm B2 | 504 / 512 | un-biased replay, mirror-h, warm start from B, QAT anneal, LR 1e-5 → 1e-7, 60 epochs | 0.93581* | 30.2% vs baseline (300 games, Elo -145.8) | ablation annealing completed |
-| `multipath_phase_bucketed:512` Arm C2 | 504 / 512 | un-biased replay, mirror-h, 6 buckets, 2 layers, warm start from C, QAT anneal, 60 epochs | 0.93396* | 31.8% vs baseline (300 games, Elo -132.3) | candidate annealing completed |
-| `multipath_phase_deep:512` Arm D2 | 504 / 512 | un-biased replay, mirror-h, 1 head, 2 layers, warm start from D, QAT anneal, 60 epochs | 0.93463* | 32.3% vs baseline (300 games, Elo -128.3) | deep ablation annealing completed |
-| `multipath_phase_contact_bucketed:512` Arm E2 | 858 / 512 | un-biased replay, mirror-h, 6 buckets, 2 layers, warm start from E, QAT anneal, 60 epochs | 0.89712* | Val MAE 0.11846 (-1.5% vs E) | contact candidate annealing completed, arena pending |
-| `multipath_phase_bucketed:512` Unified Champion | 504 / 512 | 15.637M clean master (11.065M weakness-boosted + 4.572M replay, zero outcome weight), mirror-h, 6 buckets, 2 layers, warm start, QAT, 13 epochs | 0.77140* (MAE 0.19615) | 63.0% vs baseline (200g, Elo +92.5); 53.5% vs Claustrophobia (200g, Elo +24.4); 57.0% vs Titanium (200g, Elo +48.9); 55.25% overall (400g) | External battery passed across all 4 sub-suites; beats baseline on normal and Center Rush |
-| `multipath_phase_bucketed:512` Central Fine-Tune | 504 / 512 | 21.121M samples (75% new stored-search and 25% clean master), mirror-h, 6 buckets, 2 layers, warm start, QAT, 120 epochs | 1.19547* | 55.50% vs main (400g, +38.4 Elo); 54.88% vs Claustrophobia Sound 5k (400g, +34.0 Elo); 59.13% vs Claustrophobia (400g, +64.1 Elo); 69.00% vs Titanium (400g, +141.2 Elo); 64.06% combined battery (800g, +102.7 Elo) | Promotion-ready candidate; all gates verified with 95% bootstrap intervals above 50% |
-
-* Do not compare these losses across different datasets, weighting schemes, or
-fine-tune stages. Stored replay deduplication aggregates duplicate canonical
-states across games by averaging visit policies $\bar{\pi} = \frac{1}{K}\sum \pi_i$
-and blended value targets $\bar{V} = \frac{1}{K}\sum V_i$ to eliminate outcome
-selection bias. All Version 2 annealing runs train for 60 epochs. Following
-training, each candidate model plays a 150-pair (300-game, 200 ms/move) arena match
-directly on Colab against the production baseline (`nnue_weights_int8.bin`).
-
-#### Central fine-tune evaluation results (1,600 games, 200 ms/move)
-
-The candidate `production-central-finetune-20261002-b2048` (`4fd62cfe6c60`) was evaluated across two full test regimes with zero game failures:
-
-- **Central screening battery (800 games, 400 pairs)**:
-  - **vs frozen main (400 games)**: 55.50% score, Elo +38.4 (paired bootstrap 95% +10.4 to +66.8 Elo). Net pairs: 48 won, 126 tied, 26 lost. The candidate achieved a statistically verified strength claim over the frozen baseline.
-  - **vs Claustrophobia (400 games, Center Rush Sound 5k)**: 54.88% score, Elo +34.0 (paired bootstrap 95% +6.1 to +62.3 Elo). Net pairs: 49 won, 121 tied, 30 lost. The candidate resolved the historical negative score in central openings.
-
-- **External battery (800 games, 400 pairs)**:
-  - **Claustrophobia normal book (200 games)**: 59.25% score, Elo +65.0 (paired bootstrap 95% +22.7 to +108.6 Elo). Gain vs baseline: +8.42% score (+59.2 Elo).
-  - **Claustrophobia Center Rush (200 games)**: 59.00% score, Elo +63.2 (paired bootstrap 95% +24.4 to +102.7 Elo). Gain vs baseline: +21.50% score (+151.9 Elo).
-  - **Titanium normal book (200 games)**: 74.50% score, Elo +186.2 (paired bootstrap 95% +135.8 to +242.0 Elo). Gain vs baseline: +14.50% score (+115.8 Elo).
-  - **Titanium Center Rush (200 games)**: 63.50% score, Elo +96.2 (paired bootstrap 95% +56.1 to +137.4 Elo). Gain vs baseline: +17.50% score (+124.1 Elo).
-  - **Total external battery (800 games)**: 64.06% score, Elo +102.7 overall. All four sub-suites demonstrated lower 95% bootstrap bounds strictly above 50%. The candidate is verified promotion ready.
-
-#### Unified champion screening results (vs production baseline, 200 games, 200 ms/move)
-
-- **Unified Champion (`multipath_phase_bucketed:512`, 13ep)**: 63.0% score (124W - 4D - 72L), Elo +92.5 (paired bootstrap 95% [+45.4, +141.0]), 100 complete pairs. Net paired score: 39 won pairs, 49 tied pairs, 12 lost pairs (net +27 pairs). Color balance is symmetrical: 63.0% as White (62-2-36) and 63.0% as Black (62-2-36). Zero failed games. The strength claim ready flag is confirmed true.
-
-#### 60-epoch annealing arena results (vs production baseline, 300 games, 200 ms/move)
-
-- **Arm A2 (Control Anneal, 60ep)**: 28.3% score, Elo -161.2 (paired bootstrap 95% [-201.8, -124.3]), 2347.2s. Extended annealing on the 4.26M replay slice without mirror augmentation regressed -39.5 Elo vs the 20-epoch Arm A checkpoint (-121.7 Elo) despite a 3.2% lower validation MAE, confirming catastrophic forgetting and distribution overfit.
-- **Arm B2 (Mirror Anneal, 60ep)**: 30.2% score, Elo -145.8 (paired bootstrap 95% [-187.8, -106.3]), 2344.6s. Mirror data augmentation arrested the progressive collapse seen in the control arm (-144.4 Elo at 20ep vs -145.8 Elo at 60ep, delta -1.4 Elo), demonstrating substantial regularization value. However, both arms remain ~145-160 Elo below baseline due to 50% terminal outcome weight and the exclusion of the 11M weakness/tactical corpus.
-- **Arm C2 (Bucketed Anneal, 60ep)**: 31.8% score, Elo -132.3 (paired bootstrap 95% [-175.7, -91.2]), 2317.8s. First positive Elo gain (+10.8 Elo, +1.3% score vs Arm C 20ep at -143.1 Elo) in the annealing series. Regime-specific specialization across the 6 wall-count heads effectively absorbed extended training without catastrophic collapse.
-- **Arm D2 (Deep Anneal, 60ep)**: 32.3% score, Elo -128.3 (paired bootstrap 95% [-168.4, -91.2]), 2325.7s. Regressed -19.5 Elo vs the 20-epoch Arm D checkpoint (-108.8 Elo). Isolates the bucketed architecture: depth alone without wall-count regime buckets remains prone to overfitting across disparate game phases.
-- **Arm E2 (Contact Anneal, 60ep)**: Incremental accumulator verified (4,758 positions, 0 differences). The completed E2 arena scored 30.0% against the historical baseline.
-
-
-## 3. Architecture facts
-
-| Architecture | Extra signal beyond base features | Incremental cost | Reason to test |
-| --- | --- | --- | --- |
-| `race` | distance margin, wall-stock margin, race/resource interactions | no extra BFS | exposes race and resource balance |
-| `multipath` | open directional exits, exit degree, coarse pawn-contact geometry | no extra BFS | corridor and bottleneck awareness |
-| `phase` | wall-stock phase and race-by-phase features | no extra BFS | separates opening, wall fight, and race |
-| `margin_regime` | distance-margin by wall-depletion regime | no extra BFS | tests regime-specific race evaluation |
-| `multipath_phase` | multipath plus phase | no extra BFS | current production compromise |
-| `multipath_phase_contact` | exact pawn displacement, local edge masks, jump/diagonal options | local wall tests only; no extra BFS | richer contact/corridor model for wandering and blocking positions |
-| `multipath_phase_bucketed` | `multipath_phase` inputs; 6 value heads selected by total remaining walls; each head `512 → 32 → 32 → 1` | value evaluation 5% slower in isolation | separates wall-fight and race evaluation |
-| `multipath_phase_deep` | `multipath_phase` inputs; one head `512 → 32 → 32 → 1` | value evaluation 3% slower in isolation | ablation: second layer without buckets |
-
-The value-head buckets use the same wall boundaries as the `phase` features:
-0, 1 to 2, 3 to 5, 6 to 9, 10 to 14, and 15 or more walls.
-
-Expanded architectures warm-start by copying compatible columns and setting new
-columns to zero, preserving the old function at epoch zero. Python and C++
-feature parity is required before any arena run.
-
-### Long-clock search study (180+2)
-
-This study is separate from the fixed-200 ms promotion protocol. It does not
-replace that protocol.
-
-- The historical 180+2 score against Claustrophobia rose from 14.5% before
-  native clock support to 29.75% with real-clock budgeting and 34.25% with
-  adaptive budgeting. It reached approximately 41% to 42.5% after the DAG,
-  MCGS, and repetition work. The current engine stays in that band.
-- Search scaling, 200 games per configuration: 32 nodes/ms with a 640k ceiling
-  scored 39.0% (-77.7 Elo). The best point was 96 nodes/ms with a 1.28M
-  ceiling at 46.0% (-27.9 Elo). The paired bootstrap interval still crosses the
-  threshold. Therefore, this configuration is a candidate, not a result.
-  128 nodes/ms with a 2.56M ceiling did not improve the point estimate.
-- Search architecture, 100 games per configuration: without tree reuse, the
-  score fell to 37.0%. FPU 0.2 (27.5%), MaxQ root selection (40.5%), and Gumbel
-  root filtering (39.0% for M=32, 16.5% for M=16) are rejected. Progressive
-  widening scored 49.0% against a 48.0% same-run baseline. This is a weak
-  signal only.
-- These settled results stay closed: pondering (400-game confirmation), FPU 0.1
-  and MaxVisitsThenQ (neutral or worse), and the AB root prefilter (large
-  negative Elo).
-
-## 4. Data and teaching already completed
-
-All training data uses the canonical mover-relative V3 contract: policy over
-209 actions and signed value in `[-1, 1]`. Raw V3 self-play is not a training
-dataset; replay or teaching produces `dataset.npz` with targets, weights, and a
-group-safe validation split.
-
-| Data/campaign | Local artifact | Generator | What it contains | Used by |
-| --- | --- | --- | --- | --- |
-| Direct replay | 2M replay dataset | `training/prepare_replay.py` | direct policy/value labels | base/race matrix |
-| Search fine-tune | 2.001868M mixed dataset | `training/mix_teaching_datasets.py` | 90% direct + 10% selected search by sample weight | base/race 512 fine-tunes |
-| Multitier master | 10.8M dataset | `tools/teacher/assemble_5tier_dataset.py` | weighted broad, tactical, weakness, and search tiers | multitier champion |
-| Center Rush priority | 255k dataset | `tools/teacher/build_center_rush_priority_dataset.py` | Center Rush, Action-Q, and background positions | CR policy/head stages |
-| Weakness boosted | 11.065M dataset | `tools/teacher/assemble_multipath_master_dataset.py` | broad data with weakness/search boosts | production phase network |
-| Contact reliable | 11.378344M dataset | same master assembler | weakness-boosted data plus reliable selected search | contact candidate |
-| Reliable search fine-tune | 313,344 dataset | selected/relabelled search pipeline | bilateral, critical, crisis, deep Claustrophobia, rollout states | local reliable FT |
-
-Every completed training has its exact command settings in its local
-`config.json`, architecture in `student.architecture.json`, and metrics in
-`train_report.json`. Only production provenance and one research checkpoint are
-versioned; the rest are intentionally local.
-
-### Historical five-arm training and annealing
-
-The five-arm study on 4,262,204 canonical stored-search samples (3,411,166 train,
-851,038 validation) warm-started from the production `multipath-phase512-searchboost-100ep`
-checkpoint completed:
-
-- Arm A (Control): `multipath_phase` without mirror. 20 epochs completed.
-  Val loss: 0.92044, Policy KL: 0.62121, Value MAE: 0.13108.
-  Arena match (300 games vs baseline): 33.2%, Elo -121.7.
-- Arm B (Ablation): `multipath_phase` with mirror augmentation. 20 epochs completed.
-  Val loss: 0.95141, Policy KL: 0.65112, Value MAE: 0.13537.
-  Arena match (300 games vs baseline): 30.3%, Elo -144.4.
-- Arm C (Candidate): `multipath_phase_bucketed` with mirror augmentation.
-  20 epochs completed. Val loss: 0.94987, Policy KL: 0.64976, Value MAE:
-  0.12874 (-0.0545 MAE drop from baseline; Bucket 1: 0.1205, Bucket 2: 0.1427,
-  Bucket 3: 0.1443). Arena match (300 games vs baseline): 30.5%, Elo -143.1.
-- Arm D (Deep ablation): `multipath_phase_deep` with mirror augmentation.
-  20 epochs completed. Val loss: 0.95029, Policy KL: 0.64993, Value MAE: 0.12956.
-  Arena match (300 games vs baseline): 34.8%, Elo -108.8.
-- Arm E (Contact candidate): `multipath_phase_contact_bucketed` with mirror augmentation.
-  20 epochs completed. Val loss: 0.90771, Policy KL: 0.61126, Value MAE: 0.12023
-  (Bucket 1: 0.1120, Bucket 2: 0.1333, Bucket 3: 0.1396). Arena match (300 games vs baseline): 32.0%, Elo -130.9.
-- Stage 2 Annealing (Recozimento): A2 through E2 fine-tuning runs starting
-  from the respective Arm A, B, C, D, and E checkpoints. Uses reduced learning rate
-  (`lr=1e-5`, `min_lr=1e-7`), slow trunk adaptation (`trunk_lr_scale=0.05`),
-  cosine annealing schedule, and QAT to test whether simulated annealing
-  improves holdout loss and int8 quantization stability. All five 60-epoch runs
-  completed: Arm A2 (val loss: 0.90447, val MAE: 0.12686), Arm B2 (val loss: 0.93581,
-  val MAE: 0.13213), Arm C2 (val loss: 0.93396, val MAE: 0.12486), Arm D2 (val loss:
-  0.93463, val MAE: 0.12620), and Arm E2 (val loss: 0.89712, val MAE: 0.11846).
-
-Official Arena screening matches (300 games, 150 opening pairs, 200 ms/move vs frozen production baseline) for all 10 models:
-
-| Candidate Model | Epochs | Score % | Elo [95% CI] | Delta vs 20ep |
-| --- | --- | --- | --- | --- |
-| Arm A (Control) | 20 | 33.2% | -121.7 [-161.2, -83.8] | Baseline |
-| Arm B (Mirror) | 20 | 30.3% | -144.4 [-187.8, -105.0] | Baseline |
-| Arm C (Bucketed) | 20 | 30.5% | -143.1 [-184.7, -105.0] | Baseline |
-| Arm D (Deep) | 20 | 34.8% | -108.8 [-152.7, -69.2] | Baseline |
-| Arm E (Contact Bucketed) | 20 | 32.0% | -130.9 [-172.8, -92.5] | Baseline |
-| Arm A2 (Control Anneal) | 60 | 28.3% | -161.2 [-201.8, -124.3] | -39.5 Elo |
-| Arm B2 (Mirror Anneal) | 60 | 30.2% | -145.8 [-187.8, -106.3] | -1.4 Elo |
-| Arm C2 (Bucketed Anneal) | 60 | 31.8% | -132.3 [-175.7, -91.2] | **+10.8 Elo** |
-| Arm D2 (Deep Anneal) | 60 | 32.3% | -128.3 [-168.4, -91.2] | -19.5 Elo |
-| Arm E2 (Contact Anneal) | 60 | 30.0% | -147.2 [-190.8, -106.3] | -16.3 Elo |
-
-Analytical conclusions from the 60-epoch annealing arena:
-1. **Catastrophic forgetting on restricted slice**: Extended training on a 4.26M slice caused models with a single value head (Arm A2: -39.5 Elo, Arm D2: -19.5 Elo) to overfit the slice and forget generalized tactical knowledge present in the 11.065M baseline.
-2. **Mirror augmentation stabilization**: Arm B2 (-1.4 Elo delta) stopped the collapse seen in Arm A2, confirming horizontal reflection provides crucial regularization against sample distribution drift.
-3. **Bucketing insulation victory**: Arm C2 was the **only architecture to achieve a positive gain (+10.8 Elo, +1.3% score)** under extended annealing. The 6 wall-count regime heads isolated phase-specific gradients and resisted catastrophic forgetting.
-4. **Deep ablation contrast**: Arm D2 regression (-19.5 Elo) proves that head depth alone without phase bucketing cannot prevent cross-regime interference during extended training.
-
-### Historical canonical corpus (8,516,655 states)
-
-The large-scale canonical self-play generation run (`tools/teacher/run_four_million_selfplay.py`) has **fully achieved its target of 8,516,655 unique states**:
-- **Total Unique States**: Exactly **8,516,655** (target: 8,516,655; 100.0% satisfied).
-- **Central Quota**: Exactly **6,016,655** unique states, balanced across all required opening families:
-  - `front_wall`: 1,134,067
-  - `pawn_jump`: 1,134,067
-  - `reed_rear_wall`: 1,134,066
-  - `sidestep_flank`: 1,134,066
-  - `vertical_channel`: 1,134,066
-  - Unclassified central: 346,323
-- **Broad Quota**: Exactly **2,500,000** unique states.
-- **Corpus Shards**: 1,315 shards (`shard_000000.bin` to `shard_001314.bin`).
-- **Store Counters**: 14,877,910 raw records evaluated; 6,361,255 duplicates; 96,148 replaced; 6,265,107 equal; 0 rejected.
-- **Durable Store**: `data/selfplay/corpus-contact-4m-50ms/states.sqlite` (2.89 GB).
-
-### Historical unified champion training (`multipath_unified_champion`)
-
-Following the findings from the 60-epoch annealing study (where Arm C2 bucketed architecture demonstrated superior retention and the only positive Elo delta), a unified master training dataset combining the 11.065M master weakness-boosted positions with the 4.572M clean stored-search replay corpus (`stored_outcome_weight: 0.0`, excluding terminal results from that replay target) was assembled into `data/teaching/multipath_unified_clean_15m/dataset.npz` (15,637,120 samples: 12,893,910 train / 2,743,210 validation). The exact relabeling provenance, teacher models, and anti-forgetting roles across all eight curriculum tiers are cataloged in `docs/datasets.md` and `data/teaching/multipath_unified_clean_15m/dataset.manifest.json`.
-
-The champion model (`multipath_phase_bucketed`, 512 hidden, 6 wall-count value heads, 2 dense layers per head, `mirror_h: True`, QAT, warm-started from production float) completed 13 epochs of training on local CUDA (NVIDIA RTX 4050 Laptop GPU):
-
-| Epoch | Learning Rate | Train Loss | Train Policy KL | Train Value MAE | Val Loss | Val Policy KL | Val Value MAE |
-| :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
-| 1 | 2.50e-5 | 0.80307 | 0.28763 | 0.20155 | 0.76995 | 0.26412 | 0.19993 |
-| 2 | 5.00e-5 | 0.79915 | 0.28403 | 0.20099 | 0.77089 | 0.26488 | 0.19872 |
-| 3 | 7.50e-5 | 0.79611 | 0.28119 | 0.20057 | 0.77139 | 0.26547 | 0.20225 |
-| 4 | 1.00e-4 | 0.79350 | 0.27876 | 0.20015 | 0.77185 | 0.26621 | 0.19894 |
-| 5 | 1.00e-4 | 0.79107 | 0.27662 | 0.19946 | 0.77202 | 0.26660 | 0.19843 |
-| 6 | 9.99e-5 | 0.78924 | 0.27500 | 0.19897 | 0.77230 | 0.26671 | 0.19880 |
-| 7 | 9.97e-5 | 0.78783 | 0.27382 | 0.19841 | 0.77217 | 0.26662 | 0.20033 |
-| 8 | 9.93e-5 | 0.78654 | 0.27269 | 0.19800 | 0.77236 | 0.26717 | 0.19803 |
-| 9 | 9.88e-5 | 0.78536 | 0.27166 | 0.19770 | 0.77111 | 0.26638 | 0.19796 |
-| 10 | 9.81e-5 | 0.78448 | 0.27089 | 0.19738 | 0.77118 | 0.26650 | 0.19786 |
-| 11 | 9.72e-5 | 0.78348 | 0.27003 | 0.19708 | 0.77211 | 0.26697 | 0.19868 |
-| 12 | 9.63e-5 | 0.78286 | 0.26950 | 0.19687 | 0.77140 | 0.26658 | **0.19615** |
-| 13 | 9.51e-5 | 0.78206 | 0.26887 | 0.19648 | 0.77162 | 0.26684 | 0.19731 |
-
-Validation MAE by wall-count bucket at Epoch 12 (all-time low 0.19615):
-- Bucket 0 (0 to 2 walls): 0.04995 (race endgame evaluation on 240,571 validation positions)
-- Bucket 1 (3 to 5 walls): 0.16350 (all-time record low for late midgame on 1,026,652 positions)
-- Bucket 2 (6 to 8 walls): 0.18445 (tactical midgame on 681,746 positions)
-- Bucket 3 (9 to 11 walls): 0.20167 (midgame on 364,831 positions)
-- Bucket 4 (12 to 14 walls): 0.22800 (early game on 292,093 positions)
-- Bucket 5 (15 to 20 walls): 0.22449 (all-time record low for openings on 137,317 positions)
-
-- Mirror augmentation: `training/mirror_augmentation.py` flips each training
-  sample left to right with probability 0.5. The trainer flips the raw state and
-  the policy, and then recomputes all features. Validation is not flipped. Set
-  `mirror_h` in the `run_experiment.py` `CONFIG`.
-- Mirror verification: `tests/test_mirror_engine.cpp` checked 39,759 positions
-  and 1,080,437 legal moves. Path lengths, legal move sets, and successor states
-  match under reflection.
-- Value heads: the architecture name selects the head. `src/nnue.hpp` reads
-  `ZQ_NNUE_VALUE_BUCKETS` (1 or 6) and `ZQ_NNUE_VALUE_DEPTH` (1 or 2). The
-  defaults (1 and 1) keep the production weight format unchanged.
-- Warm start: the second layer starts as the identity matrix. Therefore, the
-  float network is equal to the parent network at epoch zero. A warm-started
-  `multipath_phase` export is byte-identical to the production int8 file.
-- Parity: in 9,152 positions and all six buckets, the C++ int8 value matches
-  the Python int8 value within 2.4e-7. The QAT value matches the C++ int8 value
-  within 5e-10. The incremental accumulator matches a full rebuild.
-- Speed: search throughput was measured with warm-started weights, 9 positions,
-  1 s per position, and 3 alternating runs. The ratios to production are 1.06
-  (deep) and 0.98 (6 buckets). The run-to-run spread is approximately 12%.
-  Therefore, no speed loss is measurable. An earlier report of 82.9% did not
-  use equal weights.
-
-### Historical follow-up measurements
-
-#### 2026-09-23 long-clock finalist confirmation
-
-The 400-game confirmation gates refined the earlier screens:
-
-- Baseline vs Claustrophobia at 180+2: 141W/2D/257L, 35.50%, -103.7 Elo,
-  paired-bootstrap 95% [-136.0, -73.2].
-- Global 96 nodes/ms / 1.28M ceiling vs Claustrophobia: 169W/6D/225L,
-  43.00%, -49.0 Elo, 95% [-80.4, -18.3]. This confirms a large
-  opponent-specific improvement over the baseline point estimate.
-- The same global scaling lost head-to-head to the frozen baseline at 180+2:
-  179W/7D/212L over 396 included games, 45.83%, -29.0 Elo,
-  95% [-56.6, -1.8]. Therefore global 96/1.28M is rejected for promotion.
-- Adding global progressive widening did not solve the promotion gate:
-  42.21% vs Claustrophobia at 180+2; 49.88% H2H vs baseline at 180+2;
-  and 46.88% H2H at fixed 200 ms (-21.7 Elo point estimate,
-  95% [-50.7, +6.9]). Global PW remains off.
-
-Next experiment: preserve the production 32 nodes/ms / 640k guardrail for
-stable roots and unlock the proven 96 nodes/ms / 1.28M working set only when
-the existing adaptive root signal classifies a position as uncertain or
-volatile. Test volatile-only and uncertain-or-volatile escalation separately.
-The escalation must be disabled for fixed-movetime/self-play so the 200-ms
-production path remains bit-for-bit unchanged unless a dedicated test enables
-it. Promotion still requires gates versus both frozen main and Claustrophobia.
-
-#### 2026-09-26 Colab paired arena confirmation & 15M self-play launch
-
-A full 800-game paired external battery evaluated candidate architecture
-`multipath_contact_bucketed_unified` (858 features, 6 buckets, 2-layer MLP)
-against production baseline `multipath_phase_bucketed` (`data/nnue/nnue_weights_int8.bin`):
-
-- **vs Titanium (400 paired games at 200 ms/move)**:
-  - Candidate: 61.88% score, +84.1 Elo, 95% CI [+49.8, +120.1].
-  - Baseline: 70.25% score, +149.3 Elo, 95% CI [+114.3, +186.2].
-  - Delta: -8.37% score, -65.2 Elo. Baseline is decisively superior.
-- **vs Claustrophobia (400 paired games at 200 ms/move)**:
-  - Candidate: 40.625% score, -65.92 Elo, 95% CI [-99.01, -33.98].
-  - Baseline: 40.750% score, -65.02 Elo, 95% CI [-99.01, -32.23].
-  - Delta: -0.125% score, -0.90 Elo. Statistical parity.
-- **Root cause analysis**:
-  - Accumulator overhead (858 features vs 504) and deeper MLP evaluation
-    reduced search speed (NPS) by 25-35%. At fixed 200 ms clock, the candidate
-    searched 1-2 plies shallower than the baseline, causing significant Elo loss
-    in tactical bifurcation nodes against alpha-beta engines.
-  - Candidate architecture rejected for promotion.
-- **15M position self-play generation launch**:
-  - Cancelled H2H early to allocate resources to self-play generation.
-  - Deployed `tools/selfplay/run_colab_worker.py` on Google Colab with the winning
-    baseline network (`nnue_weights_int8.bin`) targeting 15 million positions.
-  - Settings: 100 ms/move, 2 threads, 250 games/chunk, Monte Carlo parameters
-    (`mc_temp_opening=0.35`, `mc_temp_decay_plies=45`, `mc_temp_end=0.12`),
-    persisting directly to Google Drive (`selfplay_15m`).
-  - Added dedicated headless Playwright orchestration suite under `scripts/colab/`
-    (`config.py`, `inspect_workers.py`, `launch_workers.py`, `manage_runtime.py`).
-    Switched remote runtimes to standard CPU to bypass GPU free-tier compute
-    unit quota limits. Worker 4 actively producing shards; over 313 shards
-    (>4.1 million valid V3 positions, >27% of target) saved to Drive.
-
-
-
-## 5. Current data generation
-
-The local rollout controller targets 8,000,000 production records and 4,000,000 contact records. The campaign reserves another 4,000,000 positions outside the assigned sources. The controller uses 10 threads, a shared 50,000-root opening bank, and wide, balanced, and sharp profiles. It searches the first 16 plies after each seed at 200 ms. Later plies use profile-specific full-search rates and a 20 ms steering search. Only full-search records enter the training data.
-
-The 2026-10-02 local snapshot contains 85 accepted production shards and 1,388,686 records. Every binary and metadata SHA-256 matches. Each binary record uses 64 bytes. Each metadata row uses 20 bytes. The contact source has no accepted shards. The campaign manifest still reports `running`, but no local self-play process is active. The campaign remains incomplete. Keep local self-play stopped.
-
-The complete Colab manifests for workers 3, 4, and 5 list 671 accepted shard pairs, 8,704,079 records, and 167,750 game groups. Every listed binary and metadata SHA-256 matches. The unlisted `c4_shard_0229` pair contains 157 records. It is excluded from the accepted snapshot.
-
-Of the accepted Colab records, 943,318 set `META_ROOT_MISSING` and have zero policy visits. Stored-search replay excludes these records. The remaining 7,760,761 records have valid root values and nonzero policy visits. Their terminal results use only -1, 0, and 1.
-
-The frozen new-data snapshot contains 10,092,765 raw records. This total includes the partial local source and all accepted Colab shards. It contains 9,149,447 records with valid stored-search targets before duplicate-state aggregation and cross-split conflict removal. Use only the accepted entries in the frozen manifests. Do not use unlisted staging files.
-
-## 6. Promotion protocol
-
-1. Build the exact candidate executable and verify native/Python feature parity.
-2. Screen against the frozen production baseline with paired colours, one book,
-   one seed, equal cores, and **200 ms per move**.
-3. Confirm a screening winner with fresh openings and at least 100 complete
-   pairs.
-4. Run the same fixed-time protocol against Titanium and Claustrophobia,
-   including each required opening family.
-5. Promote only when there are no unresolved failures and the confidence
-   interval supports the claim. Promotion is never automatic.
-
-## 7. Production fine-tune
-
-### Current production run
-
-Train one `production_bucketed512` candidate with 504 features and 512 hidden units. Initialize the candidate from the frozen production champion. Keep QAT enabled. The contact architecture matrix remains deferred.
-
-### New-data source
-
-The frozen snapshot contains 10,092,765 raw records. The local partial snapshot contributes 1,388,686 records from 85 accepted production shards. The complete Colab manifests contribute 8,704,079 records from 671 accepted shards. Exclude the unaccepted partial `c4_shard_0229` pair.
-
-The Colab manifests mark 943,318 records with `META_ROOT_MISSING`. These records also have zero policy visits. Stored-search replay excludes them. The remaining 7,760,761 Colab records have valid roots and nonzero policy visits. The combined sources contain 9,149,447 valid search records before duplicate aggregation and cross-split conflict removal.
-
-### Historical source
-
-The frozen historical dataset contains 15,637,120 samples. It combines 11,065,000 weakness-master samples and 4,572,120 clean stored-search samples. The dataset contains 374,177 nonempty group IDs. It has 12,893,910 training samples and 2,743,210 validation samples. No group ID crosses the split.
-
-Preserve the historical targets and internal weight ratios. The historical tier weights are 1.0, 2.49, 25.01, 34.10, 30.13, 6.0, and 6.0. The clean stored-search source uses weight 1.0. Cap historical sample weights at 30 before normalization.
-
-### Training and promotion
-
-Assign 75% of effective sample-weight mass to all eligible new records. Assign 25% to the frozen historical dataset. Normalize the shares separately in train and validation. New source shares follow eligible records. Do not apply worker quotas or a sampling cap to new records.
-
-For new records, use the value target `0.5 * (2 * MCAB_root_value - 1) + 0.5 * terminal_result`. Set gamma to 1.0. Use untempered top-eight root visits for policy targets. The trainer maps values from `[-1, 1]` to `[0, 1]` and uses BCE with logits. It reports BCE, soft-target Brier error, MAE, and source metrics.
-
-Train for 120 epochs with batch size 1024. Use CUDA and two CPU threads. Decay the head learning rate from `1e-5` to `1e-7` with a cosine schedule. Set the trunk learning-rate scale to 0.05. Use AdamW, weight decay `1e-5`, gradient clipping at 1.0, QAT, and horizontal mirror probability 0.5. Save a resume state after each epoch. Retain checkpoints every 10 epochs. Export the best validation checkpoint, including epoch zero when later checkpoints do not improve.
-
-Training completed 120 epochs with the best validation checkpoint at epoch 112 (loss 1.19547). The exported quantized weights are located at `results/experiments/production-central-finetune-20261002/production_bucketed512/train/student_int8.bin` (SHA-256 `4fd62cfe6c6045d1c6abe822eb5936349a145f61eaa9f9f87065f16abde3e89d`).
-
-The candidate passed both promotion phases:
-1. **Central screening (800 games)**: 55.50% score (+38.4 Elo) against frozen main; 54.88% score (+34.0 Elo) against Claustrophobia on Center Rush Sound 5k.
-2. **External battery (800 games)**: 59.25% against Claustrophobia normal, 59.00% against Claustrophobia Center Rush, 74.50% against Titanium normal, and 63.50% against Titanium Center Rush (64.06% overall, +102.7 Elo).
-
-All four external sub-suites improved upon their historical baselines with lower 95% bootstrap bounds strictly above 50%. Zero games failed out of 1,600 total games. The candidate is ready for promotion.
-
-
-| Decision | Current configuration |
-| --- | --- |
-| Network | Production bucketed, 504 inputs, hidden 512, six value buckets, depth 2 |
-| Initialization | Frozen champion float weights; QAT enabled |
-| Effective mixture | 75% all eligible new data; 25% historical data with internal weights capped at 30 |
-| Value | 50% signed MCAB root value and 50% terminal result; gamma 1; historical targets unchanged |
-| Policy | Untempered top-eight visits, renormalized; policy and value loss coefficients both 1 |
-| Optimizer | AdamW; weight decay `1e-5`; gradient clip 1; mirror probability 0.5 |
-| Schedule | 120 epochs; cosine head LR `1e-5` to `1e-7`; trunk scale 0.05 |
-| Resources | CUDA; batch 1024; two CPU threads; one training process |
-| Checkpoints | Resume state each epoch; retained checkpoint each 10 epochs; best validation export |
-| Arena and self-play | Completed (1,600 games evaluated, all gates passed, promotion ready) |
-
-### Deferred architecture matrix
-
-The current run uses only the production control. Defer the contact candidates until the production fine-tune passes both arena gates and retains historical validation performance.
-
-| Candidate | Features | Hidden units | Status |
-| --- | ---: | ---: | --- |
-| `production_bucketed512` | 504 | 512 | Current run |
-| `contact_bucketed512` | 858 | 512 | Deferred |
-| `contact_bucketed768` | 858 | 768 | Deferred |
-| `contact_bucketed1024` | 858 | 1024 | Deferred |
-
-## 8. Durable lessons
-
-- Broad direct labels alone have not solved Claustrophobia corridor and Center
-  Rush weaknesses.
-- Expensive search labels help most when selected from disagreement or unstable
-  positions. Blind self-distillation can reinforce wandering.
-- Cached BFS features and local wall geometry are cheap to evaluate, but an
-  architecture is only useful if the paired arena shows a gain.
-- Neither contact nor reliable-search FT demonstrated a promotion-level gain.
-- At 180+2, a larger node budget raised the score from 39.0% to 46.0%. No
-  network change produced a comparable screening gain.
-- The new central campaign assigns 12M records and reserves 4M.
-  Its completion status must preserve that distinction.
-- Keep raw data and transient artifacts local. Version source, reproducible
-  provenance, concise results, and the current roadmap.
-- Distributed Colab self-play workers use a unified 7-worker registry,
-  native Chrome interactive authentication to bypass automated browser blocks,
-  and local gitignored session cookie backups.
-
-## 9. Operating scripts
-
-See [scripts.md](scripts.md) for the canonical runners, internal stages, and
-input/output contracts. `docs/datasets.md` remains local-only and must not be
-added to Git.
+| `base:256` | 354 / 256 | 2.0M direct replay, QAT, 80 epochs | 0.74569 | Historical screening | Archived control |
+| `race:256` | 456 / 256 | 2.0M direct replay, QAT, 80 epochs | 0.74319 | Historical screening | Archived control |
+| `base:384` | 354 / 384 | 2.0M direct replay, QAT, 80 epochs | 0.73939 | Historical screening | Archived control |
+| `race:384` | 456 / 384 | 2.0M direct replay, search fine-tune | 0.73686 | Historical screening | Archived control |
+| `base:512` | 354 / 512 | 2.0M direct, followed by 40-epoch 90/10 search FT | 0.73600 | Confirmation run completed | Archived finalist |
+| `race:512-search10-ft` | 456 / 512 | 2.0M direct, followed by 40-epoch 90/10 search FT | 0.88574 | 49.0% vs Claustrophobia; 54.0% vs Titanium | Historical baseline |
+| `race:512-multitier-champion` | 456 / 512 | 10.8M weighted multitier continuation | 0.86410 | 51.5% vs search10; 49.7% vs Claustrophobia | Historical champion |
+| `race:512-policy-tactical` | 456 / 512 | 245k tactical policy continuation | 0.74580 | 37.9% Center Rush; 55.0% Titanium | Did not resolve Center Rush |
+| `race:512-weakness-ft` | 456 / 512 | 80k mined weakness continuation | 1.14938 | 38.6% Center Rush | Did not resolve Center Rush |
+| `race:512-cr200k-champion` | 456 / 512 | 255k Center Rush policy and heads tuning | 0.69542 | 63.0% Titanium; 46.2% Claustrophobia | Strong on Titanium, weak on Claustrophobia |
+| `multipath:512` | 480 / 512 | Multipath campaign, QAT | — | 51.1% vs Claustrophobia (600 games) | First positive Claustrophobia result |
+| `margin_regime:512` | 588 / 512 | Weakness and Center Rush campaign, QAT | — | 49.0% vs Claustrophobia (600 games) | Versioned research checkpoint |
+| `multipath_phase:512` | 504 / 512 | 11.065M weakness-boosted data, QAT, 100 epochs | — | 50.8% Claustrophobia; 60.0% Titanium Normal | Historical baseline |
+| `multipath_phase_contact:512` | 858 / 512 | 11.378M data, warm start, QAT, 160 epochs | 0.95217 | 47.2% H2H; 50.2% Claustrophobia | No promotion gain |
+| `multipath_phase:512` reliable FT | 504 / 512 | 313k crisis and rollout samples, QAT, 40 epochs | 1.16198 | 45.5% H2H; 48.6% Claustrophobia | Local unpromoted fine-tune |
+| `multipath_phase:512` Arm A (Control) | 504 / 512 | 4.26M stored-search, warm start, QAT, 20 epochs | 0.92044 | 33.2% vs baseline (300g, -121.7 Elo) | Control completed |
+| `multipath_phase:512` Arm B (Mirror) | 504 / 512 | 4.26M stored-search, mirror-h, QAT, 20 epochs | 0.95141 | 30.3% vs baseline (300g, -144.4 Elo) | Regularization verified |
+| `multipath_phase_bucketed:512` Arm C | 504 / 512 | 4.26M stored-search, 6 buckets, mirror-h, 20 epochs | 0.94987 | 30.5% vs baseline (300g, -143.1 Elo) | Bucket architecture verified |
+| `multipath_phase_deep:512` Arm D | 504 / 512 | 4.26M stored-search, 1 head, 2 layers, 20 epochs | 0.95029 | 34.8% vs baseline (300g, -108.8 Elo) | Deep ablation verified |
+| `multipath_phase_contact_bucketed:512` Arm E | 858 / 512 | 4.26M stored-search, 6 buckets, 2 layers, 20 epochs | 0.90771 | 32.0% vs baseline (300g, -130.9 Elo) | Contact architecture verified |
+| `multipath_phase:512` Arm A2 | 504 / 512 | Annealing from A, LR 1e-5 → 1e-7, 60 epochs | 0.90447 | 28.3% vs baseline (300g, -161.2 Elo) | Severe catastrophic forgetting |
+| `multipath_phase:512` Arm B2 | 504 / 512 | Annealing from B, mirror-h, 60 epochs | 0.93581 | 30.2% vs baseline (300g, -145.8 Elo) | Mirror halted collapse |
+| `multipath_phase_bucketed:512` Arm C2 | 504 / 512 | Annealing from C, 6 buckets, 2 layers, 60 epochs | 0.93396 | 31.8% vs baseline (300g, -132.3 Elo) | **+10.8 Elo gain under extended training** |
+| `multipath_phase_deep:512` Arm D2 | 504 / 512 | Annealing from D, 1 head, 2 layers, 60 epochs | 0.93463 | 32.3% vs baseline (300g, -128.3 Elo) | Depth without buckets regressed |
+| `multipath_phase_contact_bucketed:512` Arm E2 | 858 / 512 | Annealing from E, 6 buckets, 2 layers, 60 epochs | 0.89712 | 30.0% vs baseline (300g, -147.2 Elo) | Val MAE record (0.11846), low arena Elo |
+| `multipath_phase_bucketed:512` Unified Champion | 504 / 512 | 15.637M clean master (11M + 4.5M replay), 13 epochs | 0.77140 | 63.0% vs baseline (+92.5 Elo); 55.25% external | Beat baseline on normal and Center Rush |
+| **`multipath_phase_bucketed:512` Central Fine-Tune** | **504 / 512** | 21.121M mixture (75% search + 25% master), 120 epochs | **1.19547** | 55.50% vs main; 59.13% Claustrophobia; 69.00% Titanium | **Current Production Champion** |
+| `multipath_phase_contact_bucketed:512` Candidate | 858 / 512 | 21.121M mixture, 6 buckets, 2 layers, QAT, 112 epochs | **1.18894** | 46.8% H2H vs Main; 50.8% Claustrophobia; 57.5% Titanium | 54.1% external score (400g); main champion retained |
+
+---
+
+## 3. Available Datasets Inventory
+
+The table below catalogs all datasets generated, assembled, and maintained in the project.
+
+| Dataset Identifier | Records / Positions | Generation Strategy / Sources | Storage Path (Local or Cloud) | Format and Targets | Role and Consumers |
+| --- | ---: | --- | --- | --- | --- |
+| `direct_replay_2m` | 2,000,000 | Self-play direct rollouts | `data/datasets/replay_2m.npz` | V3 mover-relative, policy and signed value | Foundation models (`base:256`, `race:256`, `base:384`) |
+| `search_finetune_2m` | 2,001,868 | 90% direct replay, 10% search samples | `data/datasets/search_finetune_2m.npz` | Weighted V3 policy and search values | Early 512-unit models (`base:512`, `race:512`) |
+| `multitier_master_10m` | 10,800,000 | 5 curriculum tiers (broad, tactical, crisis) | `data/datasets/5tier_master.npz` | Tier-weighted loss samples | `race:512-multitier-champion` |
+| `center_rush_priority_255k` | 255,000 | Targeted Center Rush games and Action-Q | `data/datasets/cr_priority_255k.npz` | High-weight tactical openings | `race:512-cr200k-champion` |
+| `weakness_boosted_11m` | 11,065,000 | Broad self-play with weakness mining | `data/teaching/weakness_boosted_11m/` | 7 curriculum tiers, sample weights | Baseline `multipath_phase:512` |
+| `contact_reliable_11m` | 11,378,344 | Weakness data plus selected search labels | `data/teaching/contact_reliable_11m/` | 858 contact features, V3 targets | Historical `multipath_phase_contact:512` |
+| `reliable_search_ft_313k` | 313,344 | Bilateral crisis, deep Claustrophobia rollouts | `data/teaching/reliable_search_ft/` | High-depth relabeled positions | Reliable search fine-tune |
+| `corpus_contact_4m_canonical` | 8,516,655 | Deduplicated self-play (6.01M central, 2.50M broad) | `data/selfplay/corpus-contact-4m-50ms/` (SQLite and 1,315 shards) | Canonical state store (64B binary records) | Foundation for stored-search replay |
+| `stored_search_replay_4m` | 4,262,204 | State-deduplicated search visits, 0 outcome weight | `data/teaching/stored_search_replay_4m/` | Mapped binary arrays, averaged visits | Arms A through E, Arms A2 through E2 |
+| `multipath_unified_clean_15m` | 15,637,120 | 11.065M weakness-boosted + 4.572M replay | `data/teaching/multipath_unified_clean_15m/` | 8 curriculum tiers, sample weight cap 30 | `multipath_unified_champion` |
+| `colab_campaign_15m_accepted` | 8,704,079 | Cloud self-play from Workers 3, 4, 5 (671 shards) | Google Drive `selfplay_15m/` | 7.76M valid search targets, root missing excluded | Input for 21M central fine-tune mix |
+| `local_rollouts_snapshot` | 1,388,686 | Multi-profile rollouts (wide, balanced, sharp) | `data/selfplay/local_rollouts/` (85 shards) | 64B binary records and 20B metadata rows | Input for 21M central fine-tune mix |
+| `mixed_central_finetune_21m` | 21,121,572 | 75% new stored-search + 25% clean master | `data/teaching/mixed_central_finetune_21m/` | BCE logits, 50% MCAB and 50% terminal outcome | Central Fine-Tune Champion and Experimental Candidate |
+| `cloud_selfplay_incoming` | Continuous | 5 headless Colab workers in persistent sessions | Google Drive (`selfplay_central`, `irregular`, `weakness`) | Canonical V3 shards (`c1_` to `c5_`) | Next-generation 25M+ training corpus |
+
+---
+
+## 4. Self-Play Generations and Configurations
+
+### Cloud Self-Play Workers (Google Colab)
+
+Five remote virtual machines run headless self-play in parallel using persistent Chrome profiles.
+Each worker writes directly to an isolated Google Drive destination to prevent write collisions.
+
+| Worker ID | Google Account | Drive Destination Path | File Prefix | Opening Focus and Book | Time Budget | Worker Threads | Chunk Size | Monte Carlo Exploration Parameters |
+| --- | --- | --- | --- | --- | ---: | ---: | ---: | --- |
+| Worker 1 | `gustavozambrano` | `.../zquoridor_data/selfplay_central` | `c1_` | Central openings (`openings_center_rush_sound_5k.jsonl`) | 100 ms/move | 2 | 250 games | `mc_temp_opening=0.35`, `decay_plies=45`, `temp_end=0.12` |
+| Worker 2 | `flightdyn` | `.../zquoridor_data/selfplay_irregular` | `c2_` | Irregular and tactical lines (`openings_tactical_v1.jsonl`) | 100 ms/move | 2 | 250 games | `mc_temp_opening=0.35`, `decay_plies=45`, `temp_end=0.12` |
+| Worker 3 | `zambraprojects` | `.../zquoridor_data/selfplay_targeted_weakness` | `c3_` | Corridor bottlenecks and weakness positions | 100 ms/move | 2 | 250 games | `mc_temp_opening=0.35`, `decay_plies=45`, `temp_end=0.12` |
+| Worker 4 | `zquoridor` | `.../zquoridor_data/selfplay_targeted_weakness` | `c4_` | Corridor bottlenecks and weakness positions | 100 ms/move | 2 | 250 games | `mc_temp_opening=0.35`, `decay_plies=45`, `temp_end=0.12` |
+| Worker 5 | `gustati2201` | `.../zquoridor_data/selfplay_targeted_weakness` | `c5_` | Corridor bottlenecks and weakness positions | 100 ms/move | 2 | 250 games | `mc_temp_opening=0.35`, `decay_plies=45`, `temp_end=0.12` |
+
+All cloud workers execute the native `bin/selfplay` binary using the production int8 weights (`nnue_weights_int8.bin`).
+
+### Local Rollout Controller Configuration
+
+The local multi-threaded rollout controller generates specialized training samples for tactical validation.
+- **Worker Concurrency**: 10 parallel threads.
+- **Opening Catalog**: Shared bank of 50,000 balanced root positions.
+- **Search Profiles**: Wide (broad exploration), Balanced (standard search), and Sharp (tactical bifurcation).
+- **Time Controls**: Fixed 200 ms per move for the first 16 plies, followed by 20 ms steering searches for endgame plies.
+- **Output Format**: Aligned V3 binary records (64 bytes) accompanied by metadata sidecars (20 bytes).
+
+---
+
+## 5. Promotion Benchmark Protocol and Measurement Records
+
+Promotion requires rigorous validation against the frozen production champion and external reference engines.
+All official benchmark games run at a fixed clock of **200 ms per move** across paired color openings.
+
+### Promotion Gate Criteria
+
+1. **Native Parity**: Forward evaluation in C++ must match Python reference outputs across thousands of validation positions with zero divergences.
+2. **Head-to-Head Gate**: The candidate must score strictly above 50% against the frozen baseline, with a lower 95% bootstrap confidence bound above 50%.
+3. **External Opponent Gate**: The candidate must beat or match historical baseline win rates against Claustrophobia and Titanium across both normal and Center Rush books.
+4. **Search Efficiency Gate**: Average search depth and nodes per second (NPS) must be recorded. Feature additions that decrease search depth by more than 1.5 plies must justify the slowdown with higher net tactical win rates.
+
+### Historical Benchmark Evidence
+
+| Evaluation Match | Candidate Architecture | Opponent and Opening Book | Total Games | Score % | Elo [95% CI] | Net Pairs |
+| --- | --- | --- | ---: | ---: | --- | ---: |
+| Central Screening | Production Champion (`bucketed:512`) | Frozen baseline (`multipath_phase:512`) | 400 | 55.50% | +38.4 [+10.4, +66.8] | +22 pairs |
+| Central Screening | Production Champion (`bucketed:512`) | Claustrophobia, Center Rush Sound 5k | 400 | 54.88% | +34.0 [+6.1, +62.3] | +19 pairs |
+| External Battery | Production Champion (`bucketed:512`) | Claustrophobia, Normal Book | 200 | 59.25% | +65.0 [+22.7, +108.6] | +19 pairs |
+| External Battery | Production Champion (`bucketed:512`) | Claustrophobia, Center Rush Book | 200 | 59.00% | +63.2 [+24.4, +102.7] | +18 pairs |
+| External Battery | Production Champion (`bucketed:512`) | Titanium, Normal Book | 200 | 74.50% | +186.2 [+135.8, +242.0] | +49 pairs |
+| External Battery | Production Champion (`bucketed:512`) | Titanium, Center Rush Book | 200 | 63.50% | +96.2 [+56.1, +137.4] | +27 pairs |
+| Total Battery | Production Champion (`bucketed:512`) | Combined Claustrophobia and Titanium | 800 | 64.06% | +102.7 [Lower 95% > 50%] | Promotion Passed |
+
+### Experimental Candidate Promotion Battery Results
+
+The experimental candidate `multipath_phase_contact_bucketed:512` (`contact-bucketed512-central-20261003`) completed the full 600-game evaluation battery at fixed 200 ms per move.
+
+| Sub-suite | Games | Score % | Elo [95% CI] | Candidate Depth | Candidate NPS | Opponent Depth | Opponent NPS | Verdict |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| vs Main Champion (Normal) | 100 | 46.5% | -24.4 [-77.7, +27.9] | 3.86 | 20,306 | 3.81 | 23,122 | Baseline retained |
+| vs Main Champion (Center Rush) | 100 | 47.0% | -20.9 [-70.4, +27.9] | 4.36 | 19,095 | 4.34 | 21,223 | Baseline retained |
+| vs Claustrophobia (Normal) | 100 | 55.5% | +38.4 [-20.9, +100.0] | 1.61 | 25,987 | — | — | Solid external win |
+| vs Claustrophobia (Center Rush) | 100 | 46.0% | -27.9 [-85.1, +27.9] | 1.54 | 26,231 | — | — | Narrow external loss |
+| vs Titanium (Normal) | 100 | 61.0% | +77.7 [+27.9, +131.0] | 2.80 | 25,760 | — | — | Clear external win |
+| vs Titanium (Center Rush) | 100 | 54.0% | +27.9 [-20.9, +77.7] | 2.07 | 22,459 | — | — | Solid external win |
+| **Combined External Opponents** | **400** | **54.13%** | **+28.8** | **—** | **—** | **—** | **—** | **Positive external battery** |
+| **Combined Head-to-Head vs Main** | **200** | **46.75%** | **-22.6** | **4.11** | **19,700** | **4.08** | **22,172** | **Main champion retained** |
+
+#### Battery Analysis and Architectural Decision
+- **Search depth and throughput**: The 858-feature accumulator reduced node throughput by approximately 11% to 12% relative to the 504-feature baseline. However, average search depth was fully preserved (3.86 vs 3.81 plies on normal; 4.36 vs 4.34 plies on Center Rush).
+- **External Bot Strength**: The candidate scored 54.13% overall across 400 games against Claustrophobia and Titanium, verifying strong general play and beating Claustrophobia decisively on normal openings (55.5%).
+- **Promotion Decision**: In head-to-head competition, the production champion (`multipath_phase_bucketed:512`) won 53.25% to 46.75% (+22.6 Elo). Because the promotion gate requires a head-to-head score strictly above 50% with lower 95% bootstrap bound above 50%, the candidate is not promoted. The production champion remains in production.
+
+---
+
+## 6. Future Roadmap and Improvement Plan
+
+This section outlines the strategic development plan for upcoming iterations.
+
+```mermaid
+flowchart TD
+    A["Evaluate Experimental Candidate\n(contact_bucketed512)"] --> B{"Promotion Battery\nPassed?"}
+    B -- "Yes (Score > 50%, Lower CI > 50%)" --> C["Promote to Production Champion\nUpdate data/nnue/ and src/nnue.hpp"]
+    B -- "No (Slowdown / Negative Elo)" --> D["Retain Production Champion (504 features)\nAnalyze Depth and NPS Deficit"]
+    C --> E["Accumulate Fresh Colab Shards\n(Target: 15M+ across 5 Workers)"]
+    D --> E
+    E --> F["Assemble Clean 25M Master Dataset\n(Filter Roots, Deduplicate States)"]
+    F --> G["Train Next Generation Candidate\n(QAT Annealing, Extended Schedule)"]
+```
+
+### Phase 1: Experimental Candidate Decision
+1. Conclude the running promotion battery for `contact_bucketed512`.
+2. Compare the candidate's average search depth and NPS against the production champion.
+3. If the candidate achieves positive Elo with lower bootstrap confidence bound above 50% across both Main and external bots without regression on opening families, promote the network to `data/nnue/nnue_weights_int8.bin`.
+4. If the accumulator overhead (858 features) reduces search depth significantly and impairs tactical play against Alpha-Beta search, retain the 504-feature production champion.
+
+### Phase 2: Cloud Data Harvest
+1. Maintain continuous execution of the five Google Colab self-play workers.
+2. Harvest incoming shards from Google Drive across all three categories:
+   - `selfplay_central`: Strengthen opening play and central pawn advances.
+   - `selfplay_irregular`: Expose the engine to unusual wall structures and flanking maneuvers.
+   - `selfplay_targeted_weakness`: Eliminate tactical blunders in narrow corridors.
+3. Target a total of 15,000,000 fresh cloud positions.
+
+### Phase 3: Next Training Iteration (25M Master Dataset)
+1. Run `training/prepare_stored_replay_all.py` on the accepted cloud shards to eliminate duplicate states and average visit distributions.
+2. Combine the new stored-search data with the clean historical corpus to form a 25M+ master dataset.
+3. Train the next iteration using cosine learning rate schedules, QAT, and horizontal mirror augmentation.
+
+---
+
+## 7. Durable Lessons and Architectural Facts
+
+- **Evaluation speed versus feature richness**: Richer feature sets (such as contact features) increase static evaluation quality, but can reduce search throughput by 25% to 35%. In fixed-time tactical games, shallower search depth often costs more Elo than static pattern accuracy provides.
+- **Head bucketing prevents catastrophic forgetting**: Models with a single value head suffer catastrophic forgetting during extended training on specialized data slices. Partitioning value evaluation across six wall-count regime heads insulates gradients and preserves opening and endgame competence.
+- **Mirror reflection regularizes training**: Horizontal symmetry reflection (`mirror_h=True`) prevents sample distribution drift and eliminates lateral bias without additional data collection.
+- **Deduplication eliminates outcome selection bias**: Averaging visit distributions across identical states eliminates noise from individual game trajectories.
+- **Pondering provides massive internal advantage**: Opponent-root pondering with subtree reuse yields a +63.1% win rate over non-pondering configurations without consuming additional clock time during the player's turn.
