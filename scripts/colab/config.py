@@ -19,6 +19,7 @@ WORKERS: Dict[int, Dict[str, Any]] = {
         "target_shard_prefix": "c1_",
         "drive_dir": "/content/drive/MyDrive/zquoridor_data/selfplay_central",
         "positions": "tools/external/openings_center_rush_sound_5k.jsonl",
+        "extra_args": "--playout-cap --time-ms 400 --cheap-time-ms 50 --full-search-opening-plies 14 --full-search-prob 0.35",
     },
     2: {
         "name": "Colab 2",
@@ -31,6 +32,7 @@ WORKERS: Dict[int, Dict[str, Any]] = {
         "target_shard_prefix": "c2_",
         "drive_dir": "/content/drive/MyDrive/zquoridor_data/selfplay_irregular",
         "positions": "tools/external/openings_irregular_bank.jsonl",
+        "extra_args": "--playout-cap --time-ms 400 --cheap-time-ms 50 --full-search-opening-plies 14 --full-search-prob 0.35",
     },
     3: {
         "name": "Colab 3",
@@ -43,6 +45,7 @@ WORKERS: Dict[int, Dict[str, Any]] = {
         "target_shard_prefix": "c3_",
         "drive_dir": "/content/drive/MyDrive/zquoridor_data/selfplay_targeted_weakness",
         "positions": "tools/external/openings_targeted_weakness_bank.jsonl",
+        "extra_args": "--playout-cap --time-ms 400 --cheap-time-ms 50 --full-search-opening-plies 14 --full-search-prob 0.35",
     },
     4: {
         "name": "Colab 4",
@@ -55,6 +58,7 @@ WORKERS: Dict[int, Dict[str, Any]] = {
         "target_shard_prefix": "c4_",
         "drive_dir": "/content/drive/MyDrive/zquoridor_data/selfplay_targeted_weakness",
         "positions": "tools/external/openings_targeted_weakness_bank.jsonl",
+        "extra_args": "--playout-cap --time-ms 400 --cheap-time-ms 50 --full-search-opening-plies 14 --full-search-prob 0.35",
     },
     5: {
         "name": "Colab 5",
@@ -67,7 +71,7 @@ WORKERS: Dict[int, Dict[str, Any]] = {
         "target_shard_prefix": "c5_",
         "drive_dir": "/content/drive/MyDrive/zquoridor_data/selfplay_exploration",
         "positions": "",
-        "extra_args": "--mc-obvious-plies 10 --mc-temp-obvious 2.5 --mc-temp-opening 1.2 --mc-temp-decay-plies 30 --mc-temp-end 0.12 --playout-cap --time-ms 200 --cheap-time-ms 20 --full-search-opening-plies 16 --full-search-prob 0.35",
+        "extra_args": "--mc-obvious-plies 10 --mc-temp-obvious 2.5 --mc-temp-opening 1.2 --mc-temp-decay-plies 30 --mc-temp-end 0.12 --playout-cap --time-ms 400 --cheap-time-ms 35 --full-search-opening-plies 14 --full-search-prob 0.35",
     },
     6: {
         "name": "Colab 6",
