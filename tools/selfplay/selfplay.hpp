@@ -276,6 +276,8 @@ struct SelfPlayConfig {
     bool playoutCapEnabled = false;
     double fullSearchProb = 1.0;
     int cheapTimeBudgetMs = 20;
+    int cheapTimeEndMs = 0;
+    int cheapTimeDecayPlies = 30;
     // Full searches for the first N plies after a supplied opening seed.
     int fullSearchOpeningPlies = 0;
 
@@ -528,7 +530,17 @@ inline std::vector<TrainingSample> playOneGame(Negamax& engine0, Negamax& engine
         auto searchedMove = [&](bool fullSearch) {
             searchedThisPly = true;
             SearchStats st;
-            int budgetMs = fullSearch ? cfg.timeBudgetMs : cfg.cheapTimeBudgetMs;
+            int cheapBudget = cfg.cheapTimeBudgetMs;
+            if (cfg.cheapTimeEndMs > 0 && cfg.cheapTimeEndMs < cfg.cheapTimeBudgetMs) {
+                int decayPly = std::max(0, ply - cfg.fullSearchOpeningPlies);
+                if (cfg.cheapTimeDecayPlies > 1) {
+                    double frac = std::min(1.0, (double)decayPly / (double)(cfg.cheapTimeDecayPlies - 1));
+                    cheapBudget = (int)std::round(cfg.cheapTimeBudgetMs + frac * (cfg.cheapTimeEndMs - cfg.cheapTimeBudgetMs));
+                } else {
+                    cheapBudget = cfg.cheapTimeEndMs;
+                }
+            }
+            int budgetMs = fullSearch ? cfg.timeBudgetMs : cheapBudget;
             if (budgetMs <= 0) budgetMs = cfg.timeBudgetMs;
             Move m = mcabRunner.choose(engine, s, cfg.maxDepth, budgetMs, st, reptbl);
             nodesOut += st.nodes;

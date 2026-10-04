@@ -136,6 +136,8 @@ static void printUsage(const char* prog) {
         "  --playout-cap       liga datagen cheap/full: so buscas completas viram amostras\n"
         "  --full-search-prob F fracao de buscas reais completas/gravadas (default 1.0)\n"
         "  --cheap-time-ms N   tempo dos plies baratos, trajectory-only (default 20ms)\n"
+        "  --cheap-time-end-ms N piso de decaimento do tempo barato (default 0 = sem decaimento)\n"
+        "  --cheap-time-decay-plies N janela de plies de decaimento do tempo barato (default 30)\n"
         "  --full-search-opening-plies N  primeiros N plies apos seed sempre com busca completa\n"
         "  --nnue-weights PATH caminho para pesos NNUE quantizados (default:\n"
         "                      data/nnue/nnue_weights_int8.bin). NNUE e o\n"
@@ -268,6 +270,8 @@ int main(int argc, char** argv) {
         else if (a == "--playout-cap")      cfg.playoutCapEnabled     = true;
         else if (a == "--full-search-prob") cfg.fullSearchProb        = std::atof(next("--full-search-prob").c_str());
         else if (a == "--cheap-time-ms")    cfg.cheapTimeBudgetMs     = std::atoi(next("--cheap-time-ms").c_str());
+        else if (a == "--cheap-time-end-ms") cfg.cheapTimeEndMs        = std::atoi(next("--cheap-time-end-ms").c_str());
+        else if (a == "--cheap-time-decay-plies") cfg.cheapTimeDecayPlies = std::atoi(next("--cheap-time-decay-plies").c_str());
         else if (a == "--full-search-opening-plies") cfg.fullSearchOpeningPlies = std::atoi(next("--full-search-opening-plies").c_str());
         else if (a == "--nnue-weights")  { cfg.nnueWeightsPath       = next("--nnue-weights");
                                             cfg.nnueWeightsExplicit   = true; }
@@ -378,6 +382,11 @@ int main(int argc, char** argv) {
         if (cfg.cheapTimeBudgetMs <= 0 || cfg.cheapTimeBudgetMs > cfg.timeBudgetMs) {
             std::fprintf(stderr,
                 "erro: --cheap-time-ms deve ser >0 e <= --time-ms quando --playout-cap esta ativo\n");
+            return 1;
+        }
+        if (cfg.cheapTimeEndMs < 0 || (cfg.cheapTimeEndMs > 0 && cfg.cheapTimeEndMs > cfg.cheapTimeBudgetMs)) {
+            std::fprintf(stderr,
+                "erro: --cheap-time-end-ms deve ser >= 0 e <= --cheap-time-ms\n");
             return 1;
         }
     }

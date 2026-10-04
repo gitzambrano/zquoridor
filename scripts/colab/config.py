@@ -70,8 +70,7 @@ WORKERS: Dict[int, Dict[str, Any]] = {
         "target_keywords": ["run_colab_worker.py", "selfplay_exploration", "selfplay", "zquoridor"],
         "target_shard_prefix": "c5_",
         "drive_dir": "/content/drive/MyDrive/zquoridor_data/selfplay_exploration",
-        "positions": "",
-        "extra_args": "--mc-obvious-plies 10 --mc-temp-obvious 2.5 --mc-temp-opening 1.2 --mc-temp-decay-plies 30 --mc-temp-end 0.12 --playout-cap --time-ms 400 --cheap-time-ms 35 --full-search-opening-plies 14 --full-search-prob 0.35",
+        "extra_args": "--mc-obvious-plies 10 --mc-temp-obvious 2.5 --mc-temp-opening 1.2 --mc-temp-decay-plies 30 --mc-temp-end 0.12 --playout-cap --time-ms 400 --cheap-time-ms 100 --cheap-time-end-ms 20 --cheap-time-decay-plies 30 --full-search-opening-plies 14 --full-search-prob 0.35",
     },
     6: {
         "name": "Colab 6",
