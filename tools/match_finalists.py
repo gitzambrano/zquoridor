@@ -27,6 +27,9 @@ CONFIG = {
     "engine2_args": "",
     "pairs": 100,
     "move_time_ms": 200,
+    "base_ms": 0,
+    "increment_ms": 0,
+    "move_overhead_ms": 20,
     "workers": 4,
     "seed": 20260920,
     "openings": str(ROOT / "tools" / "external" / "openings_confirmation_v1.jsonl"),
@@ -55,9 +58,16 @@ def resolve_config(args: argparse.Namespace) -> dict:
     for key in ("engine1_executable", "engine1_nnue", "engine2_executable", "engine2_nnue", "openings"):
         if not Path(config[key]).is_file():
             raise FileNotFoundError(f"{key} does not exist: {config[key]}")
-    for key in ("pairs", "move_time_ms", "workers", "bootstrap"):
+    for key in ("pairs", "workers", "bootstrap"):
         if int(config[key]) <= 0:
             raise ValueError(f"{key} must be positive")
+    if int(config["base_ms"]) > 0:
+        if int(config["increment_ms"]) < 0:
+            raise ValueError("increment_ms must be non-negative")
+    elif int(config["move_time_ms"]) <= 0:
+        raise ValueError("move_time_ms must be positive when base_ms is zero")
+    if int(config["move_overhead_ms"]) < 0:
+        raise ValueError("move_overhead_ms must be non-negative")
     return config
 
 
@@ -79,11 +89,15 @@ def run(config: dict) -> dict:
     e1_args = _split_engine_args(config.get("engine1_args", ""))
     e2_args = _split_engine_args(config.get("engine2_args", ""))
 
+    clocked = int(config.get("base_ms", 0)) > 0
     manifest = local_arena.make_manifest(
         {
-            "protocol": "finalists-h2h-fixed-clock-v1",
+            "protocol": "finalists-h2h-game-clock-v1" if clocked else "finalists-h2h-fixed-clock-v1",
             "pairs": int(config["pairs"]),
-            "move_time_ms": int(config["move_time_ms"]),
+            "move_time_ms": None if clocked else int(config["move_time_ms"]),
+            "base_ms": int(config.get("base_ms", 0)),
+            "increment_ms": int(config.get("increment_ms", 0)),
+            "move_overhead_ms": int(config.get("move_overhead_ms", 20)),
             "seed": int(config["seed"]),
             "engine1_name": config["engine1_name"],
             "engine2_name": config["engine2_name"],
@@ -104,18 +118,26 @@ def run(config: dict) -> dict:
     latest = {(int(row["opening_index"]), int(row["zq_player"])): row for row in old_rows}
 
     def play(index: int, opening: list[str], side: int) -> dict:
+        e1_cmd = [str(e1_exe), "--nnue", str(e1_nnue), *e1_args]
+        e2_cmd = [str(e2_exe), "--nnue", str(e2_nnue), *e2_args]
+        if clocked:
+            overhead = str(int(config.get("move_overhead_ms", 20)))
+            e1_cmd.extend(["--move-overhead", overhead])
+            e2_cmd.extend(["--move-overhead", overhead])
         return local_arena.play_game(
             opponent=config["engine2_name"],
             opening_index=index,
             opening=opening,
             zq_player=side,
-            zq_factory=lambda: local_arena.UciPlayer([str(e1_exe), "--nnue", str(e1_nnue), *e1_args], config["engine1_name"]),
-            opponent_factory=lambda: local_arena.UciPlayer([str(e2_exe), "--nnue", str(e2_nnue), *e2_args], config["engine2_name"]),
-            zq_budget=int(config["move_time_ms"]),
-            opponent_budget=int(config["move_time_ms"]),
-            move_timeout_s=30.0,
+            zq_factory=lambda: local_arena.UciPlayer(e1_cmd, config["engine1_name"]),
+            opponent_factory=lambda: local_arena.UciPlayer(e2_cmd, config["engine2_name"]),
+            zq_budget=0 if clocked else int(config["move_time_ms"]),
+            opponent_budget=0 if clocked else int(config["move_time_ms"]),
+            move_timeout_s=60.0,
             max_plies=240,
             run_id=manifest["run_id"],
+            clock_initial_ms=int(config["base_ms"]) if clocked else None,
+            clock_increment_ms=int(config["increment_ms"]) if clocked else 0,
         )
 
     pending = [
@@ -143,7 +165,9 @@ def run(config: dict) -> dict:
         "schema": "zquoridor.finalists_h2h.v1",
         "engine1": config["engine1_name"],
         "engine2": config["engine2_name"],
-        "move_time_ms": int(config["move_time_ms"]),
+        "move_time_ms": None if clocked else int(config["move_time_ms"]),
+        "base_ms": int(config.get("base_ms", 0)),
+        "increment_ms": int(config.get("increment_ms", 0)),
         "engine1_args": e1_args,
         "engine2_args": e2_args,
         "summary": summary,
