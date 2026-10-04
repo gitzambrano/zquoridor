@@ -1,0 +1,121 @@
+name: V3 cPuct 0.72 External Deep
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/v3-cpuct072-external-deep.yml"
+
+permissions:
+  contents: read
+
+env:
+  PYTHONUNBUFFERED: "1"
+
+jobs:
+  external:
+    name: ext-${{ matrix.candidate }}-${{ matrix.book }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 420
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        include:
+          - candidate: main
+            book: mixed-a
+            openings: tools/external/openings_600g_300pairs.jsonl
+            pairs: 150
+            seed: 20261031
+          - candidate: cpuct072
+            book: mixed-a
+            openings: tools/external/openings_600g_300pairs.jsonl
+            pairs: 150
+            seed: 20261031
+          - candidate: main
+            book: mixed-b
+            openings: tools/external/openings_confirmation_v1.jsonl
+            pairs: 150
+            seed: 20261032
+          - candidate: cpuct072
+            book: mixed-b
+            openings: tools/external/openings_confirmation_v1.jsonl
+            pairs: 150
+            seed: 20261032
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Cache safe external dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            external_bots/claustrophobia/champion.pt
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: cpuct072-ext-deep-safe-${{ runner.os }}-${{ hashFiles('tools/external/bot_setup.py', 'tools/external/claustrophobia_benchmark_bridge.rs', 'training/teachers/claustrophobia_ipc_eval.rs', 'training/teachers/claustrophobia_inference_worker.py') }}
+          restore-keys: |
+            cpuct072-ext-deep-safe-${{ runner.os }}-
+      - name: Install external runtime
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install numpy
+          python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
+      - name: Compare against Claustrophobia and Titanium
+        run: |
+          python tools/run_v3_search_confirmation.py \
+            --candidate "${{ matrix.candidate }}" --gate external \
+            --pairs "${{ matrix.pairs }}" --workers 1 --move-time-ms 200 \
+            --seed "${{ matrix.seed }}" \
+            --opponents claustrophobia,titanium \
+            --openings "${{ matrix.openings }}" \
+            --output "results/cpuct072-external-deep/${{ matrix.candidate }}/${{ matrix.book }}"
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cpuct072-ext-deep-${{ matrix.candidate }}-${{ matrix.book }}
+          path: results/cpuct072-external-deep/${{ matrix.candidate }}/${{ matrix.book }}
+          retention-days: 14
+
+  aggregate:
+    name: aggregate-external-deep
+    runs-on: ubuntu-latest
+    if: always()
+    needs: [external]
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: cpuct072-ext-deep-*
+          path: artifacts
+      - name: Compute deltas vs V3.0
+        run: |
+          python - <<'PY'
+          import json
+          from collections import defaultdict
+          from pathlib import Path
+          by=defaultdict(dict)
+          for p in Path("artifacts").rglob("confirmation_summary.json"):
+              d=json.loads(p.read_text())
+              book=Path(d["openings"]).name
+              for opp,s in d["summaries"].items():
+                  by[(book,d["seed"],opp)][d["candidate"]]=s
+          rows=[]
+          for (book,seed,opp),v in sorted(by.items()):
+              if "main" in v and "cpuct072" in v:
+                  row={"book":book,"seed":seed,"opponent":opp,
+                       "v3_pct":v["main"]["score_pct"],
+                       "cpuct072_pct":v["cpuct072"]["score_pct"],
+                       "delta_pp":v["cpuct072"]["score_pct"]-v["main"]["score_pct"]}
+                  rows.append(row)
+                  print(row)
+          Path("aggregate").mkdir()
+          Path("aggregate/deltas.json").write_text(json.dumps(rows,indent=2)+"\n")
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cpuct072-ext-deep-aggregate
+          path: aggregate/
+          retention-days: 14
