@@ -20,7 +20,7 @@ CONFIG = {
     "pairs": 20,
     "workers": 1,
     "seed": 20260914,
-    "openings": str(ROOT / "tools" / "external" / "openings_titanium.jsonl"),
+    "openings": str(ROOT / "tools" / "external" / "openings_titanium_mined_40.jsonl"),
     "output": str(ROOT / "results" / "benchmarks" / "local"),
     "resume": True,
     "retry_failed": True,

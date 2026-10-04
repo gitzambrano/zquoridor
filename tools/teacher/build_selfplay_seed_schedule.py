@@ -568,7 +568,7 @@ def _benchmark_rows(path: Path, categories: Mapping[int, str]) -> list[dict]:
 
 def discover_source_rows(source_paths: Sequence[Path] | None = None) -> tuple[list[dict], list[str]]:
     """Read benchmark, opening, and generic position sources."""
-    center_paths = [ROOT / "tools/external/openings_center_rush_v1.jsonl", ROOT / "tools/external/openings_center_rush_50pairs.jsonl"]
+    center_paths = [ROOT / "tools/external/openings_center_rush_sound_5k.jsonl"]
     rows: list[dict] = []
     used: list[str] = []
     if source_paths:

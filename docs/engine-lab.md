@@ -16,17 +16,20 @@ The current external reference setup is intentionally pinned:
   `1ac94755f69799f01b2e06869403e701bbf0bd51`.
 - Frozen Titanium harness source: commit
   `0d28b7024ec0a7ac83a7f1a9282d09ec12e483a0`.
-- Frozen historical comparison openings: `tools/external/openings_titanium.jsonl`.
-- Versioned screening book: `tools/external/openings_screen_v1.jsonl` contains 100
-  deterministic, legal six-ply openings. It is the default for the candidate
-  matrix and is intended for directional comparisons.
-- Versioned confirmation book: `tools/external/openings_confirmation_v1.jsonl`
+- Frozen historical comparison openings: `tools/external/openings_titanium_mined_40.jsonl`
+  contains 40 empirical six-ply openings mined from Titanium self-play games.
+- Versioned screening book (Normal): `tools/external/openings_normal_screen_100.jsonl` contains 100
+  deterministic, legal six-ply openings (wall and labyrinth defense). It is the default for
+  the candidate matrix and is intended for directional screening (50 pairs / 100 games).
+- Versioned confirmation book (Normal): `tools/external/openings_normal_confirm_400.jsonl`
   contains 400 deterministic, legal six-ply openings disjoint from the screening
-  and historical books. Use it only for the finalists, with a fixed move clock.
+  and historical books. Use it for broad confirmation of finalists (up to 400 pairs / 800 games).
+- Versioned tactical book (Center Rush): `tools/external/openings_center_rush_sound_5k.jsonl`
+  contains 5,000 sound, search-evaluated central pawn sprints and tactical wall clashes (8 to 12 plies).
 - Reference control: 200 ms/move, paired colors, `TITANIUM_PONDERING=0`.
 
-The four benchmark files under `tools/external/` are copied byte-for-byte from the frozen harness commit.
-Do not casually edit them: a harness change creates a new benchmark protocol and must be identified
+Benchmark opening books under `tools/external/` must remain frozen during comparative evaluations.
+Do not modify opening files during an evaluation campaign: a harness change creates a new benchmark protocol and must be identified
 separately in reports.
 
 `tools/external/build_pinned_titanium.sh` rebuilds Titanium from the exact external SHA. The Gen8
@@ -54,7 +57,7 @@ Pipeline agnosticism does not make the production engine understand an unsupport
 
 ## Benchmark data is not teacher data
 
-The frozen 40-opening Titanium comparison set is an external benchmark. It must not become training data.
+The frozen 40-opening Titanium comparison set (`tools/external/openings_titanium_mined_40.jsonl`) is an external benchmark. It must not become training data.
 `training/teachers/titanium_collect.py` rejects both the benchmark file itself and any independently named
 teacher corpus containing an exact opening from that set. Use an independent opening corpus, split by
 whole openings, and keep a separate unseen external test set.

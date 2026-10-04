@@ -48,7 +48,7 @@ def sample_canonical_states(
     rng.shuffle(valid)
 
     # Block benchmark opening positions
-    openings_path = ROOT / "tools/external/openings_titanium.jsonl"
+    openings_path = ROOT / "tools/external/openings_titanium_mined_40.jsonl"
     blocked = set()
     if openings_path.exists():
         from teachers.teaching_pipeline import _tool

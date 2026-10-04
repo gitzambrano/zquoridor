@@ -25,6 +25,7 @@ from browser_utils import (
     is_cdp_reachable,
     is_profile_in_use,
     dismiss_modals,
+    handle_google_oauth_popup,
     connect_runtime_if_needed,
     get_notebook_dom_state,
     trigger_cell_execution,
@@ -168,6 +169,19 @@ def run_watchdog(cfg: Dict[str, Any]) -> None:
                     keywords = w.get("target_keywords", ["run_colab_worker.py", "selfplay_targeted_weakness", "selfplay_15m", "zquoridor"])
 
                     try:
+                        # Handle OAuth consent or close extraneous background popups
+                        if sess.get("ctx"):
+                            for pg in list(sess["ctx"].pages):
+                                if pg != page and not pg.is_closed():
+                                    if "accounts.google.com" in (pg.url or ""):
+                                        print(f"[{w['name']}] OAuth popup detected. Handling consent...", flush=True)
+                                        handle_google_oauth_popup(pg, w.get("account"))
+                                    elif "about:blank" in (pg.url or ""):
+                                        try:
+                                            pg.close()
+                                        except Exception:
+                                            pass
+
                         dismiss_modals(page)
 
                         # Extract state from Colab DOM

@@ -24,10 +24,10 @@ import numpy as np
 import torch
 from torch.nn import functional as F
 try:
-    from .student_model import Student, encode_features, export, ARCH_CONFIGS
+    from .student_model import Student, encode_features, export, ARCH_CONFIGS, soften_policy
     from .mirror_augmentation import stochastic_mirror_dict_h
 except ImportError:  # Direct execution from the training directory.
-    from student_model import Student, encode_features, export, ARCH_CONFIGS
+    from student_model import Student, encode_features, export, ARCH_CONFIGS, soften_policy
     from mirror_augmentation import stochastic_mirror_dict_h
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -56,6 +56,13 @@ CONFIG = {
     "max_sample_weight": 30.0,
     "policy_weight": 1.0,
     "value_weight": 1.0,
+    "aux_policy_enabled": False,
+    "aux_policy_temperature": 2.0,
+    "aux_policy_weight": 0.15,
+    "aux_policy_lr_scale": 5.0,
+    "validation_mode": "existing",
+    "validation_fraction": 0.008,
+    "validation_seed": None,
     "train_scope": "full",
     "grad_clip": 1.0,
     "patience": 12,
@@ -99,6 +106,104 @@ def split_indices(data):
             if set(groups[val].tolist()) & set(groups[~val].tolist()):
                 raise ValueError(f"training/validation group overlap in {key}")
     return np.flatnonzero(~val), np.flatnonzero(val)
+
+
+def get_validation_split(data, config):
+    mode = config.get("validation_mode", "existing")
+    if mode not in ("existing", "resplit", "none"):
+        raise ValueError(f"validation_mode must be 'existing', 'resplit', or 'none', got {mode!r}")
+
+    n = len(data["value"])
+    if mode == "none":
+        train_idx = np.arange(n, dtype=np.int64)
+        val_idx = np.empty(0, dtype=np.int64)
+        return {
+            "mode": "none",
+            "train_idx": train_idx,
+            "val_idx": val_idx,
+            "train_samples": n,
+            "val_samples": 0,
+            "total_groups": 0,
+            "train_groups": 0,
+            "val_groups": 0,
+            "val_sample_fraction": 0.0,
+        }
+
+    if mode == "resplit":
+        group_key = None
+        for k in ("group_id", "opening_index", "game_id"):
+            if k in data:
+                group_key = k
+                break
+        if group_key is None:
+            raise ValueError("validation_mode='resplit' requires a group identifier ('group_id', 'opening_index', or 'game_id')")
+
+        groups = np.asarray(data[group_key])
+        unique_groups, group_inverse, group_counts = np.unique(groups, return_inverse=True, return_counts=True)
+        n_groups = len(unique_groups)
+        if n_groups < 2:
+            raise ValueError("validation_mode='resplit' requires at least two distinct groups")
+
+        val_frac = float(config.get("validation_fraction", 0.008))
+        seed = config.get("validation_seed")
+        if seed is None:
+            seed = config.get("seed", 20261004)
+        rng = np.random.default_rng(seed)
+        perm = rng.permutation(n_groups)
+
+        target_val = int(round(n * val_frac))
+        target_val = max(1, min(n - 1, target_val))
+
+        cum_counts = np.cumsum(group_counts[perm])
+        k = int(np.searchsorted(cum_counts, target_val))
+        k = max(1, min(n_groups - 1, k + 1))
+
+        is_val_group = np.zeros(n_groups, dtype=bool)
+        is_val_group[perm[:k]] = True
+        is_val = is_val_group[group_inverse]
+
+        train_idx = np.flatnonzero(~is_val)
+        val_idx = np.flatnonzero(is_val)
+
+        overlap = np.intersect1d(groups[train_idx], groups[val_idx])
+        if len(overlap) > 0:
+            raise RuntimeError(f"Group leakage detected in resplit: {len(overlap)} groups")
+
+        return {
+            "mode": "resplit",
+            "group_key": group_key,
+            "train_idx": train_idx,
+            "val_idx": val_idx,
+            "train_samples": len(train_idx),
+            "val_samples": len(val_idx),
+            "total_groups": n_groups,
+            "train_groups": n_groups - k,
+            "val_groups": k,
+            "val_sample_fraction": len(val_idx) / n,
+            "seed": seed,
+        }
+
+    # mode == "existing"
+    train_idx, val_idx = split_indices(data)
+    group_key = None
+    for k in ("group_id", "opening_index", "game_id"):
+        if k in data:
+            group_key = k
+            break
+    train_groups = len(np.unique(data[group_key][train_idx])) if group_key else 0
+    val_groups = len(np.unique(data[group_key][val_idx])) if group_key else 0
+
+    return {
+        "mode": "existing",
+        "train_idx": train_idx,
+        "val_idx": val_idx,
+        "train_samples": len(train_idx),
+        "val_samples": len(val_idx),
+        "total_groups": train_groups + val_groups,
+        "train_groups": train_groups,
+        "val_groups": val_groups,
+        "val_sample_fraction": len(val_idx) / n,
+    }
 
 
 def load_dataset(path):
@@ -185,8 +290,6 @@ def load_dataset(path):
             raise ValueError("source_names must match the source_mass columns")
     if not data.get("_group_separation_verified", False):
         split_indices(data)
-    if "group_id" in data:
-        del data["group_id"]
     return data
 
 
@@ -280,7 +383,7 @@ def weight_decay(config, epoch: int) -> float:
     ) * 0.5 * (1.0 + math.cos(math.pi * progress))
 
 
-_EPOCH_BLOCK_SIZE = 32_768
+_EPOCH_BLOCK_SIZE = 8_192
 _EPOCH_FIELDS = ("own_pawn", "opp_pawn", "walls_h", "walls_v", "own_dist", "opp_dist",
                  "walls_left_own", "walls_left_opp", "policy", "value", "weight")
 
@@ -315,10 +418,15 @@ def _prepare_epoch_block(data, row_indices, config, use_cuda, training, row_orde
 
 
 def _epoch(model, data, indices, config, device, optimizer=None, rng=None):
+    if len(indices) == 0:
+        return dict(loss=0.0, policy_kl=0.0, value_mae=0.0, value_bce=0.0, value_brier=0.0)
     model.train(optimizer is not None)
     training = optimizer is not None
     use_cuda = str(device).startswith("cuda")
-    totals = torch.zeros(6, dtype=torch.float64, device=device)
+    aux_enabled = bool(config.get("aux_policy_enabled", False)) and getattr(model, "aux_policy", None) is not None
+    aux_temp = float(config.get("aux_policy_temperature", 2.0))
+    aux_weight = float(config.get("aux_policy_weight", 0.15))
+    totals = torch.zeros(7, dtype=torch.float64, device=device)
     source_names = data.get("source_names", [])
     source_totals = (torch.zeros((len(source_names), 5), dtype=torch.float64, device=device)
                      if not training and "source_mass" in data else None)
@@ -360,13 +468,22 @@ def _epoch(model, data, indices, config, device, optimizer=None, rng=None):
                 w = prepared["w"][start:end].to(device, non_blocking=use_cuda)
 
                 with torch.set_grad_enabled(training):
-                    logits, policy = model(x)
+                    if aux_enabled:
+                        logits, policy, aux_policy = model(x, return_aux=True)
+                        p_aux = soften_policy(p, aux_temp)
+                        aux_kl = (p_aux * (p_aux.clamp_min(1e-12).log() - F.log_softmax(aux_policy, dim=1))).sum(1)
+                    else:
+                        logits, policy = model(x)
+                        aux_kl = None
+
                     kl = (p * (p.clamp_min(1e-12).log() - F.log_softmax(policy, dim=1))).sum(1)
                     target = (v + 1) / 2
                     vloss = F.binary_cross_entropy_with_logits(logits, target, reduction="none")
                     probability = logits.sigmoid()
                     brier = (probability - target).square()
                     per_sample_loss = config["policy_weight"] * kl + config["value_weight"] * vloss
+                    if aux_enabled:
+                        per_sample_loss = per_sample_loss + aux_weight * aux_kl
                     mass = w.sum()
                     loss = (per_sample_loss * w).sum() / mass
                     if training:
@@ -377,9 +494,11 @@ def _epoch(model, data, indices, config, device, optimizer=None, rng=None):
                         model.clip_weights()
 
                 val_diff = (2 * probability - 1 - v).abs()
+                aux_kl_term = (aux_kl * w).sum() if aux_enabled else torch.zeros((), dtype=torch.float64, device=device)
                 totals += torch.stack((loss.detach() * mass, (kl * w).sum(),
                                        (val_diff * w).sum(), mass,
-                                       (vloss * w).sum(), (brier * w).sum())).detach().to(torch.float64)
+                                       (vloss * w).sum(), (brier * w).sum(),
+                                       aux_kl_term)).detach().to(torch.float64)
 
                 if source_totals is not None:
                     source_weight = prepared["source_mass"][start:end].to(device, non_blocking=use_cuda)
@@ -405,6 +524,8 @@ def _epoch(model, data, indices, config, device, optimizer=None, rng=None):
     res = dict(loss=float(totals[0] / totals[3]), policy_kl=float(totals[1] / totals[3]),
                value_mae=float(totals[2] / totals[3]), value_bce=float(totals[4] / totals[3]),
                value_brier=float(totals[5] / totals[3]))
+    if aux_enabled:
+        res["aux_policy_kl"] = float(totals[6] / totals[3])
     if source_totals is not None:
         source_totals = source_totals.cpu().numpy()
         res["by_source"] = {
@@ -439,9 +560,14 @@ def train(config):
     for key in ("lr", "min_lr", "trunk_lr_scale", "grad_clip"):
         if not math.isfinite(config[key]) or config[key] <= 0:
             raise ValueError(f"{key} must be finite and positive")
-    for key in ("policy_weight", "value_weight", "weight_decay", "min_weight_decay"):
+    for key in ("policy_weight", "value_weight", "weight_decay", "min_weight_decay",
+                "aux_policy_temperature", "aux_policy_weight", "aux_policy_lr_scale"):
         if not math.isfinite(config[key]) or config[key] < 0:
             raise ValueError(f"{key} must be finite and nonnegative")
+    if config["validation_mode"] not in ("existing", "resplit", "none"):
+        raise ValueError(f"validation_mode must be 'existing', 'resplit', or 'none', got {config['validation_mode']!r}")
+    if config["validation_fraction"] <= 0 or config["validation_fraction"] >= 1:
+        raise ValueError("validation_fraction must be in (0, 1)")
     if config["policy_weight"] + config["value_weight"] == 0:
         raise ValueError("at least one loss weight must be positive")
     if config["min_lr"] > config["lr"]:
@@ -462,7 +588,10 @@ def train(config):
     data = load_dataset(path)
     data["weight"] = apply_weight_boosts(
         data["weight"], config["weight_boosts"], config["max_sample_weight"])
-    train_idx, val_idx = split_indices(data)
+    split_info = get_validation_split(data, config)
+    train_idx = split_info["train_idx"]
+    val_idx = split_info["val_idx"]
+    val_mode = split_info["mode"]
     torch.set_num_threads(config["cpu_threads"])
     torch.manual_seed(config["seed"])
     rng = np.random.default_rng(config["seed"])
@@ -474,15 +603,22 @@ def train(config):
         old = Student(config["init_architecture"], config["init_hidden"])
         old.load_float(_path(config["init_from"]))
         model.warm_start(old)
+    if config.get("aux_policy_enabled", False):
+        model.enable_aux_policy()
     model.to(device)
     for name, param in model.named_parameters():
-        enabled = config["train_scope"] == "full" or name.startswith("policy.")
+        enabled = config["train_scope"] == "full" or name.startswith("policy.") or name.startswith("aux_policy.")
         enabled |= config["train_scope"] == "heads" and name.startswith("value")
         param.requires_grad_(enabled)
     groups = []
     for name, param in model.named_parameters():
         if param.requires_grad:
-            scale = config["trunk_lr_scale"] if name.startswith("fc1") else 1.0
+            if name.startswith("fc1"):
+                scale = config["trunk_lr_scale"]
+            elif name.startswith("aux_policy"):
+                scale = config["aux_policy_lr_scale"]
+            else:
+                scale = 1.0
             groups.append({"params": [param], "lr": config["lr"] * scale, "lr_scale": scale})
     optimizer = torch.optim.AdamW(groups, weight_decay=config["weight_decay"])
     identity_config = {k: v for k, v in config.items() if k not in
@@ -507,14 +643,23 @@ def train(config):
             torch.cuda.set_rng_state_all(state["cuda_rng"])
         best, best_loss, bad = state["best"], state["best_loss"], state["bad"]
         history, start, initial = state["history"], state["epoch"], state["initial"]
-        best_epoch = state.get("best_epoch", min(
-            (row["epoch"] for row in history if row["val"]["loss"] == best_loss), default=0))
+        if val_mode == "none":
+            best_epoch = state.get("best_epoch", state["epoch"])
+        else:
+            best_epoch = state.get("best_epoch", min(
+                (row["epoch"] for row in history if "val" in row and row["val"]["loss"] == best_loss), default=0))
         print(f"[resume] checkpoint valido na epoca {start}; pulando avaliacao inicial", flush=True)
     else:
-        initial = _epoch(model, data, val_idx, config, device)
-        best_loss = initial["loss"]
-        best_epoch = 0
-        best = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
+        if val_mode == "none":
+            initial = None
+            best_loss = None
+            best_epoch = 0
+            best = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
+        else:
+            initial = _epoch(model, data, val_idx, config, device)
+            best_loss = initial["loss"]
+            best_epoch = 0
+            best = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
     (folder / "config.json").write_text(json.dumps(identity, indent=2) + "\n", encoding="utf-8")
     if start == 0 and not initial_checkpoint.exists():
         initial_state = dict(fingerprint=fingerprint, model=model.state_dict(),
@@ -526,7 +671,7 @@ def train(config):
         _atomic_torch_save(initial_state, best_checkpoint)
     stopped_early = False
     for epoch in range(start, config["epochs"]):
-        if config["patience"] > 0 and bad >= config["patience"]:
+        if val_mode != "none" and config["patience"] > 0 and bad >= config["patience"]:
             stopped_early = True
             break
         base_lr = learning_rate(config, epoch)
@@ -535,17 +680,24 @@ def train(config):
             group["lr"] = base_lr * group["lr_scale"]
             group["weight_decay"] = epoch_weight_decay
         training = _epoch(model, data, train_idx, config, device, optimizer, rng)
-        validation = _epoch(model, data, val_idx, config, device)
-        row = dict(epoch=epoch + 1, lr=base_lr, weight_decay=epoch_weight_decay,
-                   train=training, val=validation)
-        history.append(row)
-        print(json.dumps(row), flush=True)
-        if validation["loss"] < best_loss:
-            best_loss, bad = validation["loss"], 0
+        if val_mode == "none":
+            validation = None
             best_epoch = epoch + 1
             best = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
+            row = dict(epoch=epoch + 1, lr=base_lr, weight_decay=epoch_weight_decay,
+                       train=training)
         else:
-            bad += 1
+            validation = _epoch(model, data, val_idx, config, device)
+            row = dict(epoch=epoch + 1, lr=base_lr, weight_decay=epoch_weight_decay,
+                       train=training, val=validation)
+            if validation["loss"] < best_loss:
+                best_loss, bad = validation["loss"], 0
+                best_epoch = epoch + 1
+                best = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
+            else:
+                bad += 1
+        history.append(row)
+        print(json.dumps(row), flush=True)
         state = dict(fingerprint=fingerprint, model=model.state_dict(), optimizer=optimizer.state_dict(),
                      best=best, best_loss=best_loss, best_epoch=best_epoch, bad=bad, history=history, epoch=epoch + 1,
                      initial=initial, rng=rng.bit_generator.state, torch_rng=torch.get_rng_state(),
@@ -556,18 +708,30 @@ def train(config):
             _atomic_torch_save(best_state, best_checkpoint)
         if checkpoint_every and (epoch + 1) % checkpoint_every == 0:
             _atomic_torch_save(state, folder / f"epoch_{epoch + 1:04d}.pt")
-    if config["patience"] > 0 and bad >= config["patience"] and len(history) < config["epochs"]:
+    if val_mode != "none" and config["patience"] > 0 and bad >= config["patience"] and len(history) < config["epochs"]:
         stopped_early = True
     model.load_state_dict(best)
     architecture = export(model, folder / "student.bin")
-    report = dict(fingerprint=fingerprint, architecture=architecture, initial_val=initial,
+    report = dict(fingerprint=fingerprint, architecture=architecture,
+                  validation_mode=val_mode,
+                  validation_split=dict(
+                      mode=val_mode,
+                      train_samples=split_info["train_samples"],
+                      val_samples=split_info["val_samples"],
+                      total_groups=split_info.get("total_groups", 0),
+                      train_groups=split_info.get("train_groups", 0),
+                      val_groups=split_info.get("val_groups", 0),
+                      val_sample_fraction=split_info.get("val_sample_fraction", 0.0),
+                  ),
+                  initial_val=initial,
                   best_val_loss=best_loss, best_epoch=best_epoch,
                   samples=len(data["value"]), train_samples=len(train_idx),
                   val_samples=len(val_idx), epochs=len(history), configured_epochs=config["epochs"],
                   training_status="early_stopped" if stopped_early else "complete", history=history,
                   schedule=dict(name=config["schedule"], warmup_epochs=config["warmup_epochs"],
                                 initial_lr=config["lr"], min_lr=config["min_lr"]),
-                  improved_validation=best_loss < initial["loss"], promoted=False)
+                  improved_validation=False if val_mode == "none" else (best_loss < initial["loss"]),
+                  promoted=False)
     (folder / "train_report.json").write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
     return report
 

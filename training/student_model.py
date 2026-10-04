@@ -257,9 +257,26 @@ def _round_ste(x, scale):
     return x + (rounded - x).detach()
 
 
+def soften_policy(p: torch.Tensor, temperature: float, eps: float = 1e-12) -> torch.Tensor:
+    """Softens policy target p by temperature T >= 1.0.
+
+    If temperature == 1.0, returns p unchanged.
+    For zero entries p(a) <= eps, the softened probability remains 0.
+    """
+    if abs(float(temperature) - 1.0) < 1e-7:
+        return p
+    valid = p > eps
+    log_p = torch.full_like(p, -1e9)
+    log_p[valid] = p[valid].log() / float(temperature)
+    max_log = log_p.max(dim=-1, keepdim=True).values
+    exp_log = torch.where(valid, (log_p - max_log).exp(), torch.zeros_like(p))
+    sum_exp = exp_log.sum(dim=-1, keepdim=True).clamp_min(eps)
+    return exp_log / sum_exp
+
+
 class Student(nn.Module):
     def __init__(self, architecture="base", hidden=256, qat=False,
-                 value_buckets=None, value_depth=None):
+                 value_buckets=None, value_depth=None, aux_policy=False):
         super().__init__()
         if architecture not in FEATURES or hidden not in SUPPORTED_HIDDEN:
             widths = "/".join(str(width) for width in SUPPORTED_HIDDEN)
@@ -273,6 +290,8 @@ class Student(nn.Module):
 
         self.fc1 = nn.Linear(FEATURES[architecture], hidden)
         self.policy = nn.Linear(hidden, 209)
+        self.aux_policy = nn.Linear(hidden, 209) if aux_policy else None
+        self.aux_value = None
 
         self.value1_heads = nn.ModuleList([nn.Linear(hidden, 32) for _ in range(self.value_buckets)])
         if self.value_depth == 2:
@@ -286,13 +305,34 @@ class Student(nn.Module):
         self.value1_wl = self.value1_heads[0]
         self.value2_wl = self.value2_heads[0]
 
+    def enable_aux_policy(self):
+        """Enable training-only auxiliary policy head and initialize from production policy."""
+        if self.aux_policy is None:
+            self.aux_policy = nn.Linear(self.hidden, 209).to(self.policy.weight.device)
+        with torch.no_grad():
+            self.aux_policy.weight.copy_(self.policy.weight)
+            self.aux_policy.bias.copy_(self.policy.bias)
+
+    def enable_aux_value(self, aux_type="linear"):
+        """Enable training-only auxiliary value head (short-term horizon / moves-left)."""
+        if self.aux_value is None:
+            device = self.policy.weight.device
+            if aux_type == "mlp":
+                self.aux_value = nn.Sequential(
+                    nn.Linear(self.hidden, 32),
+                    nn.ReLU(),
+                    nn.Linear(32, 1),
+                ).to(device)
+            else:
+                self.aux_value = nn.Linear(self.hidden, 1).to(device)
+
     def _extract_buckets(self, x):
         # In dense_features, walls_left are at 332:343 (own) and 343:354 (opp)
         own_w = x[:, 332:343].argmax(dim=-1)
         opp_w = x[:, 343:354].argmax(dim=-1)
         return get_phase_bucket(own_w + opp_w, self.value_buckets)
 
-    def forward(self, x, buckets=None):
+    def forward(self, x, buckets=None, return_aux=False, return_aux_value=False):
         if self.value_buckets > 1 and buckets is None:
             buckets = self._extract_buckets(x)
 
@@ -306,18 +346,31 @@ class Student(nn.Module):
             a_int = a_int + (torch.floor(a_int) - a_int).detach()
             a = a_int / 255
             p = F.linear(a, _round_ste(self.policy.weight, 64), _round_ste(self.policy.bias, 255 * 64))
+            p_aux = (F.linear(a, _round_ste(self.aux_policy.weight, 64), _round_ste(self.aux_policy.bias, 255 * 64))
+                     if (return_aux and self.aux_policy is not None) else None)
         else:
             a = self.fc1(x).clamp(0, 1).square()
             a_int = None
             p = self.policy(a)
+            p_aux = self.aux_policy(a) if (return_aux and self.aux_policy is not None) else None
+
+        v_aux = self.aux_value(a).squeeze(-1) if (return_aux_value and self.aux_value is not None) else None
 
         if self.value_buckets == 1:
-            return self._value_head(0, a, a_int), p
-        v = torch.zeros(x.shape[0], device=x.device, dtype=x.dtype)
-        for b in range(self.value_buckets):
-            mask = buckets == b
-            if mask.any():
-                v[mask] = self._value_head(b, a[mask], None if a_int is None else a_int[mask])
+            v = self._value_head(0, a, a_int)
+        else:
+            v = torch.zeros(x.shape[0], device=x.device, dtype=x.dtype)
+            for b in range(self.value_buckets):
+                mask = buckets == b
+                if mask.any():
+                    v[mask] = self._value_head(b, a[mask], None if a_int is None else a_int[mask])
+
+        if return_aux and return_aux_value:
+            return v, p, p_aux, v_aux
+        if return_aux and self.aux_policy is not None:
+            return v, p, p_aux
+        if return_aux_value and self.aux_value is not None:
+            return v, p, v_aux
         return v, p
 
     def _value_head(self, b, a, a_int):
@@ -395,6 +448,14 @@ class Student(nn.Module):
         if self.hidden > old.hidden:
             nn.init.normal_(self.fc1.weight[old.hidden:], std=0.01)
             self.fc1.bias[old.hidden:].fill_(0.1)
+
+        if self.aux_policy is not None:
+            if hasattr(old, "aux_policy") and old.aux_policy is not None:
+                self.aux_policy.weight[:, :old.hidden].copy_(old.aux_policy.weight)
+                self.aux_policy.bias.copy_(old.aux_policy.bias)
+            else:
+                self.aux_policy.weight[:, :old.hidden].copy_(old.policy.weight)
+                self.aux_policy.bias.copy_(old.policy.bias)
 
     def layout_keys(self):
         keys = ["w1", "b1"]
@@ -483,6 +544,12 @@ class Student(nn.Module):
         if self.value3_heads is not None:
             for h in self.value3_heads:
                 h.weight.clamp_(-127 / 64, 127 / 64)
+        if self.aux_policy is not None:
+            self.aux_policy.weight.clamp_(-127 / 64, 127 / 64)
+        if self.aux_value is not None:
+            for p in self.aux_value.parameters():
+                p.data.clamp_(-127 / 64, 127 / 64)
+
 
 
 def export(model, path):

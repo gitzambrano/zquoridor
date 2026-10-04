@@ -26,7 +26,7 @@ from common import (  # noqa: E402
 )
 from targets import sample_id  # noqa: E402
 
-FROZEN_BENCHMARK_OPENINGS = (EXTERNAL / "openings_titanium.jsonl").resolve()
+FROZEN_BENCHMARK_OPENINGS = (EXTERNAL / "openings_titanium_mined_40.jsonl").resolve()
 
 
 @dataclass(frozen=True)

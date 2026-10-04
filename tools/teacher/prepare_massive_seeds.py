@@ -18,7 +18,7 @@ ROOT = Path(__file__).resolve().parents[2]
 # Edit this block for any compatible weakness and opening sources.
 CONFIG = {
     "mined_file": str(ROOT / "data/teaching/mined_weaknesses_all.jsonl"),
-    "center_rush_file": str(ROOT / "tools/external/openings_center_rush_v1.jsonl"),
+    "center_rush_file": str(ROOT / "tools/external/openings_center_rush_sound_5k.jsonl"),
     "out_file": str(ROOT / "data/teaching/massive_seeds_3500.jsonl"),
     "seed": 20260919,
     "max_seeds": 3500,

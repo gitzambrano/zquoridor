@@ -68,9 +68,22 @@ def test_production_bucketed_warm_start_contact_width_export_and_native_parity(t
     if not PRODUCTION_FLOAT.exists():
         pytest.skip("production float weights unavailable")
 
+    manifest_path = (
+        ROOT / "results" / "experiments" / "aux_policy_stage_a" /
+        "Soup_Tri_Equal" / "student.architecture.json"
+    )
+    if not manifest_path.exists():
+        manifest_path = (
+            ROOT / "results" / "experiments" / "production-central-finetune-20261002" /
+            "production_bucketed512" / "train" / "student.architecture.json"
+        )
+    if not manifest_path.exists():
+        manifest_path = (
+            ROOT / "results" / "experiments" / "multipath_unified_champion" /
+            "student.architecture.json"
+        )
     assert hashlib.sha256(PRODUCTION_FLOAT.read_bytes()).hexdigest() == json.loads(
-        (ROOT / "results" / "experiments" / "multipath_unified_champion" /
-         "student.architecture.json").read_text(encoding="utf-8")
+        manifest_path.read_text(encoding="utf-8")
     )["float_sha256"]
 
     data = _six_bucket_states()

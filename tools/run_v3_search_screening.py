@@ -103,7 +103,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--seed", type=int, default=20261003)
     parser.add_argument(
         "--openings",
-        default=str(ROOT / "tools" / "external" / "openings_screen_v1.jsonl"),
+        default=str(ROOT / "tools" / "external" / "openings_normal_screen_100.jsonl"),
     )
     parser.add_argument(
         "--output",

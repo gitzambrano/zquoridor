@@ -300,7 +300,7 @@ def run_baseline_arena(config: dict):
         ("Arm E2 (Contact Anneal, 60ep)", base_dir / "arm_e2_anneal_60ep", "multipath_phase_contact_bucketed"),
     ]
 
-    openings_path = ROOT / "tools/external/openings_600g_300pairs.jsonl"
+    openings_path = ROOT / "tools/external/openings_normal_confirm_400.jsonl"
     openings = run_benchmark._read_openings(openings_path, pairs, seed=20260920)
 
     print("\n" + "=" * 70)

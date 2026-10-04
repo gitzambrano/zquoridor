@@ -586,7 +586,7 @@ def run(config):
     # Exclude all historical benchmark opening states, including prefixes.
     from teachers.teaching_pipeline import _tool
     from build_teacher_soft import encode_states
-    openings = [json.loads(line)["moves"] for line in (ROOT / "tools/external/openings_titanium.jsonl").read_text().splitlines() if line.strip()]
+    openings = [json.loads(line)["moves"] for line in (ROOT / "tools/external/openings_titanium_mined_40.jsonl").read_text().splitlines() if line.strip()]
     histories = {tuple(moves[:end]) for moves in openings for end in range(len(moves)+1)}
     blocked_data = encode_states([{"history": list(h)} for h in histories],
                                 _tool("teacher_encode_state", "tools/teacher/encode_state.cpp"))

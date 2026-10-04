@@ -42,7 +42,7 @@ CONFIG: Dict[str, Any] = {
     "workers": 4,
     "claustro_workers": 2,
     "seed": 20261003,
-    "normal_openings": str(ROOT / "tools" / "external" / "openings_screen_v1.jsonl"),
+    "normal_openings": str(ROOT / "tools" / "external" / "openings_normal_screen_100.jsonl"),
     "centerrush_openings": str(ROOT / "tools" / "external" / "openings_center_rush_sound_5k.jsonl"),
     "claustrophobia_device": "cpu",
     "bootstrap": 20000,

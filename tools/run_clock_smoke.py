@@ -21,7 +21,7 @@ CONFIG = {
     "candidate_nnue": None,
     "baseline_exe": None,
     "baseline_nnue": None,
-    "openings": str(ROOT / "tools" / "external" / "openings_screen_v1.jsonl"),
+    "openings": str(ROOT / "tools" / "external" / "openings_normal_screen_100.jsonl"),
     "output": str(ROOT / "results" / "benchmarks" / "clock_smoke"),
     "pairs": 2,
     "seed": 20260920,
