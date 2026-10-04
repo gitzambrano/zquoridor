@@ -70,7 +70,7 @@ Every public runner adheres to the following contract:
 - **Purpose**: Continuous keep-alive monitor for active Google Colab workers. Simulates human idle interactions to prevent disconnects and auto-reconnects dropped runtimes.
 - **Inputs**: Worker registry in `scripts/colab/config.py`.
 - **Outputs**: Health checks, periodic status screenshots, and automatic cell re-execution.
-- **Key CLI flags**: `--worker-ids`, `--check-interval-seconds`, `--headless`.
+- **Key CLI flags**: `--worker-ids`, `--check-interval-seconds`, `--headless`, `--target-delta-positions`.
 
 ### `scripts/colab/report_workers.py`
 - **Purpose**: Audits live Colab notebook DOM state, current shard indices, and games completed across all workers.
@@ -86,7 +86,7 @@ Every public runner adheres to the following contract:
 - **Purpose**: Standalone chunked self-play generator designed to execute on Linux/Colab virtual machines.
 - **Inputs**: Opening bank JSONL, self-play binary (`bin/selfplay`), int8 weights.
 - **Outputs**: Aligned V3 shards (`c{id}_shard_XXXX.bin`) and metadata sidecars in Google Drive.
-- **Key CLI flags**: `--worker-id`, `--drive-dir`, `--total-games`, `--chunk-games`, `--time-ms`, `--positions`.
+- **Key CLI flags**: `--worker-id`, `--drive-dir`, `--total-games`, `--chunk-games`, `--time-ms`, `--positions`, `--mc-temp-obvious`, `--playout-cap`, `--cheap-time-ms`, `--full-search-opening-plies`, `--full-search-prob`.
 
 ---
 
@@ -167,7 +167,20 @@ Every public runner adheres to the following contract:
 - **Inputs**: Float32 weight file (`.bin`).
 - **Outputs**: Quantized weight file (`_int8.bin`).
 
+### `training/run_stage_a.py`
+- **Purpose**: Executes Stage A of the auxiliary policy experiment. Trains A0 (control) and A1 (auxiliary softened policy) from frozen production weights, compiles native candidate binaries, and screens candidates against frozen V3.
+- **Inputs**: Dataset directory (`--data`), production weights (`--init-from`), opening books (`--normal-openings`, `--centerrush-openings`).
+- **Outputs**: Candidate models under `results/experiments/aux_policy_stage_a/`, screening transcripts, and aggregate comparison table.
+- **Key CLI flags**: `--epochs`, `--batch-size`, `--lr`, `--aux-policy-temperature`, `--aux-policy-weight`, `--screening-pairs`, `--screening-move-time-ms`, `--run-a0`, `--run-a1`, `--run-screening`.
+
+### `training/compute_surprise_weights.py`
+- **Purpose**: Evaluates Kullback-Leibler divergence between stored search policies and predictions from a frozen baseline network. Computes bounded sample weight multipliers that prioritize tactical surprise positions while conserving total sample mass.
+- **Inputs**: Dataset directory (`--data`), baseline float32 weights (`--model`), architecture and hidden width settings.
+- **Outputs**: Optional modified sample weights array (`--output-weights`) and raw divergence array (`--output-kl`).
+- **Key CLI flags**: `--data`, `--model`, `--architecture`, `--hidden`, `--alpha`, `--s-max`, `--batch-size`, `--device`, `--output-weights`, `--output-kl`.
+
 ### `training/parity_check.py`
 - **Purpose**: Validates mathematical parity between Python forward passes and C++ engine evaluation across thousands of test positions.
 - **Inputs**: Trained student weights and compiled C++ test harness.
 - **Outputs**: Discrepancy report and maximum absolute difference metrics.
+

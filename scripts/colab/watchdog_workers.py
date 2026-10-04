@@ -7,6 +7,7 @@ re-triggers the resilient bootloader cell, and saves periodic status screenshots
 
 import argparse
 import json
+import re
 import sys
 import time
 from datetime import datetime
@@ -40,6 +41,7 @@ CONFIG: Dict[str, Any] = {
     "headless": True,
     "page_timeout_ms": 60000,
     "artifacts_dir": str(REPO_ROOT / "artifacts" / "colab"),
+    "target_delta_positions": 0,
 }
 
 
@@ -47,6 +49,17 @@ def create_artifacts_dir(dir_path: str) -> Path:
     p = Path(dir_path)
     p.mkdir(parents=True, exist_ok=True)
     return p
+
+
+def extract_positions(text: str) -> Optional[int]:
+    """Extract position count from engine or selfplay stdout text."""
+    m = re.search(r"positions\s+(\d+)", text, re.IGNORECASE)
+    if m:
+        return int(m.group(1))
+    m = re.search(r"(\d+)\s+posic", text, re.IGNORECASE)
+    if m:
+        return int(m.group(1))
+    return None
 
 
 def init_worker_session(p: Any, worker: Dict[str, Any], headless: bool, timeout_ms: int) -> Optional[Dict[str, Any]]:
@@ -124,6 +137,8 @@ def run_watchdog(cfg: Dict[str, Any]) -> None:
 
         time.sleep(10)
         cycle = 0
+        worker_prev_positions: Dict[int, int] = {}
+        worker_accumulated: Dict[int, int] = {wid: 0 for wid in worker_ids}
 
         # 2. Continuous monitoring and keep-alive loop
         try:
@@ -164,6 +179,17 @@ def run_watchdog(cfg: Dict[str, Any]) -> None:
                         current_progress = progress_lines[-1] if progress_lines else (lines[-1] if lines else "No output")
                         sess["last_progress"] = current_progress
 
+                        # Track generated positions delta
+                        pos_val = extract_positions(state["outText"])
+                        if pos_val is not None:
+                            if wid in worker_prev_positions:
+                                prev_val = worker_prev_positions[wid]
+                                if pos_val > prev_val:
+                                    worker_accumulated[wid] += (pos_val - prev_val)
+                                elif pos_val < prev_val and pos_val > 0:
+                                    worker_accumulated[wid] += pos_val
+                            worker_prev_positions[wid] = pos_val
+
                         # Keep-alive micro interaction: human-like glide and subtle scroll via Fitts & Bezier
                         try:
                             random_human_idle(page)
@@ -183,7 +209,7 @@ def run_watchdog(cfg: Dict[str, Any]) -> None:
                                     time.sleep(12)
 
                                 print(f"[{w['name']}] Triggering cell execution...")
-                                ok = trigger_cell_execution(page, wid, BOOTLOADER_TEMPLATE, target_keywords=keywords)
+                                ok = trigger_cell_execution(page, wid, BOOTLOADER_TEMPLATE, target_keywords=keywords, force=True)
                                 if ok:
                                     print(f"[{w['name']}] Triggered execution successfully.")
                                 else:
@@ -226,6 +252,29 @@ def run_watchdog(cfg: Dict[str, Any]) -> None:
                                 pass
                             sessions[wid] = None
 
+                target_pos = cfg.get("target_delta_positions", 0)
+                total_accumulated = sum(worker_accumulated.values())
+                if target_pos > 0:
+                    pct = min(100.0, (total_accumulated / target_pos) * 100.0)
+                    print(f"\n[GOAL STATUS] Fresh positions accumulated: {total_accumulated:,} / {target_pos:,} ({pct:.2f}%)")
+                    goal_file = artifacts_path / "goal_status.json"
+                    goal_payload = {
+                        "target_delta_positions": target_pos,
+                        "total_accumulated_positions": total_accumulated,
+                        "progress_percent": pct,
+                        "completed": total_accumulated >= target_pos,
+                        "timestamp": now_str,
+                        "per_worker": worker_accumulated,
+                    }
+                    with open(goal_file, "w", encoding="utf-8") as gf:
+                        json.dump(goal_payload, gf, indent=2)
+
+                    if total_accumulated >= target_pos:
+                        print(f"\n[GOAL COMPLETE] Reached goal of at least {target_pos:,} positions! ({total_accumulated:,} generated)")
+                        break
+
+                sys.stdout.flush()
+
                 sys.stdout.flush()
                 time.sleep(cfg["check_interval_seconds"])
 
@@ -251,12 +300,14 @@ def main() -> None:
     parser.add_argument("--interval", type=int, default=CONFIG["check_interval_seconds"], help="Seconds between checks.")
     parser.add_argument("--no-auto-reconnect", action="store_true", help="Disable automatic VM reconnection.")
     parser.add_argument("--headed", action="store_true", help="Run browser in visible headed mode.")
+    parser.add_argument("--target-delta-positions", type=int, default=CONFIG["target_delta_positions"], help="Stop watchdog when accumulated delta positions reach this target.")
     parser.add_argument("--show-config", action="store_true", help="Display effective configuration and exit.")
     args = parser.parse_args()
 
     effective_cfg = dict(CONFIG)
     effective_cfg["worker_ids"] = args.worker_ids
     effective_cfg["check_interval_seconds"] = args.interval
+    effective_cfg["target_delta_positions"] = args.target_delta_positions
     if args.no_auto_reconnect:
         effective_cfg["auto_reconnect"] = False
     if args.headed:
