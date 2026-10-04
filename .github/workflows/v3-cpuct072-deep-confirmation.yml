@@ -1,0 +1,232 @@
+name: V3 cPuct 0.72 Deep Confirmation
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/v3-cpuct072-deep-confirmation.yml"
+
+permissions:
+  contents: read
+
+env:
+  PYTHONUNBUFFERED: "1"
+
+jobs:
+  main-fixed:
+    name: main-${{ matrix.book }}-seed${{ matrix.seed }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        include:
+          - book: mixed-a
+            openings: tools/external/openings_600g_300pairs.jsonl
+            pairs: 300
+            seed: 20261021
+          - book: mixed-b
+            openings: tools/external/openings_confirmation_v1.jsonl
+            pairs: 200
+            seed: 20261022
+          - book: central
+            openings: tools/external/openings_center_rush_sound_5k.jsonl
+            pairs: 200
+            seed: 20261023
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Deep fixed-clock H2H vs V3.0
+        run: |
+          python tools/run_v3_search_confirmation.py \
+            --candidate cpuct072 --gate main-fixed \
+            --pairs "${{ matrix.pairs }}" --workers 2 --move-time-ms 200 \
+            --seed "${{ matrix.seed }}" \
+            --openings "${{ matrix.openings }}" \
+            --output "results/cpuct072-deep/main/${{ matrix.book }}-seed${{ matrix.seed }}"
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cpuct072-main-${{ matrix.book }}-seed${{ matrix.seed }}
+          path: results/cpuct072-deep/main/${{ matrix.book }}-seed${{ matrix.seed }}
+          retention-days: 14
+
+  external:
+    name: ext-${{ matrix.candidate }}-${{ matrix.book }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        candidate: [main, cpuct072]
+        include:
+          - candidate: main
+            book: mixed-a
+            openings: tools/external/openings_600g_300pairs.jsonl
+            pairs: 150
+            seed: 20261031
+          - candidate: cpuct072
+            book: mixed-a
+            openings: tools/external/openings_600g_300pairs.jsonl
+            pairs: 150
+            seed: 20261031
+          - candidate: main
+            book: mixed-b
+            openings: tools/external/openings_confirmation_v1.jsonl
+            pairs: 150
+            seed: 20261032
+          - candidate: cpuct072
+            book: mixed-b
+            openings: tools/external/openings_confirmation_v1.jsonl
+            pairs: 150
+            seed: 20261032
+          - candidate: main
+            book: central
+            openings: tools/external/openings_center_rush_sound_5k.jsonl
+            pairs: 100
+            seed: 20261033
+          - candidate: cpuct072
+            book: central
+            openings: tools/external/openings_center_rush_sound_5k.jsonl
+            pairs: 100
+            seed: 20261033
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Cache safe external dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            external_bots/claustrophobia/champion.pt
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: cpuct072-deep-safe-${{ runner.os }}-${{ hashFiles('tools/external/bot_setup.py', 'tools/external/claustrophobia_benchmark_bridge.rs', 'training/teachers/claustrophobia_ipc_eval.rs', 'training/teachers/claustrophobia_inference_worker.py') }}
+          restore-keys: |
+            cpuct072-deep-safe-${{ runner.os }}-
+      - name: Install external runtime
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install numpy
+          python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
+      - name: Compare against Claustrophobia and Titanium
+        run: |
+          python tools/run_v3_search_confirmation.py \
+            --candidate "${{ matrix.candidate }}" --gate external \
+            --pairs "${{ matrix.pairs }}" --workers 1 --move-time-ms 200 \
+            --seed "${{ matrix.seed }}" \
+            --opponents claustrophobia,titanium \
+            --openings "${{ matrix.openings }}" \
+            --output "results/cpuct072-deep/external/${{ matrix.candidate }}/${{ matrix.book }}"
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cpuct072-ext-${{ matrix.candidate }}-${{ matrix.book }}
+          path: results/cpuct072-deep/external/${{ matrix.candidate }}/${{ matrix.book }}
+          retention-days: 14
+
+  clock:
+    name: 3plus2-${{ matrix.book }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 720
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        include:
+          - book: mixed
+            openings: tools/external/openings_600g_300pairs.jsonl
+            pairs: 32
+            seed: 20261041
+          - book: central
+            openings: tools/external/openings_center_rush_sound_5k.jsonl
+            pairs: 16
+            seed: 20261042
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Deep 3+2 H2H vs V3.0
+        run: |
+          python tools/run_v3_search_confirmation.py \
+            --candidate cpuct072 --gate main-clock \
+            --pairs "${{ matrix.pairs }}" --workers 1 \
+            --base-ms 180000 --increment-ms 2000 --move-overhead-ms 20 \
+            --seed "${{ matrix.seed }}" \
+            --openings "${{ matrix.openings }}" \
+            --output "results/cpuct072-deep/clock/${{ matrix.book }}"
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cpuct072-clock-${{ matrix.book }}
+          path: results/cpuct072-deep/clock/${{ matrix.book }}
+          retention-days: 14
+
+  aggregate:
+    name: aggregate-cpuct072-deep
+    runs-on: ubuntu-latest
+    if: always()
+    needs: [main-fixed, external, clock]
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: cpuct072-*
+          path: artifacts
+      - name: Aggregate and compute external deltas
+        run: |
+          python - <<'PY'
+          import json
+          from collections import defaultdict
+          from pathlib import Path
+
+          rows=[]
+          for p in Path("artifacts").rglob("confirmation_summary.json"):
+              d=json.loads(p.read_text())
+              base={"candidate":d["candidate"],"gate":d["gate"],
+                    "book":Path(d["openings"]).name,"pairs":d["pairs"],"seed":d["seed"]}
+              if d["gate"].startswith("main"):
+                  s=d.get("summary") or {}
+                  rows.append({**base,"opponent":"v3_main","score_pct":s.get("score_pct"),
+                               "elo":s.get("elo"),"ci":s.get("elo_ci_95"),"failed":s.get("failed_games")})
+              else:
+                  for opp,s in (d.get("summaries") or {}).items():
+                      rows.append({**base,"opponent":opp,"score_pct":s.get("score_pct"),
+                                   "elo":s.get("elo"),"ci":s.get("elo_ci_95"),"failed":s.get("failed_games")})
+
+          ext=[r for r in rows if r["gate"]=="external"]
+          by=defaultdict(dict)
+          for r in ext:
+              by[(r["book"],r["seed"],r["opponent"])][r["candidate"]]=r
+          deltas=[]
+          for key,v in sorted(by.items()):
+              if "main" in v and "cpuct072" in v:
+                  deltas.append({
+                      "book":key[0],"seed":key[1],"opponent":key[2],
+                      "baseline_pct":v["main"]["score_pct"],
+                      "candidate_pct":v["cpuct072"]["score_pct"],
+                      "delta_pp":v["cpuct072"]["score_pct"]-v["main"]["score_pct"],
+                  })
+
+          Path("aggregate").mkdir()
+          Path("aggregate/summary.json").write_text(
+              json.dumps({"rows":rows,"external_deltas":deltas},indent=2)+"\n")
+          print("=== EXTERNAL DELTAS vs V3.0 ===")
+          for d in deltas:
+              print(d)
+          print("=== ALL ROWS ===")
+          for r in sorted(rows,key=lambda x:(x["gate"],x["book"],x["opponent"],x["candidate"])):
+              print(r)
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cpuct072-deep-aggregate
+          path: aggregate/
+          retention-days: 14
