@@ -558,7 +558,7 @@ def generate_positions(args: argparse.Namespace, out: Path) -> list[dict]:
             text=True,
             check=True,
         )
-    frozen = EXTERNAL / "openings_titanium.jsonl"
+    frozen = EXTERNAL / "openings_titanium_mined_40.jsonl"
     openings = load_independent_openings(openings_path, frozen)
     raw_dir = out / "trajectories"
     config = CollectorConfig(
@@ -591,7 +591,7 @@ def independent_states(rows, encoder):
     """Remove frozen opening states and states shared across data splits."""
     fields = ("own_pawn", "opp_pawn", "walls_h", "walls_v", "walls_left_own", "walls_left_opp")
     states = _encode_states(rows, encoder)
-    book = [json.loads(line)["moves"] for line in (EXTERNAL / "openings_titanium.jsonl").read_text().splitlines() if line.strip()]
+    book = [json.loads(line)["moves"] for line in (EXTERNAL / "openings_titanium_mined_40.jsonl").read_text().splitlines() if line.strip()]
     histories = {tuple(moves[:end]) for moves in book for end in range(len(moves)+1)}
     frozen = _encode_states([dict(history=list(h)) for h in histories], encoder)
     blocked = {tuple(int(frozen[k][i]) for k in fields) for i in range(len(histories))}

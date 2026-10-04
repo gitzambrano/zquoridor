@@ -24,7 +24,7 @@ sys.path.insert(0, str(EXTERNAL))
 
 import titanium_arena_fixed as titanium_fixed  # noqa: E402
 
-FROZEN_BENCHMARK_OPENINGS = (EXTERNAL / "openings_titanium.jsonl").resolve()
+FROZEN_BENCHMARK_OPENINGS = (EXTERNAL / "openings_titanium_mined_40.jsonl").resolve()
 
 
 def _read_openings(path: Path) -> list[list[str]]:

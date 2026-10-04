@@ -31,7 +31,7 @@ CONFIG = {
     "move_time_ms": 200,
     "workers": 2,
     "seed": 20260926,
-    "openings": str(ROOT / "tools" / "external" / "openings_600g_300pairs.jsonl"),
+    "openings": str(ROOT / "tools" / "external" / "openings_normal_confirm_400.jsonl"),
     "candidate_weights": str(
         ROOT / "results" / "experiments" / "multipath_contact_bucketed_unified" / "student_int8.bin"
     ),

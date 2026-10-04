@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """Generate a validated opening bank of irregular / perimeter / non-standard openings.
 
-Ingests diverse, irregular opening roots from external benchmark catalogs
-(openings_600g_300pairs.jsonl, openings_claustro_followup_200pairs.jsonl),
-mirrors them horizontally, samples tactical branching extensions, and produces
-a verified zquoridor.position.v1 opening bank for self-play diversity.
+Ingests diverse, irregular opening roots from the external confirmation catalog
+(openings_normal_confirm_400.jsonl), mirrors them horizontally, samples
+tactical branching extensions, and produces a verified zquoridor.position.v1
+opening bank for self-play diversity.
 """
 from __future__ import annotations
 
@@ -29,8 +29,7 @@ from tools.teacher.build_selfplay_seed_schedule import (
 )
 
 CONFIG = {
-    "source_600g": "tools/external/openings_600g_300pairs.jsonl",
-    "source_followup": "tools/external/openings_claustro_followup_200pairs.jsonl",
+    "source_openings": "tools/external/openings_normal_confirm_400.jsonl",
     "out": "tools/external/openings_irregular_bank.jsonl",
     "target_bank_size": 2500,
     "seed": 20261003,
@@ -212,11 +211,9 @@ def generate_bank(config: dict) -> list[dict]:
 
     # Ingest sources
     raw_seeds = []
-    p1 = ROOT / config["source_600g"]
-    p2 = ROOT / config["source_followup"]
-    raw_seeds.extend(load_source_seeds(p1))
-    raw_seeds.extend(load_source_seeds(p2))
-    print(f"Loaded {len(raw_seeds)} raw irregular seeds from source files.", flush=True)
+    source_path = ROOT / config["source_openings"]
+    raw_seeds.extend(load_source_seeds(source_path))
+    print(f"Loaded {len(raw_seeds)} raw irregular seeds from source file.", flush=True)
 
     seen = set()
     bank = []

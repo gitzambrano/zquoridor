@@ -44,6 +44,7 @@ This document governs agent behavior, repository structure, and development safe
 - Run Python import, syntax, and focused test checks after script modifications.
 - Preserve NNUE Python and C++ parity and deterministic engine tests.
 - Require paired game evidence before promoting search or network changes.
+- Strict promotion requirement: A new candidate network must strictly outperform the previous production network across every dimension: head-to-head vs Main, vs Claustrophobia, vs Titanium, and across all opening books (Normal and Center Rush). Underperformance in any single category disqualifies promotion.
 
 ## Engine safety
 

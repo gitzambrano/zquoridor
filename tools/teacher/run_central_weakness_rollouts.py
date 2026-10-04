@@ -143,7 +143,7 @@ RESERVE_UNASSIGNED = CAMPAIGN_TOTAL_TARGET - sum(s["target_positions"] for s in 
 
 # Edit this block for normal use.  CLI options override the scalar/path fields.
 CONFIG = {
-    "opening_book": "tools/external/openings_center_rush_50pairs.jsonl",
+    "opening_book": "tools/external/openings_center_rush_sound_5k.jsonl",
     "out": "data/selfplay/central-weakness-rollouts-16m",
     "seed_bank_size": 50_000,
     # Roughly-eight-ply means most roots are 8 plies, with 9-10 ply tails to

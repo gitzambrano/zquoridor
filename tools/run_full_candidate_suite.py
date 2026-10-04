@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
 """Run complete evaluation battery for a candidate:
-1. 600 games vs Claustrophobia (GPU) on openings_600g_300pairs.jsonl
-2. 100 games vs Titanium on openings_screen_v1.jsonl
-3. 100 games vs Titanium on openings_center_rush_50pairs.jsonl
-4. Comprehensive statistical breakdown of central vs wall openings and White vs Black performance.
+1. Paired games vs Claustrophobia on normal and center-rush opening books.
+2. Paired games vs Titanium on normal and center-rush opening books.
+3. Comprehensive statistical breakdown of central vs wall openings and White vs Black performance.
 """
 import argparse
 import json
@@ -25,7 +24,7 @@ CONFIG = {
     "claustro_centerrush_pairs": 100,
     "titanium_normal_pairs": 100,
     "titanium_centerrush_pairs": 100,
-    "normal_openings": str(ROOT / "tools" / "external" / "openings_screen_v1.jsonl"),
+    "normal_openings": str(ROOT / "tools" / "external" / "openings_normal_screen_100.jsonl"),
     "centerrush_openings": str(ROOT / "tools" / "external" / "openings_center_rush_sound_5k.jsonl"),
     "claustrophobia_device": "gpu",
     "skip_claustro": False,

@@ -32,7 +32,7 @@ CONFIG = {
     "move_overhead_ms": 20,
     "workers": 4,
     "seed": 20260920,
-    "openings": str(ROOT / "tools" / "external" / "openings_confirmation_v1.jsonl"),
+    "openings": str(ROOT / "tools" / "external" / "openings_normal_confirm_400.jsonl"),
     "output": str(ROOT / "results" / "benchmarks" / "finalists-h2h-multipath_unified_champion-vs-baseline-200ms"),
     "bootstrap": 20000,
 }

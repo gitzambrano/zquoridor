@@ -25,7 +25,7 @@ CONFIG = {
     "move_time_ms": 200,
     "workers": 1,
     "seed": 20260916,
-    "openings": str(ROOT / "tools" / "external" / "openings_screen_v1.jsonl"),
+    "openings": str(ROOT / "tools" / "external" / "openings_normal_screen_100.jsonl"),
     "output": str(ROOT / "results" / "benchmarks" / "candidate"),
     "claustrophobia_device": "cpu",
     "claustrophobia_max_sims": 4096,

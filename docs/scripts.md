@@ -24,7 +24,7 @@ Every public runner adheres to the following contract:
   - `--candidate-nnue`: Path to quantized int8 candidate weights.
   - `--baseline-exe`: Path to baseline executable.
   - `--baseline-nnue`: Path to baseline int8 weights.
-  - `--normal-openings`: Path to normal opening book (`tools/external/openings_screen_v1.jsonl`).
+  - `--normal-openings`: Path to normal opening book (`tools/external/openings_normal_screen_100.jsonl`).
   - `--centerrush-openings`: Path to Center Rush book (`tools/external/openings_center_rush_sound_5k.jsonl`).
 - **Outputs**: Game transcripts in `results/benchmarks/<suite>/` and aggregate summary in `promotion_summary.json`.
 - **Default settings**: Fixed 200 ms per move, 50 pairs (100 games) per sub-suite, 4 workers.
@@ -142,6 +142,12 @@ Every public runner adheres to the following contract:
 - **Inputs**: Shard directory or manifest.
 - **Outputs**: Validation report and corruption warnings.
 
+### `training/run_teaching.py`
+- **Purpose**: Generates multi-teacher training datasets combining evaluations from Zquoridor search, direct NNUE, and Claustrophobia teachers.
+- **Inputs**: Optional architecture-neutral JSONL positions (`--positions`), game count, discount, and teacher weights.
+- **Outputs**: Generated positions, cached teacher targets, combined `dataset.npz`, and dataset manifest.
+- **Key CLI flags**: `--mode` (`direct`, `search`, `mixed`), `--games`, `--max-positions`, `--gamma`, `--outcome-weight`, `--bootstrap-weight`.
+
 ---
 
 ## 5. Training, Quantization, and Parity
@@ -178,6 +184,12 @@ Every public runner adheres to the following contract:
 - **Inputs**: Dataset directory (`--data`), baseline float32 weights (`--model`), architecture and hidden width settings.
 - **Outputs**: Optional modified sample weights array (`--output-weights`) and raw divergence array (`--output-kl`).
 - **Key CLI flags**: `--data`, `--model`, `--architecture`, `--hidden`, `--alpha`, `--s-max`, `--batch-size`, `--device`, `--output-weights`, `--output-kl`.
+
+### `training/model_soup.py`
+- **Purpose**: Blends multiple compatible NNUE student checkpoints via convex combination of weights, verifies bounds, exports int8 weights, and compiles native candidates.
+- **Inputs**: Checkpoints or float weight files (`--models <path1> <w1> <path2> <w2> ...`).
+- **Outputs**: Blended float and int8 weights, architecture manifest, soup metadata, and optional native candidate executable.
+- **Key CLI flags**: `--models`, `--out-dir`, `--architecture`, `--hidden`, `--no-build`.
 
 ### `training/parity_check.py`
 - **Purpose**: Validates mathematical parity between Python forward passes and C++ engine evaluation across thousands of test positions.

@@ -24,7 +24,7 @@ def extract_positions(
     seed: int = 20260919,
 ) -> dict:
     rng = random.Random(seed)
-    openings_path = ROOT / "tools/external/openings_titanium.jsonl"
+    openings_path = ROOT / "tools/external/openings_titanium_mined_40.jsonl"
     blocked_openings = set()
     if openings_path.exists():
         with openings_path.open("r", encoding="utf-8") as fh:

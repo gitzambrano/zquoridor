@@ -147,7 +147,7 @@ def main() -> int:
     parser.add_argument(
         "--center-openings",
         type=Path,
-        default=ROOT / "tools/external/openings_center_rush_v1.jsonl",
+        default=ROOT / "tools/external/openings_center_rush_sound_5k.jsonl",
     )
     parser.add_argument(
         "--out",

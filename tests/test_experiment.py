@@ -81,7 +81,7 @@ class ExperimentTests(unittest.TestCase):
                           mirror_h=False, epochs=2, batch_size=2, patience=0,
                           checkpoint_every=1, warmup_epochs=0, device="cpu", cpu_threads=1,
                           resume=True)
-            losses = iter([0.5, 0.4, 0.5, 0.3])
+            losses = iter([0.5, 0.4, 0.3])
 
             def fake_epoch(model, data, indices, config, device, optimizer=None, rng=None):
                 loss = next(losses) if optimizer is None else 1.0

@@ -29,4 +29,8 @@ def check_file(path_str):
         print(f"  Found {errors} errors.")
 
 if __name__ == "__main__":
-    check_file("tools/external/openings_center_rush_50pairs.jsonl")
+    if len(sys.argv) > 1:
+        check_file(sys.argv[1])
+    else:
+        for f in sorted((ROOT / "tools" / "external").glob("openings_*.jsonl")):
+            check_file(str(f))

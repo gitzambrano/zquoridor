@@ -231,7 +231,7 @@ def main() -> int:
 
     # 1. Block benchmark opening positions
     blocked = set()
-    openings_path = ROOT / "tools/external/openings_titanium.jsonl"
+    openings_path = ROOT / "tools/external/openings_titanium_mined_40.jsonl"
     if openings_path.exists():
         from teachers.teaching_pipeline import _tool
         from build_teacher_soft import encode_states

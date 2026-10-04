@@ -166,6 +166,50 @@ def dismiss_modals(page: Any) -> bool:
         return False
 
 
+def handle_google_oauth_popup(popup: Any, target_account: Optional[str] = None) -> bool:
+    """Handle Google OAuth consent dialog popup for Google Drive connection."""
+    try:
+        if popup.is_closed():
+            return False
+        url = popup.url or ""
+        if "accounts.google.com" not in url:
+            return False
+
+        # 1. Select account if account chooser is displayed
+        if target_account:
+            try:
+                acc_loc = popup.locator(f"text={target_account}")
+                if acc_loc.count() > 0 and acc_loc.first.is_visible():
+                    acc_loc.first.click()
+                    time.sleep(1)
+            except Exception:
+                pass
+
+        # 2. Check checkboxes and click Continuar/Permitir
+        for _ in range(4):
+            if popup.is_closed():
+                return True
+            try:
+                for cb in popup.locator("input[type='checkbox']").all():
+                    if not cb.is_checked():
+                        cb.check()
+            except Exception:
+                pass
+            for txt in ["Continuar", "Permitir", "Continue", "Allow"]:
+                try:
+                    btn = popup.locator(f"button:has-text('{txt}'), div[role='button']:has-text('{txt}')")
+                    if btn.count() > 0 and btn.first.is_visible():
+                        btn.first.click()
+                        time.sleep(1)
+                        break
+                except Exception:
+                    pass
+        return popup.is_closed()
+    except Exception:
+        return False
+
+
+
 def connect_runtime_if_needed(page: Any) -> bool:
     """Ensure the Colab runtime kernel is connected."""
     try:
@@ -280,6 +324,19 @@ def get_notebook_dom_state(page: Any, target_keywords: Optional[List[str]] = Non
             outText
         };
     }""", target_keywords)
+
+    if not res.get("outText") and hasattr(page, "frames"):
+        for f in page.frames:
+            try:
+                txt = f.inner_text("body", timeout=300).strip()
+                if txt and not any(k in txt for k in ["reCAPTCHA", "RotateCookiesPage"]):
+                    res["outText"] = txt[-1200:]
+                    break
+            except Exception:
+                pass
+
+    return res
+
 
 
 def trigger_cell_execution(
