@@ -36,6 +36,10 @@ CONFIG = {
     "mc_temp_opening": 0.35,
     "mc_temp_decay_plies": 45,
     "mc_temp_end": 0.12,
+    "playout_cap": False,
+    "cheap_time_ms": 20,
+    "full_search_opening_plies": 0,
+    "full_search_prob": 1.0,
     "base_seed": 20261003,
 }
 
@@ -64,6 +68,16 @@ def main(argv=None):
     parser.add_argument("--positions", type=str, default=CONFIG["positions"])
     parser.add_argument("--weights", type=str, default=CONFIG["weights"])
     parser.add_argument("--exe", type=str, default=CONFIG["exe"])
+    parser.add_argument("--mc-mode", action="store_true", default=CONFIG["mc_mode"])
+    parser.add_argument("--mc-obvious-plies", type=int, default=CONFIG["mc_obvious_plies"])
+    parser.add_argument("--mc-temp-obvious", type=float, default=CONFIG["mc_temp_obvious"])
+    parser.add_argument("--mc-temp-opening", type=float, default=CONFIG["mc_temp_opening"])
+    parser.add_argument("--mc-temp-decay-plies", type=int, default=CONFIG["mc_temp_decay_plies"])
+    parser.add_argument("--mc-temp-end", type=float, default=CONFIG["mc_temp_end"])
+    parser.add_argument("--playout-cap", action="store_true", default=CONFIG["playout_cap"])
+    parser.add_argument("--cheap-time-ms", type=int, default=CONFIG["cheap_time_ms"])
+    parser.add_argument("--full-search-opening-plies", type=int, default=CONFIG["full_search_opening_plies"])
+    parser.add_argument("--full-search-prob", type=float, default=CONFIG["full_search_prob"])
     args = parser.parse_args(argv)
 
     drive_dir = Path(args.drive_dir)
@@ -76,21 +90,27 @@ def main(argv=None):
     if not exe_path.exists():
         sys.exit(f"Error: selfplay binary not found at {exe_path}. Build it first.")
 
-    positions_path = ROOT / args.positions
-    if not positions_path.exists():
-        sys.exit(f"Error: opening positions file not found at {positions_path}")
+    positions_path = None
+    if args.positions and str(args.positions).strip().lower() not in ("none", "null", "false", '""', "''", ""):
+        p = ROOT / args.positions
+        if not p.exists():
+            sys.exit(f"Error: opening positions file not found at {p}")
+        positions_path = p
 
     weights_path = ROOT / args.weights
     if not weights_path.exists():
         sys.exit(f"Error: NNUE weights not found at {weights_path}")
 
     total_chunks = (args.total_games + args.chunk_games - 1) // args.chunk_games
+    book_name = positions_path.name if positions_path else "Standard Start (initial position)"
     print("=" * 70)
     print(f"ZQUORIDOR SELF-PLAY WORKER #{args.worker_id}")
     print(f"  Drive Output Directory: {drive_dir}")
     print(f"  Total Games Target:     {args.total_games:,} ({total_chunks} chunks of {args.chunk_games} games)")
     print(f"  Time Control:           {args.time_ms} ms/move (Monte Carlo mode)")
-    print(f"  Opening Book:           {positions_path.name}")
+    if args.playout_cap:
+        print(f"  Playout Cap:            ON | full={args.full_search_prob:.2f} @ {args.time_ms}ms | cheap={args.cheap_time_ms}ms | opening_plies={args.full_search_opening_plies}")
+    print(f"  Opening Book:           {book_name}")
     print(f"  NNUE Weights:           {weights_path.name}")
     print("=" * 70)
 
@@ -110,22 +130,32 @@ def main(argv=None):
             "--games", str(args.chunk_games),
             "--chunk-games", str(args.chunk_games),
             "--time-ms", str(args.time_ms),
-            "--positions", str(positions_path),
             "--nnue-weights", str(weights_path),
             "--seed", str(shard_seed),
             "--out", str(shard_bin),
             "--meta-out", str(shard_meta),
         ]
+        if positions_path:
+            cmd += ["--positions", str(positions_path)]
         if args.threads > 0:
             cmd += ["--threads", str(args.threads)]
 
-        if CONFIG["mc_mode"]:
+        if args.mc_mode:
             cmd += [
                 "--mc-mode",
-                "--mc-obvious-plies", str(CONFIG["mc_obvious_plies"]),
-                "--mc-temp-opening", str(CONFIG["mc_temp_opening"]),
-                "--mc-temp-decay-plies", str(CONFIG["mc_temp_decay_plies"]),
-                "--mc-temp-end", str(CONFIG["mc_temp_end"]),
+                "--mc-obvious-plies", str(args.mc_obvious_plies),
+                "--mc-temp-obvious", str(args.mc_temp_obvious),
+                "--mc-temp-opening", str(args.mc_temp_opening),
+                "--mc-temp-decay-plies", str(args.mc_temp_decay_plies),
+                "--mc-temp-end", str(args.mc_temp_end),
+            ]
+
+        if args.playout_cap:
+            cmd += [
+                "--playout-cap",
+                "--cheap-time-ms", str(args.cheap_time_ms),
+                "--full-search-opening-plies", str(args.full_search_opening_plies),
+                "--full-search-prob", str(args.full_search_prob),
             ]
 
         t0 = time.time()

@@ -287,6 +287,7 @@ def trigger_cell_execution(
     worker_or_id: Any,
     bootloader_template: Optional[str] = None,
     target_keywords: Optional[List[str]] = None,
+    force: bool = False,
 ) -> bool:
     """Inject bootloader code into the Colab target cell if template is given, and trigger execution."""
     new_code: Optional[str] = None
@@ -295,7 +296,21 @@ def trigger_cell_execution(
             wid = worker_or_id.get("worker_id", "")
             profile = worker_or_id.get("profile", str(wid))
             account_id = worker_or_id.get("account_id", 1)
-            fmt_kwargs = {**worker_or_id, "worker_id": wid, "profile": profile, "account_id": account_id}
+            drive_dir = worker_or_id.get("drive_dir", "")
+            positions = worker_or_id.get("positions", "")
+            extra_args = worker_or_id.get("extra_args", "")
+            cmd_args = f"--positions {positions}" if positions else ""
+            if extra_args:
+                cmd_args = f"{cmd_args} {extra_args}".strip()
+            fmt_kwargs = {
+                **worker_or_id,
+                "worker_id": wid,
+                "profile": profile,
+                "account_id": account_id,
+                "drive_dir": drive_dir,
+                "positions": positions,
+                "cmd_args": cmd_args,
+            }
             new_code = bootloader_template.format(**fmt_kwargs)
         else:
             try:
@@ -303,23 +318,33 @@ def trigger_cell_execution(
                 w = WORKERS.get(worker_or_id, {})
             except Exception:
                 w = {}
+            drive_dir = w.get("drive_dir", "/content/drive/MyDrive/zquoridor_data/selfplay_targeted_weakness")
+            positions = w.get("positions", "")
+            extra_args = w.get("extra_args", "")
+            cmd_args = f"--positions {positions}" if positions else ""
+            if extra_args:
+                cmd_args = f"{cmd_args} {extra_args}".strip()
             fmt_kwargs = {
                 "worker_id": worker_or_id,
                 "profile": worker_or_id,
-                "drive_dir": w.get("drive_dir", "/content/drive/MyDrive/zquoridor_data/selfplay_targeted_weakness"),
-                "positions": w.get("positions", "tools/external/openings_targeted_weakness_bank.jsonl"),
+                "drive_dir": drive_dir,
+                "positions": positions,
+                "cmd_args": cmd_args,
             }
             new_code = bootloader_template.format(**fmt_kwargs)
 
     if target_keywords is None:
         if isinstance(worker_or_id, dict) and "target_keywords" in worker_or_id:
-            target_keywords = worker_or_id["target_keywords"]
+            target_keywords = list(worker_or_id["target_keywords"])
         else:
             target_keywords = ["run_colab_worker.py", "selfplay_targeted_weakness", "selfplay_15m", "zquoridor", "Remessa 2", "zchezz"]
 
+    if "zchezz" not in target_keywords:
+        target_keywords.append("zchezz")
+
     try:
         res = page.evaluate("""(data) => {
-            const { newCode, keywords } = data;
+            const { newCode, keywords, force } = data;
             const nb = typeof colab !== 'undefined' && colab.global ? colab.global.notebook : null;
             if (!nb || !nb.cells || nb.cells.length === 0) return { success: false, reason: 'no_cells' };
 
@@ -339,8 +364,26 @@ def trigger_cell_execution(
                 targetCell = cells[cells.length - 1];
             }
 
+            const elem = targetCell.getElement ? targetCell.getElement() : (targetCell.element_ || targetCell.dom_);
+            const oldText = targetCell.getText ? targetCell.getText() : '';
+            const isProperZquoridor = oldText.includes('zquoridor') && oldText.includes('run_colab_worker.py');
+
             if (targetCell.isRunning && targetCell.isRunning()) {
-                return { success: true, alreadyRunning: true };
+                if (!force && isProperZquoridor) {
+                    return { success: true, alreadyRunning: true };
+                }
+                if (typeof targetCell.interrupt === 'function') {
+                    try { targetCell.interrupt(); } catch (e) {}
+                }
+                if (nb && typeof nb.interrupt === 'function') {
+                    try { nb.interrupt(); } catch (e) {}
+                }
+                if (elem) {
+                    const stopBtn = elem.querySelector('colab-run-button.running, colab-run-button[aria-label*="Interromper"], colab-run-button[title*="Interromper"]');
+                    if (stopBtn) {
+                        try { stopBtn.click(); } catch (e) {}
+                    }
+                }
             }
 
             if (newCode) {
@@ -352,19 +395,35 @@ def trigger_cell_execution(
                 }
 
                 if (typeof monaco !== 'undefined') {
+                    let updatedMonaco = false;
                     for (const m of monaco.editor.getModels()) {
                         const val = m.getValue ? m.getValue() : '';
-                        for (const kw of keywords) {
-                            if (val.includes(kw)) {
-                                m.setValue(newCode);
-                                break;
-                            }
+                        if (val === oldText || (oldText && val.includes(oldText.slice(0, 30)))) {
+                            m.setValue(newCode);
+                            updatedMonaco = true;
+                            break;
                         }
+                    }
+                    if (!updatedMonaco) {
+                        for (const m of monaco.editor.getModels()) {
+                            const val = m.getValue ? m.getValue() : '';
+                            for (const kw of keywords) {
+                                if (val.includes(kw)) {
+                                    m.setValue(newCode);
+                                    updatedMonaco = true;
+                                    break;
+                                }
+                            }
+                            if (updatedMonaco) break;
+                        }
+                    }
+                    if (!updatedMonaco && monaco.editor.getModels().length > 0) {
+                        const models = monaco.editor.getModels();
+                        models[models.length - 1].setValue(newCode);
                     }
                 }
             }
 
-            const elem = targetCell.getElement ? targetCell.getElement() : (targetCell.element_ || targetCell.dom_);
             if (elem && elem.scrollIntoView) elem.scrollIntoView();
 
             if (typeof targetCell.manualExecute === 'function') {
@@ -384,7 +443,7 @@ def trigger_cell_execution(
                 }
             }
             return { success: false, reason: 'no_run_method' };
-        }""", {"newCode": new_code, "keywords": target_keywords})
+        }""", {"newCode": new_code, "keywords": target_keywords, "force": force})
         time.sleep(3)
         dismiss_modals(page)
         return res.get("success", False) if isinstance(res, dict) else False

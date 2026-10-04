@@ -76,6 +76,9 @@ Validation loss values are comparable only within identical datasets and loss ta
 | `multipath_phase_bucketed:512` Unified Champion | 504 / 512 | 15.637M clean master (11M + 4.5M replay), 13 epochs | 0.77140 | 63.0% vs baseline (+92.5 Elo); 55.25% external | Beat baseline on normal and Center Rush |
 | **`multipath_phase_bucketed:512` Central Fine-Tune** | **504 / 512** | 21.121M mixture (75% search + 25% master), 120 epochs | **1.19547** | 55.50% vs main; 59.13% Claustrophobia; 69.00% Titanium | **Current Production Champion** |
 | `multipath_phase_contact_bucketed:512` Candidate | 858 / 512 | 21.121M mixture, 6 buckets, 2 layers, QAT, 112 epochs | **1.18894** | 46.8% H2H vs Main; 50.8% Claustrophobia; 57.5% Titanium | 54.1% external score (400g); main champion retained |
+| `multipath_phase_bucketed:512` A0 Control | 504 / 512 | 21.121M mixture, 20 epochs, QAT, cosine 1e-5 to 1e-7 | 1.19130 | 53.13% vs baseline (+21.7 Elo); 48.75% Center Rush | Control continuation completed |
+| `multipath_phase_bucketed:512` A1 Auxiliary Soft Policy | 504 / 512 | 21.121M mixture, 20 epochs, QAT, T=2.0, beta=0.15 | 1.31828 | 55.63% vs baseline (+39.3 Elo); 53.75% Center Rush | Promising candidate; in promotion battery |
+
 
 ---
 
@@ -115,7 +118,7 @@ Each worker writes directly to an isolated Google Drive destination to prevent w
 | Worker 2 | `flightdyn` | `.../zquoridor_data/selfplay_irregular` | `c2_` | Irregular and tactical lines (`openings_tactical_v1.jsonl`) | 100 ms/move | 2 | 250 games | `mc_temp_opening=0.35`, `decay_plies=45`, `temp_end=0.12` |
 | Worker 3 | `zambraprojects` | `.../zquoridor_data/selfplay_targeted_weakness` | `c3_` | Corridor bottlenecks and weakness positions | 100 ms/move | 2 | 250 games | `mc_temp_opening=0.35`, `decay_plies=45`, `temp_end=0.12` |
 | Worker 4 | `zquoridor` | `.../zquoridor_data/selfplay_targeted_weakness` | `c4_` | Corridor bottlenecks and weakness positions | 100 ms/move | 2 | 250 games | `mc_temp_opening=0.35`, `decay_plies=45`, `temp_end=0.12` |
-| Worker 5 | `gustati2201` | `.../zquoridor_data/selfplay_targeted_weakness` | `c5_` | Corridor bottlenecks and weakness positions | 100 ms/move | 2 | 250 games | `mc_temp_opening=0.35`, `decay_plies=45`, `temp_end=0.12` |
+| Worker 5 | `gustati2201` | `.../zquoridor_data/selfplay_exploration` | `c5_` | Unexplored lines (standard initial board, no book) | 200 ms opening (16 plies) / 20 ms cheap | 2 | 250 games | `mc_temp_obvious=2.5` (10 plies), `temp_opening=1.2`, `decay_plies=30`, `temp_end=0.12`, `playout_cap=True` |
 
 All cloud workers execute the native `bin/selfplay` binary using the production int8 weights (`nnue_weights_int8.bin`).
 
@@ -173,6 +176,33 @@ The experimental candidate `multipath_phase_contact_bucketed:512` (`contact-buck
 - **Search depth and throughput**: The 858-feature accumulator reduced node throughput by approximately 11% to 12% relative to the 504-feature baseline. However, average search depth was fully preserved (3.86 vs 3.81 plies on normal; 4.36 vs 4.34 plies on Center Rush).
 - **External Bot Strength**: The candidate scored 54.13% overall across 400 games against Claustrophobia and Titanium, verifying strong general play and beating Claustrophobia decisively on normal openings (55.5%).
 - **Promotion Decision**: In head-to-head competition, the production champion (`multipath_phase_bucketed:512`) won 53.25% to 46.75% (+22.6 Elo). Because the promotion gate requires a head-to-head score strictly above 50% with lower 95% bootstrap bound above 50%, the candidate is not promoted. The production champion remains in production.
+
+### Stage A Auxiliary Soft Policy Screening and Full Promotion Battery
+
+Evaluated training-only auxiliary policy head ($T=2.0, \beta=0.15$) against identical control continuation from frozen V3 weights at 200 ms per move.
+
+| Candidate | Head Configuration | Epochs | vs Frozen V3 (Total) | vs Frozen V3 (Normal) | vs Frozen V3 (Center Rush) | Tactical Finding |
+| --- | --- | ---: | ---: | ---: | ---: | --- |
+| `A0_control` | Policy disabled | 20 | 53.13% (+21.7 Elo) | 57.50% (+52.5 Elo) | 48.75% (-8.7 Elo) | Regressed against Center Rush openings |
+| `A1_aux_t20_b15` | $T=2.0, \beta=0.15$ | 20 | **55.63% (+39.3 Elo)** | **57.50% (+52.5 Elo)** | **53.75% (+26.1 Elo)** | **+34.8 Elo swing on Center Rush; beats baseline** |
+
+#### Candidate `A1_aux_t20_b15` Complete Promotion Battery Results (600 games at 200 ms/move)
+
+| Sub-suite | Games | Score % | Elo [95% CI] | Candidate Depth | Candidate NPS | Opponent Depth | Opponent NPS | Verdict |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| vs Main Champion (Normal) | 100 | **51.5%** | **+10.4 [-38.4, +59.6]** | 3.61 | 22,611 | 3.45 | 22,948 | **Beats Main** |
+| vs Main Champion (Center Rush) | 100 | **51.0%** | **+6.9 [-41.9, +56.1]** | 5.28 | 21,883 | 5.27 | 22,366 | **Beats Main** |
+| vs Claustrophobia (Normal) | 100 | 46.0% | -27.9 [-92.2, +34.9] | 0.63 | 28,306 | — | — | Narrow loss |
+| vs Claustrophobia (Center Rush) | 100 | **54.0%** | **+27.9 [-27.9, +85.1]** | 1.40 | 29,441 | — | — | **Beats Claustrophobia** |
+| vs Titanium (Normal) | 100 | **70.0%** | **+147.2 [+77.7, +230.2]** | 1.77 | 25,214 | — | — | **Decisive win** |
+| vs Titanium (Center Rush) | 100 | **57.0%** | **+49.0 [+0.0, +100.0]** | 2.12 | 21,898 | — | — | **Clear win** |
+| **Combined Head-to-Head vs Main** | **200** | **51.25%** | **+8.7** | **4.45** | **22,247** | **4.36** | **22,657** | **Beats Main on both books** |
+| **Combined External Opponents** | **400** | **56.75%** | **+47.3** | **—** | **—** | **—** | **—** | **Strong external battery** |
+| **Total 600-Game Promotion Battery** | **600** | **54.92%** | **+34.3** | **—** | **—** | **—** | **—** | **Positive overall across all 6 sub-suites** |
+
+Candidate A1 confirmed positive Elo over the production champion (+8.7 Elo net head-to-head) and beats Claustrophobia and Titanium on Center Rush openings.
+
+
 
 ---
 

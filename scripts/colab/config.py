@@ -63,10 +63,11 @@ WORKERS: Dict[int, Dict[str, Any]] = {
         "profile_dir": r"C:\Projetos\TikTok\profiles\gustati2201",
         "notebook_url": "https://colab.research.google.com/drive/1cPMl8_zEi-el5GAE8sv2Bw3T6uKDwK1i",
         "cdp_port": 9005,
-        "target_keywords": ["run_colab_worker.py", "selfplay_targeted_weakness", "selfplay_15m", "zquoridor"],
+        "target_keywords": ["run_colab_worker.py", "selfplay_exploration", "selfplay", "zquoridor"],
         "target_shard_prefix": "c5_",
-        "drive_dir": "/content/drive/MyDrive/zquoridor_data/selfplay_targeted_weakness",
-        "positions": "tools/external/openings_targeted_weakness_bank.jsonl",
+        "drive_dir": "/content/drive/MyDrive/zquoridor_data/selfplay_exploration",
+        "positions": "",
+        "extra_args": "--mc-obvious-plies 10 --mc-temp-obvious 2.5 --mc-temp-opening 1.2 --mc-temp-decay-plies 30 --mc-temp-end 0.12 --playout-cap --time-ms 200 --cheap-time-ms 20 --full-search-opening-plies 16 --full-search-prob 0.35",
     },
     6: {
         "name": "Colab 6",
@@ -166,4 +167,4 @@ if not os.path.exists('/content/zquoridor'):
 %cd /content/zquoridor
 !git pull origin main
 !bash build/build_selfplay.sh
-!python tools/selfplay/run_colab_worker.py --worker-id {worker_id} --drive-dir {drive_dir} --positions {positions}"""
+!python tools/selfplay/run_colab_worker.py --worker-id {worker_id} --drive-dir {drive_dir} {cmd_args}"""
