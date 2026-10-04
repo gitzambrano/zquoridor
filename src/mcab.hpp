@@ -52,6 +52,13 @@
 
 #pragma once
 
+#ifndef ZQ_EXP_RESIDUAL_PUCT
+#define ZQ_EXP_RESIDUAL_PUCT 0
+#endif
+#ifndef ZQ_EXP_EDGE_ACC_CACHE
+#define ZQ_EXP_EDGE_ACC_CACHE 0
+#endif
+
 #include <vector>
 #include <array>
 #include <cstdint>
@@ -427,6 +434,10 @@ struct McabStats {
     long long transpositionHits = 0;
     long long transpositionLookups = 0;
     long long graphCycleStops = 0;
+    long long residualSelections = 0;
+    long long residualMovesMaterialized = 0;
+    long long edgeAccCacheHits = 0;
+    long long edgeAccCacheMisses = 0;
     bool adaptiveTimeStop = false;
     int adaptiveTargetMs = 0;
     long long adaptiveLeaderChanges = 0;
@@ -681,6 +692,8 @@ template <typename Eng, typename StateT, typename MoveT, typename MoveListT,
 class MCABSearch {
 public:
     using NodeT = MCABNode<StateT, MoveListT>;
+    static constexpr bool kResidualPuct = (ZQ_EXP_RESIDUAL_PUCT != 0);
+    static constexpr bool kEdgeAccCache = (ZQ_EXP_EDGE_ACC_CACHE != 0);
 
     McabParams params;
 
@@ -1107,6 +1120,44 @@ private:
         return entry;
     }
 
+    struct EdgeAccumulatorCacheEntry {
+        uint64_t key = 0;
+        AccPairT acc{};
+    };
+    static constexpr size_t kEdgeAccumulatorCacheEntries = 1024;
+    std::vector<EdgeAccumulatorCacheEntry> edgeAccumulatorCache;
+
+    size_t edgeAccumulatorCacheIndex(uint64_t key) const {
+        uint64_t mixed = key ^ (key >> 33) ^ (key >> 17);
+        return (size_t)mixed & (kEdgeAccumulatorCacheEntries - 1);
+    }
+
+    bool loadEdgeAccumulator(uint64_t key, AccPairT& out, McabStats& mstats) {
+        if (key == 0) {
+            ++mstats.edgeAccCacheMisses;
+            return false;
+        }
+        if (edgeAccumulatorCache.empty())
+            edgeAccumulatorCache.resize(kEdgeAccumulatorCacheEntries);
+        const auto& entry = edgeAccumulatorCache[edgeAccumulatorCacheIndex(key)];
+        if (entry.key != key) {
+            ++mstats.edgeAccCacheMisses;
+            return false;
+        }
+        out = entry.acc;
+        ++mstats.edgeAccCacheHits;
+        return true;
+    }
+
+    void storeEdgeAccumulator(uint64_t key, const AccPairT& acc) {
+        if (key == 0) return;
+        if (edgeAccumulatorCache.empty())
+            edgeAccumulatorCache.resize(kEdgeAccumulatorCacheEntries);
+        auto& entry = edgeAccumulatorCache[edgeAccumulatorCacheIndex(key)];
+        entry.key = key;
+        entry.acc = acc;
+    }
+
     std::vector<NodeT> pool;
     std::unordered_multimap<uint64_t, int32_t> transpositionIndex;
     std::vector<AccPairT> mcabAccStack;   // Seção 4.3.3 -- pilha por caminho de descida
@@ -1481,18 +1532,37 @@ private:
         // renormalizing node.P in place would compound the previous scale
         // every time a new candidate is admitted.
         if (node.moves.size() > oldSize && !node.noised) {
-            float activePriorSum = 0.f;
-            for (size_t candidateIndex : node.activeCandidateIndices)
-                activePriorSum += node.candidateP[candidateIndex];
-            if (activePriorSum > 0.f) {
+            if constexpr (kResidualPuct) {
+                // Preserve absolute prior mass. The missing mass is represented
+                // explicitly by the virtual REST edge instead of being silently
+                // renormalized onto the active prefix.
                 for (size_t i = 0; i < node.P.size(); i++)
-                    node.P[i] = node.candidateP[node.activeCandidateIndices[i]] / activePriorSum;
+                    node.P[i] = node.candidateP[node.activeCandidateIndices[i]];
+            } else {
+                float activePriorSum = 0.f;
+                for (size_t candidateIndex : node.activeCandidateIndices)
+                    activePriorSum += node.candidateP[candidateIndex];
+                if (activePriorSum > 0.f) {
+                    for (size_t i = 0; i < node.P.size(); i++)
+                        node.P[i] = node.candidateP[node.activeCandidateIndices[i]] / activePriorSum;
+                }
             }
         }
         node.activeMoves = (int)node.moves.size();
     }
 
     void updateWidening(NodeT& node) {
+        if constexpr (kResidualPuct) {
+            // Residual-PUCT materializes only a small legal prefix. The
+            // unmaterialized prior mass remains a virtual REST edge handled
+            // by selectChildPUCT(); it is NOT renormalized away.
+            if (node.candidateMoves && node.moves.empty()) {
+                const int initial = node.graphDepth == 0 ? 16 : 8;
+                activateWidening(node, std::min(initial, (int)node.candidateMoves->size()));
+            }
+            node.activeMoves = (int)node.moves.size();
+            return;
+        }
         if (!params.progressiveWidening) {
             node.activeMoves = (int)node.moves.size();
             return;
@@ -1523,7 +1593,7 @@ private:
     void expandNode(int idx, int depthInTree, McabStats& mstats) {
         NodeT& node = pool[idx];
 
-        if (!params.progressiveWidening) {
+        if (!params.progressiveWidening && !kResidualPuct) {
             node.moves = legalMoves(node.state);
             size_t nm = node.moves.size();
             node.P.assign(nm, 0.f);
@@ -1575,7 +1645,14 @@ private:
                 std::vector<size_t> order(nc);
                 std::iota(order.begin(), order.end(), (size_t)0);
                 std::stable_sort(order.begin(), order.end(),
-                                 [&](size_t a, size_t b) { return logits[a] > logits[b]; });
+                                 [&](size_t a, size_t b) {
+                                     if constexpr (kResidualPuct) {
+                                         const bool aw = mcabIsWall((*node.candidateMoves)[a], 0);
+                                         const bool bw = mcabIsWall((*node.candidateMoves)[b], 0);
+                                         if (aw != bw) return !aw; // all pawn moves stay visible
+                                     }
+                                     return logits[a] > logits[b];
+                                 });
                 auto orderedCandidates = std::make_unique<MoveListT>();
                 std::vector<float> orderedLogits;
                 for (size_t i : order) {
@@ -1695,6 +1772,19 @@ private:
                 best = (int)i;
             }
         }
+
+        if constexpr (kResidualPuct) {
+            if (node.candidateMoves && node.nextCandidate < node.candidateMoves->size()) {
+                double restPrior = 0.0;
+                for (size_t i = node.nextCandidate; i < node.candidateP.size(); ++i)
+                    restPrior += (double)node.candidateP[i];
+                // Virtual REST edge. It has FPU value and carries the exact
+                // unmaterialized policy mass. Selecting it materializes one
+                // additional legal action in runSimulation().
+                double restScore = fpu + params.cPuct * restPrior * sqrtN;
+                if (restScore > bestScore) return -2;
+            }
+        }
         return best;
     }
 
@@ -1756,6 +1846,18 @@ private:
             }
 
             int e = selectChildPUCT(node);
+            if constexpr (kResidualPuct) {
+                if (e == -2) {
+                    const size_t before = node.moves.size();
+                    ++mstats.residualSelections;
+                    activateWidening(node, (int)before + 1);
+                    if (node.moves.size() > before)
+                        mstats.residualMovesMaterialized +=
+                            (long long)(node.moves.size() - before);
+                    // Re-score the node after exposing the new real edge.
+                    continue;
+                }
+            }
             if (e < 0) {
                 // Nó expandido sem lances -- não deveria ocorrer em
                 // Quoridor não-terminal, mas não crasha: trata como
@@ -1788,8 +1890,17 @@ private:
                 return;
             }
 
-            makeChildAccPair(mcabAccStack[depth], mcabAccStack[depth + 1], beforeState, mv,
-                             mcabPathCache(engine, 0));
+            if constexpr (kEdgeAccCache) {
+                const uint64_t accKey = mcabEvalStateKey(pool[(size_t)childIdx].state, 0);
+                if (!loadEdgeAccumulator(accKey, mcabAccStack[depth + 1], mstats)) {
+                    makeChildAccPair(mcabAccStack[depth], mcabAccStack[depth + 1], beforeState, mv,
+                                     mcabPathCache(engine, 0));
+                    storeEdgeAccumulator(accKey, mcabAccStack[depth + 1]);
+                }
+            } else {
+                makeChildAccPair(mcabAccStack[depth], mcabAccStack[depth + 1], beforeState, mv,
+                                 mcabPathCache(engine, 0));
+            }
             (void)parentSide;
 
             curIdx = childIdx;
