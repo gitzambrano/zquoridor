@@ -57,6 +57,10 @@ CANDIDATES: dict[str, list[str]] = {
     "cpuct072": [
         "--cpuct", "0.72",
     ],
+    "cpuct072_lmr210": [
+        "--cpuct", "0.72",
+        "--lmr-divisor", "2.10",
+    ],
     "full_aggr": [
         "--cpuct", "0.72",
         "--policy-lmr",
