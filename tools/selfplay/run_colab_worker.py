@@ -38,6 +38,8 @@ CONFIG = {
     "mc_temp_end": 0.12,
     "playout_cap": False,
     "cheap_time_ms": 20,
+    "cheap_time_end_ms": 0,
+    "cheap_time_decay_plies": 30,
     "full_search_opening_plies": 0,
     "full_search_prob": 1.0,
     "base_seed": 20261003,
@@ -76,6 +78,8 @@ def main(argv=None):
     parser.add_argument("--mc-temp-end", type=float, default=CONFIG["mc_temp_end"])
     parser.add_argument("--playout-cap", action="store_true", default=CONFIG["playout_cap"])
     parser.add_argument("--cheap-time-ms", type=int, default=CONFIG["cheap_time_ms"])
+    parser.add_argument("--cheap-time-end-ms", type=int, default=CONFIG["cheap_time_end_ms"])
+    parser.add_argument("--cheap-time-decay-plies", type=int, default=CONFIG["cheap_time_decay_plies"])
     parser.add_argument("--full-search-opening-plies", type=int, default=CONFIG["full_search_opening_plies"])
     parser.add_argument("--full-search-prob", type=float, default=CONFIG["full_search_prob"])
     args = parser.parse_args(argv)
@@ -109,7 +113,10 @@ def main(argv=None):
     print(f"  Total Games Target:     {args.total_games:,} ({total_chunks} chunks of {args.chunk_games} games)")
     print(f"  Time Control:           {args.time_ms} ms/move (Monte Carlo mode)")
     if args.playout_cap:
-        print(f"  Playout Cap:            ON | full={args.full_search_prob:.2f} @ {args.time_ms}ms | cheap={args.cheap_time_ms}ms | opening_plies={args.full_search_opening_plies}")
+        cheap_desc = f"{args.cheap_time_ms}ms"
+        if args.cheap_time_end_ms > 0:
+            cheap_desc += f" -> {args.cheap_time_end_ms}ms over {args.cheap_time_decay_plies} plies"
+        print(f"  Playout Cap:            ON | full={args.full_search_prob:.2f} @ {args.time_ms}ms | cheap={cheap_desc} | opening_plies={args.full_search_opening_plies}")
     print(f"  Opening Book:           {book_name}")
     print(f"  NNUE Weights:           {weights_path.name}")
     print("=" * 70)
@@ -157,6 +164,11 @@ def main(argv=None):
                 "--full-search-opening-plies", str(args.full_search_opening_plies),
                 "--full-search-prob", str(args.full_search_prob),
             ]
+            if args.cheap_time_end_ms > 0:
+                cmd += [
+                    "--cheap-time-end-ms", str(args.cheap_time_end_ms),
+                    "--cheap-time-decay-plies", str(args.cheap_time_decay_plies),
+                ]
 
         t0 = time.time()
         print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] Launching Shard {shard_idx:04d}/{total_chunks - 1}...")

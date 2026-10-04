@@ -86,7 +86,7 @@ Every public runner adheres to the following contract:
 - **Purpose**: Standalone chunked self-play generator designed to execute on Linux/Colab virtual machines.
 - **Inputs**: Opening bank JSONL, self-play binary (`bin/selfplay`), int8 weights.
 - **Outputs**: Aligned V3 shards (`c{id}_shard_XXXX.bin`) and metadata sidecars in Google Drive.
-- **Key CLI flags**: `--worker-id`, `--drive-dir`, `--total-games`, `--chunk-games`, `--time-ms`, `--positions`, `--mc-temp-obvious`, `--playout-cap`, `--cheap-time-ms`, `--full-search-opening-plies`, `--full-search-prob`.
+- **Key CLI flags**: `--worker-id`, `--drive-dir`, `--total-games`, `--chunk-games`, `--time-ms`, `--positions`, `--mc-temp-obvious`, `--playout-cap`, `--cheap-time-ms`, `--cheap-time-end-ms`, `--cheap-time-decay-plies`, `--full-search-opening-plies`, `--full-search-prob`.
 
 ---
 
