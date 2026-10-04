@@ -1,0 +1,301 @@
+name: V3 Search Confirmation
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/v3-search-confirmation.yml"
+
+permissions:
+  contents: read
+
+env:
+  PYTHONUNBUFFERED: "1"
+
+jobs:
+  main-mixed:
+    name: main-mixed-${{ matrix.candidate }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      max-parallel: 3
+      matrix:
+        candidate: [cpuct072, lmr210, cpuct072_lmr210]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: 400 games vs V3 main on broad mixed book
+        run: |
+          python tools/run_v3_search_confirmation.py \
+            --candidate "${{ matrix.candidate }}" --gate main-fixed \
+            --pairs 200 --workers 2 --move-time-ms 200 --seed 20261004 \
+            --openings tools/external/openings_600g_300pairs.jsonl \
+            --output "results/confirmation/main-mixed/${{ matrix.candidate }}"
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: confirm-main-mixed-${{ matrix.candidate }}
+          path: results/confirmation/main-mixed/${{ matrix.candidate }}
+          retention-days: 14
+
+  main-alt:
+    name: main-alt-${{ matrix.candidate }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      max-parallel: 3
+      matrix:
+        candidate: [cpuct072, lmr210, cpuct072_lmr210]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: 200 games vs V3 main on independent confirmation book
+        run: |
+          python tools/run_v3_search_confirmation.py \
+            --candidate "${{ matrix.candidate }}" --gate main-fixed \
+            --pairs 100 --workers 2 --move-time-ms 200 --seed 20261005 \
+            --openings tools/external/openings_confirmation_v1.jsonl \
+            --output "results/confirmation/main-alt/${{ matrix.candidate }}"
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: confirm-main-alt-${{ matrix.candidate }}
+          path: results/confirmation/main-alt/${{ matrix.candidate }}
+          retention-days: 14
+
+  main-central:
+    name: main-central-${{ matrix.candidate }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      max-parallel: 3
+      matrix:
+        candidate: [cpuct072, lmr210, cpuct072_lmr210]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: 200 games vs V3 main on central rushes
+        run: |
+          python tools/run_v3_search_confirmation.py \
+            --candidate "${{ matrix.candidate }}" --gate main-fixed \
+            --pairs 100 --workers 2 --move-time-ms 200 --seed 20261006 \
+            --openings tools/external/openings_center_rush_sound_5k.jsonl \
+            --output "results/confirmation/main-central/${{ matrix.candidate }}"
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: confirm-main-central-${{ matrix.candidate }}
+          path: results/confirmation/main-central/${{ matrix.candidate }}
+          retention-days: 14
+
+  external-mixed:
+    name: external-mixed-${{ matrix.candidate }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        candidate: [main, cpuct072, lmr210, cpuct072_lmr210]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Cache safe external dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            external_bots/claustrophobia/champion.pt
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: v3-confirm-safe-${{ runner.os }}-${{ hashFiles('tools/external/bot_setup.py', 'tools/external/claustrophobia_benchmark_bridge.rs', 'training/teachers/claustrophobia_ipc_eval.rs', 'training/teachers/claustrophobia_inference_worker.py') }}
+          restore-keys: |
+            v3-confirm-safe-${{ runner.os }}-
+      - name: Install external runtime
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install numpy
+          python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
+      - name: 200 games each vs Claustrophobia and Titanium
+        run: |
+          python tools/run_v3_search_confirmation.py \
+            --candidate "${{ matrix.candidate }}" --gate external \
+            --pairs 100 --workers 1 --move-time-ms 200 --seed 20261007 \
+            --opponents claustrophobia,titanium \
+            --openings tools/external/openings_600g_300pairs.jsonl \
+            --output "results/confirmation/external-mixed/${{ matrix.candidate }}"
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: confirm-external-mixed-${{ matrix.candidate }}
+          path: results/confirmation/external-mixed/${{ matrix.candidate }}
+          retention-days: 14
+
+  external-central:
+    name: external-central-${{ matrix.candidate }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        candidate: [main, cpuct072, lmr210, cpuct072_lmr210]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Cache safe external dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            external_bots/claustrophobia/champion.pt
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: v3-confirm-safe-${{ runner.os }}-${{ hashFiles('tools/external/bot_setup.py', 'tools/external/claustrophobia_benchmark_bridge.rs', 'training/teachers/claustrophobia_ipc_eval.rs', 'training/teachers/claustrophobia_inference_worker.py') }}
+          restore-keys: |
+            v3-confirm-safe-${{ runner.os }}-
+      - name: Install external runtime
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install numpy
+          python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
+      - name: 100 central games each vs Claustrophobia and Titanium
+        run: |
+          python tools/run_v3_search_confirmation.py \
+            --candidate "${{ matrix.candidate }}" --gate external \
+            --pairs 50 --workers 1 --move-time-ms 200 --seed 20261008 \
+            --opponents claustrophobia,titanium \
+            --openings tools/external/openings_center_rush_sound_5k.jsonl \
+            --output "results/confirmation/external-central/${{ matrix.candidate }}"
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: confirm-external-central-${{ matrix.candidate }}
+          path: results/confirmation/external-central/${{ matrix.candidate }}
+          retention-days: 14
+
+  clock-mixed:
+    name: 3plus2-mixed-${{ matrix.candidate }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    strategy:
+      fail-fast: false
+      max-parallel: 3
+      matrix:
+        candidate: [cpuct072, lmr210, cpuct072_lmr210]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: 24 games at 3+2 vs V3 main
+        run: |
+          python tools/run_v3_search_confirmation.py \
+            --candidate "${{ matrix.candidate }}" --gate main-clock \
+            --pairs 12 --workers 1 --base-ms 180000 --increment-ms 2000 \
+            --move-overhead-ms 20 --seed 20261009 \
+            --openings tools/external/openings_600g_300pairs.jsonl \
+            --output "results/confirmation/clock-mixed/${{ matrix.candidate }}"
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: confirm-clock-mixed-${{ matrix.candidate }}
+          path: results/confirmation/clock-mixed/${{ matrix.candidate }}
+          retention-days: 14
+
+  clock-central:
+    name: 3plus2-central-${{ matrix.candidate }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    strategy:
+      fail-fast: false
+      max-parallel: 3
+      matrix:
+        candidate: [cpuct072, lmr210, cpuct072_lmr210]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: 16 central games at 3+2 vs V3 main
+        run: |
+          python tools/run_v3_search_confirmation.py \
+            --candidate "${{ matrix.candidate }}" --gate main-clock \
+            --pairs 8 --workers 1 --base-ms 180000 --increment-ms 2000 \
+            --move-overhead-ms 20 --seed 20261010 \
+            --openings tools/external/openings_center_rush_sound_5k.jsonl \
+            --output "results/confirmation/clock-central/${{ matrix.candidate }}"
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: confirm-clock-central-${{ matrix.candidate }}
+          path: results/confirmation/clock-central/${{ matrix.candidate }}
+          retention-days: 14
+
+  aggregate:
+    name: aggregate-confirmation
+    runs-on: ubuntu-latest
+    if: always()
+    needs:
+      - main-mixed
+      - main-alt
+      - main-central
+      - external-mixed
+      - external-central
+      - clock-mixed
+      - clock-central
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: confirm-*
+          path: artifacts
+      - name: Aggregate summaries
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          rows = []
+          for p in Path("artifacts").rglob("confirmation_summary.json"):
+              d = json.loads(p.read_text())
+              base = {
+                  "candidate": d["candidate"],
+                  "gate": d["gate"],
+                  "openings": Path(d["openings"]).name,
+                  "pairs": d["pairs"],
+                  "seed": d["seed"],
+              }
+              if d["gate"].startswith("main"):
+                  s = d.get("summary") or {}
+                  rows.append({**base, "opponent": "v3_main",
+                               "score_pct": s.get("score_pct"), "elo": s.get("elo"),
+                               "ci": s.get("elo_ci_95"), "failed": s.get("failed_games")})
+              else:
+                  for opponent, s in (d.get("summaries") or {}).items():
+                      rows.append({**base, "opponent": opponent,
+                                   "score_pct": s.get("score_pct"), "elo": s.get("elo"),
+                                   "ci": s.get("elo_ci_95"), "failed": s.get("failed_games")})
+          rows.sort(key=lambda r: (r["gate"], r["openings"], r["opponent"], r["candidate"]))
+          Path("aggregate").mkdir()
+          Path("aggregate/summary.json").write_text(json.dumps({"rows": rows}, indent=2)+"\n")
+          for r in rows:
+              print(r)
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: confirm-aggregate
+          path: aggregate/
+          retention-days: 14
