@@ -136,7 +136,7 @@ def run(config: dict) -> dict:
             move_timeout_s=60.0,
             max_plies=240,
             run_id=manifest["run_id"],
-            clock_initial_ms=int(config["base_ms"]) if clocked else None,
+            clock_initial_ms=int(config["base_ms"]) if clocked else 0,
             clock_increment_ms=int(config["increment_ms"]) if clocked else 0,
         )
 
