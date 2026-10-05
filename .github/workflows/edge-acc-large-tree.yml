@@ -1,0 +1,111 @@
+name: EdgeAcc Large Tree Stress
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [exp/transform-search-v301-20261004]
+    paths:
+      - "tests/test_edge_acc_large_tree.cpp"
+      - "src/mcab.hpp"
+      - ".github/workflows/edge-acc-large-tree.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  stress:
+    name: large-tree-${{ matrix.net }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        net: [n504, contact858]
+    steps:
+      - uses: actions/checkout@v4
+        with: {fetch-depth: 0}
+
+      - name: Materialize Contact weights
+        if: matrix.net == 'contact858'
+        shell: bash
+        run: |
+          git worktree add /tmp/zq-main origin/main
+          mkdir -p results/experiments/contact_soup_tri_512/soup_tri_champion
+          cp /tmp/zq-main/results/experiments/contact_soup_tri_512/soup_tri_champion/student_int8.bin              results/experiments/contact_soup_tri_512/soup_tri_champion/student_int8.bin
+          test -s results/experiments/contact_soup_tri_512/soup_tri_champion/student_int8.bin
+
+      - name: Build OFF and ON
+        shell: bash
+        run: |
+          mkdir -p bin out
+          FLAGS=""
+          WEIGHTS="data/nnue/nnue_weights_int8.bin"
+          if [ "${{ matrix.net }}" = "contact858" ]; then
+            FLAGS="-DZQ_NNUE_RACE_FEATURES=1 -DZQ_NNUE_MULTIPATH_FEATURES=1 -DZQ_NNUE_MARGIN_REGIME_FEATURES=0 -DZQ_NNUE_PHASE_FEATURES=1 -DZQ_NNUE_CONTACT_FEATURES=1 -DZQ_NNUE_HIDDEN=512 -DZQ_NNUE_VALUE_BUCKETS=6 -DZQ_NNUE_VALUE_DEPTH=2"
+            WEIGHTS="results/experiments/contact_soup_tri_512/soup_tri_champion/student_int8.bin"
+          fi
+          g++ -O3 -DNDEBUG -std=c++17 -pthread -Isrc $FLAGS             tests/test_edge_acc_large_tree.cpp -o bin/large_off
+          g++ -O3 -DNDEBUG -std=c++17 -pthread -Isrc $FLAGS             -DZQ_EXP_EDGE_ACC_CACHE=1             tests/test_edge_acc_large_tree.cpp -o bin/large_on
+          echo "WEIGHTS=$WEIGHTS" >> "$GITHUB_ENV"
+
+      - name: Run large trees
+        shell: bash
+        run: |
+          ./bin/large_off "$WEIGHTS" | tee out/off.txt
+          ./bin/large_on  "$WEIGHTS" | tee out/on.txt
+
+      - name: Require semantic identity and real cache exercise
+        shell: bash
+        run: |
+          python - <<'PY'
+          import re
+          from pathlib import Path
+
+          def parse(path):
+              rows = []
+              for line in Path(path).read_text().splitlines():
+                  if not (line.startswith("CASE ") or line.startswith("REUSE ")):
+                      continue
+                  kv = dict(re.findall(r'(\w+)=([^ ]+)', line))
+                  kind = line.split()[0]
+                  label = line.split()[1] if kind == "CASE" else "step=" + kv["step"]
+                  rows.append((kind, label, kv, line))
+              return rows
+
+          off = parse("out/off.txt")
+          on = parse("out/on.txt")
+          if len(off) != 10 or len(on) != 10:
+              raise SystemExit(f"expected 10 checkpoints each, got off={len(off)} on={len(on)}")
+
+          fields = ["nodes","best","pool","sims","expanded","fp","rootN"]
+          reuse_fields = fields + ["treeHit","reused"]
+          mismatches = []
+          total_hits = 0
+
+          for a,b in zip(off,on):
+              if a[0:2] != b[0:2]:
+                  mismatches.append(("identity", a[3], b[3]))
+                  continue
+              check = reuse_fields if a[0] == "REUSE" else fields
+              bad = {k:(a[2].get(k),b[2].get(k)) for k in check if a[2].get(k) != b[2].get(k)}
+              if bad:
+                  mismatches.append((a[1], bad, a[3], b[3]))
+              total_hits += int(b[2].get("hits","0"))
+
+          if mismatches:
+              for m in mismatches:
+                  print("MISMATCH", m)
+              raise SystemExit(f"EDGE_ACC_LARGE_TREE_FAIL checkpoints={len(mismatches)}")
+
+          if total_hits < 1000:
+              raise SystemExit(f"EDGE_ACC_LARGE_TREE_INSUFFICIENT_HITS hits={total_hits}")
+
+          print(f"EDGE_ACC_LARGE_TREE_OK checkpoints=10 total_cache_hits={total_hits}")
+          PY
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: edge-large-tree-${{ matrix.net }}
+          path: out/
+          retention-days: 14
