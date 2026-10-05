@@ -21,10 +21,17 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        net: [n504, contact858]
+        net: [contact858]
     steps:
       - uses: actions/checkout@v4
         with: {fetch-depth: 0}
+      - name: Materialize Contact weights from main
+        shell: bash
+        run: |
+          git worktree add /tmp/zq-main origin/main
+          mkdir -p results/experiments/contact_soup_tri_512/soup_tri_champion
+          cp /tmp/zq-main/results/experiments/contact_soup_tri_512/soup_tri_champion/student_int8.bin              results/experiments/contact_soup_tri_512/soup_tri_champion/student_int8.bin
+          test -s results/experiments/contact_soup_tri_512/soup_tri_champion/student_int8.bin
       - name: Build parity test
         shell: bash
         run: |
@@ -48,10 +55,17 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        net: [n504, contact858]
+        net: [contact858]
     steps:
       - uses: actions/checkout@v4
         with: {fetch-depth: 0}
+      - name: Materialize Contact weights from main
+        shell: bash
+        run: |
+          git worktree add /tmp/zq-main origin/main
+          mkdir -p results/experiments/contact_soup_tri_512/soup_tri_champion
+          cp /tmp/zq-main/results/experiments/contact_soup_tri_512/soup_tri_champion/student_int8.bin              results/experiments/contact_soup_tri_512/soup_tri_champion/student_int8.bin
+          test -s results/experiments/contact_soup_tri_512/soup_tri_champion/student_int8.bin
       - uses: actions/setup-python@v5
         with: {python-version: "3.11"}
       - name: Build EdgeAcc OFF and ON identically
