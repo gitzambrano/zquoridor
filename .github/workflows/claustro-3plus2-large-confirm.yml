@@ -1,0 +1,128 @@
+name: Claustro 3+2 Large Paired Confirmation
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [exp/transform-search-v301-20261004]
+    paths:
+      - ".github/workflows/claustro-3plus2-large-confirm.yml"
+
+permissions:
+  contents: read
+
+env:
+  PYTHONUNBUFFERED: "1"
+  MAIN_SHA: 5044720a2fa1c3ef154cc9701a966ad67a07cde7
+  CONTACT_WEIGHTS: results/experiments/contact_soup_tri_512/soup_tri_champion/student_int8.bin
+
+jobs:
+  preflight:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with: {fetch-depth: 0}
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.11"}
+      - name: Validate harness
+        run: |
+          python -m py_compile tools/run_benchmark.py tools/external/local_arena.py
+          grep -q "dynamic move-time-ms" tools/external/claustrophobia_benchmark_bridge.rs
+
+  confirm:
+    name: claustro-3p2-${{ matrix.subject }}-${{ matrix.book }}-s${{ matrix.shard }}
+    needs: preflight
+    runs-on: ubuntu-latest
+    timeout-minutes: 1200
+    strategy:
+      fail-fast: false
+      max-parallel: 8
+      matrix:
+        subject: [prod504, m100_858]
+        book: [normal, central]
+        shard: [0, 1, 2, 3]
+        include:
+          - {book: normal, source: tools/external/openings_normal_confirm_400.jsonl, master_seed: 20262011}
+          - {book: central, source: tools/external/openings_center_rush_sound_5k.jsonl, master_seed: 20262021}
+    steps:
+      - uses: actions/checkout@v4
+        with: {fetch-depth: 0}
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.11"}
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache external dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            external_bots/claustrophobia/champion.pt
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: claustro3p2-${{ runner.os }}-${{ hashFiles('tools/external/bot_setup.py','tools/external/claustrophobia_benchmark_bridge.rs','training/teachers/claustrophobia_ipc_eval.rs','training/teachers/claustrophobia_inference_worker.py') }}
+          restore-keys: |
+            claustro3p2-${{ runner.os }}-
+
+      - name: Install Claustrophobia runtime
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install numpy
+          python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
+
+      - name: Build subject
+        shell: bash
+        run: |
+          git worktree add /tmp/zq-main "$MAIN_SHA"
+          mkdir -p bin
+          case "${{ matrix.subject }}" in
+            prod504)
+              (cd /tmp/zq-main && bash build/build_uci.sh)
+              cp /tmp/zq-main/bin/zquoridor bin/subject
+              cp /tmp/zq-main/data/nnue/nnue_weights_int8.bin bin/subject.nnue
+              ;;
+            m100_858)
+              CF="-DZQ_NNUE_RACE_FEATURES=1 -DZQ_NNUE_MULTIPATH_FEATURES=1 -DZQ_NNUE_MARGIN_REGIME_FEATURES=0 -DZQ_NNUE_PHASE_FEATURES=1 -DZQ_NNUE_CONTACT_FEATURES=1 -DZQ_NNUE_HIDDEN=512 -DZQ_NNUE_VALUE_BUCKETS=6 -DZQ_NNUE_VALUE_DEPTH=2"
+              SF="-DZQ_EXP_EDGE_ACC_CACHE=1 -DZQ_EXP_RESIDUAL_PUCT=1 -DZQ_EXP_RESIDUAL_ROOT_INITIAL=16 -DZQ_EXP_RESIDUAL_INNER_INITIAL=8 -DZQ_EXP_RESIDUAL_MASS_PCT=100"
+              g++ -O3 -DNDEBUG -std=c++17 -pthread -Isrc $CF $SF                 tools/external/zquoridor_uci.cpp -o bin/subject
+              cp "/tmp/zq-main/$CONTACT_WEIGHTS" bin/subject.nnue
+              ;;
+          esac
+
+      - name: Create deterministic disjoint opening shard
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json, random, os
+          from pathlib import Path
+
+          source = Path("${{ matrix.source }}")
+          seed = int("${{ matrix.master_seed }}")
+          shard = int("${{ matrix.shard }}")
+          rows = [line for line in source.read_text(encoding="utf-8").splitlines() if line.strip()]
+          rng = random.Random(seed)
+          rng.shuffle(rows)
+          start = shard * 25
+          selected = rows[start:start + 25]
+          if len(selected) != 25:
+              raise SystemExit(f"need 25 openings for shard {shard}, got {len(selected)}")
+          out = Path("openings-shard.jsonl")
+          out.write_text("\n".join(selected) + "\n", encoding="utf-8")
+          print(json.dumps({
+              "source": str(source),
+              "master_seed": seed,
+              "shard": shard,
+              "slice": [start, start + 25],
+              "rows": len(selected),
+          }, indent=2))
+          PY
+
+      - name: Claustrophobia 3+2 paired confirmation
+        shell: bash
+        run: |
+          python -u tools/run_benchmark.py             --opponents claustrophobia             --pairs 25             --workers 1             --seed "${{ matrix.master_seed }}"             --openings openings-shard.jsonl             --output "results/claustro-3p2-large/${{ matrix.subject }}/${{ matrix.book }}/shard-${{ matrix.shard }}"             --zq-executable bin/subject             --nnue bin/subject.nnue             --zq-move-time-ms 200             --titanium-move-time-ms 200             --claustrophobia-move-time-ms 200             --clock-initial-ms 180000             --clock-increment-ms 2000             --move-timeout-s 30             --auto-setup
+
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: claustro-3p2-${{ matrix.subject }}-${{ matrix.book }}-s${{ matrix.shard }}
+          path: results/claustro-3p2-large/${{ matrix.subject }}/${{ matrix.book }}/shard-${{ matrix.shard }}
+          retention-days: 14
