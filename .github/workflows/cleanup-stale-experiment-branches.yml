@@ -1,0 +1,45 @@
+name: Cleanup Stale Experiment Branches
+
+on:
+  push:
+    branches: [exp/transform-search-v301-20261004]
+    paths:
+      - ".github/workflows/cleanup-stale-experiment-branches.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Delete stale remote branches
+        shell: bash
+        run: |
+          set -euo pipefail
+          branches=(
+            "bench/central-claustro-200g-20260928"
+            "bench/central-families-200g-20260928"
+            "bench/confirm-210-head-20260929"
+            "bench/diagnose-sidestep-210-20260929"
+            "bench/pre210-central-families-200g-20260929"
+            "bench/sidestep-network-probe-20260929"
+            "bench/sidestep-root-cause-20260929"
+            "bench/sidestep-root-diagnostic-20260929"
+            "exp/sidestep-legacy-value-micro-20260929"
+            "exp/sidestep-value-micro-20260929"
+            "exp/sidestep-value-recovery-20260929"
+            "exp/sidestep-value-recovery-screen-20260929"
+            "exp/transform-search-20261004"
+            "experiment/nnue-tinyattn-probe-20261004"
+          )
+          for b in "${branches[@]}"; do
+            if git ls-remote --exit-code --heads origin "$b" >/dev/null 2>&1; then
+              echo "Deleting $b"
+              git push origin --delete "$b"
+            else
+              echo "Already absent: $b"
+            fi
+          done
