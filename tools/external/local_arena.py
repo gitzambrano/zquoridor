@@ -415,7 +415,7 @@ class TitaniumPlayer(LinePlayer):
 
 
 class ClaustrophobiaPlayer(LinePlayer):
-    """Use a persistent Claustrophobia model and a fixed move clock."""
+    """Use a persistent Claustrophobia model with per-search move budgets."""
 
     def __init__(self, bridge: Path, checkpoint: Path, *, move_time_ms: int, max_sims: int, cpuct: float,
                  device: str, startup_timeout_s: float = 120.0) -> None:
@@ -432,7 +432,7 @@ class ClaustrophobiaPlayer(LinePlayer):
     def bestmove(self, history: Sequence[str], *, budget: int,
                  timeout_s: float) -> tuple[str, float, list[str]]:
         started = time.monotonic()
-        self._send("position\t" + " ".join(history))
+        self._send(f"position\t{int(budget)}\t" + " ".join(history))
         line = self._read(timeout_s)
         try:
             result = json.loads(line)
@@ -443,6 +443,27 @@ class ClaustrophobiaPlayer(LinePlayer):
         if int(result.get("move_time_ms", -1)) != budget:
             raise EngineError("claustrophobia: the reported move clock does not match")
         return str(result["bestmove"]), time.monotonic() - started, [line]
+
+
+def _clock_budget_ms(remaining_ms: int, increment_ms: int, ply: int,
+                     move_overhead_ms: int = 20) -> int:
+    """Reference allocator for non-UCI external bots under a game clock.
+
+    Mirrors the baseline Zquoridor time-budget formula, without adaptive
+    volatility extensions. This keeps 3+2 external comparisons deterministic
+    while Zquoridor itself still receives the native full UCI clock.
+    """
+    overhead = max(0, int(move_overhead_ms))
+    reserve = max(50, 3 * overhead)
+    safe_remaining = max(1, int(remaining_ms) - reserve)
+    moves_to_go = max(10, min(30, 30 - max(0, int(ply)) // 4))
+    future_increment = max(0, int(increment_ms)) * max(0, moves_to_go - 1)
+    optimum = (safe_remaining + future_increment) // moves_to_go - overhead
+    optimum = max(1, min(optimum, safe_remaining))
+    low_clock_threshold = max(1000, 2 * max(0, int(increment_ms)) + reserve)
+    if int(remaining_ms) <= low_clock_threshold:
+        optimum = min(optimum, max(1, safe_remaining // 3))
+    return int(optimum)
 
 
 def play_game(*, opponent: str, opening_index: int, opening: Sequence[str],
@@ -491,16 +512,23 @@ def play_game(*, opponent: str, opening_index: int, opening: Sequence[str],
                     history, budget=budget, timeout_s=move_timeout_s
                 )
             else:
-                if not isinstance(player, UciPlayer):
-                    raise EngineError("game clock mode requires UCI players")
                 clock_before = clocks[side]
-                move, elapsed, move_info = player.bestmove_clock(
-                    history,
-                    white_ms=clocks[0],
-                    black_ms=clocks[1],
-                    increment_ms=int(clock_increment_ms),
-                    timeout_s=move_timeout_s,
-                )
+                if isinstance(player, UciPlayer):
+                    move, elapsed, move_info = player.bestmove_clock(
+                        history,
+                        white_ms=clocks[0],
+                        black_ms=clocks[1],
+                        increment_ms=int(clock_increment_ms),
+                        timeout_s=move_timeout_s,
+                    )
+                    budget = clock_before
+                else:
+                    budget = _clock_budget_ms(
+                        clock_before, int(clock_increment_ms), len(history)
+                    )
+                    move, elapsed, move_info = player.bestmove(
+                        history, budget=budget, timeout_s=move_timeout_s
+                    )
                 elapsed_ms = max(0, math.ceil(elapsed * 1000.0))
                 if elapsed_ms > clock_before:
                     raise EngineTimeout(
