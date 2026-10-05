@@ -1,0 +1,62 @@
+{
+  "status": "complete",
+  "source": "C:\\Projetos\\Zquoridor\\data\\teaching\\multipath_unified_clean_15m\\dataset.npz",
+  "cache": "C:\\Projetos\\Zquoridor\\results\\experiments\\production-central-finetune-20261002\\mixed_dataset\\.input_cache\\7fce415bb141eaa2ea607702b9bdb0b21a0c0bdaeea8692936e7514a8e63b589",
+  "file_count": 13,
+  "bytes": 7990569984,
+  "elapsed_seconds": 49.44,
+  "files": [
+    {
+      "name": "group_id.npy",
+      "bytes": 1000775808
+    },
+    {
+      "name": "is_val.npy",
+      "bytes": 15637248
+    },
+    {
+      "name": "opp_dist.npy",
+      "bytes": 15637248
+    },
+    {
+      "name": "opp_pawn.npy",
+      "bytes": 15637248
+    },
+    {
+      "name": "own_dist.npy",
+      "bytes": 15637248
+    },
+    {
+      "name": "own_pawn.npy",
+      "bytes": 15637248
+    },
+    {
+      "name": "policy.npy",
+      "bytes": 6536316288
+    },
+    {
+      "name": "value.npy",
+      "bytes": 31274368
+    },
+    {
+      "name": "walls_h.npy",
+      "bytes": 125097088
+    },
+    {
+      "name": "walls_left_opp.npy",
+      "bytes": 15637248
+    },
+    {
+      "name": "walls_left_own.npy",
+      "bytes": 15637248
+    },
+    {
+      "name": "walls_v.npy",
+      "bytes": 125097088
+    },
+    {
+      "name": "weight.npy",
+      "bytes": 62548608
+    }
+  ]
+}

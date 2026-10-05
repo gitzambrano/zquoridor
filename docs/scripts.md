@@ -51,6 +51,12 @@ Every public runner adheres to the following contract:
 - **Inputs**: Two UCI executables and opening book.
 - **Outputs**: Clock stability report and game termination checks.
 
+### `tools/mine_weaknesses.py`
+- **Purpose**: Mines empirical opening weaknesses for Candidate (`Soup_Tri_Contact`) and Main 3.01 (`Soup_Tri_Equal`) networks from benchmark transcripts against external opponents (`claustrophobia`, `titanium`).
+- **Inputs**: Benchmark transcripts under `results/benchmarks/`, opening catalogs (`tools/external/openings_normal_screen_100.jsonl`, `tools/external/openings_center_rush_sound_5k.jsonl`).
+- **Outputs**: Curated weak opening banks in `tools/external/weak_openings_mined.json` and `tools/external/weak_openings_mined.jsonl`.
+- **Key CLI flags**: `--output`, `--score-threshold` (default 0.40), `--losses-threshold` (default 2).
+
 ### `tools/setup_bots.py`
 - **Purpose**: Clones, compiles, and configures external benchmark opponents (`titanium`, `claustrophobia`).
 - **Inputs**: Git repositories and pre-trained checkpoints.
@@ -111,6 +117,12 @@ Every public runner adheres to the following contract:
 - **Purpose**: Executes 8 to 10 ply Center Rush rollouts using wide, balanced, and sharp exploration profiles.
 - **Inputs**: 50,000 root opening catalog, production and candidate self-play executables.
 - **Outputs**: Source-separated V3 shards and aligned metadata records.
+
+### `tools/teacher/generate_weakness_variations.cpp`
+- **Purpose**: High-speed C++ generator that traverses mined weak openings ply-by-ply, evaluates all legal moves with quantized NNUE policy and win probability heads, and branches variations on the 2nd, 3rd, and 4th best moves to unbias engine training.
+- **Inputs**: Quantized NNUE weights (`data/nnue/nnue_weights_int8.bin`), mined weakness seeds (`tools/external/weak_openings_mined.jsonl`).
+- **Outputs**: Formatted JSON array (`tools/external/openings_weakness_variations.json`) and line-delimited JSONL (`tools/external/openings_weakness_variations.jsonl`) compatible with Colab self-play workers.
+- **Key CLI flags**: `--weights`, `--seeds`, `--out-json`, `--out-jsonl`.
 
 ---
 

@@ -57,7 +57,7 @@ Validation loss values are comparable only within identical datasets and loss ta
 | `multipath_phase_contact_bucketed:512` Arm 1 (Sprint) | 858 / 512 | 21.121M mixture, 30 epochs, QAT, batch 8192, T=2.0, beta=0.15 | 1.31565 | Surpassed 504 Arm 1 val loss (1.31828) | Training complete |
 | `multipath_phase_contact_bucketed:512` Arm 2 (Surprise) | 858 / 512 | 21.121M surprise mixture, 30 epochs, QAT, batch 8192, alpha=0.5, s_max=4.0 | 1.61448 | Surpassed 504 Arm 2 val loss (1.62305) | Training complete |
 | `multipath_phase_contact_bucketed:512` Arm 3 (Regularized) | 858 / 512 | 21.121M surprise mixture, 30 epochs, QAT, batch 8192, beta=0.25 | 1.71567 | Surpassed 504 Arm 3 val loss (1.72065) | Training complete |
-| `multipath_phase_contact_bucketed:512` Tri-Model Soup (`Soup_Tri_Contact`) | 858 / 512 | Convex soup: 33.3% Arm 1 + 33.3% Arm 2 + 33.4% Arm 3, int8 (1,093,668 B) | — | 51.5% H2H vs Main 3.01; 55.0% vs Claustro; 57.0% vs Titanium (300g) | +33 Elo H2H surge over single-checkpoint contact; does not pass strict external gate vs Main 3.01 |
+| `multipath_phase_contact_bucketed:512` Tri-Model Soup (`Soup_Tri_Contact`) | 858 / 512 | Convex soup: 33.3% Arm 1 + 33.3% Arm 2 + 33.4% Arm 3, int8 (1,093,668 B) | — | **Full 800g External Battery**: 65.4% Claustro Normal (+110.7 Elo), 58.0% Claustro CR (+56.1 Elo), 71.0% Titanium Normal (+155.5 Elo), 63.0% Titanium CR (+92.5 Elo); 51.5% H2H vs Main 3.01 | Crushes baseline (+78 to +145 Elo); beats Main on Titanium CR (63.0% vs 56.0%), but trails Main 3.01 on Claustro CR (58.0% vs 66.0%) and Titanium Normal (71.0% vs 74.0%). Disqualified from promotion under strict gate. |
 
 ---
 
@@ -66,11 +66,14 @@ Validation loss values are comparable only within identical datasets and loss ta
 The table below catalogs all datasets generated, assembled, and maintained in the project.
 
 | Dataset Identifier | Records / Positions | Generation Strategy / Sources | Storage Path (Local or Cloud) | Format and Targets | Role and Consumers |
-| --- | ---: | --- | --- | --- | --- |
-| `colab_campaign_15m_accepted` | 8,704,079 | Cloud self-play from Workers 3, 4, 5 (671 shards) | Google Drive `selfplay_15m/` | 7.76M valid search targets, root missing excluded | Input for 21M central fine-tune mix |
-| `local_rollouts_snapshot` | 1,388,686 | Multi-profile rollouts (wide, balanced, sharp) | `data/selfplay/local_rollouts/` (85 shards) | 64B binary records and 20B metadata rows | Input for 21M central fine-tune mix |
-| `cloud_selfplay_v300_harvest` | ~1.2M | 5 Colab workers generation using Zquoridor 3.00 | Google Drive (`selfplay_central`, `irregular`, `weakness`, `exploration`) | Canonical V3 shards (`c1_` to `c5_`) | To be blended into next training iteration |
-| `cloud_selfplay_v301_harvest` | Continuous (15M target) | 5 Colab workers unified generation using Zquoridor 3.01 (Model Soup) | Google Drive (`selfplay_v301/`) | Canonical V3 shards (`c1_` to `c5_`) with distinct seeds | Primary fresh target for next generation dataset |
+| :--- | ---: | :--- | :--- | :--- | :--- |
+| `production_master_mix_21m` | 21,121,013 | 75% search rollouts + 25% tactical master mix | `results/experiments/production-central-finetune-20261002/mixed_dataset*` | Memory-mapped NumPy fields (`policy.npy`, `value.npy`, `weight.npy`) | Base training corpus for Zquoridor 3.00 and Stage A candidate models |
+| `cloud_selfplay_v300_shards` | ~1.4M (1,345 shards) | Cloud self-play from Workers 3, 4, 5 (Zquoridor 3.00) | `data/selfplay/v300_campaign_shards/` | Canonical V3 64-byte records and 20-byte metadata | Historical search rollouts for the next blended stored-search replay |
+| `cloud_selfplay_v301_harvest` | Continuous (15M target) | 5 Colab workers generation using Zquoridor 3.01 (Model Soup) | Google Drive `selfplay_v301/` and `data/selfplay/v301_campaign_harvest/` | Canonical V3 shards (`c1_` to `c5_`) with distinct seeds | Primary fresh target for next generation dataset |
+| `corpus_contact_4m_50ms` | 4,000,000 | Native contact-enabled self-play at 50 ms clock | `data/selfplay/corpus-contact-4m-50ms/` | SQLite state store (`states.sqlite`) and seeds | Training distribution for 858-feature contact network models |
+| `multipath_unified_clean_15m` | 15,637,120 | Master weakness curriculum (11.0M) + clean stored replay (4.57M) | `data/teaching/multipath_unified_clean_15m/dataset.npz` | NPZ archive with visit policies and calibrated weights | Anti-forgetting anchor and tactical curriculum for model training |
+| `multipath_weakness_boosted_11m` | 11,065,000 | Calibrated tactical crisis and bottleneck positions | `data/teaching/multipath-weakness-boosted-11m/dataset.npz` | NPZ archive with calibrated surprise multipliers | Core defensive dataset targeting Claustrophobia and Center Rush lines |
+| `central_weakness_rollouts_16m` | Specialized rollouts | Tactical weakness rollouts at 100 ms and 200 ms | `data/selfplay/central-weakness-rollouts-16m/` | Binary search shards and diagnostic records | Tactical fine-tuning for opening and bottleneck recovery |
 
 ---
 
@@ -275,10 +278,13 @@ flowchart TD
 3. Preserve all historical shards generated under Zquoridor 3.00 (`selfplay_central`, `selfplay_irregular`, `selfplay_targeted_weakness`, `selfplay_exploration`) to combine with the new 3.01 shards.
 
 ### Phase 3: Next Training Iteration (Unified v3.00 + v3.01 Blended Master Dataset)
-1. Ingest both the new `selfplay_v301/` shards and all existing `selfplay_v300` campaign shards into `training/prepare_stored_replay_all.py`.
+1. Ingest both the new `selfplay_v301/` harvest shards and the 1,345 consolidated `v300_campaign_shards/` into `training/prepare_stored_replay_all.py`.
 2. Deduplicate states and average visit distributions across both generation cohorts.
-3. Combine the blended stored-search dataset with the clean master corpus to form the next-generation training dataset.
-4. Train candidate networks using cosine learning rate schedules, QAT, horizontal symmetry augmentation, and model soup exploration.
+3. Combine the blended stored-search dataset with the preserved 21.121M master training corpus (`results/experiments/production-central-finetune-20261002/mixed_dataset*`) and weakness curricula (`multipath_unified_clean_15m`).
+4. Initialize training from the preserved specialized component arm checkpoints:
+   - For 504-feature candidates: Warm-start from `A1_aux_t20_b15`, `AS1_surprise_aux_t20_b15`, and `AS2_surprise_v2_t20_b25`.
+   - For 858-feature candidates: Warm-start from `arm1_sprint_aux`, `arm2_surprise_aux`, and `arm3_deep_regularized`.
+5. Train next-generation candidate models using cosine learning rate schedules, QAT, horizontal symmetry augmentation, and model soup exploration.
 
 ---
 

@@ -4,7 +4,10 @@ This module defines worker profiles, notebook URLs, CDP ports, and the resilient
 bootloader template executed on Google Colab virtual machines.
 """
 
+from pathlib import Path
 from typing import Dict, Any, List
+
+PROFILES_DIR = Path(__file__).resolve().parent / "profiles"
 
 # Worker configurations for distributed Google Colab self-play generation.
 WORKERS: Dict[int, Dict[str, Any]] = {
@@ -12,7 +15,7 @@ WORKERS: Dict[int, Dict[str, Any]] = {
         "name": "Colab 1",
         "worker_id": 1,
         "account": "worker-1@example.invalid",
-        "profile_dir": r"COLAB_PRIVATE_PROFILE_1",
+        "profile_dir": str(PROFILES_DIR / "worker-1"),
         "notebook_url": "https://colab.research.google.com/drive/NOTEBOOK_ID_1",
         "cdp_port": 9001,
         "target_keywords": ["run_colab_worker.py", "selfplay_v301", "zquoridor"],
@@ -26,7 +29,7 @@ WORKERS: Dict[int, Dict[str, Any]] = {
         "name": "Colab 2",
         "worker_id": 2,
         "account": "worker-2@example.invalid",
-        "profile_dir": r"COLAB_PRIVATE_PROFILE_2",
+        "profile_dir": str(PROFILES_DIR / "worker-2"),
         "notebook_url": "https://colab.research.google.com/drive/NOTEBOOK_ID_2",
         "cdp_port": 9002,
         "target_keywords": ["run_colab_worker.py", "selfplay_v301", "zquoridor"],
@@ -40,7 +43,7 @@ WORKERS: Dict[int, Dict[str, Any]] = {
         "name": "Colab 3",
         "worker_id": 3,
         "account": "worker-3@example.invalid",
-        "profile_dir": r"COLAB_PRIVATE_PROFILE_3",
+        "profile_dir": str(PROFILES_DIR / "worker-3"),
         "notebook_url": "https://colab.research.google.com/drive/NOTEBOOK_ID_3",
         "cdp_port": 9003,
         "target_keywords": ["run_colab_worker.py", "selfplay_v301", "zquoridor"],
@@ -54,7 +57,7 @@ WORKERS: Dict[int, Dict[str, Any]] = {
         "name": "Colab 4",
         "worker_id": 4,
         "account": "worker-4@example.invalid",
-        "profile_dir": r"COLAB_PRIVATE_PROFILE_4",
+        "profile_dir": str(PROFILES_DIR / "worker-1"),
         "notebook_url": "https://colab.research.google.com/drive/NOTEBOOK_ID_4",
         "cdp_port": 9004,
         "target_keywords": ["run_colab_worker.py", "selfplay_v301", "zquoridor"],
@@ -68,7 +71,7 @@ WORKERS: Dict[int, Dict[str, Any]] = {
         "name": "Colab 5",
         "worker_id": 5,
         "account": "worker-5@example.invalid",
-        "profile_dir": r"COLAB_PRIVATE_PROFILE_5",
+        "profile_dir": str(PROFILES_DIR / "worker-5"),
         "notebook_url": "https://colab.research.google.com/drive/NOTEBOOK_ID_5",
         "cdp_port": 9005,
         "target_keywords": ["run_colab_worker.py", "selfplay_v301", "zquoridor"],
@@ -76,30 +79,6 @@ WORKERS: Dict[int, Dict[str, Any]] = {
         "drive_dir": "/content/drive/MyDrive/zquoridor_data/selfplay_v301",
         "total_games": 80000,
         "extra_args": "--seed 5000005 --mc-obvious-plies 10 --mc-temp-obvious 2.5 --mc-temp-opening 1.2 --mc-temp-decay-plies 30 --mc-temp-end 0.12 --playout-cap --time-ms 400 --cheap-time-ms 200 --cheap-time-end-ms 50 --cheap-time-decay-plies 30 --full-search-opening-plies 14 --full-search-prob 0.35",
-    },
-    6: {
-        "name": "Colab 6",
-        "worker_id": 6,
-        "account": "worker-6@example.invalid",
-        "profile_dir": r"COLAB_PRIVATE_PROFILE_6",
-        "notebook_url": "https://colab.research.google.com/drive/NOTEBOOK_ID_6",
-        "cdp_port": 9006,
-        "target_keywords": ["run_colab_worker.py", "selfplay_targeted_weakness", "selfplay_15m", "zquoridor", "Remessa 2", "zchezz"],
-        "target_shard_prefix": "c6_",
-        "drive_dir": "/content/drive/MyDrive/zquoridor_data/selfplay_targeted_weakness",
-        "positions": "tools/external/openings_targeted_weakness_bank.jsonl",
-    },
-    7: {
-        "name": "Colab 7",
-        "worker_id": 7,
-        "account": "worker-7@example.invalid",
-        "profile_dir": r"COLAB_PRIVATE_PROFILE_7",
-        "notebook_url": "https://colab.research.google.com/drive/NOTEBOOK_ID_7",
-        "cdp_port": 9007,
-        "target_keywords": ["run_colab_worker.py", "selfplay_targeted_weakness", "selfplay_15m", "zquoridor", "Remessa 2", "zchezz"],
-        "target_shard_prefix": "c7_",
-        "drive_dir": "/content/drive/MyDrive/zquoridor_data/selfplay_targeted_weakness",
-        "positions": "tools/external/openings_targeted_weakness_bank.jsonl",
     },
 }
 
@@ -125,18 +104,6 @@ WORKER_ALIASES: Dict[Any, int] = {
     "5": 5,
     "c5": 5,
     "colab5": 5,
-    6: 6,
-    "6": 6,
-    "c6": 6,
-    "colab6": 6,
-    "zchezz": 6,
-    "worker-6": 6,
-    7: 7,
-    "7": 7,
-    "c7": 7,
-    "colab7": 7,
-    "zbrain": 7,
-    "worker-7": 7,
 }
 
 
