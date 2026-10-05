@@ -42,7 +42,7 @@ CONFIG = {
     "cheap_time_decay_plies": 30,
     "full_search_opening_plies": 0,
     "full_search_prob": 1.0,
-    "base_seed": 20261003,
+    "base_seed": 20261004,
 }
 
 
@@ -82,6 +82,7 @@ def main(argv=None):
     parser.add_argument("--cheap-time-decay-plies", type=int, default=CONFIG["cheap_time_decay_plies"])
     parser.add_argument("--full-search-opening-plies", type=int, default=CONFIG["full_search_opening_plies"])
     parser.add_argument("--full-search-prob", type=float, default=CONFIG["full_search_prob"])
+    parser.add_argument("--seed", type=int, default=CONFIG["base_seed"], help="Base RNG seed for worker")
     args = parser.parse_args(argv)
 
     drive_dir = Path(args.drive_dir)
@@ -130,7 +131,7 @@ def main(argv=None):
         shard_meta = drive_dir / f"c{args.worker_id}_shard_{shard_idx:04d}.meta"
 
         # Unique seed per worker and per shard to prevent any collision
-        shard_seed = CONFIG["base_seed"] + args.worker_id * 1_000_003 + shard_idx * 7_919
+        shard_seed = args.seed + args.worker_id * 1_000_003 + shard_idx * 7_919
 
         cmd = [
             str(exe_path),
