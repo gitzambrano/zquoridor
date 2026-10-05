@@ -115,13 +115,13 @@ Each worker writes directly to an isolated Google Drive destination to prevent w
 
 | Worker ID | Google Account | Drive Destination Path | File Prefix | Opening Focus and Book | Time Budget | Worker Threads | Chunk Size | Monte Carlo Exploration Parameters |
 | --- | --- | --- | --- | --- | --- | ---: | ---: | ---: | --- |
-| Worker 1 | `gustavozambrano` | `.../zquoridor_data/selfplay_central` | `c1_` | Central openings (`openings_center_rush_sound_5k.jsonl`) | 100 ms/move | 2 | 250 games | `mc_temp_opening=0.35`, `decay_plies=45`, `temp_end=0.12` |
-| Worker 2 | `flightdyn` | `.../zquoridor_data/selfplay_irregular` | `c2_` | Irregular and tactical lines (`openings_tactical_v1.jsonl`) | 100 ms/move | 2 | 250 games | `mc_temp_opening=0.35`, `decay_plies=45`, `temp_end=0.12` |
-| Worker 3 | `zambraprojects` | `.../zquoridor_data/selfplay_targeted_weakness` | `c3_` | Corridor bottlenecks and weakness positions | 100 ms/move | 2 | 250 games | `mc_temp_opening=0.35`, `decay_plies=45`, `temp_end=0.12` |
-| Worker 4 | `zquoridor` | `.../zquoridor_data/selfplay_targeted_weakness` | `c4_` | Corridor bottlenecks and weakness positions | 100 ms/move | 2 | 250 games | `mc_temp_opening=0.35`, `decay_plies=45`, `temp_end=0.12` |
-| Worker 5 | `gustati2201` | `.../zquoridor_data/selfplay_targeted_weakness` | `c5_` | Corridor bottlenecks and weakness positions | 100 ms/move | 2 | 250 games | `mc_temp_opening=0.35`, `decay_plies=45`, `temp_end=0.12` |
+| Worker 1 | `gustavozambrano` | `.../zquoridor_data/selfplay_v301` | `c1_` | Central openings (`openings_center_rush_sound_5k.jsonl`) | 400 ms opening (14 plies) / 50 ms cheap | 2 | 250 games | `seed=1000001`, `mc_temp_opening=0.35`, `decay_plies=45`, `temp_end=0.12`, `playout_cap=True` |
+| Worker 2 | `flightdyn` | `.../zquoridor_data/selfplay_v301` | `c2_` | Irregular and tactical lines (`openings_irregular_bank.jsonl`) | 400 ms opening (14 plies) / 50 ms cheap | 2 | 250 games | `seed=2000002`, `mc_temp_opening=0.35`, `decay_plies=45`, `temp_end=0.12`, `playout_cap=True` |
+| Worker 3 | `zambraprojects` | `.../zquoridor_data/selfplay_v301` | `c3_` | Corridor bottlenecks and weakness positions (`openings_targeted_weakness_bank.jsonl`) | 400 ms opening (14 plies) / 50 ms cheap | 2 | 250 games | `seed=3000003`, `mc_temp_opening=0.35`, `decay_plies=45`, `temp_end=0.12`, `playout_cap=True` |
+| Worker 4 | `zquoridor` | `.../zquoridor_data/selfplay_v301` | `c4_` | Corridor bottlenecks and weakness positions (`openings_targeted_weakness_bank.jsonl`) | 400 ms opening (14 plies) / 50 ms cheap | 2 | 250 games | `seed=4000004`, `mc_temp_opening=0.35`, `decay_plies=45`, `temp_end=0.12`, `playout_cap=True` |
+| Worker 5 | `gustati2201` | `.../zquoridor_data/selfplay_v301` | `c5_` | Unexplored lines (standard initial board, no book) | 400 ms opening (14 plies) / 200 ms decaying to 50 ms cheap (30 plies) | 2 | 250 games | `seed=5000005`, `mc_temp_obvious=2.5` (10 plies), `temp_opening=1.2`, `decay_plies=30`, `temp_end=0.12`, `playout_cap=True` |
 
-All cloud workers execute the native `bin/selfplay` binary using the production int8 weights (`nnue_weights_int8.bin`).
+All cloud workers execute the native `bin/selfplay` binary using the production Zquoridor 3.01 model soup weights (`nnue_weights_int8.bin`).
 
 ### Local Rollout Controller Configuration
 
