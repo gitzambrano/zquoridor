@@ -47,7 +47,7 @@ WORKERS: Dict[int, Dict[str, Any]] = {
         "target_shard_prefix": "c3_",
         "drive_dir": "/content/drive/MyDrive/zquoridor_data/selfplay_v301",
         "total_games": 80000,
-        "positions": "tools/external/openings_targeted_weakness_bank.jsonl",
+        "positions": "tools/external/openings_weakness_variations.jsonl",
         "extra_args": "--seed 3000003 --playout-cap --time-ms 400 --cheap-time-ms 50 --full-search-opening-plies 14 --full-search-prob 0.35",
     },
     4: {
@@ -61,7 +61,7 @@ WORKERS: Dict[int, Dict[str, Any]] = {
         "target_shard_prefix": "c4_",
         "drive_dir": "/content/drive/MyDrive/zquoridor_data/selfplay_v301",
         "total_games": 80000,
-        "positions": "tools/external/openings_targeted_weakness_bank.jsonl",
+        "positions": "tools/external/openings_weakness_variations.jsonl",
         "extra_args": "--seed 4000004 --playout-cap --time-ms 400 --cheap-time-ms 50 --full-search-opening-plies 14 --full-search-prob 0.35",
     },
     5: {
