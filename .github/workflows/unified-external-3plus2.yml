@@ -1,0 +1,115 @@
+name: Unified External 3+2 Matrix
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [exp/transform-search-v301-20261004]
+    paths:
+      - ".github/workflows/unified-external-3plus2.yml"
+
+permissions:
+  contents: read
+
+env:
+  PYTHONUNBUFFERED: "1"
+  MAIN_SHA: 5044720a2fa1c3ef154cc9701a966ad67a07cde7
+  CONTACT_WEIGHTS: results/experiments/contact_soup_tri_512/soup_tri_champion/student_int8.bin
+
+jobs:
+  preflight:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with: {fetch-depth: 0}
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.11"}
+      - name: Syntax check clock harness
+        run: |
+          python -m py_compile tools/run_benchmark.py tools/external/local_arena.py
+          grep -q "dynamic move-time-ms" tools/external/claustrophobia_benchmark_bridge.rs
+
+  external-3plus2:
+    name: 3p2-${{ matrix.subject }}-${{ matrix.opponent }}-${{ matrix.book }}
+    needs: preflight
+    runs-on: ubuntu-latest
+    timeout-minutes: 1200
+    strategy:
+      fail-fast: false
+      max-parallel: 6
+      matrix:
+        subject:
+          - prod504
+          - edge504
+          - m100_504
+          - contact858
+          - edge858
+          - m100_858
+        opponent: [claustrophobia, titanium]
+        book: [normal, central]
+        include:
+          - {book: normal, openings: tools/external/openings_normal_screen_100.jsonl, pairs: 12, seed: 20261811}
+          - {book: central, openings: tools/external/openings_center_rush_sound_5k.jsonl, pairs: 8, seed: 20261812}
+    steps:
+      - uses: actions/checkout@v4
+        with: {fetch-depth: 0}
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.11"}
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Cache external dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            external_bots/claustrophobia/champion.pt
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: ext3p2-${{ runner.os }}-${{ hashFiles('tools/external/bot_setup.py','tools/external/claustrophobia_benchmark_bridge.rs','training/teachers/claustrophobia_ipc_eval.rs','training/teachers/claustrophobia_inference_worker.py') }}
+          restore-keys: |
+            ext3p2-${{ runner.os }}-
+      - name: Install Claustrophobia runtime
+        if: matrix.opponent == 'claustrophobia'
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install numpy
+          python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
+      - name: Build subject
+        shell: bash
+        run: |
+          git worktree add /tmp/zq-main "$MAIN_SHA"
+          mkdir -p bin
+          case "${{ matrix.subject }}" in
+            prod504)
+              (cd /tmp/zq-main && bash build/build_uci.sh)
+              cp /tmp/zq-main/bin/zquoridor bin/subject
+              cp /tmp/zq-main/data/nnue/nnue_weights_int8.bin bin/subject.nnue
+              ;;
+            edge504)
+              g++ -O3 -DNDEBUG -std=c++17 -pthread -Isrc                 -DZQ_EXP_EDGE_ACC_CACHE=1                 tools/external/zquoridor_uci.cpp -o bin/subject
+              cp /tmp/zq-main/data/nnue/nnue_weights_int8.bin bin/subject.nnue
+              ;;
+            m100_504)
+              g++ -O3 -DNDEBUG -std=c++17 -pthread -Isrc                 -DZQ_EXP_EDGE_ACC_CACHE=1 -DZQ_EXP_RESIDUAL_PUCT=1                 -DZQ_EXP_RESIDUAL_ROOT_INITIAL=16 -DZQ_EXP_RESIDUAL_INNER_INITIAL=8                 -DZQ_EXP_RESIDUAL_MASS_PCT=100                 tools/external/zquoridor_uci.cpp -o bin/subject
+              cp /tmp/zq-main/data/nnue/nnue_weights_int8.bin bin/subject.nnue
+              ;;
+            contact858|edge858|m100_858)
+              CF="-DZQ_NNUE_RACE_FEATURES=1 -DZQ_NNUE_MULTIPATH_FEATURES=1 -DZQ_NNUE_MARGIN_REGIME_FEATURES=0 -DZQ_NNUE_PHASE_FEATURES=1 -DZQ_NNUE_CONTACT_FEATURES=1 -DZQ_NNUE_HIDDEN=512 -DZQ_NNUE_VALUE_BUCKETS=6 -DZQ_NNUE_VALUE_DEPTH=2"
+              SF=""
+              if [ "${{ matrix.subject }}" = "edge858" ]; then
+                SF="-DZQ_EXP_EDGE_ACC_CACHE=1"
+              elif [ "${{ matrix.subject }}" = "m100_858" ]; then
+                SF="-DZQ_EXP_EDGE_ACC_CACHE=1 -DZQ_EXP_RESIDUAL_PUCT=1 -DZQ_EXP_RESIDUAL_ROOT_INITIAL=16 -DZQ_EXP_RESIDUAL_INNER_INITIAL=8 -DZQ_EXP_RESIDUAL_MASS_PCT=100"
+              fi
+              g++ -O3 -DNDEBUG -std=c++17 -pthread -Isrc $CF $SF                 tools/external/zquoridor_uci.cpp -o bin/subject
+              cp "/tmp/zq-main/$CONTACT_WEIGHTS" bin/subject.nnue
+              ;;
+          esac
+      - name: External 3+2
+        shell: bash
+        run: |
+          python -u tools/run_benchmark.py             --opponents "${{ matrix.opponent }}"             --pairs "${{ matrix.pairs }}"             --workers 1             --seed "${{ matrix.seed }}"             --openings "${{ matrix.openings }}"             --output "results/unified-external-3plus2/${{ matrix.subject }}/${{ matrix.opponent }}/${{ matrix.book }}"             --zq-executable bin/subject             --nnue bin/subject.nnue             --zq-move-time-ms 200             --titanium-move-time-ms 200             --claustrophobia-move-time-ms 200             --clock-initial-ms 180000             --clock-increment-ms 2000             --move-timeout-s 30             --auto-setup
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ext3p2-${{ matrix.subject }}-${{ matrix.opponent }}-${{ matrix.book }}
+          path: results/unified-external-3plus2/${{ matrix.subject }}/${{ matrix.opponent }}/${{ matrix.book }}
+          retention-days: 14
