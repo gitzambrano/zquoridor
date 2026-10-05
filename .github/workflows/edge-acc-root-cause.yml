@@ -1,0 +1,118 @@
+name: EdgeAcc Root Cause Diagnostic
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [exp/transform-search-v301-20261004]
+    paths:
+      - "src/mcab.hpp"
+      - "tests/test_edge_acc_large_tree.cpp"
+      - ".github/workflows/edge-acc-root-cause.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose:
+    name: root-cause-${{ matrix.net }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        net: [n504, contact858]
+    steps:
+      - uses: actions/checkout@v4
+        with: {fetch-depth: 0}
+
+      - name: Materialize Contact weights
+        if: matrix.net == 'contact858'
+        shell: bash
+        run: |
+          git worktree add /tmp/zq-main origin/main
+          mkdir -p results/experiments/contact_soup_tri_512/soup_tri_champion
+          cp /tmp/zq-main/results/experiments/contact_soup_tri_512/soup_tri_champion/student_int8.bin              results/experiments/contact_soup_tri_512/soup_tri_champion/student_int8.bin
+          test -s results/experiments/contact_soup_tri_512/soup_tri_champion/student_int8.bin
+
+      - name: Build OFF, diagnostic, and parent-fix variants
+        shell: bash
+        run: |
+          mkdir -p bin out
+          FLAGS=""
+          WEIGHTS="data/nnue/nnue_weights_int8.bin"
+          if [ "${{ matrix.net }}" = "contact858" ]; then
+            FLAGS="-DZQ_NNUE_RACE_FEATURES=1 -DZQ_NNUE_MULTIPATH_FEATURES=1 -DZQ_NNUE_MARGIN_REGIME_FEATURES=0 -DZQ_NNUE_PHASE_FEATURES=1 -DZQ_NNUE_CONTACT_FEATURES=1 -DZQ_NNUE_HIDDEN=512 -DZQ_NNUE_VALUE_BUCKETS=6 -DZQ_NNUE_VALUE_DEPTH=2"
+            WEIGHTS="results/experiments/contact_soup_tri_512/soup_tri_champion/student_int8.bin"
+          fi
+          COMMON="-O3 -DNDEBUG -std=c++17 -pthread -Isrc $FLAGS"
+          g++ $COMMON tests/test_edge_acc_large_tree.cpp -o bin/off
+          g++ $COMMON             -DZQ_EXP_EDGE_ACC_CACHE=1             -DZQ_EXP_EDGE_ACC_DIAGNOSTIC=1             tests/test_edge_acc_large_tree.cpp -o bin/diag
+          g++ $COMMON             -DZQ_EXP_EDGE_ACC_CACHE=1             -DZQ_EXP_EDGE_ACC_RESOLVE_PARENT_ON_HIT=1             tests/test_edge_acc_large_tree.cpp -o bin/fix
+          echo "WEIGHTS=$WEIGHTS" >> "$GITHUB_ENV"
+
+      - name: Audit every real EdgeAcc hit
+        shell: bash
+        run: |
+          ./bin/diag "$WEIGHTS" 2>&1 | tee out/diag.txt
+          if grep -q "EDGE_ACC_DIAG_FAIL\|EDGE_ACC_DIAG_MISMATCH" out/diag.txt; then
+            echo "Accumulator mismatch found."
+            exit 11
+          fi
+          echo "EDGE_ACC_HIT_AUDIT_OK"
+
+      - name: Run OFF and parent-fix trees
+        shell: bash
+        run: |
+          ./bin/off "$WEIGHTS" | tee out/off.txt
+          ./bin/fix "$WEIGHTS" | tee out/fix.txt
+
+      - name: Compare OFF vs parent-fix bit for bit
+        shell: bash
+        run: |
+          python - <<'PY'
+          import re
+          from pathlib import Path
+
+          def parse(path):
+              rows=[]
+              for line in Path(path).read_text().splitlines():
+                  if not (line.startswith("CASE ") or line.startswith("REUSE ")):
+                      continue
+                  kv=dict(re.findall(r'(\w+)=([^ ]+)',line))
+                  kind=line.split()[0]
+                  label=line.split()[1] if kind=="CASE" else "step="+kv["step"]
+                  rows.append((kind,label,kv,line))
+              return rows
+
+          off=parse("out/off.txt")
+          fix=parse("out/fix.txt")
+          if len(off)!=10 or len(fix)!=10:
+              raise SystemExit(f"checkpoint count off={len(off)} fix={len(fix)}")
+
+          base_fields=["nodes","best","pool","sims","expanded","fp","rootN"]
+          reuse_fields=base_fields+["treeHit","reused"]
+          bad=[]
+          total_hits=0
+          for a,b in zip(off,fix):
+              fields=reuse_fields if a[0]=="REUSE" else base_fields
+              diff={k:(a[2].get(k),b[2].get(k)) for k in fields
+                    if a[2].get(k)!=b[2].get(k)}
+              if a[:2]!=b[:2] or diff:
+                  bad.append((a[1],diff,a[3],b[3]))
+              total_hits += int(b[2].get("hits","0"))
+
+          if bad:
+              for x in bad:
+                  print("PARENT_FIX_MISMATCH",x)
+              raise SystemExit(f"EDGE_ACC_PARENT_FIX_FAIL checkpoints={len(bad)} hits={total_hits}")
+          if total_hits < 1000:
+              raise SystemExit(f"insufficient Edge hits: {total_hits}")
+          print(f"EDGE_ACC_PARENT_FIX_OK checkpoints=10 total_cache_hits={total_hits}")
+          PY
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: edge-root-cause-${{ matrix.net }}
+          path: out/
+          retention-days: 14
