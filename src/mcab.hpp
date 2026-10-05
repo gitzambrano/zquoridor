@@ -61,6 +61,9 @@
 #ifndef ZQ_EXP_EDGE_ACC_DIAGNOSTIC
 #define ZQ_EXP_EDGE_ACC_DIAGNOSTIC 0
 #endif
+#ifndef ZQ_EXP_EDGE_ACC_RESOLVE_PARENT_ON_HIT
+#define ZQ_EXP_EDGE_ACC_RESOLVE_PARENT_ON_HIT 0
+#endif
 #ifndef ZQ_EXP_RESIDUAL_ROOT_INITIAL
 #define ZQ_EXP_RESIDUAL_ROOT_INITIAL 16
 #endif
@@ -1250,13 +1253,24 @@ private:
         std::abort();
     }
 
-    void edgeAccCompareCanonical(AccPairT a, AccPairT b, uint64_t key, int depth,
-                                 const char* which, Eng& engine) {
+    void edgeAccCanonicalize(AccPairT& ap, Eng& engine) {
         auto cache = mcabPathCache(engine, 0);
-        for (int side = 0; side < 2; ++side) {
-            mcabResolvePending(a, side, cache, 0);
-            mcabResolvePending(b, side, cache, 0);
-        }
+        mcabResolvePending(ap, 0, cache, 0);
+        mcabResolvePending(ap, 1, cache, 0);
+    }
+
+    bool edgeAccCanonicalEqualFast(AccPairT a, AccPairT b, Eng& engine) {
+        edgeAccCanonicalize(a, engine);
+        edgeAccCanonicalize(b, engine);
+        if (a.pending[0] || a.pending[1] || b.pending[0] || b.pending[1]) return false;
+        return std::memcmp(&a.acc[0], &b.acc[0], sizeof(a.acc[0])) == 0 &&
+               std::memcmp(&a.acc[1], &b.acc[1], sizeof(a.acc[1])) == 0;
+    }
+
+    void edgeAccCompareCanonicalDetailed(AccPairT a, AccPairT b, uint64_t key, int depth,
+                                         const char* which, Eng& engine) {
+        edgeAccCanonicalize(a, engine);
+        edgeAccCanonicalize(b, engine);
         for (int side = 0; side < 2; ++side) {
             if (a.pending[side] != b.pending[side])
                 edgeAccDiagnosticFail(which, key, depth, side, -10,
@@ -1292,23 +1306,29 @@ private:
                           const StateT& childState, const AccPairT& cached) {
         auto cache = mcabPathCache(engine, 0);
 
-        // Recreate exactly what the non-Edge path would have done from the
-        // current descent stack. makeChildAccPair may resolve pending state
-        // in parentCopy; keeping the real parent untouched makes this diagnostic
-        // observational only.
         AccPairT parentCopy = mcabAccStack[depth];
         AccPairT viaCurrent{};
         makeChildAccPair(parentCopy, viaCurrent, beforeState, mv, cache);
 
-        // Canonical state-only reference, using the SAME shared path cache.
-        AccPairT cold = buildAccPairRoot(childState, cache);
+        // Fast path on every real hit. A cold rebuild is intentionally deferred
+        // until a mismatch so this remains practical at millions of hits.
+        if (edgeAccCanonicalEqualFast(cached, viaCurrent, engine)) return;
 
-        edgeAccCompareCanonical(cached, viaCurrent, key, depth + 1,
-                                "cached-vs-current", engine);
-        edgeAccCompareCanonical(cached, cold, key, depth + 1,
-                                "cached-vs-cold", engine);
-        edgeAccCompareCanonical(viaCurrent, cold, key, depth + 1,
-                                "current-vs-cold", engine);
+        AccPairT cold = buildAccPairRoot(childState, cache);
+        std::fprintf(stderr,
+            "EDGE_ACC_DIAG_MISMATCH key=%016llx depth=%d mover=%d childTurn=%d "
+            "parentPending0=%d parentPending1=%d\n",
+            (unsigned long long)key, depth, (int)beforeState.turn, (int)childState.turn,
+            (int)mcabAccStack[depth].pending[0], (int)mcabAccStack[depth].pending[1]);
+        edgeAccCompareCanonicalDetailed(cached, cold, key, depth + 1,
+                                        "cached-vs-cold", engine);
+        edgeAccCompareCanonicalDetailed(viaCurrent, cold, key, depth + 1,
+                                        "current-vs-cold", engine);
+        edgeAccCompareCanonicalDetailed(cached, viaCurrent, key, depth + 1,
+                                        "cached-vs-current", engine);
+        std::fprintf(stderr,
+            "EDGE_ACC_DIAG_INTERNAL_ERROR mismatch detected but detailed comparison found none\n");
+        std::abort();
     }
 #endif
 
@@ -2054,6 +2074,12 @@ private:
 #if ZQ_EXP_EDGE_ACC_DIAGNOSTIC
                     edgeAccVerifyHit(engine, accKey, depth, beforeState, mv,
                                      edgeChildState, mcabAccStack[depth + 1]);
+#endif
+#if ZQ_EXP_EDGE_ACC_RESOLVE_PARENT_ON_HIT
+                    // Preserve the only parent-side mutation performed by
+                    // makeChildAccPair() on the non-cache path.
+                    mcabResolvePending(mcabAccStack[depth], 1 - (int)beforeState.turn,
+                                       mcabPathCache(engine, 0), 0);
 #endif
                 } else {
                     makeChildAccPair(mcabAccStack[depth], mcabAccStack[depth + 1], beforeState, mv,
