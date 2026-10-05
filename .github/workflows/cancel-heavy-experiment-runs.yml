@@ -32,4 +32,4 @@ jobs:
               exit 1
             fi
           done
-          echo "Heavy experiment runs cancelled; EdgeAcc parity run preserved."
+          echo "Duplicate EdgeAcc workflows cancelled; root-cause diagnostic preserved."
