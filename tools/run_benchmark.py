@@ -31,6 +31,8 @@ CONFIG = {
     "zq_move_time_ms": 200,
     "titanium_move_time_ms": 200,
     "claustrophobia_move_time_ms": 200,
+    "clock_initial_ms": 0,
+    "clock_increment_ms": 0,
     "claustrophobia_max_sims": 4096,
     "claustrophobia_cpuct": 1.5,
     "claustrophobia_device": "cpu",
@@ -63,6 +65,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--zq-move-time-ms", type=int)
     parser.add_argument("--titanium-move-time-ms", type=int)
     parser.add_argument("--claustrophobia-move-time-ms", type=int)
+    parser.add_argument("--clock-initial-ms", type=int)
+    parser.add_argument("--clock-increment-ms", type=int)
     parser.add_argument("--claustrophobia-max-sims", type=int)
     parser.add_argument("--claustrophobia-cpuct", type=float)
     parser.add_argument("--claustrophobia-device", choices=("cpu", "gpu"))
@@ -106,6 +110,9 @@ def resolve_config(args: argparse.Namespace) -> dict:
     for key in ("startup_timeout_s", "move_timeout_s", "claustrophobia_cpuct"):
         if float(config[key]) <= 0:
             raise ValueError(f"{key} must be positive")
+    for key in ("clock_initial_ms", "clock_increment_ms"):
+        if int(config[key]) < 0:
+            raise ValueError(f"{key} must be nonnegative")
     if not 0.0 <= float(config["category_score_threshold"]) <= 100.0:
         raise ValueError("category_score_threshold must be in [0,100]")
     if "titanium" in config["opponents"] and (
@@ -332,6 +339,8 @@ def run(config: dict) -> dict:
             move_timeout_s=float(config["move_timeout_s"]),
             max_plies=int(config["max_plies"]),
             run_id=manifest["run_id"],
+            clock_initial_ms=int(config["clock_initial_ms"]),
+            clock_increment_ms=int(config["clock_increment_ms"]),
         )
         if opening_index in opening_categories:
             row["opening_category"] = opening_categories[opening_index]
@@ -343,8 +352,14 @@ def run(config: dict) -> dict:
         "pairs_per_opponent": config["pairs"],
         "workers": config["workers"],
         "budgets": {
-            "zquoridor": {"type": "move_time_ms", "value": config["zq_move_time_ms"],
-                           "device": "cpu"},
+            "game_clock": (
+                {"initial_ms": config["clock_initial_ms"],
+                 "increment_ms": config["clock_increment_ms"],
+                 "external_allocator": "zquoridor-baseline-reference"}
+                if int(config["clock_initial_ms"]) > 0 else None
+            ),
+            "zquoridor": {"type": ("game_clock" if int(config["clock_initial_ms"]) > 0 else "move_time_ms"),
+                           "value": config["zq_move_time_ms"], "device": "cpu"},
             "titanium": {"type": "move_time_ms", "value": config["titanium_move_time_ms"],
                          "device": "cpu"},
             "claustrophobia": {"type": "move_time_ms", "value": config["claustrophobia_move_time_ms"],
