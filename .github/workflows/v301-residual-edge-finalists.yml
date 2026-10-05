@@ -1,0 +1,167 @@
+name: V3.01 Residual Edge Finalists
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [exp/transform-search-v301-20261004]
+    paths:
+      - ".github/workflows/v301-residual-edge-finalists.yml"
+
+permissions:
+  contents: read
+
+env:
+  PYTHONUNBUFFERED: "1"
+  BASELINE_SHA: 5044720a2fa1c3ef154cc9701a966ad67a07cde7
+
+jobs:
+  h2h:
+    name: h2h-${{ matrix.variant }}-${{ matrix.book }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 600
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        variant: [edge_only, combo_r8_i4_m100, combo_r16_i8_m120]
+        book: [normal, central]
+        include:
+          - {book: normal, openings: tools/external/openings_normal_confirm_400.jsonl, pairs: 300, seed: 20261501}
+          - {book: central, openings: tools/external/openings_center_rush_sound_5k.jsonl, pairs: 200, seed: 20261502}
+    steps:
+      - uses: actions/checkout@v4
+        with: {fetch-depth: 0}
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.11"}
+      - name: Resolve flags and build
+        shell: bash
+        run: |
+          case "${{ matrix.variant }}" in
+            edge_only) F="-DZQ_EXP_EDGE_ACC_CACHE=1" ;;
+            combo_r8_i4_m100) F="-DZQ_EXP_RESIDUAL_PUCT=1 -DZQ_EXP_EDGE_ACC_CACHE=1 -DZQ_EXP_RESIDUAL_ROOT_INITIAL=8 -DZQ_EXP_RESIDUAL_INNER_INITIAL=4 -DZQ_EXP_RESIDUAL_MASS_PCT=100" ;;
+            combo_r16_i8_m120) F="-DZQ_EXP_RESIDUAL_PUCT=1 -DZQ_EXP_EDGE_ACC_CACHE=1 -DZQ_EXP_RESIDUAL_ROOT_INITIAL=16 -DZQ_EXP_RESIDUAL_INNER_INITIAL=8 -DZQ_EXP_RESIDUAL_MASS_PCT=120" ;;
+          esac
+          mkdir -p bin
+          g++ -O3 -DNDEBUG -std=c++17 -pthread -Isrc $F tools/external/zquoridor_uci.cpp -o bin/zq_candidate
+          git worktree add /tmp/zq-main "$BASELINE_SHA"
+          (cd /tmp/zq-main && bash build/build_uci.sh)
+      - name: Paired 200ms confirmation
+        run: |
+          python -u tools/run_transform_search_confirmation.py             --gate main-fixed --name "${{ matrix.variant }}"             --engine-exe bin/zq_candidate --main-exe /tmp/zq-main/bin/zquoridor             --nnue /tmp/zq-main/data/nnue/nnue_weights_int8.bin             --main-nnue /tmp/zq-main/data/nnue/nnue_weights_int8.bin             --pairs "${{ matrix.pairs }}" --workers 2 --move-time-ms 200             --seed "${{ matrix.seed }}" --openings "${{ matrix.openings }}"             --output "results/v301-finalists/h2h/${{ matrix.variant }}/${{ matrix.book }}"
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: v301-final-h2h-${{ matrix.variant }}-${{ matrix.book }}
+          path: results/v301-finalists/h2h/${{ matrix.variant }}/${{ matrix.book }}
+          retention-days: 14
+
+  external:
+    name: ext-${{ matrix.subject }}-${{ matrix.opponent }}-${{ matrix.book }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 720
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        subject: [main301, edge_only, combo_r8_i4_m100, combo_r16_i8_m120]
+        opponent: [claustrophobia, titanium]
+        book: [normal, central]
+        include:
+          - {book: normal, openings: tools/external/openings_normal_confirm_400.jsonl, seed: 20261511}
+          - {book: central, openings: tools/external/openings_center_rush_sound_5k.jsonl, seed: 20261512}
+    steps:
+      - uses: actions/checkout@v4
+        with: {fetch-depth: 0}
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.11"}
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Cache external dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            external_bots/claustrophobia/champion.pt
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: v301-final-${{ runner.os }}-${{ hashFiles('tools/external/bot_setup.py','tools/external/claustrophobia_benchmark_bridge.rs','training/teachers/claustrophobia_ipc_eval.rs','training/teachers/claustrophobia_inference_worker.py') }}
+          restore-keys: |
+            v301-final-${{ runner.os }}-
+      - name: Install Claustrophobia runtime
+        if: matrix.opponent == 'claustrophobia'
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install numpy
+          python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
+      - name: Build subject
+        shell: bash
+        run: |
+          mkdir -p bin
+          git worktree add /tmp/zq-main "$BASELINE_SHA"
+          if [ "${{ matrix.subject }}" = "main301" ]; then
+            (cd /tmp/zq-main && bash build/build_uci.sh)
+            cp /tmp/zq-main/bin/zquoridor bin/zq_subject
+          else
+            case "${{ matrix.subject }}" in
+              edge_only) F="-DZQ_EXP_EDGE_ACC_CACHE=1" ;;
+              combo_r8_i4_m100) F="-DZQ_EXP_RESIDUAL_PUCT=1 -DZQ_EXP_EDGE_ACC_CACHE=1 -DZQ_EXP_RESIDUAL_ROOT_INITIAL=8 -DZQ_EXP_RESIDUAL_INNER_INITIAL=4 -DZQ_EXP_RESIDUAL_MASS_PCT=100" ;;
+              combo_r16_i8_m120) F="-DZQ_EXP_RESIDUAL_PUCT=1 -DZQ_EXP_EDGE_ACC_CACHE=1 -DZQ_EXP_RESIDUAL_ROOT_INITIAL=16 -DZQ_EXP_RESIDUAL_INNER_INITIAL=8 -DZQ_EXP_RESIDUAL_MASS_PCT=120" ;;
+            esac
+            g++ -O3 -DNDEBUG -std=c++17 -pthread -Isrc $F tools/external/zquoridor_uci.cpp -o bin/zq_subject
+          fi
+      - name: External confirmation
+        shell: bash
+        run: |
+          if [ "${{ matrix.opponent }}" = "claustrophobia" ]; then
+            PAIRS=200
+          else
+            PAIRS=150
+          fi
+          if [ "${{ matrix.book }}" = "central" ]; then
+            PAIRS=100
+          fi
+          python -u tools/run_transform_search_confirmation.py             --gate external --name "${{ matrix.subject }}"             --engine-exe bin/zq_subject             --nnue /tmp/zq-main/data/nnue/nnue_weights_int8.bin             --pairs "$PAIRS" --workers 1 --move-time-ms 200             --seed "${{ matrix.seed }}" --opponents "${{ matrix.opponent }}"             --openings "${{ matrix.openings }}"             --output "results/v301-finalists/external/${{ matrix.subject }}/${{ matrix.opponent }}/${{ matrix.book }}"
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: v301-final-ext-${{ matrix.subject }}-${{ matrix.opponent }}-${{ matrix.book }}
+          path: results/v301-finalists/external/${{ matrix.subject }}/${{ matrix.opponent }}/${{ matrix.book }}
+          retention-days: 14
+
+  clock:
+    name: clock-${{ matrix.variant }}-${{ matrix.book }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 1200
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        variant: [edge_only, combo_r8_i4_m100, combo_r16_i8_m120]
+        book: [normal, central]
+        include:
+          - {book: normal, openings: tools/external/openings_normal_confirm_400.jsonl, pairs: 30, seed: 20261521}
+          - {book: central, openings: tools/external/openings_center_rush_sound_5k.jsonl, pairs: 20, seed: 20261522}
+    steps:
+      - uses: actions/checkout@v4
+        with: {fetch-depth: 0}
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.11"}
+      - name: Build candidate and baseline
+        shell: bash
+        run: |
+          case "${{ matrix.variant }}" in
+            edge_only) F="-DZQ_EXP_EDGE_ACC_CACHE=1" ;;
+            combo_r8_i4_m100) F="-DZQ_EXP_RESIDUAL_PUCT=1 -DZQ_EXP_EDGE_ACC_CACHE=1 -DZQ_EXP_RESIDUAL_ROOT_INITIAL=8 -DZQ_EXP_RESIDUAL_INNER_INITIAL=4 -DZQ_EXP_RESIDUAL_MASS_PCT=100" ;;
+            combo_r16_i8_m120) F="-DZQ_EXP_RESIDUAL_PUCT=1 -DZQ_EXP_EDGE_ACC_CACHE=1 -DZQ_EXP_RESIDUAL_ROOT_INITIAL=16 -DZQ_EXP_RESIDUAL_INNER_INITIAL=8 -DZQ_EXP_RESIDUAL_MASS_PCT=120" ;;
+          esac
+          mkdir -p bin
+          g++ -O3 -DNDEBUG -std=c++17 -pthread -Isrc $F tools/external/zquoridor_uci.cpp -o bin/zq_candidate
+          git worktree add /tmp/zq-main "$BASELINE_SHA"
+          (cd /tmp/zq-main && bash build/build_uci.sh)
+      - name: 3+2 confirmation
+        run: |
+          python -u tools/run_transform_search_confirmation.py             --gate main-clock --name "${{ matrix.variant }}"             --engine-exe bin/zq_candidate --main-exe /tmp/zq-main/bin/zquoridor             --nnue /tmp/zq-main/data/nnue/nnue_weights_int8.bin             --main-nnue /tmp/zq-main/data/nnue/nnue_weights_int8.bin             --pairs "${{ matrix.pairs }}" --workers 1             --base-ms 180000 --increment-ms 2000 --move-overhead-ms 20             --seed "${{ matrix.seed }}" --openings "${{ matrix.openings }}"             --output "results/v301-finalists/clock/${{ matrix.variant }}/${{ matrix.book }}"
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: v301-final-clock-${{ matrix.variant }}-${{ matrix.book }}
+          path: results/v301-finalists/clock/${{ matrix.variant }}/${{ matrix.book }}
+          retention-days: 14
