@@ -1,0 +1,387 @@
+{
+  "schema": "zquoridor.experimental.anneal.v1",
+  "config": {
+    "out_dir": "results/experiments/production-central-finetune-20261002",
+    "champion": "results/experiments/multipath_unified_champion/student.bin",
+    "production_weights": "data/nnue/nnue_weights.bin",
+    "networks": [
+      {
+        "name": "production_bucketed512",
+        "architecture": "multipath_phase_bucketed",
+        "hidden": 512
+      }
+    ],
+    "data_sources": [
+      {
+        "name": "frozen_champion",
+        "path": "data/teaching/multipath_unified_clean_15m/dataset.npz",
+        "fraction": 0.25,
+        "weight_cap": 30.0,
+        "historical": true
+      },
+      {
+        "name": "new_all",
+        "path": "C:\\Projetos\\Zquoridor\\results\\experiments\\production-central-finetune-20261002\\new_replay\\dataset",
+        "fraction": 0.75,
+        "weight_cap": null,
+        "historical": false
+      }
+    ],
+    "epochs": 120,
+    "lr": 1e-05,
+    "min_lr": 1e-07,
+    "trunk_lr_scale": 0.05,
+    "warmup_epochs": 0,
+    "weight_decay": 1e-05,
+    "policy_weight": 1.0,
+    "value_weight": 1.0,
+    "batch_size": 2048,
+    "checkpoint_every": 10,
+    "seed": 20261002,
+    "device": "cuda",
+    "cpu_threads": 2,
+    "build": true,
+    "resume": true,
+    "dry_run": false,
+    "initialize_only": false,
+    "prepare_only": false,
+    "prepare_replays": false
+  },
+  "status": "training",
+  "networks": [
+    {
+      "name": "production_bucketed512",
+      "architecture": "multipath_phase_bucketed",
+      "hidden": 512,
+      "initial": "C:\\Projetos\\Zquoridor\\results\\experiments\\production-central-finetune-20261002\\production_bucketed512\\initial\\student.bin",
+      "architecture_manifest": "C:\\Projetos\\Zquoridor\\results\\experiments\\production-central-finetune-20261002\\production_bucketed512\\initial\\student.architecture.json",
+      "initialization_sha256": "70d76a8ca3ee0d774c64c240ea64d97b68f9790c74e0391d02c2e89bf38e891f"
+    }
+  ],
+  "datasets": [
+    {
+      "name": "frozen_champion",
+      "path": "data/teaching/multipath_unified_clean_15m/dataset.npz",
+      "fraction": 0.25,
+      "weight_cap": 30.0,
+      "historical": true,
+      "ready": true
+    },
+    {
+      "name": "new_all",
+      "path": "C:\\Projetos\\Zquoridor\\results\\experiments\\production-central-finetune-20261002\\new_replay\\dataset",
+      "fraction": 0.75,
+      "weight_cap": null,
+      "historical": false,
+      "ready": true
+    }
+  ],
+  "targets": {
+    "new_value": "0.5 * signed MCAB root + 0.5 * terminal result",
+    "gamma": 1,
+    "historical": "frozen targets and clipped historical weight ratios",
+    "policy": "untempered top-eight root visits"
+  },
+  "mixture": {
+    "arrays": {
+      "is_val": {
+        "dtype": "bool",
+        "filename": "fields\\is_val.npy",
+        "sha256": "83aaadb7c3c9842c7d0619fa9c9f61955637c3545762d85f31089ecedd7371de",
+        "shape": [
+          21121013
+        ]
+      },
+      "opp_dist": {
+        "dtype": "uint8",
+        "filename": "fields\\opp_dist.npy",
+        "sha256": "9e9da1b92b8ba2ad39ef4334a40a53748f42d884b4574cbd74b9eda3682bed06",
+        "shape": [
+          21121013
+        ]
+      },
+      "opp_pawn": {
+        "dtype": "uint8",
+        "filename": "fields\\opp_pawn.npy",
+        "sha256": "0dd495c17f4044f7a48485d3e053f0008ced263863aea457c7279a21566b3815",
+        "shape": [
+          21121013
+        ]
+      },
+      "own_dist": {
+        "dtype": "uint8",
+        "filename": "fields\\own_dist.npy",
+        "sha256": "317620f9297214a78be55ed32b4c99eb0edb785308c7a975e5c3b349a6407853",
+        "shape": [
+          21121013
+        ]
+      },
+      "own_pawn": {
+        "dtype": "uint8",
+        "filename": "fields\\own_pawn.npy",
+        "sha256": "fc69674fb1dfcfedfdc252569a1ef5ea0674a1ca9fb34602b96298084b741dad",
+        "shape": [
+          21121013
+        ]
+      },
+      "policy": {
+        "dtype": "float32",
+        "filename": "fields\\policy.npy",
+        "sha256": "6e39c6b9377d59212e842482734280922866caed388e5cffa70f46b85657e454",
+        "shape": [
+          21121013,
+          209
+        ]
+      },
+      "source_mass": {
+        "dtype": "float32",
+        "filename": "fields\\source_mass.npy",
+        "sha256": "112015155823fe8be6eb09c8da0bb14524ec2c84ea65f974fc16cd45d3dd1eb2",
+        "shape": [
+          21121013,
+          2
+        ]
+      },
+      "value": {
+        "dtype": "float32",
+        "filename": "fields\\value.npy",
+        "sha256": "4c01607d921f4d13a2d8144472bed92877b82e3a97797e3468f0378ceee53c9b",
+        "shape": [
+          21121013
+        ]
+      },
+      "walls_h": {
+        "dtype": "uint64",
+        "filename": "fields\\walls_h.npy",
+        "sha256": "7a3c8ede7ce4e59e84d4c51677efe10280c67e0e7b12cde952d6af5b24a7ed27",
+        "shape": [
+          21121013
+        ]
+      },
+      "walls_left_opp": {
+        "dtype": "int8",
+        "filename": "fields\\walls_left_opp.npy",
+        "sha256": "22866e8217227d4a30e1fd2ee6a3703bbc79bfc5fab78f6ef4998ad88e560b16",
+        "shape": [
+          21121013
+        ]
+      },
+      "walls_left_own": {
+        "dtype": "int8",
+        "filename": "fields\\walls_left_own.npy",
+        "sha256": "a088ce1306e8504b66ef7989256e98c268ec26224b9e1005b9a9e905a5575ac2",
+        "shape": [
+          21121013
+        ]
+      },
+      "walls_v": {
+        "dtype": "uint64",
+        "filename": "fields\\walls_v.npy",
+        "sha256": "96a17d201ed6f55cd65d2dc8469242877717fac5375f953d2f2e3427e88d12cc",
+        "shape": [
+          21121013
+        ]
+      },
+      "weight": {
+        "dtype": "float32",
+        "filename": "fields\\weight.npy",
+        "sha256": "5bd5a98616d96c14dc1b9ec168bb1f4ec739c96d9849f412cea3efe8f5ad9337",
+        "shape": [
+          21121013
+        ]
+      }
+    },
+    "complete": true,
+    "deduplication": {
+      "cross_split_conflicts_removed": true,
+      "group_leakage_policy": "remove_entire_group",
+      "key_fields": [
+        "own_pawn",
+        "opp_pawn",
+        "walls_h",
+        "walls_v",
+        "walls_left_own",
+        "walls_left_opp"
+      ],
+      "target_merge": "weighted_mean_by_capped_source_weight"
+    },
+    "group_separation_verified": true,
+    "identity_sha256": "fdbeb28d995ce18b4803017b642871d075fa1b1a740f685b9d27edd7922bbabc",
+    "samples": 21121013,
+    "schema": "zquoridor.experimental_mixture.v1",
+    "source_mass": {
+      "array": "source_mass",
+      "row_sum_matches_weight": true,
+      "source_names": [
+        "frozen_champion",
+        "new_all"
+      ]
+    },
+    "source_mass_mean_error": 0.0,
+    "source_names": [
+      "frozen_champion",
+      "new_all"
+    ],
+    "sources": [
+      {
+        "effective_fraction_train": 0.25,
+        "effective_fraction_val": 0.25,
+        "fraction": 0.25,
+        "group_fields_checked": [
+          "group_id"
+        ],
+        "identity": {
+          "kind": "npz",
+          "path": "C:\\Projetos\\Zquoridor\\data\\teaching\\multipath_unified_clean_15m\\dataset.npz",
+          "sha256": "7fce415bb141eaa2ea607702b9bdb0b21a0c0bdaeea8692936e7514a8e63b589"
+        },
+        "name": "frozen_champion",
+        "pool": null,
+        "pool_fraction": null,
+        "removed_group_count": 0,
+        "removed_split_conflict_rows": 251883,
+        "train_effective_mass": 4338808.999999997,
+        "train_raw_weight_after_filter": 38331019.668643,
+        "train_weight_scale": 0.11319315367833531,
+        "val_effective_mass": 941444.2500000001,
+        "val_raw_weight_after_filter": 6971615.847284317,
+        "val_weight_scale": 0.13503960496715045,
+        "weight_cap": 30.0
+      },
+      {
+        "effective_fraction_train": 0.75,
+        "effective_fraction_val": 0.75,
+        "fraction": 0.75,
+        "group_fields_checked": [
+          "group_id"
+        ],
+        "identity": {
+          "arrays": [
+            {
+              "file": "fields\\duplicate_count.npy",
+              "name": "duplicate_count",
+              "sha256": "cb419bf114e65d535cf1fce302c4bc53d4ff50ce20861269eab09618320bb7c7"
+            },
+            {
+              "file": "fields\\game_result.npy",
+              "name": "game_result",
+              "sha256": "659f508094f849717876687b4e975bbea37f8c900fbd343c0975fa8970ccf907"
+            },
+            {
+              "file": "fields\\group_id.npy",
+              "name": "group_id",
+              "sha256": "b7a67b74e35381ccb1a49019daccb6de77be38bdca9125b6106ee750591e3ed0"
+            },
+            {
+              "file": "fields\\is_val.npy",
+              "name": "is_val",
+              "sha256": "b35cb7dd8c9596b46cdd92b7255c5de2382926e512d53873231d4f54a2012125"
+            },
+            {
+              "file": "fields\\network_source_count.npy",
+              "name": "network_source_count",
+              "sha256": "9dbaa058f9b9ef561540e69beaca76ceffa2a3ad0ebb08f4c698e9ae044e49b7"
+            },
+            {
+              "file": "fields\\opp_dist.npy",
+              "name": "opp_dist",
+              "sha256": "e0d4d871653a02bde97a4f97b851050af99e2f3ca0a151a4f20f0d4eafdbefc7"
+            },
+            {
+              "file": "fields\\opp_pawn.npy",
+              "name": "opp_pawn",
+              "sha256": "960834a762180d5eb4f62de35443df4475349dc51ab77b0155b136d2e4cf467b"
+            },
+            {
+              "file": "fields\\own_dist.npy",
+              "name": "own_dist",
+              "sha256": "f367f4de943e6e6d2ab59300705fc43b3b6c8c623a7763a7353d40cf410c6ee5"
+            },
+            {
+              "file": "fields\\own_pawn.npy",
+              "name": "own_pawn",
+              "sha256": "6329c5ecbe66867906dff71c41636e8b1cf27bf448f519b7af82c09fcb072a06"
+            },
+            {
+              "file": "fields\\policy.npy",
+              "name": "policy",
+              "sha256": "189130cff152d55f178f006f246c1701e1d1974fd8dc03d722105fb0e66f7f11"
+            },
+            {
+              "file": "fields\\stored_root.npy",
+              "name": "stored_root",
+              "sha256": "59aa52d7a2258a452333a7a88fa1cf4c9d0f55c07eb9c2d16b267926ea3dfeba"
+            },
+            {
+              "file": "fields\\value.npy",
+              "name": "value",
+              "sha256": "1beb9c8322156715ef0a67a2e754bd322e7ec7d588ede505df658549f29e26e4"
+            },
+            {
+              "file": "fields\\walls_h.npy",
+              "name": "walls_h",
+              "sha256": "9199df527bfbb69892209befa827e098c3d8a256bf7504c0b5434184df9010c2"
+            },
+            {
+              "file": "fields\\walls_left_opp.npy",
+              "name": "walls_left_opp",
+              "sha256": "305c1680d5c08c3d9ced049f4f2ae96873215ec6b483300e730c0ea97f8e6b10"
+            },
+            {
+              "file": "fields\\walls_left_own.npy",
+              "name": "walls_left_own",
+              "sha256": "3009ad46f05b6d4da8334daeb08bb14e287968933d0e3e072aa04899a161160d"
+            },
+            {
+              "file": "fields\\walls_v.npy",
+              "name": "walls_v",
+              "sha256": "dc2a7f37dd7b88fd04ed08fd4920563c4686726e546a79c4b016bdf9a4aace30"
+            },
+            {
+              "file": "fields\\weight.npy",
+              "name": "weight",
+              "sha256": "8ca6b1055cd53afee5c54a515332cfde48f4b6cc4184bc2732884135688c0bd3"
+            }
+          ],
+          "kind": "directory",
+          "manifest_sha256": "aa97df14bce1b61753df5dbdf6f3791486ddf0a3bc37c79882caf724de3e21e1",
+          "path": "C:\\Projetos\\Zquoridor\\results\\experiments\\production-central-finetune-20261002\\new_replay\\dataset"
+        },
+        "name": "new_all",
+        "pool": null,
+        "pool_fraction": null,
+        "removed_group_count": 0,
+        "removed_split_conflict_rows": 1674,
+        "train_effective_mass": 13016426.999999875,
+        "train_raw_weight_after_filter": 4889944.0,
+        "train_weight_scale": 2.6618764959271517,
+        "val_effective_mass": 2824332.7499999986,
+        "val_raw_weight_after_filter": 1157048.0,
+        "val_weight_scale": 2.440981489099847,
+        "weight_cap": null
+      }
+    ],
+    "train_samples": 17355236,
+    "train_weight_sum": 17355235.99999999,
+    "val_samples": 3765777,
+    "val_weight_sum": 3765776.999999998
+  },
+  "reserve_unassigned": 4000000,
+  "additional_teaching": false,
+  "automatic_promotion": false,
+  "jobs": [
+    {
+      "name": "production_bucketed512",
+      "status": "training"
+    }
+  ],
+  "runtime_training_adjustment": {
+    "checkpoint_epoch": 10,
+    "previous_batch_size": 1024,
+    "current_batch_size": 2048,
+    "learning_rate_schedule_unchanged": true,
+    "optimizer_state_preserved": true,
+    "reason": "Match prior generation training runs and improve CUDA batch utilization",
+    "input_pipeline": "32,768-row block shuffle; CPU block prefetch; pinned asynchronous CUDA transfers; epoch metrics aggregated on device"
+  }
+}

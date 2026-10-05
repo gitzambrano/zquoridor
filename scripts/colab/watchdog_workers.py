@@ -35,14 +35,15 @@ from browser_utils import (
 from human_actions import random_human_idle
 
 CONFIG: Dict[str, Any] = {
-    "worker_ids": [1, 2, 3, 4, 5, 6, 7],
+    "worker_ids": [1, 2, 3, 4, 5],
     "check_interval_seconds": 60,
     "screenshot_interval_cycles": 10,
     "auto_reconnect": True,
-    "headless": True,
+    "headless": False,
     "page_timeout_ms": 60000,
     "artifacts_dir": str(REPO_ROOT / "artifacts" / "colab"),
     "target_delta_positions": 0,
+    "max_cycles": 0,
 }
 
 
@@ -182,6 +183,12 @@ def run_watchdog(cfg: Dict[str, Any]) -> None:
                                         except Exception:
                                             pass
 
+                        # Also handle OAuth if the main page itself is on accounts.google.com
+                        if "accounts.google.com" in (getattr(page, "url", "") or ""):
+                            print(f"[{w['name']}] Main page on Google OAuth/Sign-in. Handling automatically...", flush=True)
+                            handle_google_oauth_popup(page, w.get("account"))
+                            time.sleep(2)
+
                         dismiss_modals(page)
 
                         # Extract state from Colab DOM
@@ -211,23 +218,28 @@ def run_watchdog(cfg: Dict[str, Any]) -> None:
                             page.mouse.move(60 + (cycle % 40), 60 + (cycle % 40))
 
                         run_tag = "[RUNNING]" if state["running"] else ("[PENDING]" if state["pending"] else "[IDLE]")
-                        print(f"[{w['name']}] {run_tag} (VM: {state['statusText']}) -> {current_progress[:90]}")
+                        print(f"[{w['name']}] {run_tag} (VM: {state['statusText']}) -> {current_progress[:90]}", flush=True)
 
                         # 3. Auto-reconnect or bootstrap if idle and not running
                         if cfg["auto_reconnect"] and not state["running"] and not state["pending"]:
-                            if "Conectando" not in state["statusText"]:
-                                if "Conectar" in state["statusText"] or "Connect" in state["statusText"]:
-                                    print(f"[{w['name']}] [DISCONNECTED] Connecting VM...")
-                                    sess["reconnect_count"] += 1
-                                    connect_runtime_if_needed(page)
-                                    time.sleep(12)
+                            if "Auth Required" in state["statusText"]:
+                                print(f"[{w['name']}] [AUTH REQUIRED] Handling Google OAuth/verification...")
+                                handle_google_oauth_popup(page, w.get("account"))
+                                time.sleep(3)
+                            else:
+                                if "Conectando" not in state["statusText"]:
+                                    if "Conectar" in state["statusText"] or "Connect" in state["statusText"]:
+                                        print(f"[{w['name']}] [DISCONNECTED] Connecting VM...")
+                                        sess["reconnect_count"] += 1
+                                        connect_runtime_if_needed(page)
+                                        time.sleep(12)
 
-                                print(f"[{w['name']}] Triggering cell execution...")
-                                ok = trigger_cell_execution(page, wid, BOOTLOADER_TEMPLATE, target_keywords=keywords, force=True)
-                                if ok:
-                                    print(f"[{w['name']}] Triggered execution successfully.")
-                                else:
-                                    print(f"[{w['name']}] Trigger attempt complete (will re-verify next cycle).")
+                                    print(f"[{w['name']}] Triggering cell execution...")
+                                    ok = trigger_cell_execution(page, wid, BOOTLOADER_TEMPLATE, target_keywords=keywords, force=True)
+                                    if ok:
+                                        print(f"[{w['name']}] Triggered execution successfully.")
+                                    else:
+                                        print(f"[{w['name']}] Trigger attempt complete (will re-verify next cycle).")
 
                         # 4. Periodic health screenshot and status sidecar
                         if cycle % cfg["screenshot_interval_cycles"] == 0:
@@ -287,7 +299,10 @@ def run_watchdog(cfg: Dict[str, Any]) -> None:
                         print(f"\n[GOAL COMPLETE] Reached goal of at least {target_pos:,} positions! ({total_accumulated:,} generated)")
                         break
 
-                sys.stdout.flush()
+                max_c = cfg.get("max_cycles", 0)
+                if max_c > 0 and cycle >= max_c:
+                    print(f"\n[WATCHDOG] Reached maximum requested cycles ({max_c}). Exiting cleanly.")
+                    break
 
                 sys.stdout.flush()
                 time.sleep(cfg["check_interval_seconds"])
@@ -313,8 +328,10 @@ def main() -> None:
     parser.add_argument("--worker-ids", type=int, nargs="+", default=CONFIG["worker_ids"], help="Worker IDs (e.g. 3 4 5).")
     parser.add_argument("--interval", type=int, default=CONFIG["check_interval_seconds"], help="Seconds between checks.")
     parser.add_argument("--no-auto-reconnect", action="store_true", help="Disable automatic VM reconnection.")
+    parser.add_argument("--headless", action="store_true", help="Run browser in headless mode.")
     parser.add_argument("--headed", action="store_true", help="Run browser in visible headed mode.")
     parser.add_argument("--target-delta-positions", type=int, default=CONFIG["target_delta_positions"], help="Stop watchdog when accumulated delta positions reach this target.")
+    parser.add_argument("--max-cycles", type=int, default=CONFIG["max_cycles"], help="Maximum number of watchdog cycles to run before exiting (0 = infinite).")
     parser.add_argument("--show-config", action="store_true", help="Display effective configuration and exit.")
     args = parser.parse_args()
 
@@ -322,8 +339,11 @@ def main() -> None:
     effective_cfg["worker_ids"] = args.worker_ids
     effective_cfg["check_interval_seconds"] = args.interval
     effective_cfg["target_delta_positions"] = args.target_delta_positions
+    effective_cfg["max_cycles"] = args.max_cycles
     if args.no_auto_reconnect:
         effective_cfg["auto_reconnect"] = False
+    if args.headless:
+        effective_cfg["headless"] = True
     if args.headed:
         effective_cfg["headless"] = False
 

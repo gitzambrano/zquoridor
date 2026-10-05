@@ -1,0 +1,76 @@
+{
+  "status": "all_evaluations_complete_promotion_ready",
+  "completed_epochs": 120,
+  "total_epochs": 120,
+  "best_epoch": 112,
+  "best_validation_loss": 1.1954655158344394,
+  "batch_size": 2048,
+  "candidate_float": "production_bucketed512/train/student.bin",
+  "candidate_int8": "production_bucketed512/train/student_int8.bin",
+  "evaluation_enabled": true,
+  "arena_enabled": true,
+  "selfplay_enabled": false,
+  "updated_at": "2026-10-03T12:57:00-0300",
+  "central_screening_400g": {
+    "vs_frozen_main": {
+      "games": 400,
+      "score_pct": 55.50,
+      "elo": 38.4,
+      "ci_95": [51.5, 59.5],
+      "strength_claim_ready": true
+    },
+    "vs_claustrophobia_sound5k": {
+      "games": 400,
+      "score_pct": 54.87,
+      "elo": 34.0,
+      "ci_95": [50.9, 58.9],
+      "strength_claim_ready": true
+    }
+  },
+  "external_battery_800g": {
+    "claustro_normal": {
+      "games": 200,
+      "score_pct": 59.25,
+      "elo": 65.0,
+      "ci_95": [53.25, 65.25],
+      "delta_vs_baseline_pct": 8.42,
+      "delta_elo": 59.2
+    },
+    "claustro_centerrush": {
+      "games": 200,
+      "score_pct": 59.00,
+      "elo": 63.2,
+      "ci_95": [53.50, 64.50],
+      "delta_vs_baseline_pct": 21.50,
+      "delta_elo": 151.9
+    },
+    "titanium_normal": {
+      "games": 200,
+      "score_pct": 74.50,
+      "elo": 186.2,
+      "ci_95": [68.50, 80.50],
+      "delta_vs_baseline_pct": 14.50,
+      "delta_elo": 115.8
+    },
+    "titanium_centerrush": {
+      "games": 200,
+      "score_pct": 63.50,
+      "elo": 96.2,
+      "ci_95": [58.00, 69.00],
+      "delta_vs_baseline_pct": 17.50,
+      "delta_elo": 124.1
+    },
+    "claustro_total_400g": {
+      "score_pct": 59.13,
+      "elo": 64.1
+    },
+    "titanium_total_400g": {
+      "score_pct": 69.00,
+      "elo": 141.2
+    },
+    "battery_total_800g": {
+      "score_pct": 64.06,
+      "elo": 102.7
+    }
+  }
+}

@@ -55,8 +55,13 @@ def save_profile_cookies(ctx: Any, profile_dir: str) -> None:
 
 
 def load_profile_cookies(ctx: Any, profile_dir: str) -> None:
-    """Load and inject persistent cookies backup from profile or local project mirror."""
+    """Load and inject persistent cookies backup from profile or local project mirror if needed."""
     try:
+        existing = ctx.cookies()
+        if existing and len(existing) >= 10:
+            # Context already has active cookies from persistent profile database
+            return
+
         candidates = [
             Path(profile_dir) / "cookies.json",
             Path(__file__).resolve().parent / "cookies" / f"{Path(profile_dir).name}_cookies.json",
@@ -119,15 +124,17 @@ def is_cdp_reachable(port: int, host: str = "127.0.0.1", timeout: float = 1.0) -
 
 def is_profile_in_use(profile_dir: str) -> Tuple[bool, Optional[int]]:
     """Check if any running chrome.exe process is currently using the specified user data directory."""
-    target_name = os.path.basename(os.path.normpath(profile_dir)).lower()
+    norm_target = os.path.normpath(profile_dir).lower()
     for proc in psutil.process_iter(["pid", "name", "cmdline"]):
         try:
             p_name = proc.info.get("name") or ""
             if "chrome" in p_name.lower():
                 cmdline = proc.info.get("cmdline") or []
-                cmd_str = " ".join(cmdline).lower()
-                if target_name in cmd_str and ("user-data-dir" in cmd_str or "profile" in cmd_str):
-                    return True, proc.info.get("pid")
+                for arg in cmdline:
+                    if arg.lower().startswith("--user-data-dir="):
+                        val = os.path.normpath(arg.split("=", 1)[1]).lower()
+                        if val == norm_target:
+                            return True, proc.info.get("pid")
         except (psutil.NoSuchProcess, psutil.AccessDenied):
             pass
     return False, None
@@ -167,44 +174,66 @@ def dismiss_modals(page: Any) -> bool:
 
 
 def handle_google_oauth_popup(popup: Any, target_account: Optional[str] = None) -> bool:
-    """Handle Google OAuth consent dialog popup for Google Drive connection."""
+    """Handle Google OAuth consent dialog popup or page for Google Drive connection."""
     try:
-        if popup.is_closed():
+        if hasattr(popup, "is_closed") and popup.is_closed():
             return False
-        url = popup.url or ""
+        url = getattr(popup, "url", "") or ""
         if "accounts.google.com" not in url:
             return False
 
         # 1. Select account if account chooser is displayed
         if target_account:
-            try:
-                acc_loc = popup.locator(f"text={target_account}")
-                if acc_loc.count() > 0 and acc_loc.first.is_visible():
-                    acc_loc.first.click()
-                    time.sleep(1)
-            except Exception:
-                pass
+            for sel in [
+                f"div[data-identifier*='{target_account}']",
+                f"div[data-email*='{target_account}']",
+                f"li:has-text('{target_account}')",
+                f"div[role='link']:has-text('{target_account}')",
+                f"div[role='button']:has-text('{target_account}')",
+                f"text={target_account}",
+            ]:
+                try:
+                    loc = popup.locator(sel)
+                    if loc.count() > 0 and loc.first.is_visible():
+                        loc.first.click()
+                        time.sleep(1.5)
+                        break
+                except Exception:
+                    pass
 
-        # 2. Check checkboxes and click Continuar/Permitir
+        # 2. Check checkboxes and click Continuar/Permitir/Avançar
+        action_buttons = [
+            "Continuar", "Permitir", "Continue", "Allow",
+            "Avançar", "Next", "Entrar", "Sign in"
+        ]
         for _ in range(4):
-            if popup.is_closed():
+            if hasattr(popup, "is_closed") and popup.is_closed():
                 return True
+
             try:
                 for cb in popup.locator("input[type='checkbox']").all():
                     if not cb.is_checked():
                         cb.check()
             except Exception:
                 pass
-            for txt in ["Continuar", "Permitir", "Continue", "Allow"]:
+
+            clicked = False
+            for txt in action_buttons:
                 try:
-                    btn = popup.locator(f"button:has-text('{txt}'), div[role='button']:has-text('{txt}')")
+                    btn = popup.locator(f"button:has-text('{txt}'), div[role='button']:has-text('{txt}'), input[type='submit'][value*='{txt}']")
                     if btn.count() > 0 and btn.first.is_visible():
                         btn.first.click()
-                        time.sleep(1)
+                        time.sleep(2)
+                        clicked = True
                         break
                 except Exception:
                     pass
-        return popup.is_closed()
+            if not clicked:
+                break
+
+        if hasattr(popup, "is_closed"):
+            return popup.is_closed()
+        return "colab.research.google.com" in (getattr(popup, "url", "") or "")
     except Exception:
         return False
 

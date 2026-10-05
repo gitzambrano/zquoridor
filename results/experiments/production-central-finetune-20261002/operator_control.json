@@ -1,0 +1,16 @@
+{
+  "training_enabled": true,
+  "arena_enabled": false,
+  "selfplay_enabled": false,
+  "request": "Use resources only for training. Stop all arena workers and do not run self-play.",
+  "training_pid": null,
+  "production_architecture": "multipath_phase_bucketed:512",
+  "automatic_evaluation": false,
+  "training_recovery": {
+    "resumed_utc": "2026-10-02T21:44:34.3227734Z",
+    "checkpoint": "production_bucketed512/train/resume.pt",
+    "completed_epochs_at_resume": 4,
+    "recovery_log": "logs/finetune-resume1.stdout.log"
+  },
+  "training_runtime": "complete_120_epochs_best_epoch_112"
+}
