@@ -58,6 +58,15 @@
 #ifndef ZQ_EXP_EDGE_ACC_CACHE
 #define ZQ_EXP_EDGE_ACC_CACHE 0
 #endif
+#ifndef ZQ_EXP_RESIDUAL_ROOT_INITIAL
+#define ZQ_EXP_RESIDUAL_ROOT_INITIAL 16
+#endif
+#ifndef ZQ_EXP_RESIDUAL_INNER_INITIAL
+#define ZQ_EXP_RESIDUAL_INNER_INITIAL 8
+#endif
+#ifndef ZQ_EXP_RESIDUAL_MASS_PCT
+#define ZQ_EXP_RESIDUAL_MASS_PCT 100
+#endif
 
 #include <vector>
 #include <array>
@@ -1557,7 +1566,9 @@ private:
             // unmaterialized prior mass remains a virtual REST edge handled
             // by selectChildPUCT(); it is NOT renormalized away.
             if (node.candidateMoves && node.moves.empty()) {
-                const int initial = node.graphDepth == 0 ? 16 : 8;
+                const int initial = node.graphDepth == 0
+                                        ? ZQ_EXP_RESIDUAL_ROOT_INITIAL
+                                        : ZQ_EXP_RESIDUAL_INNER_INITIAL;
                 activateWidening(node, std::min(initial, (int)node.candidateMoves->size()));
             }
             node.activeMoves = (int)node.moves.size();
@@ -1778,6 +1789,7 @@ private:
                 double restPrior = 0.0;
                 for (size_t i = node.nextCandidate; i < node.candidateP.size(); ++i)
                     restPrior += (double)node.candidateP[i];
+                restPrior *= (double)ZQ_EXP_RESIDUAL_MASS_PCT / 100.0;
                 // Virtual REST edge. It has FPU value and carries the exact
                 // unmaterialized policy mass. Selecting it materializes one
                 // additional legal action in runSimulation().
