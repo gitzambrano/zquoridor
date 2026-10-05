@@ -1,0 +1,245 @@
+name: V3.01 Residual Edge Full Sweep
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [exp/transform-search-v301-20261004]
+    paths:
+      - ".github/workflows/v301-residual-edge-full-sweep.yml"
+
+permissions:
+  contents: read
+
+env:
+  PYTHONUNBUFFERED: "1"
+  BASELINE_SHA: b83c985a90190999cc028d323699665318bd5733
+
+jobs:
+  preflight:
+    name: preflight
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compile representative variants
+        run: |
+          mkdir -p bin
+          for spec in             "edge:-DZQ_EXP_EDGE_ACC_CACHE=1"             "residual:-DZQ_EXP_RESIDUAL_PUCT=1"             "combo8:-DZQ_EXP_RESIDUAL_PUCT=1 -DZQ_EXP_EDGE_ACC_CACHE=1 -DZQ_EXP_RESIDUAL_ROOT_INITIAL=8 -DZQ_EXP_RESIDUAL_INNER_INITIAL=4"             "combo24m80:-DZQ_EXP_RESIDUAL_PUCT=1 -DZQ_EXP_EDGE_ACC_CACHE=1 -DZQ_EXP_RESIDUAL_ROOT_INITIAL=24 -DZQ_EXP_RESIDUAL_INNER_INITIAL=12 -DZQ_EXP_RESIDUAL_MASS_PCT=80"
+          do
+            name="${spec%%:*}"
+            flags="${spec#*:}"
+            g++ -O2 -std=c++17 -Isrc $flags tests/test_mcab_core.cpp -o "bin/test_${name}"
+            "./bin/test_${name}"
+          done
+
+  fixed:
+    name: fixed-${{ matrix.variant }}-${{ matrix.book }}
+    needs: preflight
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    strategy:
+      fail-fast: false
+      max-parallel: 6
+      matrix:
+        variant:
+          - edge_only
+          - residual_only
+          - combo_r8_i4_m100
+          - combo_r12_i6_m100
+          - combo_r16_i8_m60
+          - combo_r16_i8_m80
+          - combo_r16_i8_m100
+          - combo_r16_i8_m120
+          - combo_r24_i12_m100
+          - combo_r32_i16_m100
+        book: [normal, central]
+        include:
+          - {book: normal, openings: tools/external/openings_normal_screen_100.jsonl, pairs: 100, seed: 20261401}
+          - {book: central, openings: tools/external/openings_center_rush_sound_5k.jsonl, pairs: 75, seed: 20261402}
+    steps:
+      - uses: actions/checkout@v4
+        with: {fetch-depth: 0}
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.11"}
+      - name: Resolve flags
+        id: flags
+        shell: bash
+        run: |
+          case "${{ matrix.variant }}" in
+            edge_only) F="-DZQ_EXP_EDGE_ACC_CACHE=1" ;;
+            residual_only) F="-DZQ_EXP_RESIDUAL_PUCT=1" ;;
+            combo_r8_i4_m100) F="-DZQ_EXP_RESIDUAL_PUCT=1 -DZQ_EXP_EDGE_ACC_CACHE=1 -DZQ_EXP_RESIDUAL_ROOT_INITIAL=8 -DZQ_EXP_RESIDUAL_INNER_INITIAL=4 -DZQ_EXP_RESIDUAL_MASS_PCT=100" ;;
+            combo_r12_i6_m100) F="-DZQ_EXP_RESIDUAL_PUCT=1 -DZQ_EXP_EDGE_ACC_CACHE=1 -DZQ_EXP_RESIDUAL_ROOT_INITIAL=12 -DZQ_EXP_RESIDUAL_INNER_INITIAL=6 -DZQ_EXP_RESIDUAL_MASS_PCT=100" ;;
+            combo_r16_i8_m60) F="-DZQ_EXP_RESIDUAL_PUCT=1 -DZQ_EXP_EDGE_ACC_CACHE=1 -DZQ_EXP_RESIDUAL_ROOT_INITIAL=16 -DZQ_EXP_RESIDUAL_INNER_INITIAL=8 -DZQ_EXP_RESIDUAL_MASS_PCT=60" ;;
+            combo_r16_i8_m80) F="-DZQ_EXP_RESIDUAL_PUCT=1 -DZQ_EXP_EDGE_ACC_CACHE=1 -DZQ_EXP_RESIDUAL_ROOT_INITIAL=16 -DZQ_EXP_RESIDUAL_INNER_INITIAL=8 -DZQ_EXP_RESIDUAL_MASS_PCT=80" ;;
+            combo_r16_i8_m100) F="-DZQ_EXP_RESIDUAL_PUCT=1 -DZQ_EXP_EDGE_ACC_CACHE=1 -DZQ_EXP_RESIDUAL_ROOT_INITIAL=16 -DZQ_EXP_RESIDUAL_INNER_INITIAL=8 -DZQ_EXP_RESIDUAL_MASS_PCT=100" ;;
+            combo_r16_i8_m120) F="-DZQ_EXP_RESIDUAL_PUCT=1 -DZQ_EXP_EDGE_ACC_CACHE=1 -DZQ_EXP_RESIDUAL_ROOT_INITIAL=16 -DZQ_EXP_RESIDUAL_INNER_INITIAL=8 -DZQ_EXP_RESIDUAL_MASS_PCT=120" ;;
+            combo_r24_i12_m100) F="-DZQ_EXP_RESIDUAL_PUCT=1 -DZQ_EXP_EDGE_ACC_CACHE=1 -DZQ_EXP_RESIDUAL_ROOT_INITIAL=24 -DZQ_EXP_RESIDUAL_INNER_INITIAL=12 -DZQ_EXP_RESIDUAL_MASS_PCT=100" ;;
+            combo_r32_i16_m100) F="-DZQ_EXP_RESIDUAL_PUCT=1 -DZQ_EXP_EDGE_ACC_CACHE=1 -DZQ_EXP_RESIDUAL_ROOT_INITIAL=32 -DZQ_EXP_RESIDUAL_INNER_INITIAL=16 -DZQ_EXP_RESIDUAL_MASS_PCT=100" ;;
+          esac
+          echo "flags=$F" >> "$GITHUB_OUTPUT"
+      - name: Build candidate and current 3.01 baseline
+        run: |
+          mkdir -p bin
+          FLAGS='${{ steps.flags.outputs.flags }}'
+          g++ -O3 -DNDEBUG -std=c++17 -pthread -Isrc $FLAGS tools/external/zquoridor_uci.cpp -o bin/zq_candidate
+          git worktree add /tmp/zq-main "$BASELINE_SHA"
+          (cd /tmp/zq-main && bash build/build_uci.sh)
+      - name: H2H
+        run: |
+          python -u tools/run_transform_search_confirmation.py             --gate main-fixed --name "${{ matrix.variant }}"             --engine-exe bin/zq_candidate --main-exe /tmp/zq-main/bin/zquoridor             --nnue /tmp/zq-main/data/nnue/nnue_weights_int8.bin             --main-nnue /tmp/zq-main/data/nnue/nnue_weights_int8.bin             --pairs "${{ matrix.pairs }}" --workers 2 --move-time-ms 200             --seed "${{ matrix.seed }}" --openings "${{ matrix.openings }}"             --output "results/v301-full-sweep/fixed/${{ matrix.variant }}/${{ matrix.book }}"
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: v301-full-fixed-${{ matrix.variant }}-${{ matrix.book }}
+          path: results/v301-full-sweep/fixed/${{ matrix.variant }}/${{ matrix.book }}
+          retention-days: 14
+
+  external-baseline:
+    name: ext-baseline-${{ matrix.opponent }}
+    needs: preflight
+    runs-on: ubuntu-latest
+    timeout-minutes: 480
+    strategy:
+      fail-fast: false
+      matrix:
+        opponent: [claustrophobia, titanium]
+    steps:
+      - uses: actions/checkout@v4
+        with: {fetch-depth: 0}
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.11"}
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install Claustrophobia runtime
+        if: matrix.opponent == 'claustrophobia'
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install numpy
+          python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
+      - name: Build current 3.01
+        run: |
+          git worktree add /tmp/zq-main "$BASELINE_SHA"
+          (cd /tmp/zq-main && bash build/build_uci.sh)
+      - name: Baseline external screen
+        run: |
+          python -u tools/run_transform_search_confirmation.py             --gate external --name main301             --engine-exe /tmp/zq-main/bin/zquoridor             --nnue /tmp/zq-main/data/nnue/nnue_weights_int8.bin             --pairs 50 --workers 1 --move-time-ms 200             --seed 20261411 --opponents "${{ matrix.opponent }}"             --openings tools/external/openings_normal_screen_100.jsonl             --output "results/v301-full-sweep/external/main301/${{ matrix.opponent }}"
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: v301-full-ext-main301-${{ matrix.opponent }}
+          path: results/v301-full-sweep/external/main301/${{ matrix.opponent }}
+          retention-days: 14
+
+  external-candidate:
+    name: ext-${{ matrix.variant }}-${{ matrix.opponent }}
+    needs: preflight
+    runs-on: ubuntu-latest
+    timeout-minutes: 480
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        variant:
+          - edge_only
+          - residual_only
+          - combo_r8_i4_m100
+          - combo_r12_i6_m100
+          - combo_r16_i8_m60
+          - combo_r16_i8_m80
+          - combo_r16_i8_m100
+          - combo_r16_i8_m120
+          - combo_r24_i12_m100
+          - combo_r32_i16_m100
+        opponent: [claustrophobia, titanium]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.11"}
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install Claustrophobia runtime
+        if: matrix.opponent == 'claustrophobia'
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install numpy
+          python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
+      - name: Resolve flags and build candidate
+        shell: bash
+        run: |
+          case "${{ matrix.variant }}" in
+            edge_only) F="-DZQ_EXP_EDGE_ACC_CACHE=1" ;;
+            residual_only) F="-DZQ_EXP_RESIDUAL_PUCT=1" ;;
+            combo_r8_i4_m100) F="-DZQ_EXP_RESIDUAL_PUCT=1 -DZQ_EXP_EDGE_ACC_CACHE=1 -DZQ_EXP_RESIDUAL_ROOT_INITIAL=8 -DZQ_EXP_RESIDUAL_INNER_INITIAL=4 -DZQ_EXP_RESIDUAL_MASS_PCT=100" ;;
+            combo_r12_i6_m100) F="-DZQ_EXP_RESIDUAL_PUCT=1 -DZQ_EXP_EDGE_ACC_CACHE=1 -DZQ_EXP_RESIDUAL_ROOT_INITIAL=12 -DZQ_EXP_RESIDUAL_INNER_INITIAL=6 -DZQ_EXP_RESIDUAL_MASS_PCT=100" ;;
+            combo_r16_i8_m60) F="-DZQ_EXP_RESIDUAL_PUCT=1 -DZQ_EXP_EDGE_ACC_CACHE=1 -DZQ_EXP_RESIDUAL_ROOT_INITIAL=16 -DZQ_EXP_RESIDUAL_INNER_INITIAL=8 -DZQ_EXP_RESIDUAL_MASS_PCT=60" ;;
+            combo_r16_i8_m80) F="-DZQ_EXP_RESIDUAL_PUCT=1 -DZQ_EXP_EDGE_ACC_CACHE=1 -DZQ_EXP_RESIDUAL_ROOT_INITIAL=16 -DZQ_EXP_RESIDUAL_INNER_INITIAL=8 -DZQ_EXP_RESIDUAL_MASS_PCT=80" ;;
+            combo_r16_i8_m100) F="-DZQ_EXP_RESIDUAL_PUCT=1 -DZQ_EXP_EDGE_ACC_CACHE=1 -DZQ_EXP_RESIDUAL_ROOT_INITIAL=16 -DZQ_EXP_RESIDUAL_INNER_INITIAL=8 -DZQ_EXP_RESIDUAL_MASS_PCT=100" ;;
+            combo_r16_i8_m120) F="-DZQ_EXP_RESIDUAL_PUCT=1 -DZQ_EXP_EDGE_ACC_CACHE=1 -DZQ_EXP_RESIDUAL_ROOT_INITIAL=16 -DZQ_EXP_RESIDUAL_INNER_INITIAL=8 -DZQ_EXP_RESIDUAL_MASS_PCT=120" ;;
+            combo_r24_i12_m100) F="-DZQ_EXP_RESIDUAL_PUCT=1 -DZQ_EXP_EDGE_ACC_CACHE=1 -DZQ_EXP_RESIDUAL_ROOT_INITIAL=24 -DZQ_EXP_RESIDUAL_INNER_INITIAL=12 -DZQ_EXP_RESIDUAL_MASS_PCT=100" ;;
+            combo_r32_i16_m100) F="-DZQ_EXP_RESIDUAL_PUCT=1 -DZQ_EXP_EDGE_ACC_CACHE=1 -DZQ_EXP_RESIDUAL_ROOT_INITIAL=32 -DZQ_EXP_RESIDUAL_INNER_INITIAL=16 -DZQ_EXP_RESIDUAL_MASS_PCT=100" ;;
+          esac
+          mkdir -p bin
+          g++ -O3 -DNDEBUG -std=c++17 -pthread -Isrc $F tools/external/zquoridor_uci.cpp -o bin/zq_candidate
+          git worktree add /tmp/zq-main "$BASELINE_SHA"
+      - name: Candidate external screen
+        run: |
+          python -u tools/run_transform_search_confirmation.py             --gate external --name "${{ matrix.variant }}"             --engine-exe bin/zq_candidate             --nnue /tmp/zq-main/data/nnue/nnue_weights_int8.bin             --pairs 50 --workers 1 --move-time-ms 200             --seed 20261411 --opponents "${{ matrix.opponent }}"             --openings tools/external/openings_normal_screen_100.jsonl             --output "results/v301-full-sweep/external/${{ matrix.variant }}/${{ matrix.opponent }}"
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: v301-full-ext-${{ matrix.variant }}-${{ matrix.opponent }}
+          path: results/v301-full-sweep/external/${{ matrix.variant }}/${{ matrix.opponent }}
+          retention-days: 14
+
+  clock:
+    name: clock-${{ matrix.variant }}
+    needs: preflight
+    runs-on: ubuntu-latest
+    timeout-minutes: 720
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        variant:
+          - edge_only
+          - residual_only
+          - combo_r8_i4_m100
+          - combo_r12_i6_m100
+          - combo_r16_i8_m60
+          - combo_r16_i8_m80
+          - combo_r16_i8_m100
+          - combo_r16_i8_m120
+          - combo_r24_i12_m100
+          - combo_r32_i16_m100
+    steps:
+      - uses: actions/checkout@v4
+        with: {fetch-depth: 0}
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.11"}
+      - name: Resolve flags and build
+        shell: bash
+        run: |
+          case "${{ matrix.variant }}" in
+            edge_only) F="-DZQ_EXP_EDGE_ACC_CACHE=1" ;;
+            residual_only) F="-DZQ_EXP_RESIDUAL_PUCT=1" ;;
+            combo_r8_i4_m100) F="-DZQ_EXP_RESIDUAL_PUCT=1 -DZQ_EXP_EDGE_ACC_CACHE=1 -DZQ_EXP_RESIDUAL_ROOT_INITIAL=8 -DZQ_EXP_RESIDUAL_INNER_INITIAL=4 -DZQ_EXP_RESIDUAL_MASS_PCT=100" ;;
+            combo_r12_i6_m100) F="-DZQ_EXP_RESIDUAL_PUCT=1 -DZQ_EXP_EDGE_ACC_CACHE=1 -DZQ_EXP_RESIDUAL_ROOT_INITIAL=12 -DZQ_EXP_RESIDUAL_INNER_INITIAL=6 -DZQ_EXP_RESIDUAL_MASS_PCT=100" ;;
+            combo_r16_i8_m60) F="-DZQ_EXP_RESIDUAL_PUCT=1 -DZQ_EXP_EDGE_ACC_CACHE=1 -DZQ_EXP_RESIDUAL_ROOT_INITIAL=16 -DZQ_EXP_RESIDUAL_INNER_INITIAL=8 -DZQ_EXP_RESIDUAL_MASS_PCT=60" ;;
+            combo_r16_i8_m80) F="-DZQ_EXP_RESIDUAL_PUCT=1 -DZQ_EXP_EDGE_ACC_CACHE=1 -DZQ_EXP_RESIDUAL_ROOT_INITIAL=16 -DZQ_EXP_RESIDUAL_INNER_INITIAL=8 -DZQ_EXP_RESIDUAL_MASS_PCT=80" ;;
+            combo_r16_i8_m100) F="-DZQ_EXP_RESIDUAL_PUCT=1 -DZQ_EXP_EDGE_ACC_CACHE=1 -DZQ_EXP_RESIDUAL_ROOT_INITIAL=16 -DZQ_EXP_RESIDUAL_INNER_INITIAL=8 -DZQ_EXP_RESIDUAL_MASS_PCT=100" ;;
+            combo_r16_i8_m120) F="-DZQ_EXP_RESIDUAL_PUCT=1 -DZQ_EXP_EDGE_ACC_CACHE=1 -DZQ_EXP_RESIDUAL_ROOT_INITIAL=16 -DZQ_EXP_RESIDUAL_INNER_INITIAL=8 -DZQ_EXP_RESIDUAL_MASS_PCT=120" ;;
+            combo_r24_i12_m100) F="-DZQ_EXP_RESIDUAL_PUCT=1 -DZQ_EXP_EDGE_ACC_CACHE=1 -DZQ_EXP_RESIDUAL_ROOT_INITIAL=24 -DZQ_EXP_RESIDUAL_INNER_INITIAL=12 -DZQ_EXP_RESIDUAL_MASS_PCT=100" ;;
+            combo_r32_i16_m100) F="-DZQ_EXP_RESIDUAL_PUCT=1 -DZQ_EXP_EDGE_ACC_CACHE=1 -DZQ_EXP_RESIDUAL_ROOT_INITIAL=32 -DZQ_EXP_RESIDUAL_INNER_INITIAL=16 -DZQ_EXP_RESIDUAL_MASS_PCT=100" ;;
+          esac
+          mkdir -p bin
+          g++ -O3 -DNDEBUG -std=c++17 -pthread -Isrc $F tools/external/zquoridor_uci.cpp -o bin/zq_candidate
+          git worktree add /tmp/zq-main "$BASELINE_SHA"
+          (cd /tmp/zq-main && bash build/build_uci.sh)
+      - name: Short 3+2 screen
+        run: |
+          python -u tools/run_transform_search_confirmation.py             --gate main-clock --name "${{ matrix.variant }}"             --engine-exe bin/zq_candidate --main-exe /tmp/zq-main/bin/zquoridor             --nnue /tmp/zq-main/data/nnue/nnue_weights_int8.bin             --main-nnue /tmp/zq-main/data/nnue/nnue_weights_int8.bin             --pairs 8 --workers 1 --base-ms 180000 --increment-ms 2000             --move-overhead-ms 20 --seed 20261421             --openings tools/external/openings_normal_screen_100.jsonl             --output "results/v301-full-sweep/clock/${{ matrix.variant }}"
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: v301-full-clock-${{ matrix.variant }}
+          path: results/v301-full-sweep/clock/${{ matrix.variant }}
+          retention-days: 14
