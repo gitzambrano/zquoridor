@@ -38,7 +38,7 @@ jobs:
       fail-fast: false
       max-parallel: 8
       matrix:
-        subject: [prod504, m100_858]
+        subject: [prod504, edge504, edge858, m100_858]
         book: [normal, central]
         shard: [0, 1, 2, 3]
         include:
@@ -78,6 +78,15 @@ jobs:
               (cd /tmp/zq-main && bash build/build_uci.sh)
               cp /tmp/zq-main/bin/zquoridor bin/subject
               cp /tmp/zq-main/data/nnue/nnue_weights_int8.bin bin/subject.nnue
+              ;;
+            edge504)
+              g++ -O3 -DNDEBUG -std=c++17 -pthread -Isrc                 -DZQ_EXP_EDGE_ACC_CACHE=1                 tools/external/zquoridor_uci.cpp -o bin/subject
+              cp /tmp/zq-main/data/nnue/nnue_weights_int8.bin bin/subject.nnue
+              ;;
+            edge858)
+              CF="-DZQ_NNUE_RACE_FEATURES=1 -DZQ_NNUE_MULTIPATH_FEATURES=1 -DZQ_NNUE_MARGIN_REGIME_FEATURES=0 -DZQ_NNUE_PHASE_FEATURES=1 -DZQ_NNUE_CONTACT_FEATURES=1 -DZQ_NNUE_HIDDEN=512 -DZQ_NNUE_VALUE_BUCKETS=6 -DZQ_NNUE_VALUE_DEPTH=2"
+              g++ -O3 -DNDEBUG -std=c++17 -pthread -Isrc $CF                 -DZQ_EXP_EDGE_ACC_CACHE=1                 tools/external/zquoridor_uci.cpp -o bin/subject
+              cp "/tmp/zq-main/$CONTACT_WEIGHTS" bin/subject.nnue
               ;;
             m100_858)
               CF="-DZQ_NNUE_RACE_FEATURES=1 -DZQ_NNUE_MULTIPATH_FEATURES=1 -DZQ_NNUE_MARGIN_REGIME_FEATURES=0 -DZQ_NNUE_PHASE_FEATURES=1 -DZQ_NNUE_CONTACT_FEATURES=1 -DZQ_NNUE_HIDDEN=512 -DZQ_NNUE_VALUE_BUCKETS=6 -DZQ_NNUE_VALUE_DEPTH=2"
