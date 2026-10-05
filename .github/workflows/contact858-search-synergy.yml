@@ -1,0 +1,237 @@
+name: Contact 858 Search Synergy Screen
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [exp/transform-search-v301-20261004]
+    paths:
+      - ".github/workflows/contact858-search-synergy.yml"
+
+permissions:
+  contents: read
+
+env:
+  PYTHONUNBUFFERED: "1"
+  MAIN_SHA: 5044720a2fa1c3ef154cc9701a966ad67a07cde7
+  CONTACT_WEIGHTS: results/experiments/contact_soup_tri_512/soup_tri_champion/student_int8.bin
+
+jobs:
+  preflight:
+    name: preflight
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with: {fetch-depth: 0}
+      - name: Verify contact champion and compile
+        shell: bash
+        run: |
+          git worktree add /tmp/zq-main "$MAIN_SHA"
+          test -f "/tmp/zq-main/$CONTACT_WEIGHTS"
+          echo "Contact weights:"
+          sha256sum "/tmp/zq-main/$CONTACT_WEIGHTS"
+          test "$(sha256sum "/tmp/zq-main/$CONTACT_WEIGHTS" | cut -d' ' -f1)" = "f8d85cae979bbf2047532e31daa61859c5f20246fc58de225f85ced0bef8841f"
+          CF="-DZQ_NNUE_RACE_FEATURES=1 -DZQ_NNUE_MULTIPATH_FEATURES=1 -DZQ_NNUE_MARGIN_REGIME_FEATURES=0 -DZQ_NNUE_PHASE_FEATURES=1 -DZQ_NNUE_CONTACT_FEATURES=1 -DZQ_NNUE_HIDDEN=512 -DZQ_NNUE_VALUE_BUCKETS=6 -DZQ_NNUE_VALUE_DEPTH=2"
+          g++ -O2 -std=c++17 -Isrc $CF tests/nnue_incremental_check.cpp -o /tmp/contact_nnue_check
+          /tmp/contact_nnue_check "/tmp/zq-main/$CONTACT_WEIGHTS"
+
+  search-delta:
+    name: delta-${{ matrix.variant }}-${{ matrix.book }}
+    needs: preflight
+    runs-on: ubuntu-latest
+    timeout-minutes: 420
+    strategy:
+      fail-fast: false
+      max-parallel: 5
+      matrix:
+        variant:
+          - edge_only
+          - residual_only
+          - combo_r8_i4_m100
+          - combo_r12_i6_m100
+          - combo_r16_i8_m80
+          - combo_r16_i8_m100
+          - combo_r16_i8_m120
+        book: [normal, central]
+        include:
+          - {book: normal, openings: tools/external/openings_normal_screen_100.jsonl, pairs: 100, seed: 20261601}
+          - {book: central, openings: tools/external/openings_center_rush_sound_5k.jsonl, pairs: 75, seed: 20261602}
+    steps:
+      - uses: actions/checkout@v4
+        with: {fetch-depth: 0}
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.11"}
+      - name: Build contact baseline and candidate
+        shell: bash
+        run: |
+          git worktree add /tmp/zq-main "$MAIN_SHA"
+          mkdir -p bin
+          CF="-DZQ_NNUE_RACE_FEATURES=1 -DZQ_NNUE_MULTIPATH_FEATURES=1 -DZQ_NNUE_MARGIN_REGIME_FEATURES=0 -DZQ_NNUE_PHASE_FEATURES=1 -DZQ_NNUE_CONTACT_FEATURES=1 -DZQ_NNUE_HIDDEN=512 -DZQ_NNUE_VALUE_BUCKETS=6 -DZQ_NNUE_VALUE_DEPTH=2"
+          case "${{ matrix.variant }}" in
+            edge_only) SF="-DZQ_EXP_EDGE_ACC_CACHE=1" ;;
+            residual_only) SF="-DZQ_EXP_RESIDUAL_PUCT=1" ;;
+            combo_r8_i4_m100) SF="-DZQ_EXP_RESIDUAL_PUCT=1 -DZQ_EXP_EDGE_ACC_CACHE=1 -DZQ_EXP_RESIDUAL_ROOT_INITIAL=8 -DZQ_EXP_RESIDUAL_INNER_INITIAL=4 -DZQ_EXP_RESIDUAL_MASS_PCT=100" ;;
+            combo_r12_i6_m100) SF="-DZQ_EXP_RESIDUAL_PUCT=1 -DZQ_EXP_EDGE_ACC_CACHE=1 -DZQ_EXP_RESIDUAL_ROOT_INITIAL=12 -DZQ_EXP_RESIDUAL_INNER_INITIAL=6 -DZQ_EXP_RESIDUAL_MASS_PCT=100" ;;
+            combo_r16_i8_m80) SF="-DZQ_EXP_RESIDUAL_PUCT=1 -DZQ_EXP_EDGE_ACC_CACHE=1 -DZQ_EXP_RESIDUAL_ROOT_INITIAL=16 -DZQ_EXP_RESIDUAL_INNER_INITIAL=8 -DZQ_EXP_RESIDUAL_MASS_PCT=80" ;;
+            combo_r16_i8_m100) SF="-DZQ_EXP_RESIDUAL_PUCT=1 -DZQ_EXP_EDGE_ACC_CACHE=1 -DZQ_EXP_RESIDUAL_ROOT_INITIAL=16 -DZQ_EXP_RESIDUAL_INNER_INITIAL=8 -DZQ_EXP_RESIDUAL_MASS_PCT=100" ;;
+            combo_r16_i8_m120) SF="-DZQ_EXP_RESIDUAL_PUCT=1 -DZQ_EXP_EDGE_ACC_CACHE=1 -DZQ_EXP_RESIDUAL_ROOT_INITIAL=16 -DZQ_EXP_RESIDUAL_INNER_INITIAL=8 -DZQ_EXP_RESIDUAL_MASS_PCT=120" ;;
+          esac
+          g++ -O3 -DNDEBUG -std=c++17 -pthread -Isrc $CF tools/external/zquoridor_uci.cpp -o bin/contact_base
+          g++ -O3 -DNDEBUG -std=c++17 -pthread -Isrc $CF $SF tools/external/zquoridor_uci.cpp -o bin/contact_candidate
+      - name: Candidate vs same Contact network
+        run: |
+          python -u tools/run_transform_search_confirmation.py             --gate main-fixed --name "${{ matrix.variant }}"             --engine-exe bin/contact_candidate --main-exe bin/contact_base             --nnue "/tmp/zq-main/$CONTACT_WEIGHTS"             --main-nnue "/tmp/zq-main/$CONTACT_WEIGHTS"             --pairs "${{ matrix.pairs }}" --workers 2 --move-time-ms 200             --seed "${{ matrix.seed }}" --openings "${{ matrix.openings }}"             --output "results/contact858-search/delta/${{ matrix.variant }}/${{ matrix.book }}"
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: contact858-delta-${{ matrix.variant }}-${{ matrix.book }}
+          path: results/contact858-search/delta/${{ matrix.variant }}/${{ matrix.book }}
+          retention-days: 14
+
+  prod-gate:
+    name: prod-${{ matrix.subject }}-${{ matrix.book }}
+    needs: preflight
+    runs-on: ubuntu-latest
+    timeout-minutes: 480
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        subject: [contact_base, edge_only, combo_r8_i4_m100, combo_r16_i8_m120]
+        book: [normal, central]
+        include:
+          - {book: normal, openings: tools/external/openings_normal_screen_100.jsonl, pairs: 100, seed: 20261611}
+          - {book: central, openings: tools/external/openings_center_rush_sound_5k.jsonl, pairs: 75, seed: 20261612}
+    steps:
+      - uses: actions/checkout@v4
+        with: {fetch-depth: 0}
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.11"}
+      - name: Build Contact subject and production main
+        shell: bash
+        run: |
+          git worktree add /tmp/zq-main "$MAIN_SHA"
+          (cd /tmp/zq-main && bash build/build_uci.sh)
+          mkdir -p bin
+          CF="-DZQ_NNUE_RACE_FEATURES=1 -DZQ_NNUE_MULTIPATH_FEATURES=1 -DZQ_NNUE_MARGIN_REGIME_FEATURES=0 -DZQ_NNUE_PHASE_FEATURES=1 -DZQ_NNUE_CONTACT_FEATURES=1 -DZQ_NNUE_HIDDEN=512 -DZQ_NNUE_VALUE_BUCKETS=6 -DZQ_NNUE_VALUE_DEPTH=2"
+          case "${{ matrix.subject }}" in
+            contact_base) SF="" ;;
+            edge_only) SF="-DZQ_EXP_EDGE_ACC_CACHE=1" ;;
+            combo_r8_i4_m100) SF="-DZQ_EXP_RESIDUAL_PUCT=1 -DZQ_EXP_EDGE_ACC_CACHE=1 -DZQ_EXP_RESIDUAL_ROOT_INITIAL=8 -DZQ_EXP_RESIDUAL_INNER_INITIAL=4 -DZQ_EXP_RESIDUAL_MASS_PCT=100" ;;
+            combo_r16_i8_m120) SF="-DZQ_EXP_RESIDUAL_PUCT=1 -DZQ_EXP_EDGE_ACC_CACHE=1 -DZQ_EXP_RESIDUAL_ROOT_INITIAL=16 -DZQ_EXP_RESIDUAL_INNER_INITIAL=8 -DZQ_EXP_RESIDUAL_MASS_PCT=120" ;;
+          esac
+          g++ -O3 -DNDEBUG -std=c++17 -pthread -Isrc $CF $SF tools/external/zquoridor_uci.cpp -o bin/contact_subject
+      - name: Contact subject vs production 3.01
+        run: |
+          python -u tools/run_transform_search_confirmation.py             --gate main-fixed --name "${{ matrix.subject }}"             --engine-exe bin/contact_subject --main-exe /tmp/zq-main/bin/zquoridor             --nnue "/tmp/zq-main/$CONTACT_WEIGHTS"             --main-nnue /tmp/zq-main/data/nnue/nnue_weights_int8.bin             --pairs "${{ matrix.pairs }}" --workers 2 --move-time-ms 200             --seed "${{ matrix.seed }}" --openings "${{ matrix.openings }}"             --output "results/contact858-search/prod/${{ matrix.subject }}/${{ matrix.book }}"
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: contact858-prod-${{ matrix.subject }}-${{ matrix.book }}
+          path: results/contact858-search/prod/${{ matrix.subject }}/${{ matrix.book }}
+          retention-days: 14
+
+  external:
+    name: ext-${{ matrix.subject }}-${{ matrix.opponent }}-${{ matrix.book }}
+    needs: preflight
+    runs-on: ubuntu-latest
+    timeout-minutes: 600
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        subject: [contact_base, edge_only, combo_r8_i4_m100, combo_r16_i8_m80, combo_r16_i8_m100, combo_r16_i8_m120]
+        opponent: [claustrophobia, titanium]
+        book: [normal, central]
+        include:
+          - {book: normal, openings: tools/external/openings_normal_screen_100.jsonl, seed: 20261621}
+          - {book: central, openings: tools/external/openings_center_rush_sound_5k.jsonl, seed: 20261622}
+    steps:
+      - uses: actions/checkout@v4
+        with: {fetch-depth: 0}
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.11"}
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Cache external dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            external_bots/claustrophobia/champion.pt
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: contact858-search-${{ runner.os }}-${{ hashFiles('tools/external/bot_setup.py','tools/external/claustrophobia_benchmark_bridge.rs','training/teachers/claustrophobia_ipc_eval.rs','training/teachers/claustrophobia_inference_worker.py') }}
+          restore-keys: |
+            contact858-search-${{ runner.os }}-
+      - name: Install Claustrophobia runtime
+        if: matrix.opponent == 'claustrophobia'
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install numpy
+          python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
+      - name: Build Contact subject
+        shell: bash
+        run: |
+          git worktree add /tmp/zq-main "$MAIN_SHA"
+          mkdir -p bin
+          CF="-DZQ_NNUE_RACE_FEATURES=1 -DZQ_NNUE_MULTIPATH_FEATURES=1 -DZQ_NNUE_MARGIN_REGIME_FEATURES=0 -DZQ_NNUE_PHASE_FEATURES=1 -DZQ_NNUE_CONTACT_FEATURES=1 -DZQ_NNUE_HIDDEN=512 -DZQ_NNUE_VALUE_BUCKETS=6 -DZQ_NNUE_VALUE_DEPTH=2"
+          case "${{ matrix.subject }}" in
+            contact_base) SF="" ;;
+            edge_only) SF="-DZQ_EXP_EDGE_ACC_CACHE=1" ;;
+            combo_r8_i4_m100) SF="-DZQ_EXP_RESIDUAL_PUCT=1 -DZQ_EXP_EDGE_ACC_CACHE=1 -DZQ_EXP_RESIDUAL_ROOT_INITIAL=8 -DZQ_EXP_RESIDUAL_INNER_INITIAL=4 -DZQ_EXP_RESIDUAL_MASS_PCT=100" ;;
+            combo_r16_i8_m80) SF="-DZQ_EXP_RESIDUAL_PUCT=1 -DZQ_EXP_EDGE_ACC_CACHE=1 -DZQ_EXP_RESIDUAL_ROOT_INITIAL=16 -DZQ_EXP_RESIDUAL_INNER_INITIAL=8 -DZQ_EXP_RESIDUAL_MASS_PCT=80" ;;
+            combo_r16_i8_m100) SF="-DZQ_EXP_RESIDUAL_PUCT=1 -DZQ_EXP_EDGE_ACC_CACHE=1 -DZQ_EXP_RESIDUAL_ROOT_INITIAL=16 -DZQ_EXP_RESIDUAL_INNER_INITIAL=8 -DZQ_EXP_RESIDUAL_MASS_PCT=100" ;;
+            combo_r16_i8_m120) SF="-DZQ_EXP_RESIDUAL_PUCT=1 -DZQ_EXP_EDGE_ACC_CACHE=1 -DZQ_EXP_RESIDUAL_ROOT_INITIAL=16 -DZQ_EXP_RESIDUAL_INNER_INITIAL=8 -DZQ_EXP_RESIDUAL_MASS_PCT=120" ;;
+          esac
+          g++ -O3 -DNDEBUG -std=c++17 -pthread -Isrc $CF $SF tools/external/zquoridor_uci.cpp -o bin/contact_subject
+      - name: External screen
+        shell: bash
+        run: |
+          python -u tools/run_transform_search_confirmation.py             --gate external --name "${{ matrix.subject }}"             --engine-exe bin/contact_subject             --nnue "/tmp/zq-main/$CONTACT_WEIGHTS"             --pairs 25 --workers 1 --move-time-ms 200             --seed "${{ matrix.seed }}" --opponents "${{ matrix.opponent }}"             --openings "${{ matrix.openings }}"             --output "results/contact858-search/external/${{ matrix.subject }}/${{ matrix.opponent }}/${{ matrix.book }}"
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: contact858-ext-${{ matrix.subject }}-${{ matrix.opponent }}-${{ matrix.book }}
+          path: results/contact858-search/external/${{ matrix.subject }}/${{ matrix.opponent }}/${{ matrix.book }}
+          retention-days: 14
+
+  clock:
+    name: clock-${{ matrix.variant }}-${{ matrix.book }}
+    needs: preflight
+    runs-on: ubuntu-latest
+    timeout-minutes: 900
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        variant: [edge_only, combo_r8_i4_m100, combo_r16_i8_m120]
+        book: [normal, central]
+        include:
+          - {book: normal, openings: tools/external/openings_normal_screen_100.jsonl, seed: 20261631}
+          - {book: central, openings: tools/external/openings_center_rush_sound_5k.jsonl, seed: 20261632}
+    steps:
+      - uses: actions/checkout@v4
+        with: {fetch-depth: 0}
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.11"}
+      - name: Build Contact baseline and candidate
+        shell: bash
+        run: |
+          git worktree add /tmp/zq-main "$MAIN_SHA"
+          mkdir -p bin
+          CF="-DZQ_NNUE_RACE_FEATURES=1 -DZQ_NNUE_MULTIPATH_FEATURES=1 -DZQ_NNUE_MARGIN_REGIME_FEATURES=0 -DZQ_NNUE_PHASE_FEATURES=1 -DZQ_NNUE_CONTACT_FEATURES=1 -DZQ_NNUE_HIDDEN=512 -DZQ_NNUE_VALUE_BUCKETS=6 -DZQ_NNUE_VALUE_DEPTH=2"
+          case "${{ matrix.variant }}" in
+            edge_only) SF="-DZQ_EXP_EDGE_ACC_CACHE=1" ;;
+            combo_r8_i4_m100) SF="-DZQ_EXP_RESIDUAL_PUCT=1 -DZQ_EXP_EDGE_ACC_CACHE=1 -DZQ_EXP_RESIDUAL_ROOT_INITIAL=8 -DZQ_EXP_RESIDUAL_INNER_INITIAL=4 -DZQ_EXP_RESIDUAL_MASS_PCT=100" ;;
+            combo_r16_i8_m120) SF="-DZQ_EXP_RESIDUAL_PUCT=1 -DZQ_EXP_EDGE_ACC_CACHE=1 -DZQ_EXP_RESIDUAL_ROOT_INITIAL=16 -DZQ_EXP_RESIDUAL_INNER_INITIAL=8 -DZQ_EXP_RESIDUAL_MASS_PCT=120" ;;
+          esac
+          g++ -O3 -DNDEBUG -std=c++17 -pthread -Isrc $CF tools/external/zquoridor_uci.cpp -o bin/contact_base
+          g++ -O3 -DNDEBUG -std=c++17 -pthread -Isrc $CF $SF tools/external/zquoridor_uci.cpp -o bin/contact_candidate
+      - name: 3+2 Contact delta
+        run: |
+          python -u tools/run_transform_search_confirmation.py             --gate main-clock --name "${{ matrix.variant }}"             --engine-exe bin/contact_candidate --main-exe bin/contact_base             --nnue "/tmp/zq-main/$CONTACT_WEIGHTS"             --main-nnue "/tmp/zq-main/$CONTACT_WEIGHTS"             --pairs 8 --workers 1 --base-ms 180000 --increment-ms 2000             --move-overhead-ms 20 --seed "${{ matrix.seed }}"             --openings "${{ matrix.openings }}"             --output "results/contact858-search/clock/${{ matrix.variant }}/${{ matrix.book }}"
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: contact858-clock-${{ matrix.variant }}-${{ matrix.book }}
+          path: results/contact858-search/clock/${{ matrix.variant }}/${{ matrix.book }}
+          retention-days: 14
