@@ -1,0 +1,42 @@
+{
+  "schema": "zquoridor.soup.v1",
+  "components": [
+    {
+      "path": "results\\experiments\\aux_policy_stage_a\\A1_aux_t20_b15\\student.bin",
+      "weight": 0.16670000000000001
+    },
+    {
+      "path": "results\\experiments\\aux_policy_stage_a\\AS1_surprise_aux_t20_b15\\student.bin",
+      "weight": 0.6666000000000001
+    },
+    {
+      "path": "results\\experiments\\aux_policy_stage_a\\AS2_surprise_v2_t20_b25\\best.pt",
+      "weight": 0.16670000000000001
+    }
+  ],
+  "manifest": {
+    "schema": "zquoridor.student.v1",
+    "architecture": "multipath_phase_bucketed",
+    "features": 504,
+    "hidden": 512,
+    "value_hidden": 32,
+    "value_buckets": 6,
+    "value_depth": 2,
+    "policy_out": 209,
+    "qa": 255,
+    "qb": 64,
+    "qat": true,
+    "cpp_flags": [
+      "-DZQ_NNUE_RACE_FEATURES=1",
+      "-DZQ_NNUE_MULTIPATH_FEATURES=1",
+      "-DZQ_NNUE_MARGIN_REGIME_FEATURES=0",
+      "-DZQ_NNUE_PHASE_FEATURES=1",
+      "-DZQ_NNUE_CONTACT_FEATURES=0",
+      "-DZQ_NNUE_HIDDEN=512",
+      "-DZQ_NNUE_VALUE_BUCKETS=6",
+      "-DZQ_NNUE_VALUE_DEPTH=2"
+    ],
+    "float_sha256": "422d11ab5081a3a9f4144e4d6e831f8956775bb1f7da3b96065243200366581f",
+    "int8_sha256": "58e5d1f806a0494afb8efd3d86603d55fc144f2e7b2e990e00f199a597631959"
+  }
+}

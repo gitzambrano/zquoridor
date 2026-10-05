@@ -1,0 +1,42 @@
+{
+  "schema": "zquoridor.soup.v1",
+  "components": [
+    {
+      "path": "results\\experiments\\contact_soup_tri_512\\arm1_sprint_aux\\best.pt",
+      "weight": 0.3333
+    },
+    {
+      "path": "results\\experiments\\contact_soup_tri_512\\arm2_surprise_aux\\best.pt",
+      "weight": 0.3333
+    },
+    {
+      "path": "results\\experiments\\contact_soup_tri_512\\arm3_deep_regularized\\best.pt",
+      "weight": 0.3334
+    }
+  ],
+  "manifest": {
+    "schema": "zquoridor.student.v1",
+    "architecture": "multipath_phase_contact_bucketed",
+    "features": 858,
+    "hidden": 512,
+    "value_hidden": 32,
+    "value_buckets": 6,
+    "value_depth": 2,
+    "policy_out": 209,
+    "qa": 255,
+    "qb": 64,
+    "qat": true,
+    "cpp_flags": [
+      "-DZQ_NNUE_RACE_FEATURES=1",
+      "-DZQ_NNUE_MULTIPATH_FEATURES=1",
+      "-DZQ_NNUE_MARGIN_REGIME_FEATURES=0",
+      "-DZQ_NNUE_PHASE_FEATURES=1",
+      "-DZQ_NNUE_CONTACT_FEATURES=1",
+      "-DZQ_NNUE_HIDDEN=512",
+      "-DZQ_NNUE_VALUE_BUCKETS=6",
+      "-DZQ_NNUE_VALUE_DEPTH=2"
+    ],
+    "float_sha256": "a5fa6b080a8912411454c83f139fede81d6489db3bf6a5dad7d8f828958ea9a7",
+    "int8_sha256": "f8d85cae979bbf2047532e31daa61859c5f20246fc58de225f85ced0bef8841f"
+  }
+}

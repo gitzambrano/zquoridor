@@ -1,0 +1,38 @@
+{
+  "schema": "zquoridor.finalists_h2h.v1",
+  "engine1": "A0_control",
+  "engine2": "frozen_v3",
+  "move_time_ms": 200,
+  "base_ms": 0,
+  "increment_ms": 0,
+  "engine1_args": [],
+  "engine2_args": [],
+  "summary": {
+    "schema": "zquoridor.local_benchmark.summary.v1",
+    "recorded_games": 40,
+    "failed_games": 0,
+    "complete_pairs": 20,
+    "included_games": 40,
+    "excluded_ok_games": 0,
+    "max_plies_games": 0,
+    "repetition_games": 1,
+    "repeated_states": 8,
+    "mean_plies": 63.975,
+    "score_pct": 48.75,
+    "elo": -8.687699877294502,
+    "decision_95": {
+      "method": "paired Hoeffding bound",
+      "score_low_pct": 18.381926904584738,
+      "score_high_pct": 79.11807309541526
+    },
+    "strength_claim_ready": false,
+    "paired_bootstrap_95": {
+      "iterations": 20000,
+      "seed": 20261005,
+      "score_low_pct": 35.0,
+      "score_high_pct": 62.5,
+      "elo_low": -107.53812491703198,
+      "elo_high": 88.73949984654256
+    }
+  }
+}

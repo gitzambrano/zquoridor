@@ -1,0 +1,276 @@
+{
+  "A0_control": {
+    "candidate": "A0_control",
+    "normal": {
+      "schema": "zquoridor.finalists_h2h.v1",
+      "engine1": "A0_control",
+      "engine2": "frozen_v3",
+      "move_time_ms": 200,
+      "base_ms": 0,
+      "increment_ms": 0,
+      "engine1_args": [],
+      "engine2_args": [],
+      "summary": {
+        "schema": "zquoridor.local_benchmark.summary.v1",
+        "recorded_games": 40,
+        "failed_games": 0,
+        "complete_pairs": 20,
+        "included_games": 40,
+        "excluded_ok_games": 0,
+        "max_plies_games": 0,
+        "repetition_games": 0,
+        "repeated_states": 1,
+        "mean_plies": 66.575,
+        "score_pct": 57.49999999999999,
+        "elo": 52.51156585572756,
+        "decision_95": {
+          "method": "paired Hoeffding bound",
+          "score_low_pct": 27.131926904584734,
+          "score_high_pct": 87.86807309541526
+        },
+        "strength_claim_ready": false,
+        "paired_bootstrap_95": {
+          "iterations": 20000,
+          "seed": 20261004,
+          "score_low_pct": 45.0,
+          "score_high_pct": 70.0,
+          "elo_low": -34.86007028756008,
+          "elo_high": 147.19071411783773
+        }
+      }
+    },
+    "normal_metrics": {
+      "zquoridor": {
+        "move_count": 1213,
+        "mean_depth": 4.3528441879637265,
+        "mean_nodes": 4474.929101401484,
+        "mean_nps": 23492.528075574573
+      },
+      "frozen_v3": {
+        "move_count": 1210,
+        "mean_depth": 4.363636363636363,
+        "mean_nodes": 3491.0413223140495,
+        "mean_nps": 18488.200933956163
+      }
+    },
+    "centerrush": {
+      "schema": "zquoridor.finalists_h2h.v1",
+      "engine1": "A0_control",
+      "engine2": "frozen_v3",
+      "move_time_ms": 200,
+      "base_ms": 0,
+      "increment_ms": 0,
+      "engine1_args": [],
+      "engine2_args": [],
+      "summary": {
+        "schema": "zquoridor.local_benchmark.summary.v1",
+        "recorded_games": 40,
+        "failed_games": 0,
+        "complete_pairs": 20,
+        "included_games": 40,
+        "excluded_ok_games": 0,
+        "max_plies_games": 0,
+        "repetition_games": 1,
+        "repeated_states": 8,
+        "mean_plies": 63.975,
+        "score_pct": 48.75,
+        "elo": -8.687699877294502,
+        "decision_95": {
+          "method": "paired Hoeffding bound",
+          "score_low_pct": 18.381926904584738,
+          "score_high_pct": 79.11807309541526
+        },
+        "strength_claim_ready": false,
+        "paired_bootstrap_95": {
+          "iterations": 20000,
+          "seed": 20261005,
+          "score_low_pct": 35.0,
+          "score_high_pct": 62.5,
+          "elo_low": -107.53812491703198,
+          "elo_high": 88.73949984654256
+        }
+      }
+    },
+    "centerrush_metrics": {
+      "zquoridor": {
+        "move_count": 1047,
+        "mean_depth": 4.699140401146132,
+        "mean_nodes": 4023.1642788920726,
+        "mean_nps": 21701.15731824033
+      },
+      "frozen_v3": {
+        "move_count": 1048,
+        "mean_depth": 4.5038167938931295,
+        "mean_nodes": 3006.111641221374,
+        "mean_nps": 16294.345008607537
+      }
+    },
+    "overall": {
+      "schema": "zquoridor.local_benchmark.summary.v1",
+      "recorded_games": 80,
+      "failed_games": 0,
+      "complete_pairs": 40,
+      "included_games": 80,
+      "excluded_ok_games": 0,
+      "max_plies_games": 0,
+      "repetition_games": 1,
+      "repeated_states": 9,
+      "mean_plies": 65.275,
+      "score_pct": 53.125,
+      "elo": 21.74306492903707,
+      "decision_95": {
+        "method": "paired Hoeffding bound",
+        "score_low_pct": 31.65152958266312,
+        "score_high_pct": 74.59847041733688
+      },
+      "strength_claim_ready": false,
+      "paired_bootstrap_95": {
+        "iterations": 20000,
+        "seed": 20261004,
+        "score_low_pct": 43.75,
+        "score_high_pct": 62.5,
+        "elo_low": -43.65778777002721,
+        "elo_high": 88.73949984654256
+      }
+    },
+    "avg_depth": 0.0,
+    "avg_nps": 0.0
+  },
+  "A1_aux_t20_b15": {
+    "candidate": "A1_aux_t20_b15",
+    "normal": {
+      "schema": "zquoridor.finalists_h2h.v1",
+      "engine1": "A1_aux_t20_b15",
+      "engine2": "frozen_v3",
+      "move_time_ms": 200,
+      "base_ms": 0,
+      "increment_ms": 0,
+      "engine1_args": [],
+      "engine2_args": [],
+      "summary": {
+        "schema": "zquoridor.local_benchmark.summary.v1",
+        "recorded_games": 40,
+        "failed_games": 0,
+        "complete_pairs": 20,
+        "included_games": 40,
+        "excluded_ok_games": 0,
+        "max_plies_games": 0,
+        "repetition_games": 2,
+        "repeated_states": 19,
+        "mean_plies": 66.775,
+        "score_pct": 57.49999999999999,
+        "elo": 52.51156585572756,
+        "decision_95": {
+          "method": "paired Hoeffding bound",
+          "score_low_pct": 27.131926904584734,
+          "score_high_pct": 87.86807309541526
+        },
+        "strength_claim_ready": false,
+        "paired_bootstrap_95": {
+          "iterations": 20000,
+          "seed": 20261004,
+          "score_low_pct": 42.5,
+          "score_high_pct": 72.5,
+          "elo_low": -52.51156585572756,
+          "elo_high": 168.40212509629242
+        }
+      }
+    },
+    "normal_metrics": {
+      "frozen_v3": {
+        "move_count": 1214,
+        "mean_depth": 4.481054365733113,
+        "mean_nodes": 3015.802306425041,
+        "mean_nps": 16054.782469306432
+      },
+      "zquoridor": {
+        "move_count": 1217,
+        "mean_depth": 4.502875924404273,
+        "mean_nodes": 4071.2949876746097,
+        "mean_nps": 21396.24234365592
+      }
+    },
+    "centerrush": {
+      "schema": "zquoridor.finalists_h2h.v1",
+      "engine1": "A1_aux_t20_b15",
+      "engine2": "frozen_v3",
+      "move_time_ms": 200,
+      "base_ms": 0,
+      "increment_ms": 0,
+      "engine1_args": [],
+      "engine2_args": [],
+      "summary": {
+        "schema": "zquoridor.local_benchmark.summary.v1",
+        "recorded_games": 40,
+        "failed_games": 0,
+        "complete_pairs": 20,
+        "included_games": 40,
+        "excluded_ok_games": 0,
+        "max_plies_games": 0,
+        "repetition_games": 1,
+        "repeated_states": 7,
+        "mean_plies": 61.7,
+        "score_pct": 53.75,
+        "elo": 26.106692605036596,
+        "decision_95": {
+          "method": "paired Hoeffding bound",
+          "score_low_pct": 23.381926904584738,
+          "score_high_pct": 84.11807309541526
+        },
+        "strength_claim_ready": false,
+        "paired_bootstrap_95": {
+          "iterations": 20000,
+          "seed": 20261005,
+          "score_low_pct": 40.0,
+          "score_high_pct": 66.25,
+          "elo_low": -70.43650362227247,
+          "elo_high": 117.16484217672067
+        }
+      }
+    },
+    "centerrush_metrics": {
+      "frozen_v3": {
+        "move_count": 1001,
+        "mean_depth": 3.076923076923077,
+        "mean_nodes": 3118.8641358641357,
+        "mean_nps": 16307.916564324754
+      },
+      "zquoridor": {
+        "move_count": 1003,
+        "mean_depth": 2.9112662013958124,
+        "mean_nodes": 4152.144566301096,
+        "mean_nps": 21323.284329297545
+      }
+    },
+    "overall": {
+      "schema": "zquoridor.local_benchmark.summary.v1",
+      "recorded_games": 80,
+      "failed_games": 0,
+      "complete_pairs": 40,
+      "included_games": 80,
+      "excluded_ok_games": 0,
+      "max_plies_games": 0,
+      "repetition_games": 3,
+      "repeated_states": 26,
+      "mean_plies": 64.2375,
+      "score_pct": 55.625,
+      "elo": 39.25266317033501,
+      "decision_95": {
+        "method": "paired Hoeffding bound",
+        "score_low_pct": 34.15152958266312,
+        "score_high_pct": 77.09847041733688
+      },
+      "strength_claim_ready": false,
+      "paired_bootstrap_95": {
+        "iterations": 20000,
+        "seed": 20261004,
+        "score_low_pct": 45.0,
+        "score_high_pct": 66.25,
+        "elo_low": -34.86007028756008,
+        "elo_high": 117.16484217672067
+      }
+    },
+    "avg_depth": 0.0,
+    "avg_nps": 0.0
+  }
+}

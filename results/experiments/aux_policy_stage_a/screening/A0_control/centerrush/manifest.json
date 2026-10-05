@@ -1,0 +1,66 @@
+{
+  "schema": "zquoridor.local_benchmark.manifest.v1",
+  "run_id": "c657abea91c0c5780f701798dab2e3040777ee3d5485a13c5eb091983187475f",
+  "config": {
+    "base_ms": 0,
+    "engine1_args": [],
+    "engine1_name": "A0_control",
+    "engine2_args": [],
+    "engine2_name": "frozen_v3",
+    "increment_ms": 0,
+    "move_overhead_ms": 20,
+    "move_time_ms": 200,
+    "openings": [
+      4522,
+      415,
+      3972,
+      3453,
+      1595,
+      3243,
+      3805,
+      3626,
+      69,
+      3500,
+      126,
+      1831,
+      850,
+      2390,
+      4034,
+      2162,
+      2448,
+      286,
+      3421,
+      2557
+    ],
+    "pairs": 20,
+    "protocol": "finalists-h2h-fixed-clock-v1",
+    "seed": 20261005
+  },
+  "artifacts": {
+    "engine1_executable": {
+      "path": "C:\\Projetos\\Zquoridor\\results\\experiments\\aux_policy_stage_a\\A0_control\\zquoridor.exe",
+      "size": 979172,
+      "sha256": "477a2f068c3a8773577c71e24b6b220a87f9a96b5c0a014cfc1257654c03455c"
+    },
+    "engine1_nnue": {
+      "path": "C:\\Projetos\\Zquoridor\\results\\experiments\\aux_policy_stage_a\\A0_control\\student_int8.bin",
+      "size": 731172,
+      "sha256": "347c8a345447c0f8d4a224d955c153fd9a53b1c96c4fc03f86965ad8542c24c1"
+    },
+    "engine2_executable": {
+      "path": "C:\\Projetos\\Zquoridor\\bin\\zquoridor.exe",
+      "size": 967152,
+      "sha256": "38fa1d4897cf129d10e791e7f2b41d2c38583927918d50558188f8e152098a80"
+    },
+    "engine2_nnue": {
+      "path": "C:\\Projetos\\Zquoridor\\data\\nnue\\nnue_weights_int8.bin",
+      "size": 731172,
+      "sha256": "4fd62cfe6c6045d1c6abe822eb5936349a145f61eaa9f9f87065f16abde3e89d"
+    },
+    "referee": {
+      "path": "C:\\Projetos\\Zquoridor\\tools\\external\\local_arena.py",
+      "size": 30183,
+      "sha256": "9afffd19a7758c15710100e8f3b382debb52e444286fc6e8a5bcb1a1635e6d0b"
+    }
+  }
+}

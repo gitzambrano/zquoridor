@@ -63,34 +63,49 @@ data_policy_ab.*
 data_wall_qext.*
 data/camping_survey.csv
 
+# Checkpoints / PyTorch weights
+*.pt
+
 # Local teaching, self-play and benchmark datasets stay outside Git.
 # Their layout and provenance are documented under docs/.
 results/benchmarks/
 data/teaching/
 
-# Keep only the two intentionally retained provenance checkpoints. All other
-# experiment outputs are local artifacts, including partial and candidate runs.
+# Retained experimental checkpoints and documentation.
 results/**
 !results/
 !results/experiments/
+
 !results/experiments/multipath-phase512-searchboost-100ep/
-!results/experiments/multipath-phase512-searchboost-100ep/student.bin
-!results/experiments/multipath-phase512-searchboost-100ep/student_int8.bin
-!results/experiments/multipath-phase512-searchboost-100ep/student.architecture.json
-!results/experiments/multipath-phase512-searchboost-100ep/config.json
-!results/experiments/multipath-phase512-searchboost-100ep/train_report.json
-!results/experiments/multipath-phase512-searchboost-100ep/build_manifest.json
-!results/experiments/margin_regime512-weakness-cr60ep/student.bin
-!results/experiments/margin_regime512-weakness-cr60ep/student_int8.bin
-!results/experiments/margin_regime512-weakness-cr60ep/student.architecture.json
-!results/experiments/margin_regime512-weakness-cr60ep/config.json
-!results/experiments/margin_regime512-weakness-cr60ep/train_report.json
-!results/experiments/margin_regime512-weakness-cr60ep/build_manifest.json
+!results/experiments/multipath-phase512-searchboost-100ep/*.json
+!results/experiments/multipath-phase512-searchboost-100ep/*.md
+!results/experiments/multipath-phase512-searchboost-100ep/student*.bin
+
+!results/experiments/margin_regime512-weakness-cr60ep/
+!results/experiments/margin_regime512-weakness-cr60ep/*.json
+!results/experiments/margin_regime512-weakness-cr60ep/*.md
+!results/experiments/margin_regime512-weakness-cr60ep/student*.bin
+
 !results/experiments/multipath_contact_bucketed_unified/
-!results/experiments/multipath_contact_bucketed_unified/student_int8.bin
-!results/experiments/multipath_contact_bucketed_unified/student.architecture.json
-!results/experiments/multipath_contact_bucketed_unified/config.json
-!results/experiments/multipath_contact_bucketed_unified/train_report.json
+!results/experiments/multipath_contact_bucketed_unified/*.json
+!results/experiments/multipath_contact_bucketed_unified/*.md
+!results/experiments/multipath_contact_bucketed_unified/student*.bin
+
+!results/experiments/contact-bucketed512-central-20261003/
+!results/experiments/contact-bucketed512-central-20261003/*.json
+!results/experiments/contact-bucketed512-central-20261003/*.md
+!results/experiments/contact-bucketed512-central-20261003/student*.bin
+
+!results/experiments/contact_soup_tri_512/
+!results/experiments/contact_soup_tri_512/**
+!results/experiments/aux_policy_stage_a/
+!results/experiments/aux_policy_stage_a/**
+
+# Always ignore executables, PyTorch checkpoints, and logs in results
+results/**/*.exe
+results/**/*.pt
+results/**/*.log
+results/**/*.jsonl
 
 .pytest_cache/
 # Internal agent workflow state; never version project documentation here.
