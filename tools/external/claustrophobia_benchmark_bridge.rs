@@ -121,7 +121,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         if line == "quit" {
             break;
         }
-        let Some((command, history)) = line.split_once('\t') else {
+        let Some((command, payload)) = line.split_once('\t') else {
             println!("{}", json_error("expected a tab after the command"));
             io::stdout().flush()?;
             continue;
@@ -131,26 +131,37 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             io::stdout().flush()?;
             continue;
         }
+        let (request_move_time_ms, history) = match payload.split_once('\t') {
+            Some((budget, history)) => match budget.parse::<u64>() {
+                Ok(value) if value > 0 => (value, history),
+                _ => {
+                    println!("{}", json_error("invalid dynamic move-time-ms"));
+                    io::stdout().flush()?;
+                    continue;
+                }
+            },
+            None => (move_time_ms, payload),
+        };
         match replay(history) {
             Ok(state) => {
                 let started = Instant::now();
                 // Reserve one quarter of the clock for position variance. The
                 // remaining time is spent as a deterministic MCTS search.
-                let search_budget_ms = (move_time_ms as f64 * 0.75).max(1.0);
+                let search_budget_ms = (request_move_time_ms as f64 * 0.75).max(1.0);
                 let sims = ((sims_per_ms * search_budget_ms).floor() as u32)
                     .clamp(1, max_sims);
                 let result = run_mcts_batched(state, &evaluator, sims, cpuct, config);
                 match index_to_move(&state, result.best_action) {
                     Some(chosen) if parse_move(&move_text(chosen), &state).is_some() => {
                         let search_ms = started.elapsed().as_secs_f64() * 1000.0;
-                        let remaining_ms = move_time_ms as f64 - search_ms;
+                        let remaining_ms = request_move_time_ms as f64 - search_ms;
                         if remaining_ms > 0.0 {
                             thread::sleep(Duration::from_secs_f64(remaining_ms / 1000.0));
                         }
                         let elapsed_ms = started.elapsed().as_secs_f64() * 1000.0;
                         println!(
                             "{{\"bestmove\":\"{}\",\"move_time_ms\":{},\"sims\":{},\"search_ms\":{:.3},\"elapsed_ms\":{:.3},\"root_value\":{:.9}}}",
-                            move_text(chosen), move_time_ms, sims, search_ms, elapsed_ms,
+                            move_text(chosen), request_move_time_ms, sims, search_ms, elapsed_ms,
                             result.root_value_side_to_move()
                         );
                     }
