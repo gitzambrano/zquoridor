@@ -1,0 +1,128 @@
+name: V3.01 Residual Edge Normal Rerun
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [exp/transform-search-v301-20261004]
+    paths:
+      - ".github/workflows/v301-residual-edge-normal-rerun.yml"
+
+permissions:
+  contents: read
+
+env:
+  PYTHONUNBUFFERED: "1"
+  BASELINE_SHA: 2b8486ec3287c8befa4d24d6962f7fe18818c461
+
+jobs:
+  h2h:
+    name: h2h-${{ matrix.book }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 480
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        include:
+          - {book: normal-confirm, openings: tools/external/openings_normal_confirm_400.jsonl, pairs: 300, seed: 20261301}
+          - {book: normal-screen, openings: tools/external/openings_normal_screen_100.jsonl, pairs: 100, seed: 20261302}
+    steps:
+      - uses: actions/checkout@v4
+        with: {fetch-depth: 0}
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.11"}
+      - name: Build combo and frozen 3.01
+        run: |
+          mkdir -p bin
+          g++ -O3 -DNDEBUG -std=c++17 -pthread -Isrc             -DZQ_EXP_RESIDUAL_PUCT=1 -DZQ_EXP_EDGE_ACC_CACHE=1             tools/external/zquoridor_uci.cpp -o bin/zq_combo
+          git worktree add /tmp/zq-main "$BASELINE_SHA"
+          (cd /tmp/zq-main && bash build/build_uci.sh)
+      - name: Paired 200ms H2H
+        run: |
+          python -u tools/run_transform_search_confirmation.py             --gate main-fixed --name residual_edgeacc_v301             --engine-exe bin/zq_combo             --main-exe /tmp/zq-main/bin/zquoridor             --nnue /tmp/zq-main/data/nnue/nnue_weights_int8.bin             --main-nnue /tmp/zq-main/data/nnue/nnue_weights_int8.bin             --pairs "${{ matrix.pairs }}" --workers 2 --move-time-ms 200             --seed "${{ matrix.seed }}" --openings "${{ matrix.openings }}"             --output "results/v301-residual-edge-rerun/main/${{ matrix.book }}"
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: v301-resedge-rerun-main-${{ matrix.book }}
+          path: results/v301-residual-edge-rerun/main/${{ matrix.book }}
+          retention-days: 14
+
+  external:
+    name: ext-${{ matrix.subject }}-${{ matrix.opponent }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 720
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        include:
+          - {subject: main301, opponent: claustrophobia, pairs: 200, seed: 20261311}
+          - {subject: combo301, opponent: claustrophobia, pairs: 200, seed: 20261311}
+          - {subject: main301, opponent: titanium, pairs: 150, seed: 20261312}
+          - {subject: combo301, opponent: titanium, pairs: 150, seed: 20261312}
+    steps:
+      - uses: actions/checkout@v4
+        with: {fetch-depth: 0}
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.11"}
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Cache external dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            external_bots/claustrophobia/champion.pt
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: v301-resedge-rerun-${{ runner.os }}-${{ hashFiles('tools/external/bot_setup.py', 'tools/external/claustrophobia_benchmark_bridge.rs', 'training/teachers/claustrophobia_ipc_eval.rs', 'training/teachers/claustrophobia_inference_worker.py') }}
+          restore-keys: |
+            v301-resedge-rerun-${{ runner.os }}-
+      - name: Install Claustrophobia runtime
+        if: matrix.opponent == 'claustrophobia'
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install numpy
+          python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
+      - name: Build subject
+        run: |
+          mkdir -p bin
+          git worktree add /tmp/zq-main "$BASELINE_SHA"
+          (cd /tmp/zq-main && bash build/build_uci.sh)
+          if [ "${{ matrix.subject }}" = "main301" ]; then
+            cp /tmp/zq-main/bin/zquoridor bin/zq_subject
+          else
+            g++ -O3 -DNDEBUG -std=c++17 -pthread -Isrc               -DZQ_EXP_RESIDUAL_PUCT=1 -DZQ_EXP_EDGE_ACC_CACHE=1               tools/external/zquoridor_uci.cpp -o bin/zq_subject
+          fi
+      - name: Same-seed external normal benchmark
+        run: |
+          python -u tools/run_transform_search_confirmation.py             --gate external --name "${{ matrix.subject }}"             --engine-exe bin/zq_subject             --nnue /tmp/zq-main/data/nnue/nnue_weights_int8.bin             --pairs "${{ matrix.pairs }}" --workers 1 --move-time-ms 200             --seed "${{ matrix.seed }}" --opponents "${{ matrix.opponent }}"             --openings tools/external/openings_normal_confirm_400.jsonl             --output "results/v301-residual-edge-rerun/external/${{ matrix.subject }}/${{ matrix.opponent }}"
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: v301-resedge-rerun-ext-${{ matrix.subject }}-${{ matrix.opponent }}
+          path: results/v301-residual-edge-rerun/external/${{ matrix.subject }}/${{ matrix.opponent }}
+          retention-days: 14
+
+  clock:
+    name: 3plus2-normal
+    runs-on: ubuntu-latest
+    timeout-minutes: 900
+    steps:
+      - uses: actions/checkout@v4
+        with: {fetch-depth: 0}
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.11"}
+      - name: Build combo and frozen 3.01
+        run: |
+          mkdir -p bin
+          g++ -O3 -DNDEBUG -std=c++17 -pthread -Isrc             -DZQ_EXP_RESIDUAL_PUCT=1 -DZQ_EXP_EDGE_ACC_CACHE=1             tools/external/zquoridor_uci.cpp -o bin/zq_combo
+          git worktree add /tmp/zq-main "$BASELINE_SHA"
+          (cd /tmp/zq-main && bash build/build_uci.sh)
+      - name: 3+2 normal H2H
+        run: |
+          python -u tools/run_transform_search_confirmation.py             --gate main-clock --name residual_edgeacc_v301             --engine-exe bin/zq_combo             --main-exe /tmp/zq-main/bin/zquoridor             --nnue /tmp/zq-main/data/nnue/nnue_weights_int8.bin             --main-nnue /tmp/zq-main/data/nnue/nnue_weights_int8.bin             --pairs 30 --workers 1             --base-ms 180000 --increment-ms 2000 --move-overhead-ms 20             --seed 20261321 --openings tools/external/openings_normal_confirm_400.jsonl             --output results/v301-residual-edge-rerun/clock/normal
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: v301-resedge-rerun-clock-normal
+          path: results/v301-residual-edge-rerun/clock/normal
+          retention-days: 14
