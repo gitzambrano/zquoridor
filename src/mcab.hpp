@@ -737,6 +737,71 @@ public:
         return bytes;
     }
 
+    // Deterministic inspection hash for semantic-equivalence stress tests.
+    // Hashes the complete reachable pool representation, not only bestmove/root.
+    // Runtime-only details (capacity, addresses, clocks) are intentionally excluded.
+    uint64_t treeFingerprintForInspection() const {
+        uint64_t h = 1469598103934665603ull;
+        auto mix = [&](uint64_t x) {
+            h ^= x;
+            h *= 1099511628211ull;
+        };
+        auto mixFloat = [&](float x) {
+            uint32_t u = 0;
+            static_assert(sizeof(u) == sizeof(x), "float size");
+            std::memcpy(&u, &x, sizeof(u));
+            mix((uint64_t)u);
+        };
+        auto mixDouble = [&](double x) {
+            uint64_t u = 0;
+            static_assert(sizeof(u) == sizeof(x), "double size");
+            std::memcpy(&u, &x, sizeof(u));
+            mix(u);
+        };
+
+        mix((uint64_t)pool.size());
+        for (const NodeT& n : pool) {
+            mix(mcabEvalStateKey(n.state, 0));
+            mix((uint64_t)(uint32_t)n.side);
+            mix((uint64_t)n.expanded);
+            mix((uint64_t)n.terminal);
+            mix((uint64_t)(uint32_t)n.terminalScore);
+            mix((uint64_t)(uint32_t)n.activeMoves);
+            mix((uint64_t)n.nextCandidate);
+            mix((uint64_t)(uint32_t)n.totalN);
+            mix((uint64_t)(uint32_t)n.graphDepth);
+            mix((uint64_t)n.graphN);
+            mixDouble(n.graphW);
+            mix((uint64_t)n.noised);
+
+            mix((uint64_t)n.moves.size());
+            for (size_t i = 0; i < n.moves.size(); ++i)
+                mix((uint64_t)moveToPolicyIndex(n.moves[i]));
+
+            mix((uint64_t)n.P.size());
+            for (float x : n.P) mixFloat(x);
+            mix((uint64_t)n.N.size());
+            for (float x : n.N) mixFloat(x);
+            mix((uint64_t)n.W.size());
+            for (float x : n.W) mixFloat(x);
+            mix((uint64_t)n.child.size());
+            for (int32_t x : n.child) mix((uint64_t)(uint32_t)x);
+
+            mix((uint64_t)n.candidateP.size());
+            for (float x : n.candidateP) mixFloat(x);
+            mix((uint64_t)n.activeCandidateIndices.size());
+            for (size_t x : n.activeCandidateIndices) mix((uint64_t)x);
+            if (n.candidateMoves) {
+                mix((uint64_t)n.candidateMoves->size());
+                for (size_t i = 0; i < n.candidateMoves->size(); ++i)
+                    mix((uint64_t)moveToPolicyIndex((*n.candidateMoves)[i]));
+            } else {
+                mix(0);
+            }
+        }
+        return h;
+    }
+
     // ---------------------------------------------------------------
     // Seção 5 -- chooseMoveMCAB
     // ---------------------------------------------------------------
