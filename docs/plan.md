@@ -47,39 +47,17 @@ This table lists every neural network trained across the project.
 Validation loss values are comparable only within identical datasets and loss targets.
 
 | Network Architecture | Features / Hidden | Training Dataset and Recipe | Val Loss | Arena Outcome vs Baseline | Status and Decision |
-| --- | --- | --- | ---: | --- | --- |
-| `base:256` | 354 / 256 | 2.0M direct replay, QAT, 80 epochs | 0.74569 | Historical screening | Archived control |
-| `race:256` | 456 / 256 | 2.0M direct replay, QAT, 80 epochs | 0.74319 | Historical screening | Archived control |
-| `base:384` | 354 / 384 | 2.0M direct replay, QAT, 80 epochs | 0.73939 | Historical screening | Archived control |
-| `race:384` | 456 / 384 | 2.0M direct replay, search fine-tune | 0.73686 | Historical screening | Archived control |
-| `base:512` | 354 / 512 | 2.0M direct, followed by 40-epoch 90/10 search FT | 0.73600 | Confirmation run completed | Archived finalist |
-| `race:512-search10-ft` | 456 / 512 | 2.0M direct, followed by 40-epoch 90/10 search FT | 0.88574 | 49.0% vs Claustrophobia; 54.0% vs Titanium | Historical baseline |
-| `race:512-multitier-champion` | 456 / 512 | 10.8M weighted multitier continuation | 0.86410 | 51.5% vs search10; 49.7% vs Claustrophobia | Historical champion |
-| `race:512-policy-tactical` | 456 / 512 | 245k tactical policy continuation | 0.74580 | 37.9% Center Rush; 55.0% Titanium | Did not resolve Center Rush |
-| `race:512-weakness-ft` | 456 / 512 | 80k mined weakness continuation | 1.14938 | 38.6% Center Rush | Did not resolve Center Rush |
-| `race:512-cr200k-champion` | 456 / 512 | 255k Center Rush policy and heads tuning | 0.69542 | 63.0% Titanium; 46.2% Claustrophobia | Strong on Titanium, weak on Claustrophobia |
-| `multipath:512` | 480 / 512 | Multipath campaign, QAT | — | 51.1% vs Claustrophobia (600 games) | First positive Claustrophobia result |
-| `margin_regime:512` | 588 / 512 | Weakness and Center Rush campaign, QAT | — | 49.0% vs Claustrophobia (600 games) | Versioned research checkpoint |
-| `multipath_phase:512` | 504 / 512 | 11.065M weakness-boosted data, QAT, 100 epochs | — | 50.8% Claustrophobia; 60.0% Titanium Normal | Historical baseline |
-| `multipath_phase_contact:512` | 858 / 512 | 11.378M data, warm start, QAT, 160 epochs | 0.95217 | 47.2% H2H; 50.2% Claustrophobia | No promotion gain |
-| `multipath_phase:512` reliable FT | 504 / 512 | 313k crisis and rollout samples, QAT, 40 epochs | 1.16198 | 45.5% H2H; 48.6% Claustrophobia | Local unpromoted fine-tune |
-| `multipath_phase:512` Arm A (Control) | 504 / 512 | 4.26M stored-search, warm start, QAT, 20 epochs | 0.92044 | 33.2% vs baseline (300g, -121.7 Elo) | Control completed |
-| `multipath_phase:512` Arm B (Mirror) | 504 / 512 | 4.26M stored-search, mirror-h, QAT, 20 epochs | 0.95141 | 30.3% vs baseline (300g, -144.4 Elo) | Regularization verified |
-| `multipath_phase_bucketed:512` Arm C | 504 / 512 | 4.26M stored-search, 6 buckets, mirror-h, 20 epochs | 0.94987 | 30.5% vs baseline (300g, -143.1 Elo) | Bucket architecture verified |
-| `multipath_phase_deep:512` Arm D | 504 / 512 | 4.26M stored-search, 1 head, 2 layers, 20 epochs | 0.95029 | 34.8% vs baseline (300g, -108.8 Elo) | Deep ablation verified |
-| `multipath_phase_contact_bucketed:512` Arm E | 858 / 512 | 4.26M stored-search, 6 buckets, 2 layers, 20 epochs | 0.90771 | 32.0% vs baseline (300g, -130.9 Elo) | Contact architecture verified |
-| `multipath_phase:512` Arm A2 | 504 / 512 | Annealing from A, LR 1e-5 → 1e-7, 60 epochs | 0.90447 | 28.3% vs baseline (300g, -161.2 Elo) | Severe catastrophic forgetting |
-| `multipath_phase:512` Arm B2 | 504 / 512 | Annealing from B, mirror-h, 60 epochs | 0.93581 | 30.2% vs baseline (300g, -145.8 Elo) | Mirror halted collapse |
-| `multipath_phase_bucketed:512` Arm C2 | 504 / 512 | Annealing from C, 6 buckets, 2 layers, 60 epochs | 0.93396 | 31.8% vs baseline (300g, -132.3 Elo) | **+10.8 Elo gain under extended training** |
-| `multipath_phase_deep:512` Arm D2 | 504 / 512 | Annealing from D, 1 head, 2 layers, 60 epochs | 0.93463 | 32.3% vs baseline (300g, -128.3 Elo) | Depth without buckets regressed |
-| `multipath_phase_contact_bucketed:512` Arm E2 | 858 / 512 | Annealing from E, 6 buckets, 2 layers, 60 epochs | 0.89712 | 30.0% vs baseline (300g, -147.2 Elo) | Val MAE record (0.11846), low arena Elo |
-| `multipath_phase_bucketed:512` Unified Champion | 504 / 512 | 15.637M clean master (11M + 4.5M replay), 13 epochs | 0.77140 | 63.0% vs baseline (+92.5 Elo); 55.25% external | Beat baseline on normal and Center Rush |
-| **`multipath_phase_bucketed:512` Central Fine-Tune** | **504 / 512** | 21.121M mixture (75% search + 25% master), 120 epochs | **1.19547** | 55.50% vs main; 59.13% Claustrophobia; 69.00% Titanium | **Current Production Champion** |
+| :--- | :--- | :--- | ---: | :--- | :--- |
+| **`multipath_phase_bucketed:512` Central Fine-Tune** | **504 / 512** | 21.121M mixture (75% search + 25% master), 120 epochs | **1.19547** | 55.50% vs main; 59.13% Claustrophobia; 69.00% Titanium | Previous Production Baseline |
 | `multipath_phase_contact_bucketed:512` Candidate | 858 / 512 | 21.121M mixture, 6 buckets, 2 layers, QAT, 112 epochs | **1.18894** | 46.8% H2H vs Main; 50.8% Claustrophobia; 57.5% Titanium | 54.1% external score (400g); main champion retained |
 | `multipath_phase_bucketed:512` A0 Control | 504 / 512 | 21.121M mixture, 20 epochs, QAT, cosine 1e-5 to 1e-7 | 1.19130 | 53.13% vs baseline (+21.7 Elo); 48.75% Center Rush | Control continuation completed |
 | `multipath_phase_bucketed:512` A1 Auxiliary Soft Policy | 504 / 512 | 21.121M mixture, 20 epochs, QAT, T=2.0, beta=0.15 | 1.31828 | 55.63% vs baseline (+39.3 Elo); 53.75% Center Rush | Promising candidate; in promotion battery |
 | `multipath_phase_bucketed:512` AS1 Surprise + Aux | 504 / 512 | 21.121M surprise mixture, 20 epochs, QAT, T=2.0, beta=0.15, alpha=0.5 | 1.62305 | 55.83% (+40.7 Elo, 600g); 52.5% Claustro Normal; 65.75% Titanium | Surpassed A1 (+40.7 vs +34.3 Elo); +45.3 Elo turnaround on Claustro Normal |
-| **`multipath_phase_bucketed:512` Tri-Model Soup (`Soup_Tri_Equal`)** | **504 / 512** | **Convex soup: 33.3% A1 + 33.3% AS1 + 33.4% AS2 (ep14)** | **1.72065 (AS2 component)** | **Strictly beats Main across all 6 suites**: H2H Normal 53.0%, H2H CR 53.0%, Claustro Normal 65.0%, Claustro CR 66.0%, Titanium Normal 74.0% vs 70.0%, Titanium CR 56.0% vs 52.0% | **New Production Champion Candidate** |
+| **`multipath_phase_bucketed:512` Tri-Model Soup (`Soup_Tri_Equal`)** | **504 / 512** | **Convex soup: 33.3% A1 + 33.3% AS1 + 33.4% AS2 (ep14)** | **1.72065 (AS2 component)** | **Strictly beats Main across all 6 suites**: H2H Normal 53.0%, H2H CR 53.0%, Claustro Normal 65.0%, Claustro CR 66.0%, Titanium Normal 74.0% vs 70.0%, Titanium CR 56.0% vs 52.0% | **Production Champion (Zquoridor 3.01)** |
+| `multipath_phase_contact_bucketed:512` Arm 1 (Sprint) | 858 / 512 | 21.121M mixture, 30 epochs, QAT, batch 8192, T=2.0, beta=0.15 | 1.31565 | Surpassed 504 Arm 1 val loss (1.31828) | Training complete |
+| `multipath_phase_contact_bucketed:512` Arm 2 (Surprise) | 858 / 512 | 21.121M surprise mixture, 30 epochs, QAT, batch 8192, alpha=0.5, s_max=4.0 | 1.61448 | Surpassed 504 Arm 2 val loss (1.62305) | Training complete |
+| `multipath_phase_contact_bucketed:512` Arm 3 (Regularized) | 858 / 512 | 21.121M surprise mixture, 30 epochs, QAT, batch 8192, beta=0.25 | 1.71567 | Surpassed 504 Arm 3 val loss (1.72065) | Training complete |
+| `multipath_phase_contact_bucketed:512` Tri-Model Soup (`Soup_Tri_Contact`) | 858 / 512 | Convex soup: 33.3% Arm 1 + 33.3% Arm 2 + 33.4% Arm 3, int8 (1,093,668 B) | — | 51.5% H2H vs Main 3.01; 55.0% vs Claustro; 57.0% vs Titanium (300g) | +33 Elo H2H surge over single-checkpoint contact; does not pass strict external gate vs Main 3.01 |
 
 ---
 
@@ -89,16 +67,6 @@ The table below catalogs all datasets generated, assembled, and maintained in th
 
 | Dataset Identifier | Records / Positions | Generation Strategy / Sources | Storage Path (Local or Cloud) | Format and Targets | Role and Consumers |
 | --- | ---: | --- | --- | --- | --- |
-| `direct_replay_2m` | 2,000,000 | Self-play direct rollouts | `data/datasets/replay_2m.npz` | V3 mover-relative, policy and signed value | Foundation models (`base:256`, `race:256`, `base:384`) |
-| `search_finetune_2m` | 2,001,868 | 90% direct replay, 10% search samples | `data/datasets/search_finetune_2m.npz` | Weighted V3 policy and search values | Early 512-unit models (`base:512`, `race:512`) |
-| `multitier_master_10m` | 10,800,000 | 5 curriculum tiers (broad, tactical, crisis) | `data/datasets/5tier_master.npz` | Tier-weighted loss samples | `race:512-multitier-champion` |
-| `center_rush_priority_255k` | 255,000 | Targeted Center Rush games and Action-Q | `data/datasets/cr_priority_255k.npz` | High-weight tactical openings | `race:512-cr200k-champion` |
-| `weakness_boosted_11m` | 11,065,000 | Broad self-play with weakness mining | `data/teaching/weakness_boosted_11m/` | 7 curriculum tiers, sample weights | Baseline `multipath_phase:512` |
-| `contact_reliable_11m` | 11,378,344 | Weakness data plus selected search labels | `data/teaching/contact_reliable_11m/` | 858 contact features, V3 targets | Historical `multipath_phase_contact:512` |
-| `reliable_search_ft_313k` | 313,344 | Bilateral crisis, deep Claustrophobia rollouts | `data/teaching/reliable_search_ft/` | High-depth relabeled positions | Reliable search fine-tune |
-| `corpus_contact_4m_canonical` | 8,516,655 | Deduplicated self-play (6.01M central, 2.50M broad) | `data/selfplay/corpus-contact-4m-50ms/` (SQLite and 1,315 shards) | Canonical state store (64B binary records) | Foundation for stored-search replay |
-| `stored_search_replay_4m` | 4,262,204 | State-deduplicated search visits, 0 outcome weight | `data/teaching/stored_search_replay_4m/` | Mapped binary arrays, averaged visits | Arms A through E, Arms A2 through E2 |
-| `multipath_unified_clean_15m` | 15,637,120 | 11.065M weakness-boosted + 4.572M replay | `data/teaching/multipath_unified_clean_15m/` | 8 curriculum tiers, sample weight cap 30 | `multipath_unified_champion` |
 | `colab_campaign_15m_accepted` | 8,704,079 | Cloud self-play from Workers 3, 4, 5 (671 shards) | Google Drive `selfplay_15m/` | 7.76M valid search targets, root missing excluded | Input for 21M central fine-tune mix |
 | `local_rollouts_snapshot` | 1,388,686 | Multi-profile rollouts (wide, balanced, sharp) | `data/selfplay/local_rollouts/` (85 shards) | 64B binary records and 20B metadata rows | Input for 21M central fine-tune mix |
 | `cloud_selfplay_v300_harvest` | ~1.2M | 5 Colab workers generation using Zquoridor 3.00 | Google Drive (`selfplay_central`, `irregular`, `weakness`, `exploration`) | Canonical V3 shards (`c1_` to `c5_`) | To be blended into next training iteration |
@@ -255,6 +223,28 @@ All suites evaluated at 200 ms/move with 25 opening pairs (50 games) per conditi
 2. Sets all-time project records against Claustrophobia: 65.0% on Normal (+42.5 Elo over Main) and 66.0% on Center Rush (+52.0 Elo over Main).
 3. Outperforms Main on calibrated paired matches against Titanium: 74.0% vs 70.0% on Normal (+34.5 Elo) and 56.0% vs 52.0% on Center Rush (+28.0 Elo).
 4. Strictly fulfills all criteria in `AGENTS.md` and qualifies as the new Production Champion.
+
+### Candidate `Soup_Tri_Contact` Screening Battery Results (300 games at 200 ms/move)
+
+Evaluated the experimental `multipath_phase_contact_bucketed:512` architecture (858 sparse contact features, 512 hidden units, 6 buckets, 2-layer value MLPs) trained with the specialized 3-arm recipe (Sprint, Surprise, Regularized at batch size 8192) and unified via convex Model Soup (`results/experiments/contact_soup_tri_512/soup_tri_champion/`).
+
+The initial 300-game screening battery (25 opening pairs / 50 games per sub-suite) was conducted against the Main 3.01 champion and external bots:
+
+| Sub-suite | Games | Score % | Elo [95% CI] | Cand Depth | Cand NPS | Opp Depth | Opp NPS | Outcome vs Baseline |
+| :--- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | :--- |
+| vs Main 3.01 (Normal) | 50 | 50.0% | +0.0 [-70.4, +70.4] | 4.09 | 22,840 | 4.07 | 19,797 | Even (+24.4 Elo vs single contact) |
+| vs Main 3.01 (Center Rush) | 50 | **53.0%** | **+20.9 [-13.9, +70.4]** | 4.27 | 17,451 | 4.30 | 15,571 | **Beats Main** (+41.8 Elo vs single contact) |
+| vs Claustrophobia (Normal) | 50 | **54.0%** | **+27.9 [-56.1, +115.2]** | 1.11 | 18,636 | — | — | Positive external win |
+| vs Claustrophobia (Center Rush) | 50 | **56.0%** | **+41.9 [-41.9, +130.9]** | 1.37 | 21,649 | — | — | **+69.8 Elo swing** over single contact (46%) |
+| vs Titanium (Normal) | 50 | **66.0%** | **+115.2 [+27.9, +219.9]** | 2.08 | 23,164 | — | — | Clear external win |
+| vs Titanium (Center Rush) | 50 | 48.0% | -13.9 [-85.0, +56.1] | 1.86 | 20,188 | — | — | 1-pair deficit (24 vs 26 pts) |
+| **Combined H2H vs Main 3.01** | **100** | **51.50%** | **+10.4** | **4.18** | **20,146** | **4.19** | **17,684** | **Positive H2H (+33.0 Elo turnaround)** |
+| **Combined External Bots** | **200** | **56.00%** | **+41.9** | **—** | **—** | **—** | **—** | **Solid external performance** |
+
+#### Key Findings and Architectural Decision
+1. **Model Soup Effectiveness on 858 Contact Features**: Model Soup dramatically rehabilitated the larger contact architecture. In previous experiments, a single contact checkpoint trailed Main 3.01 at 46.75% (-22.6 Elo) and lost Center Rush to Claustrophobia at 46.0%. `Soup_Tri_Contact` reversed both deficits, achieving **51.5% combined H2H vs Main 3.01** (+10.4 Elo) and **56.0% vs Claustrophobia Center Rush** (+69.8 Elo swing).
+2. **Comparison with Production Champion (`Soup_Tri_Equal`, Zquoridor 3.01)**: While `Soup_Tri_Contact` outperforms the previous single-checkpoint contact model, it does not surpass `Soup_Tri_Equal` against external bots (where Main 3.01 scores 65-66% vs Claustrophobia and 74% vs Titanium Normal). The 504-feature accumulator evaluates lighter and permits deeper, cleaner graph search branches.
+3. **Promotion Verdict**: Per the strict promotion requirements in `AGENTS.md` (requiring strict superiority across all evaluation dimensions), `Soup_Tri_Contact` is not promoted. `Zquoridor 3.01` (`Soup_Tri_Equal`, 504 features) remains the production champion.
 
 ---
 

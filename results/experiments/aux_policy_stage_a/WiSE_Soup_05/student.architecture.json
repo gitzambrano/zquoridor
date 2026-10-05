@@ -1,0 +1,25 @@
+{
+  "schema": "zquoridor.student.v1",
+  "architecture": "multipath_phase_bucketed",
+  "features": 504,
+  "hidden": 512,
+  "value_hidden": 32,
+  "value_buckets": 6,
+  "value_depth": 2,
+  "policy_out": 209,
+  "qa": 255,
+  "qb": 64,
+  "qat": false,
+  "cpp_flags": [
+    "-DZQ_NNUE_RACE_FEATURES=1",
+    "-DZQ_NNUE_MULTIPATH_FEATURES=1",
+    "-DZQ_NNUE_MARGIN_REGIME_FEATURES=0",
+    "-DZQ_NNUE_PHASE_FEATURES=1",
+    "-DZQ_NNUE_CONTACT_FEATURES=0",
+    "-DZQ_NNUE_HIDDEN=512",
+    "-DZQ_NNUE_VALUE_BUCKETS=6",
+    "-DZQ_NNUE_VALUE_DEPTH=2"
+  ],
+  "float_sha256": "5af2e4ace5dc9997a70fbf76a49eca82eac017eed9bff2e8d98dcd11d369a322",
+  "int8_sha256": "a1c1954be0cf7426ab2f45f61183b4a94f32d77ff4617cc87559376303aa5241"
+}

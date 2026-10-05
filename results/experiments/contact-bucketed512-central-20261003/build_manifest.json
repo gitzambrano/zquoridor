@@ -1,0 +1,30 @@
+{
+  "inputs": {
+    "flags": [
+      "-DZQ_NNUE_RACE_FEATURES=1",
+      "-DZQ_NNUE_MULTIPATH_FEATURES=1",
+      "-DZQ_NNUE_MARGIN_REGIME_FEATURES=0",
+      "-DZQ_NNUE_PHASE_FEATURES=1",
+      "-DZQ_NNUE_CONTACT_FEATURES=1",
+      "-DZQ_NNUE_HIDDEN=512",
+      "-DZQ_NNUE_VALUE_BUCKETS=6",
+      "-DZQ_NNUE_VALUE_DEPTH=2"
+    ],
+    "compiler": "868cee21c49db9c2475de39944bd0da5c601ca700185fe9d2614248f464ac085",
+    "files": {
+      "tools\\external\\zquoridor_uci.cpp": "e8f3d30a5791632e5164351a0b179855d2325f61d6eecc993c0706363ba9daec",
+      "tests\\nnue_incremental_check.cpp": "bd657abcd5ec2f3abfc8964666fc351a58dbfc9bb9f88393cd1fce003bd7218a",
+      "src\\cat.hpp": "4a4a95f50e48a94c8376cf75b7c65f9ab79f82f3dde5a9e55407f02fec5aa583",
+      "src\\dsu.hpp": "c2b104e4d460ed73ee0b39406daa1ab38f30761159251793f9f7ef9b1e7deb3c",
+      "src\\endgame_race.hpp": "9e09f24a89c1a6853c386832bc7a2c98dddd9392d633408403f1b7a0322920fe",
+      "src\\mcab.hpp": "4d92af8c3690c00e0d5508233dc4c548195453c9b70e5b446961cfa21f5b29b2",
+      "src\\nnue.hpp": "5601d50f2d9f1d51e1f0bfe755845192686d1b8a673ed811a0bc686d7af4fa25",
+      "src\\rules.hpp": "845ff0ac4f5da7c76ce5b5462440be25469e386a39ea4cbda1818ba8b6764532",
+      "src\\search.hpp": "c2dda9cf5292049fcb3e3305d434c34af6086ae19845eb70bb89dc0d3ec23866",
+      "src\\search_tuning.hpp": "14c7d01367fb083cd51630681236db691ecbfc354b8295b1406f9e840ee7f096",
+      "src\\time_manager.hpp": "f406b9cb77a486698aa24c1fccf50973c2279452ae77ad6a37045e8018a0ba0b"
+    },
+    "weights": "7bcf29f21e2e4a714220babf96729a834346dcb7f79c570c1958d564076ea33d"
+  },
+  "executable_sha256": "c831015086be0a9fa8846effc32ef04ab4f2e559cf8197306bf6e892fd25985a"
+}

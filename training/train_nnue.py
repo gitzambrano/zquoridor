@@ -326,6 +326,11 @@ def main(argv: Optional[List[str]] = None) -> int:
     parser.add_argument("--batch-size", type=int, default=CONFIG["batch_size"], help="Training batch size")
     parser.add_argument("--lr", type=float, default=CONFIG["lr"], help="Initial learning rate")
     parser.add_argument("--min-lr", type=float, default=CONFIG["min_lr"], help="Minimum learning rate for cosine annealing")
+    parser.add_argument("--architecture", type=str, default=CONFIG["architecture"], help="Student network architecture")
+    parser.add_argument("--hidden", type=int, default=CONFIG["hidden"], help="Hidden layer width")
+    parser.add_argument("--init-architecture", type=str, default=CONFIG["init_architecture"], help="Architecture of init checkpoint")
+    parser.add_argument("--init-hidden", type=int, default=CONFIG["init_hidden"], help="Hidden width of init checkpoint")
+    parser.add_argument("--patience", type=int, default=CONFIG["patience"], help="Early stopping patience")
     parser.add_argument("--device", type=str, default=CONFIG["device"], help="Compute device ('cuda' or 'cpu')")
     parser.add_argument("--no-build", action="store_true", help="Skip compilation of candidate binaries")
     args = parser.parse_args(argv)
@@ -336,6 +341,11 @@ def main(argv: Optional[List[str]] = None) -> int:
     cfg["surprise_data"] = args.surprise_data
     cfg["out_root"] = args.out_root
     cfg["init_from"] = args.init_from
+    cfg["architecture"] = args.architecture
+    cfg["hidden"] = args.hidden
+    cfg["init_architecture"] = args.init_architecture
+    cfg["init_hidden"] = args.init_hidden
+    cfg["patience"] = args.patience
     cfg["epochs"] = args.epochs
     cfg["batch_size"] = args.batch_size
     cfg["lr"] = args.lr

@@ -1,0 +1,7 @@
+{
+  "status": "training_in_progress",
+  "architecture": "multipath_phase_contact_bucketed",
+  "batch_size": 131072,
+  "current_epoch": 117,
+  "target_epochs": 120
+}
