@@ -1,0 +1,158 @@
+name: EdgeAcc Semantic Parity
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [exp/transform-search-v301-20261004]
+    paths:
+      - "tests/test_edge_acc_transposition.cpp"
+      - ".github/workflows/edge-acc-parity.yml"
+      - "src/nnue.hpp"
+      - "src/mcab.hpp"
+
+permissions:
+  contents: read
+
+jobs:
+  accumulator-parity:
+    name: accumulator-parity-${{ matrix.net }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        net: [n504, contact858]
+    steps:
+      - uses: actions/checkout@v4
+        with: {fetch-depth: 0}
+      - name: Build parity test
+        shell: bash
+        run: |
+          mkdir -p bin
+          FLAGS=""
+          WEIGHTS="data/nnue/nnue_weights_int8.bin"
+          if [ "${{ matrix.net }}" = "contact858" ]; then
+            FLAGS="-DZQ_NNUE_RACE_FEATURES=1 -DZQ_NNUE_MULTIPATH_FEATURES=1 -DZQ_NNUE_MARGIN_REGIME_FEATURES=0 -DZQ_NNUE_PHASE_FEATURES=1 -DZQ_NNUE_CONTACT_FEATURES=1 -DZQ_NNUE_HIDDEN=512 -DZQ_NNUE_VALUE_BUCKETS=6 -DZQ_NNUE_VALUE_DEPTH=2"
+            WEIGHTS="results/experiments/contact_soup_tri_512/soup_tri_champion/student_int8.bin"
+          fi
+          g++ -O2 -DNDEBUG -std=c++17 -pthread -Isrc $FLAGS             tests/test_edge_acc_transposition.cpp -o bin/test_edge_acc_parity
+          test -f "$WEIGHTS"
+          echo "WEIGHTS=$WEIGHTS" >> "$GITHUB_ENV"
+      - name: Run 5k transposition parity fuzz
+        run: ./bin/test_edge_acc_parity "$WEIGHTS"
+
+  node-equivalence:
+    name: node-equivalence-${{ matrix.net }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        net: [n504, contact858]
+    steps:
+      - uses: actions/checkout@v4
+        with: {fetch-depth: 0}
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.11"}
+      - name: Build EdgeAcc OFF and ON identically
+        shell: bash
+        run: |
+          mkdir -p bin
+          FLAGS=""
+          WEIGHTS="data/nnue/nnue_weights_int8.bin"
+          if [ "${{ matrix.net }}" = "contact858" ]; then
+            FLAGS="-DZQ_NNUE_RACE_FEATURES=1 -DZQ_NNUE_MULTIPATH_FEATURES=1 -DZQ_NNUE_MARGIN_REGIME_FEATURES=0 -DZQ_NNUE_PHASE_FEATURES=1 -DZQ_NNUE_CONTACT_FEATURES=1 -DZQ_NNUE_HIDDEN=512 -DZQ_NNUE_VALUE_BUCKETS=6 -DZQ_NNUE_VALUE_DEPTH=2"
+            WEIGHTS="results/experiments/contact_soup_tri_512/soup_tri_champion/student_int8.bin"
+          fi
+          g++ -O3 -DNDEBUG -std=c++17 -pthread -Isrc $FLAGS             tools/external/zquoridor_uci.cpp -o bin/noedge
+          g++ -O3 -DNDEBUG -std=c++17 -pthread -Isrc $FLAGS             -DZQ_EXP_EDGE_ACC_CACHE=1             tools/external/zquoridor_uci.cpp -o bin/edge
+          echo "WEIGHTS=$WEIGHTS" >> "$GITHUB_ENV"
+      - name: Compare deterministic fixed-node decisions
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json, os, subprocess, sys
+          from pathlib import Path
+
+          weights = os.environ["WEIGHTS"]
+          books = [
+              Path("tools/external/openings_normal_confirm_400.jsonl"),
+              Path("tools/external/openings_center_rush_sound_5k.jsonl"),
+          ]
+          histories = []
+          for book in books:
+              for line in book.read_text(encoding="utf-8").splitlines():
+                  if not line.strip():
+                      continue
+                  row = json.loads(line)
+                  moves = row.get("moves", [])
+                  histories.append(moves)
+                  if len(histories) >= 80:
+                      break
+              if len(histories) >= 80:
+                  break
+
+          def start(exe):
+              p = subprocess.Popen(
+                  [exe, "--nnue", weights, "--nodes", "4000",
+                   "--no-tree-reuse", "--clear-tt-per-move"],
+                  stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                  stderr=subprocess.PIPE, text=True, bufsize=1)
+              def send(s):
+                  p.stdin.write(s + "\n"); p.stdin.flush()
+              send("uci")
+              while True:
+                  line = p.stdout.readline()
+                  if not line: raise RuntimeError("engine exited during uci")
+                  if line.strip() == "uciok": break
+              send("isready")
+              while True:
+                  line = p.stdout.readline()
+                  if not line: raise RuntimeError("engine exited during isready")
+                  if line.strip() == "readyok": break
+              return p, send
+
+          def query(p, send, moves):
+              send("ucinewgame")
+              send("position startpos" + ((" moves " + " ".join(moves)) if moves else ""))
+              send("go movetime 60000")
+              info = None
+              while True:
+                  line = p.stdout.readline()
+                  if not line:
+                      err = p.stderr.read()
+                      raise RuntimeError("engine exited: " + err)
+                  line = line.strip()
+                  if line.startswith("info "):
+                      info = line
+                  if line.startswith("bestmove "):
+                      return line.split()[1], info
+
+          engines = {}
+          for tag, exe in [("off", "bin/noedge"), ("on", "bin/edge")]:
+              engines[tag] = start(exe)
+
+          mismatches = []
+          try:
+              for i, moves in enumerate(histories):
+                  a, ia = query(*engines["off"], moves)
+                  b, ib = query(*engines["on"], moves)
+                  if a != b:
+                      mismatches.append({
+                          "index": i, "moves": moves, "off": a, "on": b,
+                          "off_info": ia, "on_info": ib,
+                      })
+                      if len(mismatches) >= 10:
+                          break
+          finally:
+              for p, send in engines.values():
+                  try: send("quit")
+                  except Exception: pass
+                  try: p.wait(timeout=5)
+                  except Exception: p.kill()
+
+          if mismatches:
+              print(json.dumps(mismatches, indent=2))
+              raise SystemExit(f"EDGE_ACC_NODE_EQ_FAIL mismatches={len(mismatches)}")
+          print(f"EDGE_ACC_NODE_EQ_OK positions={len(histories)} nodes=4000")
+          PY
