@@ -85,6 +85,9 @@ struct Options {
     double wideningExponent = -1.0;
     int endgameMoverWallThreshold = -999;
     int endgameLeafDepth = -1;
+    int abPrefilterDepth = -1;
+    int abPrefilterTopK = -1;
+    double abPrefilterTimeFrac = -1.0;
     int moveOverheadMs = 20;
     tuning::SearchTuning searchTuning;
 };
@@ -128,6 +131,9 @@ static Options parseArgs(int argc, char** argv) {
         else if (a == "--widening-exp") o.wideningExponent = std::atof(need("--widening-exp"));
         else if (a == "--endgame-mover-walls") o.endgameMoverWallThreshold = std::atoi(need("--endgame-mover-walls"));
         else if (a == "--endgame-leaf-depth") o.endgameLeafDepth = std::atoi(need("--endgame-leaf-depth"));
+        else if (a == "--ab-prefilter-depth") o.abPrefilterDepth = std::atoi(need("--ab-prefilter-depth"));
+        else if (a == "--ab-prefilter-topk") o.abPrefilterTopK = std::atoi(need("--ab-prefilter-topk"));
+        else if (a == "--ab-prefilter-timefrac") o.abPrefilterTimeFrac = std::atof(need("--ab-prefilter-timefrac"));
         else if (a == "--move-overhead") o.moveOverheadMs = std::max(0, std::atoi(need("--move-overhead")));
         else if (tuning::parseSearchTuningArg(a.c_str(), argc, argv, i, "", o.searchTuning)) {}
         else {
@@ -182,6 +188,9 @@ int main(int argc, char** argv) {
     if (opt.wideningExponent > 0.0) params.wideningExponent = opt.wideningExponent;
     if (opt.endgameMoverWallThreshold != -999) params.endgameMoverWallThreshold = opt.endgameMoverWallThreshold;
     if (opt.endgameLeafDepth >= 0) params.endgameLeafDepth = opt.endgameLeafDepth;
+    if (opt.abPrefilterDepth >= 0) params.abPrefilterDepth = opt.abPrefilterDepth;
+    if (opt.abPrefilterTopK >= 0) params.abPrefilterTopK = opt.abPrefilterTopK;
+    if (opt.abPrefilterTimeFrac >= 0.0) params.abPrefilterTimeFrac = std::clamp(opt.abPrefilterTimeFrac, 0.0, 1.0);
     params.rootNoiseEnabled = false;
     runner.setParams(params);
 
