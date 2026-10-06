@@ -1325,15 +1325,33 @@ private:
         if (edgeAccCanonicalEqualFast(cached, viaCurrent, engine)) return;
 
         AccPairT cold = buildAccPairRoot(childState, cache);
+        AccPairT ca = cached, cu = viaCurrent, co = cold;
+        edgeAccCanonicalize(ca, engine);
+        edgeAccCanonicalize(cu, engine);
+        edgeAccCanonicalize(co, engine);
         std::fprintf(stderr,
             "EDGE_ACC_DIAG_MISMATCH key=%016llx depth=%d mover=%d childTurn=%d "
             "parentPending0=%d parentPending1=%d\n",
             (unsigned long long)key, depth, (int)beforeState.turn, (int)childState.turn,
             (int)mcabAccStack[depth].pending[0], (int)mcabAccStack[depth].pending[1]);
-        edgeAccCompareCanonicalDetailed(cached, cold, key, depth + 1,
-                                        "cached-vs-cold", engine);
-        edgeAccCompareCanonicalDetailed(viaCurrent, cold, key, depth + 1,
-                                        "current-vs-cold", engine);
+        for (int s = 0; s < 2; ++s) {
+            std::fprintf(stderr,
+                "EDGE_ACC_BUCKETS side=%d cached=[%d,%d,%d,%d] current=[%d,%d,%d,%d] cold=[%d,%d,%d,%d]\n",
+                s,
+                ca.acc[s].ownDistBucket, ca.acc[s].oppDistBucket,
+                ca.acc[s].ownWallsLeftBucket, ca.acc[s].oppWallsLeftBucket,
+                cu.acc[s].ownDistBucket, cu.acc[s].oppDistBucket,
+                cu.acc[s].ownWallsLeftBucket, cu.acc[s].oppWallsLeftBucket,
+                co.acc[s].ownDistBucket, co.acc[s].oppDistBucket,
+                co.acc[s].ownWallsLeftBucket, co.acc[s].oppWallsLeftBucket);
+        }
+        // First decide whether the current incremental path itself is wrong.
+        if (!edgeAccCanonicalEqualFast(viaCurrent, cold, engine))
+            edgeAccCompareCanonicalDetailed(viaCurrent, cold, key, depth + 1,
+                                            "current-vs-cold", engine);
+        if (!edgeAccCanonicalEqualFast(cached, cold, engine))
+            edgeAccCompareCanonicalDetailed(cached, cold, key, depth + 1,
+                                            "cached-vs-cold", engine);
         edgeAccCompareCanonicalDetailed(cached, viaCurrent, key, depth + 1,
                                         "cached-vs-current", engine);
         std::fprintf(stderr,
