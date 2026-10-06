@@ -140,6 +140,7 @@ if not os.path.exists('/content/zquoridor'):
     !git clone https://github.com/gitzambrano/zquoridor.git /content/zquoridor
 
 %cd /content/zquoridor
-!git pull origin main
+!git fetch origin main
+!git reset --hard origin/main
 !bash build/build_selfplay.sh -DZQ_NNUE_CONTACT_FEATURES=1 -DZQ_NNUE_VALUE_BUCKETS=6 -DZQ_NNUE_VALUE_DEPTH=2 -DZQ_NNUE_HIDDEN=512
 !python tools/selfplay/run_colab_worker.py --worker-id {worker_id} --drive-dir {drive_dir} {cmd_args}"""
