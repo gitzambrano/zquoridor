@@ -28,6 +28,7 @@ from browser_utils import (
     handle_google_oauth_popup,
     connect_runtime_if_needed,
     get_notebook_dom_state,
+    stop_cell_execution,
     trigger_cell_execution,
     launch_stealth_context,
     save_profile_cookies,
@@ -39,6 +40,7 @@ CONFIG: Dict[str, Any] = {
     "check_interval_seconds": 60,
     "screenshot_interval_cycles": 10,
     "auto_reconnect": True,
+    "relaunch_on_start": False,
     "headless": False,
     "page_timeout_ms": 60000,
     "artifacts_dir": str(REPO_ROOT / "artifacts" / "colab"),
@@ -136,6 +138,37 @@ def run_watchdog(cfg: Dict[str, Any]) -> None:
 
         if not any(sessions.values()):
             print("[WATCHDOG] No sessions could be initialized. Retrying in main loop...")
+
+        if cfg.get("relaunch_on_start", False):
+            print("\n[WATCHDOG] Initializing clean stop and relaunch across all workers...")
+            for wid in worker_ids:
+                sess = sessions.get(wid)
+                if not sess or not sess.get("page"):
+                    continue
+                w = WORKERS[wid]
+                page = sess["page"]
+                keywords = w.get("target_keywords", ["run_colab_worker.py", "selfplay_contact_soup_858", "contact_soup", "zquoridor"])
+                print(f"[{w['name']}] Stopping any active cell execution...")
+                stop_cell_execution(page)
+                dismiss_modals(page)
+                handle_google_oauth_popup(page, w.get("account"), w.get("notebook_url"))
+                connect_runtime_if_needed(page)
+                time.sleep(2)
+                print(f"[{w['name']}] Injecting updated bootloader template and triggering execution...")
+                ok = trigger_cell_execution(page, wid, BOOTLOADER_TEMPLATE, target_keywords=keywords, force=True)
+                if ok:
+                    print(f"[{w['name']}] Triggered execution successfully.")
+                else:
+                    print(f"[{w['name']}] Trigger attempt complete.")
+                time.sleep(4)
+                dismiss_modals(page)
+                handle_google_oauth_popup(page, w.get("account"), w.get("notebook_url"))
+                shot_file = artifacts_path / f"colab_{wid}_launched.png"
+                try:
+                    page.screenshot(path=str(shot_file))
+                except Exception:
+                    pass
+            print("[WATCHDOG] Initial relaunch sequence complete. Entering continuous watchdog loop...\n")
 
         time.sleep(10)
         cycle = 0
@@ -331,7 +364,8 @@ def main() -> None:
     parser.add_argument("--headless", action="store_true", help="Run browser in headless mode.")
     parser.add_argument("--headed", action="store_true", help="Run browser in visible headed mode.")
     parser.add_argument("--target-delta-positions", type=int, default=CONFIG["target_delta_positions"], help="Stop watchdog when accumulated delta positions reach this target.")
-    parser.add_argument("--max-cycles", type=int, default=CONFIG["max_cycles"], help="Maximum number of watchdog cycles to run before exiting (0 = infinite).")
+    parser.add_argument("--relaunch-on-start", action="store_true", help="Stop running execution and re-inject bootloader on startup.")
+    parser.add_argument("--no-relaunch-on-start", action="store_true", help="Do not stop/relaunch running workers on startup.")
     parser.add_argument("--show-config", action="store_true", help="Display effective configuration and exit.")
     args = parser.parse_args()
 
@@ -340,6 +374,10 @@ def main() -> None:
     effective_cfg["check_interval_seconds"] = args.interval
     effective_cfg["target_delta_positions"] = args.target_delta_positions
     effective_cfg["max_cycles"] = args.max_cycles
+    if args.relaunch_on_start:
+        effective_cfg["relaunch_on_start"] = True
+    elif args.no_relaunch_on_start:
+        effective_cfg["relaunch_on_start"] = False
     if args.no_auto_reconnect:
         effective_cfg["auto_reconnect"] = False
     if args.headless:

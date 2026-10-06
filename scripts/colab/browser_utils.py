@@ -482,6 +482,36 @@ def get_notebook_dom_state(page: Any, target_keywords: Optional[List[str]] = Non
 
     return res
 
+def stop_cell_execution(page: Any) -> bool:
+    """Interrupt any currently executing cell in the Colab notebook."""
+    try:
+        page.evaluate("""() => {
+            const nb = typeof colab !== 'undefined' && colab.global ? colab.global.notebook : null;
+            if (nb && typeof nb.interrupt === 'function') {
+                try { nb.interrupt(); } catch (e) {}
+            }
+            if (nb && nb.cells) {
+                for (const cell of nb.cells) {
+                    if (cell.isRunning && cell.isRunning()) {
+                        if (typeof cell.interrupt === 'function') {
+                            try { cell.interrupt(); } catch (e) {}
+                        }
+                        const elem = cell.getElement ? cell.getElement() : (cell.element_ || cell.dom_);
+                        if (elem) {
+                            const stopBtn = elem.querySelector('colab-run-button.running, colab-run-button[aria-label*="Interromper"], colab-run-button[title*="Interromper"]');
+                            if (stopBtn) {
+                                try { stopBtn.click(); } catch (e) {}
+                            }
+                        }
+                    }
+                }
+            }
+        }""")
+        time.sleep(4)
+        dismiss_modals(page)
+        return True
+    except Exception:
+        return False
 
 
 def trigger_cell_execution(
