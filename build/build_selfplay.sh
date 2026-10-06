@@ -22,6 +22,11 @@ case "$(uname -m)" in
     x86_64|amd64) FLAGS+=(-mavx2 -mfma) ;;
 esac
 
+# Append caller-specified compiler flags (e.g. NNUE architecture overrides)
+if [ "$#" -gt 0 ]; then
+    FLAGS+=("$@")
+fi
+
 echo "selfplay  <-  tools/selfplay/selfplay_main.cpp"
 g++ "${FLAGS[@]}" -I"$SRC" -I"$ROOT/tools/selfplay" -o "$BIN/selfplay" "$ROOT/tools/selfplay/selfplay_main.cpp"
 

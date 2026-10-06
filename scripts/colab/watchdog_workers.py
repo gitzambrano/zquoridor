@@ -176,7 +176,7 @@ def run_watchdog(cfg: Dict[str, Any]) -> None:
                                 if pg != page and not pg.is_closed():
                                     if "accounts.google.com" in (pg.url or ""):
                                         print(f"[{w['name']}] OAuth popup detected. Handling consent...", flush=True)
-                                        handle_google_oauth_popup(pg, w.get("account"))
+                                        handle_google_oauth_popup(pg, w.get("account"), w.get("notebook_url"))
                                     elif "about:blank" in (pg.url or ""):
                                         try:
                                             pg.close()
@@ -186,7 +186,7 @@ def run_watchdog(cfg: Dict[str, Any]) -> None:
                         # Also handle OAuth if the main page itself is on accounts.google.com
                         if "accounts.google.com" in (getattr(page, "url", "") or ""):
                             print(f"[{w['name']}] Main page on Google OAuth/Sign-in. Handling automatically...", flush=True)
-                            handle_google_oauth_popup(page, w.get("account"))
+                            handle_google_oauth_popup(page, w.get("account"), w.get("notebook_url"))
                             time.sleep(2)
 
                         dismiss_modals(page)
@@ -224,7 +224,7 @@ def run_watchdog(cfg: Dict[str, Any]) -> None:
                         if cfg["auto_reconnect"] and not state["running"] and not state["pending"]:
                             if "Auth Required" in state["statusText"]:
                                 print(f"[{w['name']}] [AUTH REQUIRED] Handling Google OAuth/verification...")
-                                handle_google_oauth_popup(page, w.get("account"))
+                                handle_google_oauth_popup(page, w.get("account"), w.get("notebook_url"))
                                 time.sleep(3)
                             else:
                                 if "Conectando" not in state["statusText"]:

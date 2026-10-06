@@ -173,69 +173,185 @@ def dismiss_modals(page: Any) -> bool:
         return False
 
 
-def handle_google_oauth_popup(popup: Any, target_account: Optional[str] = None) -> bool:
-    """Handle Google OAuth consent dialog popup or page for Google Drive connection."""
+_WHISPER_MODEL = None
+
+
+def transcribe_audio_bytes(raw_bytes: bytes) -> str:
+    """Transcribe raw audio bytes using the Whisper tiny model."""
+    global _WHISPER_MODEL
     try:
-        if hasattr(popup, "is_closed") and popup.is_closed():
+        import io
+        import soundfile as sf
+        import scipy.signal
+        import whisper
+
+        if _WHISPER_MODEL is None:
+            _WHISPER_MODEL = whisper.load_model("tiny")
+
+        bio = io.BytesIO(raw_bytes)
+        data, sr = sf.read(bio, dtype="float32")
+        if len(data.shape) > 1:
+            data = data.mean(axis=1)
+        if sr != 16000:
+            num_samples = int(len(data) * 16000 / sr)
+            data = scipy.signal.resample(data, num_samples)
+
+        result = _WHISPER_MODEL.transcribe(data, fp16=False)
+        return result.get("text", "").strip()
+    except Exception as exc:
+        print(f"  [WHISPER ERROR] {exc}", flush=True)
+        return ""
+
+
+def solve_recaptcha_playwright(page: Any) -> bool:
+    """Detect and solve Google reCAPTCHA v2 challenges via audio fallback and Whisper."""
+    try:
+        anchor_frame = page.frame_locator("iframe[src*='anchor']")
+        anchor = anchor_frame.locator("#recaptcha-anchor")
+        if anchor.count() == 0:
             return False
-        url = getattr(popup, "url", "") or ""
+
+        try:
+            if anchor.get_attribute("aria-checked", timeout=2000) == "true":
+                return True
+        except Exception:
+            pass
+
+        print("  [reCAPTCHA] Clicking anchor checkbox...", flush=True)
+        anchor.click(timeout=5000)
+        time.sleep(3)
+
+        try:
+            if anchor.get_attribute("aria-checked", timeout=2000) == "true":
+                print("  [reCAPTCHA] Checkbox checked immediately.", flush=True)
+                return True
+        except Exception:
+            pass
+
+        bframe = page.frame_locator("iframe[src*='bframe']")
+        audio_btn = bframe.locator("#recaptcha-audio-button")
+        if audio_btn.count() > 0 and audio_btn.first.is_visible():
+            print("  [reCAPTCHA] Triggering audio challenge...", flush=True)
+            audio_btn.first.click()
+            time.sleep(4)
+
+        dl_link = bframe.locator("a.rc-audiochallenge-tdownload-link, a[href*='payload'], a[href*='audio.mp3']")
+        if dl_link.count() > 0:
+            audio_url = dl_link.first.get_attribute("href")
+            print(f"  [reCAPTCHA] Downloading audio challenge: {audio_url[:60]}...", flush=True)
+            resp = page.request.get(audio_url)
+            audio_bytes = resp.body()
+
+            text = transcribe_audio_bytes(audio_bytes)
+            print(f"  [reCAPTCHA] Transcribed text: '{text}'", flush=True)
+
+            audio_input = bframe.locator("#audio-response")
+            if text and audio_input.count() > 0:
+                audio_input.fill(text)
+                time.sleep(1)
+                verify_btn = bframe.locator("#recaptcha-verify-button")
+                if verify_btn.count() > 0:
+                    print("  [reCAPTCHA] Submitting verification...", flush=True)
+                    verify_btn.click()
+                    time.sleep(4)
+
+        try:
+            status = anchor.get_attribute("aria-checked", timeout=3000)
+            return status == "true"
+        except Exception:
+            return True
+    except Exception as exc:
+        print(f"  [reCAPTCHA ERROR] {exc}", flush=True)
+        return False
+
+
+def solve_google_challenge_if_needed(page: Any, target_account: Optional[str] = None, notebook_url: Optional[str] = None) -> bool:
+    """Handle Google authentication prompts, account chooser, reCAPTCHA, and OAuth consent."""
+    try:
+        url = getattr(page, "url", "") or ""
         if "accounts.google.com" not in url:
             return False
 
+        # Recover from rejected sign-in by reloading the notebook
+        if "signin/rejected" in url:
+            if notebook_url:
+                print(f"  [AUTH] Rejected sign-in detected. Resetting to {notebook_url[:50]}...", flush=True)
+                page.goto(notebook_url, wait_until="domcontentloaded", timeout=30000)
+                time.sleep(3)
+                url = getattr(page, "url", "") or ""
+            else:
+                return False
+
         # 1. Select account if account chooser is displayed
-        if target_account:
-            for sel in [
-                f"div[data-identifier*='{target_account}']",
-                f"div[data-email*='{target_account}']",
-                f"li:has-text('{target_account}')",
-                f"div[role='link']:has-text('{target_account}')",
-                f"div[role='button']:has-text('{target_account}')",
-                f"text={target_account}",
-            ]:
-                try:
-                    loc = popup.locator(sel)
-                    if loc.count() > 0 and loc.first.is_visible():
-                        loc.first.click()
-                        time.sleep(1.5)
-                        break
-                except Exception:
-                    pass
+        if "accountchooser" in url or "ServiceLogin" in url:
+            if target_account:
+                for sel in [
+                    f"div[data-identifier*='{target_account}']",
+                    f"div[data-email*='{target_account}']",
+                    f"div.UXFQgc:has-text('{target_account}')",
+                    f"div.xKcayf:has-text('{target_account}')",
+                    f"li:has-text('{target_account}')",
+                    f"div[role='link']:has-text('{target_account}')",
+                    f"div[role='button']:has-text('{target_account}')",
+                    f"text={target_account}",
+                ]:
+                    try:
+                        loc = page.locator(sel)
+                        if loc.count() > 0 and loc.first.is_visible():
+                            print(f"  [AUTH] Selecting account {target_account}...", flush=True)
+                            loc.first.click()
+                            time.sleep(3)
+                            break
+                    except Exception:
+                        pass
 
-        # 2. Check checkboxes and click Continuar/Permitir/Avançar
-        action_buttons = [
-            "Continuar", "Permitir", "Continue", "Allow",
-            "Avançar", "Next", "Entrar", "Sign in"
-        ]
-        for _ in range(4):
-            if hasattr(popup, "is_closed") and popup.is_closed():
-                return True
+        # 2. Check for reCAPTCHA before clicking any advance button
+        anchor_frame = page.frame_locator("iframe[src*='anchor']")
+        has_anchor = anchor_frame.locator("#recaptcha-anchor").count() > 0
+        if has_anchor:
+            print("  [AUTH] reCAPTCHA challenge detected. Solving...", flush=True)
+            solve_recaptcha_playwright(page)
+            time.sleep(2)
 
+        # 3. Check if reCAPTCHA is verified before advancing
+        anchor_checked = False
+        if has_anchor:
             try:
-                for cb in popup.locator("input[type='checkbox']").all():
-                    if not cb.is_checked():
-                        cb.check()
+                anchor_checked = anchor_frame.locator("#recaptcha-anchor").get_attribute("aria-checked", timeout=2000) == "true"
+            except Exception:
+                anchor_checked = True
+
+        # 4. Check if a password field is present and empty
+        pwd_input = page.locator("input[type='password']")
+        if pwd_input.count() > 0:
+            try:
+                if not pwd_input.first.input_value():
+                    return False
             except Exception:
                 pass
 
-            clicked = False
+        if not has_anchor or anchor_checked:
+            action_buttons = ["Avançar", "Continuar", "Permitir", "Continue", "Allow", "Next", "Entrar"]
             for txt in action_buttons:
                 try:
-                    btn = popup.locator(f"button:has-text('{txt}'), div[role='button']:has-text('{txt}'), input[type='submit'][value*='{txt}']")
+                    btn = page.locator(f"button:has-text('{txt}'), div[role='button']:has-text('{txt}'), input[type='submit'][value*='{txt}']")
                     if btn.count() > 0 and btn.first.is_visible():
+                        print(f"  [AUTH] Clicking '{txt}'...", flush=True)
                         btn.first.click()
-                        time.sleep(2)
-                        clicked = True
+                        time.sleep(4)
                         break
                 except Exception:
                     pass
-            if not clicked:
-                break
 
-        if hasattr(popup, "is_closed"):
-            return popup.is_closed()
-        return "colab.research.google.com" in (getattr(popup, "url", "") or "")
-    except Exception:
+        return True
+    except Exception as exc:
+        print(f"  [AUTH ERROR] {exc}", flush=True)
         return False
+
+
+def handle_google_oauth_popup(popup: Any, target_account: Optional[str] = None, notebook_url: Optional[str] = None) -> bool:
+    """Handle Google OAuth consent dialog popup or page for Google Drive connection."""
+    return solve_google_challenge_if_needed(popup, target_account=target_account, notebook_url=notebook_url)
 
 
 
