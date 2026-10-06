@@ -1,0 +1,188 @@
+name: Claustrophobia 3+2 Protocol Calibration
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [exp/claustro-3p2-calibration-20261006]
+    paths:
+      - ".github/workflows/claustro-3plus2-protocol-calibration.yml"
+
+permissions:
+  contents: read
+
+env:
+  PYTHONUNBUFFERED: "1"
+  HIST_SHA: d927e201fe4eeff84745cbc06b98410a0ebc463f
+  MAIN_SHA: 105f6e39b649aa737f258042bd7cd97aea09b358
+
+jobs:
+  calibration:
+    name: ${{ matrix.subject }}-${{ matrix.protocol }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 1200
+    strategy:
+      fail-fast: false
+      max-parallel: 8
+      matrix:
+        subject: [historical, main, edge_v1, main_hist_nnue]
+        protocol: [historical, current]
+    steps:
+      - uses: actions/checkout@v4
+        with: {fetch-depth: 0}
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.11"}
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Cache Claustrophobia
+        uses: actions/cache@v4
+        with:
+          path: |
+            external_bots/claustrophobia/champion.pt
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: claustro-protocol-cal-${{ runner.os }}-${{ hashFiles('tools/external/bot_setup.py','tools/external/claustrophobia_benchmark_bridge.rs','training/teachers/claustrophobia_ipc_eval.rs','training/teachers/claustrophobia_inference_worker.py') }}
+          restore-keys: |
+            claustro-protocol-cal-${{ runner.os }}-
+      - name: Install Claustrophobia runtime
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install numpy
+          python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
+      - name: Materialize historical and current trees
+        shell: bash
+        run: |
+          set -euo pipefail
+          git worktree add /tmp/zq-hist "$HIST_SHA"
+          git worktree add /tmp/zq-main "$MAIN_SHA"
+          mkdir -p bin
+      - name: Build exact subject
+        shell: bash
+        run: |
+          set -euo pipefail
+          COMMON="-O3 -DNDEBUG -std=c++17 -pthread"
+          case "${{ matrix.subject }}" in
+            historical)
+              g++ $COMMON -I/tmp/zq-hist/src /tmp/zq-hist/tools/external/zquoridor_uci.cpp -o bin/subject
+              cp /tmp/zq-hist/data/nnue/nnue_weights_int8.bin bin/subject.nnue
+              ;;
+            main)
+              g++ $COMMON -I/tmp/zq-main/src /tmp/zq-main/tools/external/zquoridor_uci.cpp -o bin/subject
+              cp /tmp/zq-main/data/nnue/nnue_weights_int8.bin bin/subject.nnue
+              ;;
+            edge_v1)
+              g++ $COMMON -Isrc -DZQ_EXP_EDGE_ACC_CACHE=1 tools/external/zquoridor_uci.cpp -o bin/subject
+              cp /tmp/zq-main/data/nnue/nnue_weights_int8.bin bin/subject.nnue
+              ;;
+            main_hist_nnue)
+              g++ $COMMON -I/tmp/zq-main/src \
+                -DZQ_NNUE_RACE_FEATURES=1 -DZQ_NNUE_MARGIN_REGIME_FEATURES=0 \
+                -DZQ_NNUE_PHASE_FEATURES=1 -DZQ_NNUE_MULTIPATH_FEATURES=1 \
+                -DZQ_NNUE_CONTACT_FEATURES=0 -DZQ_NNUE_HIDDEN=512 \
+                -DZQ_NNUE_VALUE_BUCKETS=1 -DZQ_NNUE_VALUE_DEPTH=1 \
+                /tmp/zq-main/tools/external/zquoridor_uci.cpp -o bin/subject
+              cp /tmp/zq-hist/data/nnue/nnue_weights_int8.bin bin/subject.nnue
+              ;;
+          esac
+          sha256sum bin/subject bin/subject.nnue
+      - name: Run paired calibration
+        shell: bash
+        run: |
+          set -euo pipefail
+          EXTRA=""
+          CLAUSTRO_MS=200
+          if [ "${{ matrix.protocol }}" = "historical" ]; then
+            EXTRA="--zq-clock-only"
+            CLAUSTRO_MS=2000
+          fi
+          python -u tools/run_benchmark.py \
+            --opponents claustrophobia \
+            --pairs 100 --workers 1 --seed 20261006 \
+            --openings tools/external/openings_confirmation_v1.jsonl \
+            --output "results/claustro-protocol-cal/${{ matrix.subject }}/${{ matrix.protocol }}" \
+            --zq-executable bin/subject --nnue bin/subject.nnue \
+            --zq-move-time-ms 200 --claustrophobia-move-time-ms "$CLAUSTRO_MS" \
+            --clock-initial-ms 180000 --clock-increment-ms 2000 \
+            --max-plies 240 --move-timeout-s 45 --bootstrap 50000 \
+            --auto-setup $EXTRA
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: claustro-protocol-cal-${{ matrix.subject }}-${{ matrix.protocol }}
+          path: results/claustro-protocol-cal/${{ matrix.subject }}/${{ matrix.protocol }}
+          if-no-files-found: warn
+          retention-days: 30
+      - if: always()
+        run: |
+          git worktree remove --force /tmp/zq-hist 2>/dev/null || true
+          git worktree remove --force /tmp/zq-main 2>/dev/null || true
+          git worktree prune
+
+  aggregate:
+    name: aggregate-calibration
+    runs-on: ubuntu-latest
+    needs: calibration
+    if: always()
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: claustro-protocol-cal-*
+          path: artifacts
+      - name: Build calibration table and decomposition
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          rows=[]
+          for summary_path in Path('artifacts').rglob('summary.json'):
+              artifact=next((p for p in summary_path.parts if p.startswith('claustro-protocol-cal-')), '')
+              suffix=artifact.removeprefix('claustro-protocol-cal-')
+              protocol='historical' if suffix.endswith('-historical') else 'current'
+              subject=suffix[:-(len(protocol)+1)]
+              d=json.loads(summary_path.read_text())
+              s=d['summaries']['claustrophobia']
+              games_path=summary_path.with_name('games.jsonl')
+              games=[json.loads(x) for x in games_path.read_text().splitlines() if x.strip()] if games_path.exists() else []
+              ok=[g for g in games if g.get('status')=='ok']
+              w=sum(g.get('result')==1.0 for g in ok); dr=sum(g.get('result')==0.5 for g in ok); l=sum(g.get('result')==0.0 for g in ok)
+              ci=s.get('paired_bootstrap_95') or {}
+              rows.append(dict(subject=subject,protocol=protocol,wins=w,draws=dr,losses=l,
+                               score_pct=s.get('score_pct'),elo=s.get('elo'),
+                               elo_low=ci.get('elo_low'),elo_high=ci.get('elo_high'),
+                               score_low=ci.get('score_low_pct'),score_high=ci.get('score_high_pct'),
+                               failures=s.get('failed_games'),pairs=s.get('complete_pairs'),
+                               max_plies=s.get('max_plies_games')))
+          rows.sort(key=lambda r:(r['subject'],r['protocol']))
+          by={(r['subject'],r['protocol']):r for r in rows}
+          protocol_effects=[]
+          for subject in sorted({r['subject'] for r in rows}):
+              a=by.get((subject,'historical')); b=by.get((subject,'current'))
+              if a and b and a['score_pct'] is not None and b['score_pct'] is not None:
+                  protocol_effects.append({'subject':subject,'historical_minus_current_pp':a['score_pct']-b['score_pct']})
+          generation_effects=[]
+          for protocol in ('historical','current'):
+              base=by.get(('historical',protocol))
+              if not base or base['score_pct'] is None: continue
+              for subject in ('main','edge_v1','main_hist_nnue'):
+                  r=by.get((subject,protocol))
+                  if r and r['score_pct'] is not None:
+                      generation_effects.append({'protocol':protocol,'subject':subject,
+                          'vs_d927e20_pp':r['score_pct']-base['score_pct']})
+          report={'schema':'zquoridor.claustro_3p2_protocol_calibration.v1','rows':rows,
+                  'protocol_effects':protocol_effects,'generation_effects':generation_effects,
+                  'historical_reference_band_pct':[55.0,61.0]}
+          Path('aggregate').mkdir(exist_ok=True)
+          Path('aggregate/calibration.json').write_text(json.dumps(report,indent=2)+'\n')
+          print('| subject | protocol | W-D-L | score | Elo [95%] | failures |')
+          print('|---|---|---:|---:|---:|---:|')
+          for r in rows:
+              elo='—' if r['elo'] is None else f"{r['elo']:+.1f} [{r['elo_low']:+.1f},{r['elo_high']:+.1f}]"
+              score='—' if r['score_pct'] is None else f"{r['score_pct']:.2f}%"
+              print(f"| {r['subject']} | {r['protocol']} | {r['wins']}-{r['draws']}-{r['losses']} | {score} | {elo} | {r['failures']} |")
+          print('Protocol effects:',protocol_effects)
+          print('Generation effects:',generation_effects)
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: claustro-protocol-cal-aggregate
+          path: aggregate/
+          retention-days: 30
