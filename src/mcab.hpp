@@ -64,6 +64,12 @@
 #ifndef ZQ_EXP_EDGE_ACC_PATH_CONTEXT
 #define ZQ_EXP_EDGE_ACC_PATH_CONTEXT 0
 #endif
+#ifndef ZQ_EXP_EDGE_ACC_PATH_SKIP_PARENT_RESOLVE
+#define ZQ_EXP_EDGE_ACC_PATH_SKIP_PARENT_RESOLVE 0
+#endif
+#ifndef ZQ_EXP_EDGE_ACC_HYBRID
+#define ZQ_EXP_EDGE_ACC_HYBRID 0
+#endif
 #ifndef ZQ_EXP_RESIDUAL_ROOT_INITIAL
 #define ZQ_EXP_RESIDUAL_ROOT_INITIAL 16
 #endif
@@ -710,8 +716,14 @@ public:
     static constexpr bool kResidualPuct = (ZQ_EXP_RESIDUAL_PUCT != 0);
     static constexpr bool kEdgeAccFullCanonical = (ZQ_EXP_EDGE_ACC_FULL_CANONICAL != 0);
     static constexpr bool kEdgeAccPathContext = (ZQ_EXP_EDGE_ACC_PATH_CONTEXT != 0);
+    static constexpr bool kEdgeAccPathSkipParentResolve =
+        (ZQ_EXP_EDGE_ACC_PATH_SKIP_PARENT_RESOLVE != 0);
+    static constexpr bool kEdgeAccHybrid = (ZQ_EXP_EDGE_ACC_HYBRID != 0);
+    static constexpr bool kEdgeAccUsesPathSignature =
+        kEdgeAccPathContext || kEdgeAccHybrid;
     static constexpr bool kEdgeAccCache =
-        (ZQ_EXP_EDGE_ACC_CACHE != 0) || kEdgeAccFullCanonical || kEdgeAccPathContext;
+        (ZQ_EXP_EDGE_ACC_CACHE != 0) || kEdgeAccFullCanonical ||
+        kEdgeAccPathContext || kEdgeAccHybrid;
 
     McabParams params;
 
@@ -939,15 +951,18 @@ public:
         if ((int)mcabAccStack.size() < params.maxTreeDepth + 2) {
             mcabAccStack.resize(params.maxTreeDepth + 2);
         }
-        if constexpr (kEdgeAccPathContext) {
+        if constexpr (kEdgeAccUsesPathSignature) {
             if ((int)edgePathSigA.size() < params.maxTreeDepth + 2) {
                 edgePathSigA.resize(params.maxTreeDepth + 2);
                 edgePathSigB.resize(params.maxTreeDepth + 2);
             }
-            // Full lazy pairs are valid only within one root search context.
-            // Tree statistics may be reused, but accumulator path semantics
-            // restart from the newly rebuilt root accumulator every choose().
-            edgeAccumulatorCache.clear();
+            // Full lazy path entries are valid only within one root search
+            // context. Tree statistics may be reused, accumulator path state
+            // may not.
+            if constexpr (kEdgeAccPathContext)
+                edgeAccumulatorCache.clear();
+            if constexpr (kEdgeAccHybrid)
+                hybridPathAccumulatorCache.clear();
         }
 
         int budget = effectiveNodeBudget(params, timeBudgetMs);
@@ -994,7 +1009,7 @@ public:
         pool.reserve(pool.size() + (size_t)reserveBudget + 1);
 
         mcabAccStack[0] = buildAccPairRoot(root, mcabPathCache(engine, 0));
-        if constexpr (kEdgeAccPathContext) {
+        if constexpr (kEdgeAccUsesPathSignature) {
             const uint64_t rootKey = mcabEvalStateKey(root, 0);
             edgePathSigA[0] = edgePathMix(0x243F6A8885A308D3ull, rootKey,
                                           0x9E3779B97F4A7C15ull);
@@ -1228,6 +1243,17 @@ private:
     static constexpr size_t kEdgeAccumulatorCacheEntries =
         kEdgeAccPathContext ? 4096 : 1024;
     std::vector<EdgeAccumulatorCacheEntry> edgeAccumulatorCache;
+
+    // Hybrid v4 L1: exact-path full lazy pairs. The ordinary edge cache
+    // remains the v1 state-safe eager L2.
+    struct HybridPathAccumulatorCacheEntry {
+        uint64_t key = 0;
+        uint64_t key2 = 0;
+        AccPairT acc{};
+    };
+    static constexpr size_t kHybridPathCacheEntries = 4096;
+    std::vector<HybridPathAccumulatorCacheEntry> hybridPathAccumulatorCache;
+
     std::vector<uint64_t> edgePathSigA;
     std::vector<uint64_t> edgePathSigB;
 
@@ -1244,6 +1270,34 @@ private:
     size_t edgeAccumulatorCacheIndex(uint64_t key) const {
         uint64_t mixed = key ^ (key >> 33) ^ (key >> 17);
         return (size_t)mixed & (kEdgeAccumulatorCacheEntries - 1);
+    }
+
+    size_t hybridPathCacheIndex(uint64_t key) const {
+        uint64_t mixed = key ^ (key >> 29) ^ (key >> 43);
+        return (size_t)mixed & (kHybridPathCacheEntries - 1);
+    }
+
+    bool loadHybridPathAccumulator(uint64_t key, uint64_t key2,
+                                   AccPairT& out, McabStats& mstats) {
+        if (key == 0) return false;
+        if (hybridPathAccumulatorCache.empty())
+            hybridPathAccumulatorCache.resize(kHybridPathCacheEntries);
+        const auto& entry = hybridPathAccumulatorCache[hybridPathCacheIndex(key)];
+        if (entry.key != key || entry.key2 != key2) return false;
+        out = entry.acc;
+        ++mstats.edgeAccCacheHits;
+        return true;
+    }
+
+    void storeHybridPathAccumulator(uint64_t key, uint64_t key2,
+                                    const AccPairT& acc) {
+        if (key == 0) return;
+        if (hybridPathAccumulatorCache.empty())
+            hybridPathAccumulatorCache.resize(kHybridPathCacheEntries);
+        auto& entry = hybridPathAccumulatorCache[hybridPathCacheIndex(key)];
+        entry.key = key;
+        entry.key2 = key2;
+        entry.acc = acc;
     }
 
     bool loadEdgeAccumulator(uint64_t key, uint64_t key2, int childSide,
@@ -2049,9 +2103,9 @@ private:
             if constexpr (kEdgeAccCache) {
                 const StateT& edgeChildState = pool[(size_t)childIdx].state;
                 const uint64_t stateKey = mcabEvalStateKey(edgeChildState, 0);
-                uint64_t accKey = stateKey;
-                uint64_t accKey2 = 0;
-                if constexpr (kEdgeAccPathContext) {
+                uint64_t pathKey = 0;
+                uint64_t pathKey2 = 0;
+                if constexpr (kEdgeAccUsesPathSignature) {
                     const uint64_t moveKey =
                         ((uint64_t)moveToPolicyIndex(mv) << 32) ^
                         (uint64_t)(uint32_t)(depth + 1);
@@ -2062,32 +2116,75 @@ private:
                         edgePathMix(edgePathSigB[depth],
                                     stateKey + 0xA0761D6478BD642Full + moveKey,
                                     0xD1B54A32D192ED03ull);
-                    accKey = edgePathSigA[depth + 1];
-                    accKey2 = edgePathSigB[depth + 1];
+                    pathKey = edgePathSigA[depth + 1];
+                    pathKey2 = edgePathSigB[depth + 1];
                 }
+
                 const int mover = (int)beforeState.turn;
                 const int childSide = (int)edgeChildState.turn;
-                if (loadEdgeAccumulator(accKey, accKey2, childSide,
-                                        mcabAccStack[depth + 1], mstats)) {
-                    // Reproduce makeChildAccPair's parent mutation. v3 could
-                    // theoretically skip this because the exact child pair is
-                    // already cached; keep it for the first correctness gate.
-                    mcabResolvePending(mcabAccStack[depth], childSide,
-                                       mcabPathCache(engine, 0), 0);
 
-                    if constexpr (!kEdgeAccFullCanonical && !kEdgeAccPathContext) {
-                        // v1: reconstruct the path-dependent lazy mover side.
+                if constexpr (kEdgeAccHybrid) {
+                    // v4: exact-path full-pair L1; v1 state-safe eager L2.
+                    // L1 hit can use the exact lazy pair directly. On L1
+                    // miss, L2 falls back to proven-v1 semantics.
+                    if (loadHybridPathAccumulator(pathKey, pathKey2,
+                                                  mcabAccStack[depth + 1], mstats)) {
+                        // No parent resolution needed: this descent never
+                        // backtracks through the accumulator stack, and the
+                        // exact child pair already contains everything needed
+                        // by deeper plies.
+                    } else if (loadEdgeAccumulator(stateKey, 0, childSide,
+                                                   mcabAccStack[depth + 1], mstats)) {
+                        mcabResolvePending(mcabAccStack[depth], childSide,
+                                           mcabPathCache(engine, 0), 0);
                         mcabAccStack[depth + 1].acc[mover] = mcabAccStack[depth].acc[mover];
                         mcabAccStack[depth + 1].pending[mover] = true;
                         mcabAccStack[depth + 1].pendBefore[mover] = beforeState;
                         mcabAccStack[depth + 1].pendMove[mover] = mv;
                         mcabAccStack[depth + 1].pendViewerIsMover[mover] = true;
+                        storeHybridPathAccumulator(pathKey, pathKey2,
+                                                   mcabAccStack[depth + 1]);
+                    } else {
+                        makeChildAccPair(mcabAccStack[depth], mcabAccStack[depth + 1],
+                                         beforeState, mv, mcabPathCache(engine, 0));
+                        storeEdgeAccumulator(stateKey, 0, childSide,
+                                             mcabAccStack[depth + 1], engine);
+                        storeHybridPathAccumulator(pathKey, pathKey2,
+                                                   mcabAccStack[depth + 1]);
                     }
                 } else {
-                    makeChildAccPair(mcabAccStack[depth], mcabAccStack[depth + 1], beforeState, mv,
-                                     mcabPathCache(engine, 0));
-                    storeEdgeAccumulator(accKey, accKey2, childSide,
-                                         mcabAccStack[depth + 1], engine);
+                    uint64_t accKey = stateKey;
+                    uint64_t accKey2 = 0;
+                    if constexpr (kEdgeAccPathContext) {
+                        accKey = pathKey;
+                        accKey2 = pathKey2;
+                    }
+
+                    if (loadEdgeAccumulator(accKey, accKey2, childSide,
+                                            mcabAccStack[depth + 1], mstats)) {
+                        // v3.1 experiment: on an exact-path full-pair hit the
+                        // parent accumulator is dead after descent, so its
+                        // lazy side need not be materialized.
+                        if constexpr (!(kEdgeAccPathContext &&
+                                        kEdgeAccPathSkipParentResolve)) {
+                            mcabResolvePending(mcabAccStack[depth], childSide,
+                                               mcabPathCache(engine, 0), 0);
+                        }
+
+                        if constexpr (!kEdgeAccFullCanonical && !kEdgeAccPathContext) {
+                            // v1: reconstruct the path-dependent lazy mover side.
+                            mcabAccStack[depth + 1].acc[mover] = mcabAccStack[depth].acc[mover];
+                            mcabAccStack[depth + 1].pending[mover] = true;
+                            mcabAccStack[depth + 1].pendBefore[mover] = beforeState;
+                            mcabAccStack[depth + 1].pendMove[mover] = mv;
+                            mcabAccStack[depth + 1].pendViewerIsMover[mover] = true;
+                        }
+                    } else {
+                        makeChildAccPair(mcabAccStack[depth], mcabAccStack[depth + 1],
+                                         beforeState, mv, mcabPathCache(engine, 0));
+                        storeEdgeAccumulator(accKey, accKey2, childSide,
+                                             mcabAccStack[depth + 1], engine);
+                    }
                 }
             } else {
                 makeChildAccPair(mcabAccStack[depth], mcabAccStack[depth + 1], beforeState, mv,
