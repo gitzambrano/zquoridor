@@ -33,6 +33,7 @@ CONFIG = {
     "claustrophobia_move_time_ms": 200,
     "clock_initial_ms": 0,
     "clock_increment_ms": 0,
+    "zq_clock_only": False,
     "claustrophobia_max_sims": 4096,
     "claustrophobia_cpuct": 1.5,
     "claustrophobia_device": "cpu",
@@ -67,6 +68,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--claustrophobia-move-time-ms", type=int)
     parser.add_argument("--clock-initial-ms", type=int)
     parser.add_argument("--clock-increment-ms", type=int)
+    parser.add_argument("--zq-clock-only", action=argparse.BooleanOptionalAction, default=None)
     parser.add_argument("--claustrophobia-max-sims", type=int)
     parser.add_argument("--claustrophobia-cpuct", type=float)
     parser.add_argument("--claustrophobia-device", choices=("cpu", "gpu"))
@@ -118,7 +120,7 @@ def resolve_config(args: argparse.Namespace) -> dict:
     if "titanium" in config["opponents"] and (
             int(config["titanium_move_time_ms"]) != int(config["zq_move_time_ms"])):
         raise ValueError("Titanium and Zquoridor must use the same move clock")
-    if "claustrophobia" in config["opponents"] and (
+    if "claustrophobia" in config["opponents"] and not bool(config["zq_clock_only"]) and (
             int(config["claustrophobia_move_time_ms"]) != int(config["zq_move_time_ms"])):
         raise ValueError("Claustrophobia and Zquoridor must use the same move clock")
     return config
@@ -341,6 +343,7 @@ def run(config: dict) -> dict:
             run_id=manifest["run_id"],
             clock_initial_ms=int(config["clock_initial_ms"]),
             clock_increment_ms=int(config["clock_increment_ms"]),
+            zq_clock_only=bool(config["zq_clock_only"]),
         )
         if opening_index in opening_categories:
             row["opening_category"] = opening_categories[opening_index]
