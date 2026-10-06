@@ -471,7 +471,8 @@ def play_game(*, opponent: str, opening_index: int, opening: Sequence[str],
               opponent_factory: Callable[[], LinePlayer], zq_budget: int,
               opponent_budget: int, move_timeout_s: float, max_plies: int,
               run_id: str, clock_initial_ms: int = 0,
-              clock_increment_ms: int = 0, zq_ponder: bool = False) -> dict:
+              clock_increment_ms: int = 0, zq_ponder: bool = False,
+              zq_clock_only: bool = False) -> dict:
     """Play one game and return an explicit success or failure record."""
     base = {
         "schema": "zquoridor.local_benchmark.game.v1",
@@ -508,6 +509,13 @@ def play_game(*, opponent: str, opening_index: int, opening: Sequence[str],
             budget = zq_budget if side == zq_player else opponent_budget
             clock_before = None
             if clocks is None:
+                move, elapsed, move_info = player.bestmove(
+                    history, budget=budget, timeout_s=move_timeout_s
+                )
+            elif zq_clock_only and side != zq_player:
+                # Historical protocol: Claustrophobia receives its fixed
+                # per-move budget; only ZQuoridor's 180+2 clock is decremented.
+                clock_before = clocks[side]
                 move, elapsed, move_info = player.bestmove(
                     history, budget=budget, timeout_s=move_timeout_s
                 )
