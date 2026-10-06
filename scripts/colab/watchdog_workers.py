@@ -364,6 +364,7 @@ def main() -> None:
     parser.add_argument("--headless", action="store_true", help="Run browser in headless mode.")
     parser.add_argument("--headed", action="store_true", help="Run browser in visible headed mode.")
     parser.add_argument("--target-delta-positions", type=int, default=CONFIG["target_delta_positions"], help="Stop watchdog when accumulated delta positions reach this target.")
+    parser.add_argument("--max-cycles", type=int, default=CONFIG["max_cycles"], help="Maximum number of watchdog cycles to run before exiting (0 = infinite).")
     parser.add_argument("--relaunch-on-start", action="store_true", help="Stop running execution and re-inject bootloader on startup.")
     parser.add_argument("--no-relaunch-on-start", action="store_true", help="Do not stop/relaunch running workers on startup.")
     parser.add_argument("--show-config", action="store_true", help="Display effective configuration and exit.")
