@@ -58,13 +58,15 @@ def load_profile_cookies(ctx: Any, profile_dir: str) -> None:
     """Load and inject persistent cookies backup from profile or local project mirror if needed."""
     try:
         existing = ctx.cookies()
-        if existing and len(existing) >= 10:
-            # Context already has active cookies from persistent profile database
+        existing_names = {c.get("name") for c in existing}
+        if "SID" in existing_names and "__Secure-1PSID" in existing_names:
+            # Context already has active auth cookies from persistent profile database
             return
 
         candidates = [
             Path(profile_dir) / "cookies.json",
             Path(__file__).resolve().parent / "cookies" / f"{Path(profile_dir).name}_cookies.json",
+            Path(__file__).resolve().parent / "cookies" / f"worker_{Path(profile_dir).name}_cookies.json",
         ]
         for in_path in candidates:
             if in_path.is_file():
@@ -74,7 +76,6 @@ def load_profile_cookies(ctx: Any, profile_dir: str) -> None:
                     ctx.add_cookies(saved)
                     return
     except Exception:
-        pass
         pass
 
 
@@ -330,8 +331,20 @@ def solve_google_challenge_if_needed(page: Any, target_account: Optional[str] = 
             except Exception:
                 pass
 
+        # Check OAuth scope checkboxes (e.g. Google Drive access)
+        try:
+            for cb in page.locator("input[type='checkbox']").all():
+                if not cb.is_checked():
+                    cb.check()
+                    time.sleep(1)
+        except Exception:
+            pass
+
         if not has_anchor or anchor_checked:
-            action_buttons = ["Avançar", "Continuar", "Permitir", "Continue", "Allow", "Next", "Entrar"]
+            action_buttons = [
+                "Avançar", "Continuar", "Permitir", "Continue", "Allow", "Next",
+                "Entrar", "Sim, sou eu", "Confirmar", "Confirm", "Acessar"
+            ]
             for txt in action_buttons:
                 try:
                     btn = page.locator(f"button:has-text('{txt}'), div[role='button']:has-text('{txt}'), input[type='submit'][value*='{txt}']")
@@ -546,11 +559,14 @@ def trigger_cell_execution(
             new_code = bootloader_template.format(**fmt_kwargs)
         else:
             try:
-                from config import WORKERS
+                try:
+                    from config import WORKERS
+                except ImportError:
+                    from scripts.colab.config import WORKERS
                 w = WORKERS.get(worker_or_id, {})
             except Exception:
                 w = {}
-            drive_dir = w.get("drive_dir", "/content/drive/MyDrive/zquoridor_data/selfplay_targeted_weakness")
+            drive_dir = w.get("drive_dir", "/content/drive/MyDrive/zquoridor_data/selfplay_contact_soup_858")
             positions = w.get("positions", "")
             extra_args = w.get("extra_args", "")
             cmd_args = f"--positions {positions}" if positions else ""
