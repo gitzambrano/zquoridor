@@ -58,12 +58,6 @@
 #ifndef ZQ_EXP_EDGE_ACC_CACHE
 #define ZQ_EXP_EDGE_ACC_CACHE 0
 #endif
-#ifndef ZQ_EXP_EDGE_ACC_DIAGNOSTIC
-#define ZQ_EXP_EDGE_ACC_DIAGNOSTIC 0
-#endif
-#ifndef ZQ_EXP_EDGE_ACC_RESOLVE_PARENT_ON_HIT
-#define ZQ_EXP_EDGE_ACC_RESOLVE_PARENT_ON_HIT 0
-#endif
 #ifndef ZQ_EXP_RESIDUAL_ROOT_INITIAL
 #define ZQ_EXP_RESIDUAL_ROOT_INITIAL 16
 #endif
@@ -90,10 +84,6 @@
 #include <memory>
 #include <queue>
 #include <unordered_map>
-#if ZQ_EXP_EDGE_ACC_DIAGNOSTIC
-#include <cstdio>
-#include <cstdlib>
-#endif
 
 namespace mcab {
 
@@ -1252,113 +1242,7 @@ private:
         entry.acc.pending[childSide] = false;
     }
 
-#if ZQ_EXP_EDGE_ACC_DIAGNOSTIC
-    [[noreturn]] void edgeAccDiagnosticFail(const char* which, uint64_t key, int depth,
-                                            int side, int index,
-                                            long long got, long long expected) const {
-        std::fprintf(stderr,
-            "EDGE_ACC_DIAG_FAIL which=%s key=%016llx depth=%d side=%d index=%d got=%lld expected=%lld\n",
-            which, (unsigned long long)key, depth, side, index, got, expected);
-        std::fflush(stderr);
-        std::abort();
-    }
 
-    void edgeAccCanonicalize(AccPairT& ap, Eng& engine) {
-        auto cache = mcabPathCache(engine, 0);
-        mcabResolvePending(ap, 0, cache, 0);
-        mcabResolvePending(ap, 1, cache, 0);
-    }
-
-    bool edgeAccCanonicalEqualFast(AccPairT a, AccPairT b, Eng& engine) {
-        edgeAccCanonicalize(a, engine);
-        edgeAccCanonicalize(b, engine);
-        if (a.pending[0] || a.pending[1] || b.pending[0] || b.pending[1]) return false;
-        return std::memcmp(&a.acc[0], &b.acc[0], sizeof(a.acc[0])) == 0 &&
-               std::memcmp(&a.acc[1], &b.acc[1], sizeof(a.acc[1])) == 0;
-    }
-
-    void edgeAccCompareCanonicalDetailed(AccPairT a, AccPairT b, uint64_t key, int depth,
-                                         const char* which, Eng& engine) {
-        edgeAccCanonicalize(a, engine);
-        edgeAccCanonicalize(b, engine);
-        for (int side = 0; side < 2; ++side) {
-            if (a.pending[side] != b.pending[side])
-                edgeAccDiagnosticFail(which, key, depth, side, -10,
-                                      a.pending[side], b.pending[side]);
-            if (a.acc[side].ownDistBucket != b.acc[side].ownDistBucket)
-                edgeAccDiagnosticFail(which, key, depth, side, -1,
-                                      a.acc[side].ownDistBucket, b.acc[side].ownDistBucket);
-            if (a.acc[side].oppDistBucket != b.acc[side].oppDistBucket)
-                edgeAccDiagnosticFail(which, key, depth, side, -2,
-                                      a.acc[side].oppDistBucket, b.acc[side].oppDistBucket);
-            if (a.acc[side].ownWallsLeftBucket != b.acc[side].ownWallsLeftBucket)
-                edgeAccDiagnosticFail(which, key, depth, side, -3,
-                                      a.acc[side].ownWallsLeftBucket, b.acc[side].ownWallsLeftBucket);
-            if (a.acc[side].oppWallsLeftBucket != b.acc[side].oppWallsLeftBucket)
-                edgeAccDiagnosticFail(which, key, depth, side, -4,
-                                      a.acc[side].oppWallsLeftBucket, b.acc[side].oppWallsLeftBucket);
-            for (size_t i = 0; i < a.acc[side].v.size(); ++i) {
-                if (a.acc[side].v[i] != b.acc[side].v[i])
-                    edgeAccDiagnosticFail(which, key, depth, side, (int)i,
-                                          a.acc[side].v[i], b.acc[side].v[i]);
-            }
-            if constexpr (hasNnueEvalInt<AccPairT>::value) {
-                const int va = nnueEvalInt(a, side);
-                const int vb = nnueEvalInt(b, side);
-                if (va != vb)
-                    edgeAccDiagnosticFail(which, key, depth, side, -5, va, vb);
-            }
-        }
-    }
-
-    void edgeAccVerifyHit(Eng& engine, uint64_t key, int depth,
-                          const StateT& beforeState, const MoveT& mv,
-                          const StateT& childState, const AccPairT& cached) {
-        auto cache = mcabPathCache(engine, 0);
-
-        AccPairT parentCopy = mcabAccStack[depth];
-        AccPairT viaCurrent{};
-        makeChildAccPair(parentCopy, viaCurrent, beforeState, mv, cache);
-
-        // Fast path on every real hit. A cold rebuild is intentionally deferred
-        // until a mismatch so this remains practical at millions of hits.
-        if (edgeAccCanonicalEqualFast(cached, viaCurrent, engine)) return;
-
-        AccPairT cold = buildAccPairRoot(childState, cache);
-        AccPairT ca = cached, cu = viaCurrent, co = cold;
-        edgeAccCanonicalize(ca, engine);
-        edgeAccCanonicalize(cu, engine);
-        edgeAccCanonicalize(co, engine);
-        std::fprintf(stderr,
-            "EDGE_ACC_DIAG_MISMATCH key=%016llx depth=%d mover=%d childTurn=%d "
-            "parentPending0=%d parentPending1=%d\n",
-            (unsigned long long)key, depth, (int)beforeState.turn, (int)childState.turn,
-            (int)mcabAccStack[depth].pending[0], (int)mcabAccStack[depth].pending[1]);
-        for (int s = 0; s < 2; ++s) {
-            std::fprintf(stderr,
-                "EDGE_ACC_BUCKETS side=%d cached=[%d,%d,%d,%d] current=[%d,%d,%d,%d] cold=[%d,%d,%d,%d]\n",
-                s,
-                ca.acc[s].ownDistBucket, ca.acc[s].oppDistBucket,
-                ca.acc[s].ownWallsLeftBucket, ca.acc[s].oppWallsLeftBucket,
-                cu.acc[s].ownDistBucket, cu.acc[s].oppDistBucket,
-                cu.acc[s].ownWallsLeftBucket, cu.acc[s].oppWallsLeftBucket,
-                co.acc[s].ownDistBucket, co.acc[s].oppDistBucket,
-                co.acc[s].ownWallsLeftBucket, co.acc[s].oppWallsLeftBucket);
-        }
-        // First decide whether the current incremental path itself is wrong.
-        if (!edgeAccCanonicalEqualFast(viaCurrent, cold, engine))
-            edgeAccCompareCanonicalDetailed(viaCurrent, cold, key, depth + 1,
-                                            "current-vs-cold", engine);
-        if (!edgeAccCanonicalEqualFast(cached, cold, engine))
-            edgeAccCompareCanonicalDetailed(cached, cold, key, depth + 1,
-                                            "cached-vs-cold", engine);
-        edgeAccCompareCanonicalDetailed(cached, viaCurrent, key, depth + 1,
-                                        "cached-vs-current", engine);
-        std::fprintf(stderr,
-            "EDGE_ACC_DIAG_INTERNAL_ERROR mismatch detected but detailed comparison found none\n");
-        std::abort();
-    }
-#endif
 
     std::vector<NodeT> pool;
     std::unordered_multimap<uint64_t, int32_t> transpositionIndex;
@@ -2111,10 +1995,6 @@ private:
                     mcabAccStack[depth + 1].pendBefore[mover] = beforeState;
                     mcabAccStack[depth + 1].pendMove[mover] = mv;
                     mcabAccStack[depth + 1].pendViewerIsMover[mover] = true;
-#if ZQ_EXP_EDGE_ACC_DIAGNOSTIC
-                    edgeAccVerifyHit(engine, accKey, depth, beforeState, mv,
-                                     edgeChildState, mcabAccStack[depth + 1]);
-#endif
                 } else {
                     makeChildAccPair(mcabAccStack[depth], mcabAccStack[depth + 1], beforeState, mv,
                                      mcabPathCache(engine, 0));
