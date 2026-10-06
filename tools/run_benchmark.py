@@ -34,7 +34,8 @@ CONFIG = {
     "clock_initial_ms": 0,
     "clock_increment_ms": 0,
     "zq_clock_only": False,
-    "claustrophobia_max_sims": 4096,
+    "symmetric_clock_adapter": False,
+    "claustrophobia_max_sims": 1000000,
     "claustrophobia_cpuct": 1.5,
     "claustrophobia_device": "cpu",
     "startup_timeout_s": 120.0,
@@ -69,7 +70,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--clock-initial-ms", type=int)
     parser.add_argument("--clock-increment-ms", type=int)
     parser.add_argument("--zq-clock-only", action=argparse.BooleanOptionalAction, default=None)
-    parser.add_argument("--claustrophobia-max-sims", type=int)
+    parser.add_argument("--symmetric-clock-adapter", action=argparse.BooleanOptionalAction, default=None)
+    parser.add_argument("--claustrophobia-max-sims", type=int,
+                        help="Safety ceiling only; real Claustrophobia termination is wall-clock.")
     parser.add_argument("--claustrophobia-cpuct", type=float)
     parser.add_argument("--claustrophobia-device", choices=("cpu", "gpu"))
     parser.add_argument("--startup-timeout-s", type=float)
@@ -344,6 +347,7 @@ def run(config: dict) -> dict:
             clock_initial_ms=int(config["clock_initial_ms"]),
             clock_increment_ms=int(config["clock_increment_ms"]),
             zq_clock_only=bool(config["zq_clock_only"]),
+            symmetric_clock_adapter=bool(config["symmetric_clock_adapter"]),
         )
         if opening_index in opening_categories:
             row["opening_category"] = opening_categories[opening_index]
@@ -358,15 +362,19 @@ def run(config: dict) -> dict:
             "game_clock": (
                 {"initial_ms": config["clock_initial_ms"],
                  "increment_ms": config["clock_increment_ms"],
-                 "external_allocator": "zquoridor-baseline-reference"}
+                 "external_allocator": (
+                     "symmetric-zquoridor-baseline-reference"
+                     if bool(config["symmetric_clock_adapter"])
+                     else "external-only-zquoridor-baseline-reference"
+                 )}
                 if int(config["clock_initial_ms"]) > 0 else None
             ),
             "zquoridor": {"type": ("game_clock" if int(config["clock_initial_ms"]) > 0 else "move_time_ms"),
                            "value": config["zq_move_time_ms"], "device": "cpu"},
             "titanium": {"type": "move_time_ms", "value": config["titanium_move_time_ms"],
                          "device": "cpu"},
-            "claustrophobia": {"type": "move_time_ms", "value": config["claustrophobia_move_time_ms"],
-                               "max_sims": config["claustrophobia_max_sims"],
+            "claustrophobia": {"type": "wall_clock_move_time_ms", "value": config["claustrophobia_move_time_ms"],
+                               "safety_max_sims": config["claustrophobia_max_sims"],
                                "device": config["claustrophobia_device"]},
         },
     }, indent=2), flush=True)
@@ -410,8 +418,8 @@ def run(config: dict) -> dict:
                            "device": "cpu"},
             "titanium": {"type": "move_time_ms", "value": config["titanium_move_time_ms"],
                          "device": "cpu"},
-            "claustrophobia": {"type": "move_time_ms", "value": config["claustrophobia_move_time_ms"],
-                               "max_sims": config["claustrophobia_max_sims"],
+            "claustrophobia": {"type": "wall_clock_move_time_ms", "value": config["claustrophobia_move_time_ms"],
+                               "safety_max_sims": config["claustrophobia_max_sims"],
                                "device": config["claustrophobia_device"]},
         },
         "summaries": summaries,
