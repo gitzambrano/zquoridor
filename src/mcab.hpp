@@ -1216,7 +1216,7 @@ private:
         return (size_t)mixed & (kEdgeAccumulatorCacheEntries - 1);
     }
 
-    bool loadEdgeAccumulator(uint64_t key, AccPairT& out, McabStats& mstats) {
+    bool loadEdgeAccumulator(uint64_t key, int childSide, AccPairT& out, McabStats& mstats) {
         if (key == 0) {
             ++mstats.edgeAccCacheMisses;
             return false;
@@ -1228,26 +1228,28 @@ private:
             ++mstats.edgeAccCacheMisses;
             return false;
         }
-        out = entry.acc;
+
+        // IMPORTANT: only the eager accumulator of the side to move is
+        // state-canonical and therefore safe to reuse by a state-keyed cache.
+        // The other perspective is path-dependent lazy state and is rebuilt
+        // below from the current parent/move.
+        out.acc[childSide] = entry.acc.acc[childSide];
+        out.pending[childSide] = false;
         ++mstats.edgeAccCacheHits;
         return true;
     }
 
-    void storeEdgeAccumulator(uint64_t key, const AccPairT& acc, Eng& engine) {
+    void storeEdgeAccumulator(uint64_t key, int childSide, const AccPairT& acc) {
         if (key == 0) return;
         if (edgeAccumulatorCache.empty())
             edgeAccumulatorCache.resize(kEdgeAccumulatorCacheEntries);
-
-        // Cache entries are state-keyed, so the cached payload must itself be
-        // state-canonical. Never persist path-dependent lazy metadata.
-        AccPairT canonical = acc;
-        auto cache = mcabPathCache(engine, 0);
-        mcabResolvePending(canonical, 0, cache, 0);
-        mcabResolvePending(canonical, 1, cache, 0);
-
         auto& entry = edgeAccumulatorCache[edgeAccumulatorCacheIndex(key)];
         entry.key = key;
-        entry.acc = canonical;
+
+        // Store ONLY the eager side-to-move accumulator. Do not cache pending
+        // flags, pendBefore, pendMove, or the mover-side accumulator.
+        entry.acc.acc[childSide] = acc.acc[childSide];
+        entry.acc.pending[childSide] = false;
     }
 
 #if ZQ_EXP_EDGE_ACC_DIAGNOSTIC
@@ -2078,21 +2080,27 @@ private:
             if constexpr (kEdgeAccCache) {
                 const StateT& edgeChildState = pool[(size_t)childIdx].state;
                 const uint64_t accKey = mcabEvalStateKey(edgeChildState, 0);
-                if (loadEdgeAccumulator(accKey, mcabAccStack[depth + 1], mstats)) {
+                const int mover = (int)beforeState.turn;
+                const int childSide = (int)edgeChildState.turn;
+                if (loadEdgeAccumulator(accKey, childSide, mcabAccStack[depth + 1], mstats)) {
+                    // Reproduce makeChildAccPair semantics for the CURRENT
+                    // parent/move while skipping only the expensive eager
+                    // child-side incremental update.
+                    mcabResolvePending(mcabAccStack[depth], childSide,
+                                       mcabPathCache(engine, 0), 0);
+                    mcabAccStack[depth + 1].acc[mover] = mcabAccStack[depth].acc[mover];
+                    mcabAccStack[depth + 1].pending[mover] = true;
+                    mcabAccStack[depth + 1].pendBefore[mover] = beforeState;
+                    mcabAccStack[depth + 1].pendMove[mover] = mv;
+                    mcabAccStack[depth + 1].pendViewerIsMover[mover] = true;
 #if ZQ_EXP_EDGE_ACC_DIAGNOSTIC
                     edgeAccVerifyHit(engine, accKey, depth, beforeState, mv,
                                      edgeChildState, mcabAccStack[depth + 1]);
 #endif
-#if ZQ_EXP_EDGE_ACC_RESOLVE_PARENT_ON_HIT
-                    // Preserve the only parent-side mutation performed by
-                    // makeChildAccPair() on the non-cache path.
-                    mcabResolvePending(mcabAccStack[depth], 1 - (int)beforeState.turn,
-                                       mcabPathCache(engine, 0), 0);
-#endif
                 } else {
                     makeChildAccPair(mcabAccStack[depth], mcabAccStack[depth + 1], beforeState, mv,
                                      mcabPathCache(engine, 0));
-                    storeEdgeAccumulator(accKey, mcabAccStack[depth + 1], engine);
+                    storeEdgeAccumulator(accKey, childSide, mcabAccStack[depth + 1]);
                 }
             } else {
                 makeChildAccPair(mcabAccStack[depth], mcabAccStack[depth + 1], beforeState, mv,
