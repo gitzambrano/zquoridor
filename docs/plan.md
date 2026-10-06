@@ -70,6 +70,7 @@ The table below catalogs all datasets generated, assembled, and maintained in th
 | `production_master_mix_21m` | 21,121,013 | 75% search rollouts + 25% tactical master mix | `results/experiments/production-central-finetune-20261002/mixed_dataset*` | Memory-mapped NumPy fields (`policy.npy`, `value.npy`, `weight.npy`) | Base training corpus for Zquoridor 3.00 and Stage A candidate models |
 | `cloud_selfplay_v300_shards` | ~1.4M (1,345 shards) | Cloud self-play from Workers 3, 4, 5 (Zquoridor 3.00) | `data/selfplay/v300_campaign_shards/` | Canonical V3 64-byte records and 20-byte metadata | Historical search rollouts for the next blended stored-search replay |
 | `cloud_selfplay_v301_harvest` | Continuous (15M target) | 5 Colab workers generation using Zquoridor 3.01 (Model Soup) | Google Drive `selfplay_v301/` and `data/selfplay/v301_campaign_harvest/` | Canonical V3 shards (`c1_` to `c5_`) with distinct seeds | Primary fresh target for next generation dataset |
+| `cloud_selfplay_contact_soup_858` | Active generation (15M target) | 5 Colab workers generation with `Soup_Tri_Contact` (858 features, 512 hidden, 6 buckets, 2 value depth) | Google Drive `/content/drive/MyDrive/zquoridor_data/selfplay_contact_soup_858/` (`c1_` to `c5_`) | Canonical V3 64-byte records and 20-byte metadata | Specialized contact feature exploration and next generation model soup training |
 | `corpus_contact_4m_50ms` | 4,000,000 | Native contact-enabled self-play at 50 ms clock | `data/selfplay/corpus-contact-4m-50ms/` | SQLite state store (`states.sqlite`) and seeds | Training distribution for 858-feature contact network models |
 | `multipath_unified_clean_15m` | 15,637,120 | Master weakness curriculum (11.0M) + clean stored replay (4.57M) | `data/teaching/multipath_unified_clean_15m/dataset.npz` | NPZ archive with visit policies and calibrated weights | Anti-forgetting anchor and tactical curriculum for model training |
 | `multipath_weakness_boosted_11m` | 11,065,000 | Calibrated tactical crisis and bottleneck positions | `data/teaching/multipath-weakness-boosted-11m/dataset.npz` | NPZ archive with calibrated surprise multipliers | Core defensive dataset targeting Claustrophobia and Center Rush lines |
@@ -83,16 +84,44 @@ The table below catalogs all datasets generated, assembled, and maintained in th
 
 Five remote virtual machines run headless self-play in parallel using persistent Chrome profiles.
 Each worker writes directly to an isolated Google Drive destination to prevent write collisions.
+Every generated shard across all current and historical campaigns is preserved for offline replay training.
 
-| Worker ID | Google Account | Drive Destination Path | File Prefix | Opening Focus and Book | Time Budget | Worker Threads | Chunk Size | Monte Carlo Exploration Parameters |
-| --- | --- | --- | --- | --- | --- | ---: | ---: | ---: | --- |
-| Worker 1 | `gustavozambrano` | `.../zquoridor_data/selfplay_v301` | `c1_` | Central openings (`openings_center_rush_sound_5k.jsonl`) | 400 ms opening (14 plies) / 50 ms cheap | 2 | 250 games | `seed=1000001`, `mc_temp_opening=0.35`, `decay_plies=45`, `temp_end=0.12`, `playout_cap=True` |
-| Worker 2 | `flightdyn` | `.../zquoridor_data/selfplay_v301` | `c2_` | Irregular and tactical lines (`openings_irregular_bank.jsonl`) | 400 ms opening (14 plies) / 50 ms cheap | 2 | 250 games | `seed=2000002`, `mc_temp_opening=0.35`, `decay_plies=45`, `temp_end=0.12`, `playout_cap=True` |
-| Worker 3 | `zambraprojects` | `.../zquoridor_data/selfplay_v301` | `c3_` | Multi-ply weakness variations (`openings_weakness_variations.jsonl`, 4,297 positions) | 400 ms opening (14 plies) / 50 ms cheap | 2 | 250 games | `seed=3000003`, `mc_temp_opening=0.35`, `decay_plies=45`, `temp_end=0.12`, `playout_cap=True` |
-| Worker 4 | `zquoridor` | `.../zquoridor_data/selfplay_v301` | `c4_` | Multi-ply weakness variations (`openings_weakness_variations.jsonl`, 4,297 positions) | 400 ms opening (14 plies) / 50 ms cheap | 2 | 250 games | `seed=4000004`, `mc_temp_opening=0.35`, `decay_plies=45`, `temp_end=0.12`, `playout_cap=True` |
-| Worker 5 | `gustati2201` | `.../zquoridor_data/selfplay_v301` | `c5_` | Unexplored lines (standard initial board, no book) | 400 ms opening (14 plies) / 200 ms decaying to 50 ms cheap (30 plies) | 2 | 250 games | `seed=5000005`, `mc_temp_obvious=2.5` (10 plies), `temp_opening=1.2`, `decay_plies=30`, `temp_end=0.12`, `playout_cap=True` |
+#### Active Campaign: Experimental Contact Soup Tri (`selfplay_contact_soup_858`)
 
-All cloud workers execute the native `bin/selfplay` binary using the production Zquoridor 3.01 model soup weights (`nnue_weights_int8.bin`).
+The active campaign uses the experimental 858-feature contact network architecture with unified Model Soup weights (`results/experiments/contact_soup_tri_512/soup_tri_champion/student_int8.bin`).
+The remote binary compiles with:
+`-DZQ_NNUE_CONTACT_FEATURES=1 -DZQ_NNUE_VALUE_BUCKETS=6 -DZQ_NNUE_VALUE_DEPTH=2 -DZQ_NNUE_HIDDEN=512`.
+
+| Worker ID | Google Account | Drive Destination Path | File Prefix | Opening Focus and Book | Time Budget | Threads | Chunk Size | Monte Carlo Exploration Parameters |
+| --- | --- | --- | --- | --- | --- | ---: | ---: | --- |
+| Worker 1 | `gustavozambrano` | `.../zquoridor_data/selfplay_contact_soup_858` | `c1_` | Central openings (`openings_center_rush_sound_5k.jsonl`) | 400 ms opening (14 plies) / 50 ms cheap | 2 | 250 games | `seed=1000001`, `mc_temp_opening=0.35`, `decay_plies=45`, `temp_end=0.12`, `playout_cap=True` |
+| Worker 2 | `flightdyn` | `.../zquoridor_data/selfplay_contact_soup_858` | `c2_` | Irregular and tactical lines (`openings_irregular_bank.jsonl`) | 400 ms opening (14 plies) / 50 ms cheap | 2 | 250 games | `seed=2000002`, `mc_temp_opening=0.35`, `decay_plies=45`, `temp_end=0.12`, `playout_cap=True` |
+| Worker 3 | `zambraprojects` | `.../zquoridor_data/selfplay_contact_soup_858` | `c3_` | Multi-ply weakness variations (`openings_weakness_variations.jsonl`) | 400 ms opening (14 plies) / 50 ms cheap | 2 | 250 games | `seed=3000003`, `mc_temp_opening=0.35`, `decay_plies=45`, `temp_end=0.12`, `playout_cap=True` |
+| Worker 4 | `zquoridor` | `.../zquoridor_data/selfplay_contact_soup_858` | `c4_` | Multi-ply weakness variations (`openings_weakness_variations.jsonl`) | 400 ms opening (14 plies) / 50 ms cheap | 2 | 250 games | `seed=4000004`, `mc_temp_opening=0.35`, `decay_plies=45`, `temp_end=0.12`, `playout_cap=True` |
+| Worker 5 | `gustati2201` | `.../zquoridor_data/selfplay_contact_soup_858` | `c5_` | Unexplored lines (standard initial board, no book) | 400 ms opening (14 plies) / 200 ms decaying to 50 ms cheap (30 plies) | 2 | 250 games | `seed=5000005`, `mc_temp_obvious=2.5` (10 plies), `temp_opening=1.2`, `decay_plies=30`, `temp_end=0.12`, `playout_cap=True` |
+
+#### Historical Campaign: Production Baseline Harvest (`selfplay_v301`)
+
+The previous campaign ran the production 504-feature network (`Soup_Tri_Equal`, Zquoridor 3.01) with default flags.
+All generated shards remain intact on Google Drive:
+
+| Worker ID | Google Account | Drive Destination Path | Shard Prefix | Generated Range | Opening Book |
+| --- | --- | --- | --- | --- | --- |
+| Worker 1 | `gustavozambrano` | `.../zquoridor_data/selfplay_v301` | `c1_` | `c1_shard_0000.bin` to `c1_shard_0003.bin` | Central openings (`openings_center_rush_sound_5k.jsonl`) |
+| Worker 2 | `flightdyn` | `.../zquoridor_data/selfplay_v301` | `c2_` | `c2_shard_0000.bin` to `c2_shard_0003.bin` | Irregular lines (`openings_irregular_bank.jsonl`) |
+| Worker 3 | `zambraprojects` | `.../zquoridor_data/selfplay_v301` | `c3_` | `c3_shard_0000.bin` to `c3_shard_0003.bin` | Multi-ply weakness (`openings_weakness_variations.jsonl`) |
+| Worker 4 | `zquoridor` | `.../zquoridor_data/selfplay_v301` | `c4_` | `c4_shard_0000.bin` to `c4_shard_0002.bin` | Multi-ply weakness (`openings_weakness_variations.jsonl`) |
+| Worker 5 | `gustati2201` | `.../zquoridor_data/selfplay_v301` | `c5_` | `c5_shard_0000.bin` to `c5_shard_0003.bin` | Unexplored lines (initial board, high exploration) |
+
+#### Historical Campaign: Early Rollouts (`v300_campaign_shards`)
+
+Initial rollout batches executed across distinct folders during Zquoridor 3.00:
+- Worker 1: `.../zquoridor_data/selfplay_central` (`c1_`)
+- Worker 2: `.../zquoridor_data/selfplay_irregular` (`c2_`)
+- Worker 3: `.../zquoridor_data/selfplay_targeted_weakness` (`c3_`)
+- Worker 4: `.../zquoridor_data/selfplay_targeted_weakness` (`c4_`)
+- Worker 5: `.../zquoridor_data/selfplay_exploration` (`c5_`)
+Archived inventory contains 1,345 shards (~1.4M positions) consolidated in `data/selfplay/v300_campaign_shards/`.
 
 ### Local Rollout Controller Configuration
 

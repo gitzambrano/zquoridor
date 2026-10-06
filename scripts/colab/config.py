@@ -18,12 +18,12 @@ WORKERS: Dict[int, Dict[str, Any]] = {
         "profile_dir": str(PROFILES_DIR / "gustavozambrano"),
         "notebook_url": "https://colab.research.google.com/drive/13O4yYpM8ElgOFzo774Jps488DAPzIbDT",
         "cdp_port": 9001,
-        "target_keywords": ["run_colab_worker.py", "selfplay_v301", "zquoridor"],
+        "target_keywords": ["run_colab_worker.py", "selfplay_contact_soup_858", "contact_soup", "zquoridor"],
         "target_shard_prefix": "c1_",
-        "drive_dir": "/content/drive/MyDrive/zquoridor_data/selfplay_v301",
+        "drive_dir": "/content/drive/MyDrive/zquoridor_data/selfplay_contact_soup_858",
         "total_games": 80000,
         "positions": "tools/external/openings_center_rush_sound_5k.jsonl",
-        "extra_args": "--seed 1000001 --playout-cap --time-ms 400 --cheap-time-ms 50 --full-search-opening-plies 14 --full-search-prob 0.35",
+        "extra_args": "--weights results/experiments/contact_soup_tri_512/soup_tri_champion/student_int8.bin --seed 1000001 --playout-cap --time-ms 400 --cheap-time-ms 50 --full-search-opening-plies 14 --full-search-prob 0.35",
     },
     2: {
         "name": "Colab 2",
@@ -32,12 +32,12 @@ WORKERS: Dict[int, Dict[str, Any]] = {
         "profile_dir": str(PROFILES_DIR / "flightdyn"),
         "notebook_url": "https://colab.research.google.com/drive/1rPSnvqg7stxwU5V8ITgpGVv02j7qVsD1",
         "cdp_port": 9002,
-        "target_keywords": ["run_colab_worker.py", "selfplay_v301", "zquoridor"],
+        "target_keywords": ["run_colab_worker.py", "selfplay_contact_soup_858", "contact_soup", "zquoridor"],
         "target_shard_prefix": "c2_",
-        "drive_dir": "/content/drive/MyDrive/zquoridor_data/selfplay_v301",
+        "drive_dir": "/content/drive/MyDrive/zquoridor_data/selfplay_contact_soup_858",
         "total_games": 80000,
         "positions": "tools/external/openings_irregular_bank.jsonl",
-        "extra_args": "--seed 2000002 --playout-cap --time-ms 400 --cheap-time-ms 50 --full-search-opening-plies 14 --full-search-prob 0.35",
+        "extra_args": "--weights results/experiments/contact_soup_tri_512/soup_tri_champion/student_int8.bin --seed 2000002 --playout-cap --time-ms 400 --cheap-time-ms 50 --full-search-opening-plies 14 --full-search-prob 0.35",
     },
     3: {
         "name": "Colab 3",
@@ -46,12 +46,12 @@ WORKERS: Dict[int, Dict[str, Any]] = {
         "profile_dir": str(PROFILES_DIR / "zambraprojects"),
         "notebook_url": "https://colab.research.google.com/drive/1tTPVhIs4Jq0Qr1yHNPRfBDtohE3EjX9E",
         "cdp_port": 9003,
-        "target_keywords": ["run_colab_worker.py", "selfplay_v301", "zquoridor"],
+        "target_keywords": ["run_colab_worker.py", "selfplay_contact_soup_858", "contact_soup", "zquoridor"],
         "target_shard_prefix": "c3_",
-        "drive_dir": "/content/drive/MyDrive/zquoridor_data/selfplay_v301",
+        "drive_dir": "/content/drive/MyDrive/zquoridor_data/selfplay_contact_soup_858",
         "total_games": 80000,
         "positions": "tools/external/openings_weakness_variations.jsonl",
-        "extra_args": "--seed 3000003 --playout-cap --time-ms 400 --cheap-time-ms 50 --full-search-opening-plies 14 --full-search-prob 0.35",
+        "extra_args": "--weights results/experiments/contact_soup_tri_512/soup_tri_champion/student_int8.bin --seed 3000003 --playout-cap --time-ms 400 --cheap-time-ms 50 --full-search-opening-plies 14 --full-search-prob 0.35",
     },
     4: {
         "name": "Colab 4",
@@ -60,12 +60,12 @@ WORKERS: Dict[int, Dict[str, Any]] = {
         "profile_dir": str(PROFILES_DIR / "zquoridor"),
         "notebook_url": "https://colab.research.google.com/drive/1nC1LOjwFm1LyeJtx4kxg6T7wQXym9FnA",
         "cdp_port": 9004,
-        "target_keywords": ["run_colab_worker.py", "selfplay_v301", "zquoridor"],
+        "target_keywords": ["run_colab_worker.py", "selfplay_contact_soup_858", "contact_soup", "zquoridor"],
         "target_shard_prefix": "c4_",
-        "drive_dir": "/content/drive/MyDrive/zquoridor_data/selfplay_v301",
+        "drive_dir": "/content/drive/MyDrive/zquoridor_data/selfplay_contact_soup_858",
         "total_games": 80000,
         "positions": "tools/external/openings_weakness_variations.jsonl",
-        "extra_args": "--seed 4000004 --playout-cap --time-ms 400 --cheap-time-ms 50 --full-search-opening-plies 14 --full-search-prob 0.35",
+        "extra_args": "--weights results/experiments/contact_soup_tri_512/soup_tri_champion/student_int8.bin --seed 4000004 --playout-cap --time-ms 400 --cheap-time-ms 50 --full-search-opening-plies 14 --full-search-prob 0.35",
     },
     5: {
         "name": "Colab 5",
@@ -74,11 +74,11 @@ WORKERS: Dict[int, Dict[str, Any]] = {
         "profile_dir": str(PROFILES_DIR / "gustati2201"),
         "notebook_url": "https://colab.research.google.com/drive/1cPMl8_zEi-el5GAE8sv2Bw3T6uKDwK1i",
         "cdp_port": 9005,
-        "target_keywords": ["run_colab_worker.py", "selfplay_v301", "zquoridor"],
+        "target_keywords": ["run_colab_worker.py", "selfplay_contact_soup_858", "contact_soup", "zquoridor"],
         "target_shard_prefix": "c5_",
-        "drive_dir": "/content/drive/MyDrive/zquoridor_data/selfplay_v301",
+        "drive_dir": "/content/drive/MyDrive/zquoridor_data/selfplay_contact_soup_858",
         "total_games": 80000,
-        "extra_args": "--seed 5000005 --mc-obvious-plies 10 --mc-temp-obvious 2.5 --mc-temp-opening 1.2 --mc-temp-decay-plies 30 --mc-temp-end 0.12 --playout-cap --time-ms 400 --cheap-time-ms 200 --cheap-time-end-ms 50 --cheap-time-decay-plies 30 --full-search-opening-plies 14 --full-search-prob 0.35",
+        "extra_args": "--weights results/experiments/contact_soup_tri_512/soup_tri_champion/student_int8.bin --seed 5000005 --mc-obvious-plies 10 --mc-temp-obvious 2.5 --mc-temp-opening 1.2 --mc-temp-decay-plies 30 --mc-temp-end 0.12 --playout-cap --time-ms 400 --cheap-time-ms 200 --cheap-time-end-ms 50 --cheap-time-decay-plies 30 --full-search-opening-plies 14 --full-search-prob 0.35",
     },
 }
 
@@ -141,5 +141,5 @@ if not os.path.exists('/content/zquoridor'):
 
 %cd /content/zquoridor
 !git pull origin main
-!bash build/build_selfplay.sh
+!bash build/build_selfplay.sh -DZQ_NNUE_CONTACT_FEATURES=1 -DZQ_NNUE_VALUE_BUCKETS=6 -DZQ_NNUE_VALUE_DEPTH=2 -DZQ_NNUE_HIDDEN=512
 !python tools/selfplay/run_colab_worker.py --worker-id {worker_id} --drive-dir {drive_dir} {cmd_args}"""
