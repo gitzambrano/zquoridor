@@ -472,7 +472,8 @@ def play_game(*, opponent: str, opening_index: int, opening: Sequence[str],
               opponent_budget: int, move_timeout_s: float, max_plies: int,
               run_id: str, clock_initial_ms: int = 0,
               clock_increment_ms: int = 0, zq_ponder: bool = False,
-              zq_clock_only: bool = False) -> dict:
+              zq_clock_only: bool = False,
+              symmetric_clock_adapter: bool = False) -> dict:
     """Play one game and return an explicit success or failure record."""
     base = {
         "schema": "zquoridor.local_benchmark.game.v1",
@@ -521,7 +522,21 @@ def play_game(*, opponent: str, opening_index: int, opening: Sequence[str],
                 )
             else:
                 clock_before = clocks[side]
-                if isinstance(player, UciPlayer):
+                if symmetric_clock_adapter:
+                    # Apples-to-apples 3+2 adapter: both engines receive the
+                    # same neutral per-move allocator and a real movetime
+                    # deadline; actual elapsed wall time is debited from each
+                    # side's own game clock.
+                    budget = _clock_budget_ms(
+                        clock_before, int(clock_increment_ms), len(history)
+                    )
+                    move, elapsed, move_info = player.bestmove(
+                        history, budget=budget, timeout_s=move_timeout_s
+                    )
+                elif isinstance(player, UciPlayer):
+                    # Production-style comparison: ZQuoridor owns its native
+                    # UCI time manager; external engines use the neutral
+                    # allocator because they expose no native game-clock API.
                     move, elapsed, move_info = player.bestmove_clock(
                         history,
                         white_ms=clocks[0],
