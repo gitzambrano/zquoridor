@@ -1,0 +1,221 @@
+name: EdgeAcc V2 Canonical Shootout
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [exp/transform-search-v301-20261004]
+    paths:
+      - ".github/workflows/edge-v2-shootout.yml"
+
+permissions:
+  contents: read
+
+env:
+  PYTHONUNBUFFERED: "1"
+  MAIN_SHA: 3c8964b6cddac26fa605dcf3a04159bf640d8f87
+  CONTACT_WEIGHTS: results/experiments/contact_soup_tri_512/soup_tri_champion/student_int8.bin
+
+jobs:
+  gate:
+    name: gate-${{ matrix.net }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        net: [n504, contact858]
+    steps:
+      - uses: actions/checkout@v4
+        with: {fetch-depth: 0}
+      - name: Materialize Contact weights
+        if: matrix.net == 'contact858'
+        shell: bash
+        run: |
+          git worktree add /tmp/zq-main "$MAIN_SHA"
+          mkdir -p results/experiments/contact_soup_tri_512/soup_tri_champion
+          cp "/tmp/zq-main/$CONTACT_WEIGHTS" "$CONTACT_WEIGHTS"
+      - name: Build OFF, Edge v1, Edge v2
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p bin out
+          FLAGS=""
+          WEIGHTS="data/nnue/nnue_weights_int8.bin"
+          if [ "${{ matrix.net }}" = "contact858" ]; then
+            FLAGS="-DZQ_NNUE_RACE_FEATURES=1 -DZQ_NNUE_MULTIPATH_FEATURES=1 -DZQ_NNUE_MARGIN_REGIME_FEATURES=0 -DZQ_NNUE_PHASE_FEATURES=1 -DZQ_NNUE_CONTACT_FEATURES=1 -DZQ_NNUE_HIDDEN=512 -DZQ_NNUE_VALUE_BUCKETS=6 -DZQ_NNUE_VALUE_DEPTH=2"
+            WEIGHTS="$CONTACT_WEIGHTS"
+          fi
+          COMMON="-O3 -DNDEBUG -std=c++17 -pthread -Isrc $FLAGS"
+          g++ $COMMON tests/test_edge_acc_large_tree.cpp -o bin/off
+          g++ $COMMON -DZQ_EXP_EDGE_ACC_CACHE=1 tests/test_edge_acc_large_tree.cpp -o bin/v1
+          g++ $COMMON -DZQ_EXP_EDGE_ACC_FULL_CANONICAL=1 tests/test_edge_acc_large_tree.cpp -o bin/v2
+          echo "WEIGHTS=$WEIGHTS" >> "$GITHUB_ENV"
+
+      - name: Run deterministic large trees and measure elapsed
+        shell: bash
+        run: |
+          set -euo pipefail
+          /usr/bin/time -f "%e" -o out/off.seconds ./bin/off "$WEIGHTS" > out/off.txt
+          /usr/bin/time -f "%e" -o out/v1.seconds ./bin/v1 "$WEIGHTS" > out/v1.txt
+          /usr/bin/time -f "%e" -o out/v2.seconds ./bin/v2 "$WEIGHTS" > out/v2.txt
+          echo "OFF seconds=$(cat out/off.seconds)"
+          echo "V1  seconds=$(cat out/v1.seconds)"
+          echo "V2  seconds=$(cat out/v2.seconds)"
+
+      - name: Require OFF/V1/V2 semantic identity
+        shell: bash
+        run: |
+          python - <<'PY'
+          import re
+          from pathlib import Path
+
+          def parse(path):
+              rows=[]
+              for line in Path(path).read_text().splitlines():
+                  if line.startswith("CASE ") or line.startswith("REUSE "):
+                      kv=dict(re.findall(r'(\w+)=([^ ]+)',line))
+                      kind=line.split()[0]
+                      label=line.split()[1] if kind=="CASE" else "step="+kv["step"]
+                      rows.append((kind,label,kv,line))
+              return rows
+
+          off=parse("out/off.txt")
+          v1=parse("out/v1.txt")
+          v2=parse("out/v2.txt")
+          assert len(off)==len(v1)==len(v2)==10, (len(off),len(v1),len(v2))
+
+          fields=["nodes","best","pool","sims","expanded","fp","rootN"]
+          rfields=fields+["treeHit","reused"]
+          for ref,name,rows in [(off,"v1",v1),(off,"v2",v2)]:
+              bad=[]
+              for a,b in zip(ref,rows):
+                  use=rfields if a[0]=="REUSE" else fields
+                  diff={k:(a[2].get(k),b[2].get(k)) for k in use if a[2].get(k)!=b[2].get(k)}
+                  if a[:2]!=b[:2] or diff: bad.append((a[1],diff,a[3],b[3]))
+              if bad:
+                  for x in bad: print("MISMATCH",name,x)
+                  raise SystemExit(f"EDGE_V2_GATE_FAIL variant={name} mismatches={len(bad)}")
+
+          t={k:float(Path(f"out/{k}.seconds").read_text().strip()) for k in ("off","v1","v2")}
+          print("EDGE_V2_GATE_OK checkpoints=10",t)
+          print("V2_vs_V1_speed_ratio", t["v1"]/t["v2"] if t["v2"] else 0)
+          PY
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: edge-v2-gate-${{ matrix.net }}
+          path: out/
+          retention-days: 30
+      - name: Cleanup
+        if: always()
+        shell: bash
+        run: |
+          git worktree remove --force /tmp/zq-main 2>/dev/null || true
+          git worktree prune
+
+  h2h200:
+    name: v2-v1-200-${{ matrix.net }}-${{ matrix.book }}
+    needs: gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 900
+    strategy:
+      fail-fast: false
+      max-parallel: 8
+      matrix:
+        net: [n504, contact858]
+        book: [normal, center]
+        include:
+          - {book: normal, openings: tools/external/openings_normal_confirm_400.jsonl, pairs: 150, seed: 20262201}
+          - {book: center, openings: tools/external/openings_center_rush_sound_5k.jsonl, pairs: 300, seed: 20262202}
+    steps:
+      - uses: actions/checkout@v4
+        with: {fetch-depth: 0}
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.11"}
+      - name: Materialize weights and build v1/v2
+        shell: bash
+        run: |
+          set -euo pipefail
+          git worktree add /tmp/zq-main "$MAIN_SHA"
+          mkdir -p bin
+          FLAGS=""
+          WEIGHTS="/tmp/zq-main/data/nnue/nnue_weights_int8.bin"
+          if [ "${{ matrix.net }}" = "contact858" ]; then
+            FLAGS="-DZQ_NNUE_RACE_FEATURES=1 -DZQ_NNUE_MULTIPATH_FEATURES=1 -DZQ_NNUE_MARGIN_REGIME_FEATURES=0 -DZQ_NNUE_PHASE_FEATURES=1 -DZQ_NNUE_CONTACT_FEATURES=1 -DZQ_NNUE_HIDDEN=512 -DZQ_NNUE_VALUE_BUCKETS=6 -DZQ_NNUE_VALUE_DEPTH=2"
+            WEIGHTS="/tmp/zq-main/$CONTACT_WEIGHTS"
+          fi
+          g++ -O3 -DNDEBUG -std=c++17 -pthread -Isrc $FLAGS             -DZQ_EXP_EDGE_ACC_CACHE=1 tools/external/zquoridor_uci.cpp -o bin/v1
+          g++ -O3 -DNDEBUG -std=c++17 -pthread -Isrc $FLAGS             -DZQ_EXP_EDGE_ACC_FULL_CANONICAL=1 tools/external/zquoridor_uci.cpp -o bin/v2
+          cp "$WEIGHTS" bin/v1.nnue
+          cp "$WEIGHTS" bin/v2.nnue
+
+      - name: Direct v2 vs v1 at 200 ms
+        shell: bash
+        run: |
+          python -u tools/run_transform_search_confirmation.py             --gate main-fixed --name "edge-v2-${{ matrix.net }}"             --engine-exe bin/v2 --main-exe bin/v1             --nnue bin/v2.nnue --main-nnue bin/v1.nnue             --pairs "${{ matrix.pairs }}" --workers 1 --move-time-ms 200             --seed "${{ matrix.seed }}" --openings "${{ matrix.openings }}"             --output "results/edge-v2-shootout/200/${{ matrix.net }}/${{ matrix.book }}"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: edge-v2-200-${{ matrix.net }}-${{ matrix.book }}
+          path: results/edge-v2-shootout/200/${{ matrix.net }}/${{ matrix.book }}
+          retention-days: 30
+      - if: always()
+        shell: bash
+        run: |
+          git worktree remove --force /tmp/zq-main 2>/dev/null || true
+          git worktree prune
+
+  h2h3p2:
+    name: v2-v1-3p2-${{ matrix.net }}-${{ matrix.book }}
+    needs: gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 330
+    strategy:
+      fail-fast: false
+      max-parallel: 8
+      matrix:
+        net: [n504, contact858]
+        book: [normal, center]
+        include:
+          - {book: normal, openings: tools/external/openings_normal_screen_100.jsonl, pairs: 12, seed: 20262211}
+          - {book: center, openings: tools/external/openings_center_rush_sound_5k.jsonl, pairs: 12, seed: 20262212}
+    steps:
+      - uses: actions/checkout@v4
+        with: {fetch-depth: 0}
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.11"}
+      - name: Materialize weights and build v1/v2
+        shell: bash
+        run: |
+          set -euo pipefail
+          git worktree add /tmp/zq-main "$MAIN_SHA"
+          mkdir -p bin
+          FLAGS=""
+          WEIGHTS="/tmp/zq-main/data/nnue/nnue_weights_int8.bin"
+          if [ "${{ matrix.net }}" = "contact858" ]; then
+            FLAGS="-DZQ_NNUE_RACE_FEATURES=1 -DZQ_NNUE_MULTIPATH_FEATURES=1 -DZQ_NNUE_MARGIN_REGIME_FEATURES=0 -DZQ_NNUE_PHASE_FEATURES=1 -DZQ_NNUE_CONTACT_FEATURES=1 -DZQ_NNUE_HIDDEN=512 -DZQ_NNUE_VALUE_BUCKETS=6 -DZQ_NNUE_VALUE_DEPTH=2"
+            WEIGHTS="/tmp/zq-main/$CONTACT_WEIGHTS"
+          fi
+          g++ -O3 -DNDEBUG -std=c++17 -pthread -Isrc $FLAGS             -DZQ_EXP_EDGE_ACC_CACHE=1 tools/external/zquoridor_uci.cpp -o bin/v1
+          g++ -O3 -DNDEBUG -std=c++17 -pthread -Isrc $FLAGS             -DZQ_EXP_EDGE_ACC_FULL_CANONICAL=1 tools/external/zquoridor_uci.cpp -o bin/v2
+          cp "$WEIGHTS" bin/v1.nnue
+          cp "$WEIGHTS" bin/v2.nnue
+
+      - name: Direct v2 vs v1 at native 3+2
+        shell: bash
+        run: |
+          python -u tools/run_transform_search_confirmation.py             --gate main-clock --name "edge-v2-${{ matrix.net }}"             --engine-exe bin/v2 --main-exe bin/v1             --nnue bin/v2.nnue --main-nnue bin/v1.nnue             --pairs "${{ matrix.pairs }}" --workers 1             --base-ms 180000 --increment-ms 2000 --move-overhead-ms 20             --seed "${{ matrix.seed }}" --openings "${{ matrix.openings }}"             --output "results/edge-v2-shootout/3p2/${{ matrix.net }}/${{ matrix.book }}"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: edge-v2-3p2-${{ matrix.net }}-${{ matrix.book }}
+          path: results/edge-v2-shootout/3p2/${{ matrix.net }}/${{ matrix.book }}
+          retention-days: 30
+      - if: always()
+        shell: bash
+        run: |
+          git worktree remove --force /tmp/zq-main 2>/dev/null || true
+          git worktree prune
