@@ -137,3 +137,5 @@ artifacts/
 scripts/colab/profiles/
 scripts/colab/cookies/
 **/cookies.json
+ 
+scripts/colab/launch_colab_*.bat
