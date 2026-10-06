@@ -1233,13 +1233,21 @@ private:
         return true;
     }
 
-    void storeEdgeAccumulator(uint64_t key, const AccPairT& acc) {
+    void storeEdgeAccumulator(uint64_t key, const AccPairT& acc, Eng& engine) {
         if (key == 0) return;
         if (edgeAccumulatorCache.empty())
             edgeAccumulatorCache.resize(kEdgeAccumulatorCacheEntries);
+
+        // Cache entries are state-keyed, so the cached payload must itself be
+        // state-canonical. Never persist path-dependent lazy metadata.
+        AccPairT canonical = acc;
+        auto cache = mcabPathCache(engine, 0);
+        mcabResolvePending(canonical, 0, cache, 0);
+        mcabResolvePending(canonical, 1, cache, 0);
+
         auto& entry = edgeAccumulatorCache[edgeAccumulatorCacheIndex(key)];
         entry.key = key;
-        entry.acc = acc;
+        entry.acc = canonical;
     }
 
 #if ZQ_EXP_EDGE_ACC_DIAGNOSTIC
@@ -2084,7 +2092,7 @@ private:
                 } else {
                     makeChildAccPair(mcabAccStack[depth], mcabAccStack[depth + 1], beforeState, mv,
                                      mcabPathCache(engine, 0));
-                    storeEdgeAccumulator(accKey, mcabAccStack[depth + 1]);
+                    storeEdgeAccumulator(accKey, mcabAccStack[depth + 1], engine);
                 }
             } else {
                 makeChildAccPair(mcabAccStack[depth], mcabAccStack[depth + 1], beforeState, mv,
