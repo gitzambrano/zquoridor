@@ -81,6 +81,7 @@ _MANAGED_PATHS = {
     "src/bin/zq_search_bridge.rs",
     "src/bin/zq_benchmark_bridge.rs",
     "src/bin/zq_ipc_eval.rs",
+    "src/mcts.rs",
 }
 
 
@@ -176,6 +177,77 @@ def _add_cargo_binary(cargo_toml: Path, name: str, *, neural: bool) -> bool:
     return True
 
 
+def _patch_claustrophobia_wall_clock(checkout: Path) -> bool:
+    """Add a cooperative wall-clock deadline to the pinned Claustrophobia MCTS.
+
+    The upstream API is simulation-count based. Benchmarks that claim a move
+    time must therefore stop the *same continuous tree* by elapsed wall clock,
+    not estimate a simulation count and sleep. The patch is deliberately tiny:
+    a thread-local deadline checked once per batched wave.
+    """
+    path = checkout / "src" / "mcts.rs"
+    text = path.read_text(encoding="utf-8")
+    sentinel = "pub fn zq_set_search_deadline"
+    if sentinel in text:
+        return False
+
+    import_anchor = "use crate::{index_to_move, GameState};\n"
+    if import_anchor not in text:
+        raise RuntimeError("Claustrophobia mcts.rs import anchor changed")
+    deadline_code = r'''
+use std::cell::RefCell;
+use std::time::Instant;
+
+thread_local! {
+    static ZQ_SEARCH_DEADLINE: RefCell<Option<Instant>> = RefCell::new(None);
+}
+
+/// Benchmark-only cooperative deadline. None preserves upstream behavior.
+pub fn zq_set_search_deadline(deadline: Option<Instant>) {
+    ZQ_SEARCH_DEADLINE.with(|slot| *slot.borrow_mut() = deadline);
+}
+
+#[inline]
+fn zq_search_deadline_reached() -> bool {
+    ZQ_SEARCH_DEADLINE.with(|slot| {
+        slot.borrow().as_ref().is_some_and(|deadline| Instant::now() >= *deadline)
+    })
+}
+
+#[inline]
+fn zq_reserve_simulations(requested: u32) -> u32 {
+    ZQ_SEARCH_DEADLINE.with(|slot| {
+        if slot.borrow().is_some() { requested.min(2048) } else { requested }
+    })
+}
+'''
+    text = text.replace(import_anchor, import_anchor + deadline_code + "\n", 1)
+
+    reserve_old = "reserve(n_simulations as usize * AVG_BRANCH + 1);"
+    if reserve_old not in text:
+        raise RuntimeError("Claustrophobia reserve anchor changed")
+    text = text.replace(
+        reserve_old,
+        "reserve(zq_reserve_simulations(n_simulations) as usize * AVG_BRANCH + 1);",
+    )
+
+    loop_anchor = "    while done < n_simulations {\n"
+    # There are multiple MCTS implementations. Patch the batched production
+    # loop(s); the deadline is inert unless the bridge explicitly arms it.
+    if loop_anchor not in text:
+        raise RuntimeError("Claustrophobia MCTS loop anchor changed")
+    text = text.replace(
+        loop_anchor,
+        loop_anchor
+        + "        if done > 0 && zq_search_deadline_reached() {\n"
+        + "            break;\n"
+        + "        }\n",
+    )
+
+    path.write_text(text, encoding="utf-8")
+    return True
+
+
 def _prepare_claustrophobia_sources(project_root: Path, checkout: Path) -> bool:
     """Refresh each available bridge and add its Cargo target once."""
     helper = project_root / "training/teachers/claustrophobia_ipc_eval.rs"
@@ -183,6 +255,8 @@ def _prepare_claustrophobia_sources(project_root: Path, checkout: Path) -> bool:
     helper_changed = helper.is_file() and not _same_file_content(helper, destination)
     if helper_changed:
         shutil.copy2(helper, destination)
+    deadline_changed = _patch_claustrophobia_wall_clock(checkout)
+    helper_changed = helper_changed or deadline_changed
     # These managed bridge targets can use the std-only IPC evaluator.
     cargo_file = checkout / "Cargo.toml"
     text = cargo_file.read_text(encoding="utf-8")
