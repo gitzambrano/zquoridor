@@ -58,6 +58,9 @@
 #ifndef ZQ_EXP_EDGE_ACC_CACHE
 #define ZQ_EXP_EDGE_ACC_CACHE 0
 #endif
+#ifndef ZQ_EXP_EDGE_ACC_FULL_CANONICAL
+#define ZQ_EXP_EDGE_ACC_FULL_CANONICAL 0
+#endif
 #ifndef ZQ_EXP_RESIDUAL_ROOT_INITIAL
 #define ZQ_EXP_RESIDUAL_ROOT_INITIAL 16
 #endif
@@ -702,7 +705,9 @@ class MCABSearch {
 public:
     using NodeT = MCABNode<StateT, MoveListT>;
     static constexpr bool kResidualPuct = (ZQ_EXP_RESIDUAL_PUCT != 0);
-    static constexpr bool kEdgeAccCache = (ZQ_EXP_EDGE_ACC_CACHE != 0);
+    static constexpr bool kEdgeAccFullCanonical = (ZQ_EXP_EDGE_ACC_FULL_CANONICAL != 0);
+    static constexpr bool kEdgeAccCache =
+        (ZQ_EXP_EDGE_ACC_CACHE != 0) || kEdgeAccFullCanonical;
 
     McabParams params;
 
@@ -1219,27 +1224,44 @@ private:
             return false;
         }
 
-        // IMPORTANT: only the eager accumulator of the side to move is
-        // state-canonical and therefore safe to reuse by a state-keyed cache.
-        // The other perspective is path-dependent lazy state and is rebuilt
-        // below from the current parent/move.
-        out.acc[childSide] = entry.acc.acc[childSide];
-        out.pending[childSide] = false;
+        if constexpr (kEdgeAccFullCanonical) {
+            // Experimental v2: the cache payload is a fully resolved,
+            // state-canonical pair. Parent-side effects are reproduced at
+            // the call site before this payload is consumed.
+            out = entry.acc;
+        } else {
+            // Production-safe v1: only the eager accumulator of the side to
+            // move is state-canonical. The other perspective is rebuilt from
+            // the current parent/move at the call site.
+            out.acc[childSide] = entry.acc.acc[childSide];
+            out.pending[childSide] = false;
+        }
         ++mstats.edgeAccCacheHits;
         return true;
     }
 
-    void storeEdgeAccumulator(uint64_t key, int childSide, const AccPairT& acc) {
+    void storeEdgeAccumulator(uint64_t key, int childSide, const AccPairT& acc,
+                              Eng& engine) {
         if (key == 0) return;
         if (edgeAccumulatorCache.empty())
             edgeAccumulatorCache.resize(kEdgeAccumulatorCacheEntries);
         auto& entry = edgeAccumulatorCache[edgeAccumulatorCacheIndex(key)];
         entry.key = key;
 
-        // Store ONLY the eager side-to-move accumulator. Do not cache pending
-        // flags, pendBefore, pendMove, or the mover-side accumulator.
-        entry.acc.acc[childSide] = acc.acc[childSide];
-        entry.acc.pending[childSide] = false;
+        if constexpr (kEdgeAccFullCanonical) {
+            // Experimental v2: canonicalize a COPY. The live descent stack
+            // keeps normal lazy semantics; only the cache entry is eager.
+            AccPairT canonical = acc;
+            auto cache = mcabPathCache(engine, 0);
+            mcabResolvePending(canonical, 0, cache, 0);
+            mcabResolvePending(canonical, 1, cache, 0);
+            entry.acc = canonical;
+        } else {
+            // Production-safe v1: store only the eager side-to-move
+            // accumulator, never path-dependent lazy metadata.
+            entry.acc.acc[childSide] = acc.acc[childSide];
+            entry.acc.pending[childSide] = false;
+        }
     }
 
 
@@ -1985,20 +2007,24 @@ private:
                 const int mover = (int)beforeState.turn;
                 const int childSide = (int)edgeChildState.turn;
                 if (loadEdgeAccumulator(accKey, childSide, mcabAccStack[depth + 1], mstats)) {
-                    // Reproduce makeChildAccPair semantics for the CURRENT
-                    // parent/move while skipping only the expensive eager
-                    // child-side incremental update.
+                    // makeChildAccPair always resolves this parent perspective
+                    // before constructing the child. Preserve that side effect
+                    // even when the child pair itself comes from cache.
                     mcabResolvePending(mcabAccStack[depth], childSide,
                                        mcabPathCache(engine, 0), 0);
-                    mcabAccStack[depth + 1].acc[mover] = mcabAccStack[depth].acc[mover];
-                    mcabAccStack[depth + 1].pending[mover] = true;
-                    mcabAccStack[depth + 1].pendBefore[mover] = beforeState;
-                    mcabAccStack[depth + 1].pendMove[mover] = mv;
-                    mcabAccStack[depth + 1].pendViewerIsMover[mover] = true;
+
+                    if constexpr (!kEdgeAccFullCanonical) {
+                        // v1: reconstruct the path-dependent lazy mover side.
+                        mcabAccStack[depth + 1].acc[mover] = mcabAccStack[depth].acc[mover];
+                        mcabAccStack[depth + 1].pending[mover] = true;
+                        mcabAccStack[depth + 1].pendBefore[mover] = beforeState;
+                        mcabAccStack[depth + 1].pendMove[mover] = mv;
+                        mcabAccStack[depth + 1].pendViewerIsMover[mover] = true;
+                    }
                 } else {
                     makeChildAccPair(mcabAccStack[depth], mcabAccStack[depth + 1], beforeState, mv,
                                      mcabPathCache(engine, 0));
-                    storeEdgeAccumulator(accKey, childSide, mcabAccStack[depth + 1]);
+                    storeEdgeAccumulator(accKey, childSide, mcabAccStack[depth + 1], engine);
                 }
             } else {
                 makeChildAccPair(mcabAccStack[depth], mcabAccStack[depth + 1], beforeState, mv,
