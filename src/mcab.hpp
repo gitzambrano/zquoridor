@@ -70,6 +70,9 @@
 #ifndef ZQ_EXP_EDGE_ACC_HYBRID
 #define ZQ_EXP_EDGE_ACC_HYBRID 0
 #endif
+#ifndef ZQ_EXP_EDGE_ACC_RESOLVED_PARENT_HYBRID
+#define ZQ_EXP_EDGE_ACC_RESOLVED_PARENT_HYBRID 0
+#endif
 #ifndef ZQ_EXP_RESIDUAL_ROOT_INITIAL
 #define ZQ_EXP_RESIDUAL_ROOT_INITIAL 16
 #endif
@@ -719,11 +722,13 @@ public:
     static constexpr bool kEdgeAccPathSkipParentResolve =
         (ZQ_EXP_EDGE_ACC_PATH_SKIP_PARENT_RESOLVE != 0);
     static constexpr bool kEdgeAccHybrid = (ZQ_EXP_EDGE_ACC_HYBRID != 0);
+    static constexpr bool kEdgeAccResolvedParentHybrid =
+        (ZQ_EXP_EDGE_ACC_RESOLVED_PARENT_HYBRID != 0);
     static constexpr bool kEdgeAccUsesPathSignature =
-        kEdgeAccPathContext || kEdgeAccHybrid;
+        kEdgeAccPathContext || kEdgeAccHybrid || kEdgeAccResolvedParentHybrid;
     static constexpr bool kEdgeAccCache =
         (ZQ_EXP_EDGE_ACC_CACHE != 0) || kEdgeAccFullCanonical ||
-        kEdgeAccPathContext || kEdgeAccHybrid;
+        kEdgeAccPathContext || kEdgeAccHybrid || kEdgeAccResolvedParentHybrid;
 
     McabParams params;
 
@@ -963,6 +968,8 @@ public:
                 edgeAccumulatorCache.clear();
             if constexpr (kEdgeAccHybrid)
                 hybridPathAccumulatorCache.clear();
+            if constexpr (kEdgeAccResolvedParentHybrid)
+                resolvedParentCache.clear();
         }
 
         int budget = effectiveNodeBudget(params, timeBudgetMs);
@@ -1254,6 +1261,17 @@ private:
     static constexpr size_t kHybridPathCacheEntries = 4096;
     std::vector<HybridPathAccumulatorCacheEntry> hybridPathAccumulatorCache;
 
+    // v4.1: exact-path cache for the one parent perspective that v1 must
+    // resolve on an eager-child cache hit. This caches only a resolved
+    // AccumulatorQuant, never a full child pair.
+    struct ResolvedParentCacheEntry {
+        uint64_t key = 0;
+        uint64_t key2 = 0;
+        AccumulatorQuant acc{};
+    };
+    static constexpr size_t kResolvedParentCacheEntries = 4096;
+    std::vector<ResolvedParentCacheEntry> resolvedParentCache;
+
     std::vector<uint64_t> edgePathSigA;
     std::vector<uint64_t> edgePathSigB;
 
@@ -1275,6 +1293,33 @@ private:
     size_t hybridPathCacheIndex(uint64_t key) const {
         uint64_t mixed = key ^ (key >> 29) ^ (key >> 43);
         return (size_t)mixed & (kHybridPathCacheEntries - 1);
+    }
+
+    size_t resolvedParentCacheIndex(uint64_t key) const {
+        uint64_t mixed = key ^ (key >> 31) ^ (key >> 47);
+        return (size_t)mixed & (kResolvedParentCacheEntries - 1);
+    }
+
+    bool loadResolvedParent(uint64_t key, uint64_t key2,
+                            AccumulatorQuant& out) {
+        if (key == 0) return false;
+        if (resolvedParentCache.empty())
+            resolvedParentCache.resize(kResolvedParentCacheEntries);
+        const auto& entry = resolvedParentCache[resolvedParentCacheIndex(key)];
+        if (entry.key != key || entry.key2 != key2) return false;
+        out = entry.acc;
+        return true;
+    }
+
+    void storeResolvedParent(uint64_t key, uint64_t key2,
+                             const AccumulatorQuant& acc) {
+        if (key == 0) return;
+        if (resolvedParentCache.empty())
+            resolvedParentCache.resize(kResolvedParentCacheEntries);
+        auto& entry = resolvedParentCache[resolvedParentCacheIndex(key)];
+        entry.key = key;
+        entry.key2 = key2;
+        entry.acc = acc;
     }
 
     bool loadHybridPathAccumulator(uint64_t key, uint64_t key2,
@@ -2123,7 +2168,38 @@ private:
                 const int mover = (int)beforeState.turn;
                 const int childSide = (int)edgeChildState.turn;
 
-                if constexpr (kEdgeAccHybrid) {
+                if constexpr (kEdgeAccResolvedParentHybrid) {
+                    // v4.1: retain v1's state-safe eager-child cache. On a
+                    // v1 hit, replace only the expensive resolvePending(parent,
+                    // childSide) with an exact-path cached resolved accumulator
+                    // when available. The child lazy mover side is still
+                    // reconstructed exactly as in v1.
+                    if (loadEdgeAccumulator(stateKey, 0, childSide,
+                                            mcabAccStack[depth + 1], mstats)) {
+                        if (!loadResolvedParent(pathKey, pathKey2,
+                                                mcabAccStack[depth].acc[childSide])) {
+                            mcabResolvePending(mcabAccStack[depth], childSide,
+                                               mcabPathCache(engine, 0), 0);
+                            storeResolvedParent(pathKey, pathKey2,
+                                                mcabAccStack[depth].acc[childSide]);
+                        } else {
+                            mcabAccStack[depth].pending[childSide] = false;
+                        }
+                        mcabAccStack[depth + 1].acc[mover] = mcabAccStack[depth].acc[mover];
+                        mcabAccStack[depth + 1].pending[mover] = true;
+                        mcabAccStack[depth + 1].pendBefore[mover] = beforeState;
+                        mcabAccStack[depth + 1].pendMove[mover] = mv;
+                        mcabAccStack[depth + 1].pendViewerIsMover[mover] = true;
+                    } else {
+                        makeChildAccPair(mcabAccStack[depth], mcabAccStack[depth + 1],
+                                         beforeState, mv, mcabPathCache(engine, 0));
+                        storeEdgeAccumulator(stateKey, 0, childSide,
+                                             mcabAccStack[depth + 1], engine);
+                        // makeChildAccPair has resolved parent[childSide].
+                        storeResolvedParent(pathKey, pathKey2,
+                                            mcabAccStack[depth].acc[childSide]);
+                    }
+                } else if constexpr (kEdgeAccHybrid) {
                     // v4: exact-path full-pair L1; v1 state-safe eager L2.
                     // L1 hit can use the exact lazy pair directly. On L1
                     // miss, L2 falls back to proven-v1 semantics.
