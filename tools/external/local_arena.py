@@ -442,6 +442,17 @@ class ClaustrophobiaPlayer(LinePlayer):
             raise EngineError(f"claustrophobia: {result['error']}")
         if int(result.get("move_time_ms", -1)) != budget:
             raise EngineError("claustrophobia: the reported move clock does not match")
+        if "search_ms" not in result or "deadline_hit" not in result or "sims" not in result:
+            raise EngineError("claustrophobia: bridge did not report real-time search telemetry")
+        search_ms = float(result["search_ms"])
+        # Cooperative stopping occurs between MCTS waves. Allow a small
+        # wave-boundary overshoot, but reject a bridge that materially exceeds
+        # the requested wall-clock movetime.
+        tolerance_ms = max(50.0, 0.25 * float(budget))
+        if search_ms > float(budget) + tolerance_ms:
+            raise EngineTimeout(
+                f"claustrophobia: search used {search_ms:.1f} ms for a {budget} ms budget"
+            )
         return str(result["bestmove"]), time.monotonic() - started, [line]
 
 
