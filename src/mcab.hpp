@@ -716,6 +716,8 @@ template <typename Eng, typename StateT, typename MoveT, typename MoveListT,
 class MCABSearch {
 public:
     using NodeT = MCABNode<StateT, MoveListT>;
+    using AccumulatorT =
+        std::remove_reference_t<decltype(std::declval<AccPairT&>().acc[0])>;
     static constexpr bool kResidualPuct = (ZQ_EXP_RESIDUAL_PUCT != 0);
     static constexpr bool kEdgeAccFullCanonical = (ZQ_EXP_EDGE_ACC_FULL_CANONICAL != 0);
     static constexpr bool kEdgeAccPathContext = (ZQ_EXP_EDGE_ACC_PATH_CONTEXT != 0);
@@ -1267,7 +1269,7 @@ private:
     struct ResolvedParentCacheEntry {
         uint64_t key = 0;
         uint64_t key2 = 0;
-        AccumulatorQuant acc{};
+        AccumulatorT acc{};
     };
     static constexpr size_t kResolvedParentCacheEntries = 4096;
     std::vector<ResolvedParentCacheEntry> resolvedParentCache;
@@ -1301,7 +1303,7 @@ private:
     }
 
     bool loadResolvedParent(uint64_t key, uint64_t key2,
-                            AccumulatorQuant& out) {
+                            AccumulatorT& out) {
         if (key == 0) return false;
         if (resolvedParentCache.empty())
             resolvedParentCache.resize(kResolvedParentCacheEntries);
@@ -1312,7 +1314,7 @@ private:
     }
 
     void storeResolvedParent(uint64_t key, uint64_t key2,
-                             const AccumulatorQuant& acc) {
+                             const AccumulatorT& acc) {
         if (key == 0) return;
         if (resolvedParentCache.empty())
             resolvedParentCache.resize(kResolvedParentCacheEntries);
