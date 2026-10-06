@@ -1,9 +1,8 @@
 //! Keep one Claustrophobia model loaded for all searches in one benchmark game.
 use std::io::{self, BufRead, Write};
-use std::thread;
 use std::time::{Duration, Instant};
 
-use quoridor::mcts::{run_mcts_batched, BatchedConfig};
+use quoridor::mcts::{run_mcts_batched, zq_set_search_deadline, BatchedConfig};
 #[cfg(feature = "nn")]
 use quoridor::nn::TchEvaluator;
 #[cfg(not(feature = "nn"))]
@@ -85,12 +84,12 @@ fn json_error(message: &str) -> String {
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = std::env::args().collect();
     if args.len() != 5 && args.len() != 6 {
-        eprintln!("usage: zq_benchmark_bridge <checkpoint.pt> <move-time-ms> <cpuct> <cpu|gpu> [max-sims]");
+        eprintln!("usage: zq_benchmark_bridge <checkpoint.pt> <move-time-ms> <cpuct> <cpu|gpu> [safety-max-sims]");
         std::process::exit(2);
     }
     let move_time_ms: u64 = args[2].parse()?;
     let cpuct: f64 = args[3].parse()?;
-    let max_sims: u32 = if args.len() == 6 { args[5].parse()? } else { 4096 };
+    let max_sims: u32 = if args.len() == 6 { args[5].parse()? } else { 1_000_000 };
     if move_time_ms == 0 || max_sims == 0 || cpuct <= 0.0 {
         return Err("move-time-ms, max-sims, and cpuct must be positive".into());
     }
@@ -104,15 +103,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut config = BatchedConfig::new(8);
     config.eval_tt = true;
     config.solver = true;
-
-    // Measure a small deterministic search once. The bridge then keeps each
-    // search below the clock and sleeps until the complete move budget ends.
-    // The cap protects positions that are slower than the start position.
-    let calibration_sims = 8u32.min(max_sims);
-    let calibration_start = Instant::now();
-    let _ = run_mcts_batched(GameState::start(), &evaluator, calibration_sims, cpuct, config);
-    let calibration_ms = calibration_start.elapsed().as_secs_f64() * 1000.0;
-    let sims_per_ms = calibration_sims as f64 / calibration_ms.max(1.0);
 
     println!("ready");
     io::stdout().flush()?;
@@ -145,23 +135,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         match replay(history) {
             Ok(state) => {
                 let started = Instant::now();
-                // Reserve one quarter of the clock for position variance. The
-                // remaining time is spent as a deterministic MCTS search.
-                let search_budget_ms = (request_move_time_ms as f64 * 0.75).max(1.0);
-                let sims = ((sims_per_ms * search_budget_ms).floor() as u32)
-                    .clamp(1, max_sims);
-                let result = run_mcts_batched(state, &evaluator, sims, cpuct, config);
+                let deadline = started + Duration::from_millis(request_move_time_ms);
+                // REAL wall-clock search. max_sims is only a very high safety
+                // ceiling; normal termination is the cooperative deadline
+                // checked inside Claustrophobia's batched MCTS loop.
+                zq_set_search_deadline(Some(deadline));
+                let result = run_mcts_batched(state, &evaluator, max_sims, cpuct, config);
+                zq_set_search_deadline(None);
                 match index_to_move(&state, result.best_action) {
                     Some(chosen) if parse_move(&move_text(chosen), &state).is_some() => {
                         let search_ms = started.elapsed().as_secs_f64() * 1000.0;
-                        let remaining_ms = request_move_time_ms as f64 - search_ms;
-                        if remaining_ms > 0.0 {
-                            thread::sleep(Duration::from_secs_f64(remaining_ms / 1000.0));
-                        }
-                        let elapsed_ms = started.elapsed().as_secs_f64() * 1000.0;
+                        let deadline_hit = Instant::now() >= deadline;
                         println!(
-                            "{{\"bestmove\":\"{}\",\"move_time_ms\":{},\"sims\":{},\"search_ms\":{:.3},\"elapsed_ms\":{:.3},\"root_value\":{:.9}}}",
-                            move_text(chosen), request_move_time_ms, sims, search_ms, elapsed_ms,
+                            "{{\"bestmove\":\"{}\",\"move_time_ms\":{},\"sims\":{},\"search_ms\":{:.3},\"elapsed_ms\":{:.3},\"deadline_hit\":{},\"root_value\":{:.9}}}",
+                            move_text(chosen), request_move_time_ms, result.total_simulations,
+                            search_ms, search_ms, deadline_hit,
                             result.root_value_side_to_move()
                         );
                     }
