@@ -62,6 +62,28 @@ checks only the requested pawn move or wall. An exhaustive action comparison
 across sampled states verified agreement with the complete legal move set.
 All 56 focused clock, referee, build, and collection tests passed.
 
+The next Colab collection uses five isolated account outputs. Each account
+schedules 5000 pairs (10000 games): 70% Center Rush, 20% Normal, and 10%
+weakness openings. The selection uses exact weighted quotas and distinct
+account seeds. Temperature 1.0 samples actual root visits during the first
+14 searched plies after each opening. Later plies use the selected best move.
+The record preserves the best move separately from the played move.
+
+With `--record-both-searches`, both engines search every played position with
+the same history and time budget. Raw game records retain both dense visit
+vectors, root values, engine information, search roles, and outcomes. The
+Zquoridor adapter exports root data through the optional `--dump-root` flag.
+This export does not change search decisions. Claustrophobia roots supply
+teacher targets; Zquoridor roots remain comparison data for future weighting.
+The original self-play shards remain available for the later combined dataset.
+No training weights or production search defaults change in this collection.
+
+All 34 focused collection, profile, and runner tests passed. A four-ply
+GPU protocol check recorded eight searches, with both engines on each of
+four identical histories. The check verified legal temperature choices and
+preserved distinct best and played moves. It deliberately truncated the
+trajectory and does not supply training targets or strength evidence.
+
 The table below summarizes the operational state of Zquoridor in production.
 
 | Component | Production Specification |
