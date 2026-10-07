@@ -63,11 +63,11 @@ across sampled states verified agreement with the complete legal move set.
 All 56 focused clock, referee, build, and collection tests passed.
 
 The next Colab collection uses five isolated account outputs. Each account
-schedules 5000 pairs (10000 games): 70% Center Rush, 20% Normal, and 10%
+schedules 50000 pairs (100000 games): 70% Center Rush, 20% Normal, and 10%
 weakness openings. The selection uses exact weighted quotas and distinct
 account seeds. It exhausts unique histories within each book before reuse.
-Each account selects 3500 distinct Center Rush histories, 1000 distinct Normal
-histories, and 63 distinct weakness histories. Temperature 1.0 samples actual root visits during the first
+Each account exhausts all 5000 distinct Center Rush histories before reuse.
+The weakness book contains 63 distinct histories. Temperature 1.0 samples actual root visits during the first
 14 searched plies after each opening. Later plies use the selected best move.
 The record preserves the best move separately from the played move.
 
@@ -79,6 +79,14 @@ This export does not change search decisions. Claustrophobia roots supply
 teacher targets; Zquoridor roots remain comparison data for future weighting.
 The original self-play shards remain available for the later combined dataset.
 No training weights or production search defaults change in this collection.
+The native runner saves compressed batches of 250 games and their targets
+directly to Drive. Per-game compressed ledger writes also preserve progress
+between batches. One Python watcher reconnects the notebooks and resumes the
+same pinned workflow after ordinary disconnects. Batching does not depend on
+the local watcher. Interrupted games remain separate from complete games.
+Before later training, combine the historical and new data, deduplicate state
+identities, and assign shared validation groups across all account outputs.
+Do not concatenate account-specific train and validation splits unchanged.
 
 All 34 focused collection, profile, and runner tests passed. A four-ply
 GPU protocol check recorded eight searches, with both engines on each of

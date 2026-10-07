@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import concurrent.futures
 import contextlib
+import gzip
 import hashlib
 import json
 import math
@@ -63,6 +64,9 @@ CONFIG = {
     "auto_setup": True,
     "resume": True,
     "export_targets": True,
+    "batch_games": 250,
+    "export_final_run": True,
+    "compress_game_ledger": False,
     "dry_run": False,
 }
 
@@ -77,7 +81,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--opening-temperature", type=float)
     parser.add_argument("--temperature-plies", type=int)
     for key in ("pairs", "workers", "seed", "start_move_time_ms", "end_move_time_ms",
-                "decay_start_ply", "decay_end_ply", "max_plies"):
+                "decay_start_ply", "decay_end_ply", "max_plies", "batch_games"):
         parser.add_argument("--" + key.replace("_", "-"), type=int)
     for key in ("move_timeout_s", "startup_timeout_s", "claustrophobia_cpuct", "validation_fraction"):
         parser.add_argument("--" + key.replace("_", "-"), type=float)
@@ -86,7 +90,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--claustrophobia-device", choices=("cpu", "gpu"))
     parser.add_argument("--schedule-origin", choices=("opening", "game"))
     parser.add_argument("--zq-arg", dest="zq_args", action="append")
-    for key in ("auto_setup", "resume", "export_targets", "dry_run", "record_both_searches",
+    for key in ("auto_setup", "resume", "export_targets", "export_final_run", "compress_game_ledger", "dry_run", "record_both_searches",
                 "unique_openings_first"):
         parser.add_argument("--" + key.replace("_", "-"), action=argparse.BooleanOptionalAction, default=None)
     return parser
@@ -119,7 +123,7 @@ def resolve_config(args: argparse.Namespace) -> dict:
         raise ValueError("temperature_plies must be nonnegative")
     if config["record_both_searches"] and config["mode"] != "match":
         raise ValueError("record_both_searches requires match mode")
-    for key in ("pairs", "workers", "start_move_time_ms", "end_move_time_ms", "max_plies"):
+    for key in ("pairs", "workers", "start_move_time_ms", "end_move_time_ms", "max_plies", "batch_games"):
         if int(config[key]) <= 0:
             raise ValueError(f"{key} must be positive")
     if not 0 <= config["decay_start_ply"] < config["decay_end_ply"]:
@@ -500,6 +504,43 @@ def atomic_json(path: Path, value: dict) -> None:
     temporary.replace(path)
 
 
+def ledger_game_id(path: Path) -> str:
+    return path.name.removesuffix(".gz").removesuffix(".json")
+
+
+def ledger_path(output: Path, task: dict, compressed: bool = False) -> Path:
+    return output / "games" / (task_name(task) + (".json.gz" if compressed else ".json"))
+
+
+def ledger_paths(output: Path) -> list[Path]:
+    paths = sorted([*(output / "games").glob("*.json"), *(output / "games").glob("*.json.gz")])
+    identifiers = [ledger_game_id(path) for path in paths]
+    if len(identifiers) != len(set(identifiers)):
+        raise ValueError("the game ledger contains duplicate compressed and raw identifiers")
+    return paths
+
+
+def read_game(path: Path) -> dict:
+    if path.suffix == ".gz":
+        with gzip.open(path, "rt", encoding="utf-8") as stream:
+            return json.load(stream)
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def atomic_game(path: Path, game: dict) -> None:
+    """Commit one raw or compressed game before a batch can include the game."""
+    if path.suffix != ".gz":
+        atomic_json(path, game)
+        return
+    temporary = path.with_suffix(".gz.tmp")
+    with gzip.open(temporary, "wt", encoding="utf-8", newline="\n", compresslevel=6) as stream:
+        json.dump(game, stream, separators=(",", ":"), sort_keys=True)
+        stream.write("\n")
+    with temporary.open("r+b") as stream:
+        os.fsync(stream.fileno())
+    temporary.replace(path)
+
+
 @contextlib.contextmanager
 def run_lock(output: Path) -> Iterator[None]:
     """Hold an operating system lock that survives no process termination."""
@@ -535,7 +576,8 @@ def task_name(task: dict) -> str:
     return f"{task['pair_index']:07d}_{task['zq_player']}"
 
 
-def prepare_ledger(output: Path, manifest: dict, tasks: list[dict], resume: bool) -> list[dict]:
+def prepare_ledger(output: Path, manifest: dict, tasks: list[dict], resume: bool,
+                   batched_games: set[str] | None = None, compress_game_ledger: bool = False) -> list[dict]:
     """Validate identity and mark interrupted claims before any further games."""
     manifest_path = output / "manifest.json"
     ledger = output / "games"
@@ -551,10 +593,13 @@ def prepare_ledger(output: Path, manifest: dict, tasks: list[dict], resume: bool
     ledger.mkdir(exist_ok=True)
     pending = []
     for task in tasks:
-        path = ledger / (task_name(task) + ".json")
+        path = ledger_path(output, task, compress_game_ledger)
         claim = ledger / (task_name(task) + ".pending")
+        if task_name(task) in (batched_games or set()):
+            claim.unlink(missing_ok=True)
+            continue
         if path.exists():
-            row = json.loads(path.read_text(encoding="utf-8"))
+            row = read_game(path)
             if row.get("run_id") != manifest["run_id"]:
                 raise ValueError(f"the game record has a different run identity: {path}")
             claim.unlink(missing_ok=True)
@@ -562,7 +607,7 @@ def prepare_ledger(output: Path, manifest: dict, tasks: list[dict], resume: bool
             row = json.loads(claim.read_text(encoding="utf-8"))
             if row.get("run_id") != manifest["run_id"]:
                 raise ValueError(f"the interrupted claim has a different run identity: {claim}")
-            atomic_json(path, {**row, "status": "interrupted", "termination": "process_interruption",
+            atomic_game(path, {**row, "status": "interrupted", "termination": "process_interruption",
                                "moves": [], "searches": []})
             claim.unlink()
         else:
@@ -600,14 +645,15 @@ def training_positions(game: dict) -> Iterator[dict]:
                             "visit_count": sum(root["visit_counts_global"])}}
 
 
-def export_run(output: Path, manifest: dict, config: dict) -> dict:
+def export_run(output: Path, manifest: dict, config: dict, *,
+               game_paths: Sequence[Path] | None = None, compressed: bool = False) -> dict:
     """Rebuild atomic exports from committed game records without another search."""
-    paths = sorted((output / "games").glob("*.json"))
+    paths = ledger_paths(output) if game_paths is None else list(game_paths)
     statuses: Counter = Counter()
     counts: Counter = Counter()
     position_count = 0
     for path in paths:
-        game = json.loads(path.read_text(encoding="utf-8"))
+        game = read_game(path)
         statuses[game["status"]] += 1
         count = sum(1 for _ in training_positions(game))
         position_count += count
@@ -626,11 +672,15 @@ def export_run(output: Path, manifest: dict, config: dict) -> dict:
                 arrays[name] = numpy.lib.format.open_memmap(temp / (name + ".npy"),
                                                            mode="w+", dtype=dtype, shape=shape)
         index = 0
-        with (temp / "games.jsonl").open("w", encoding="utf-8", newline="\n") as games, \
-                (temp / "positions.jsonl").open("w", encoding="utf-8", newline="\n") as positions, \
-                (temp / "labels.jsonl").open("w", encoding="utf-8", newline="\n") as labels:
+        names = [name + (".gz" if compressed else "")
+                 for name in ("games.jsonl", "positions.jsonl", "labels.jsonl")]
+        def open_text(name: str):
+            if compressed:
+                return gzip.open(temp / name, "wt", encoding="utf-8", newline="\n", compresslevel=6)
+            return (temp / name).open("w", encoding="utf-8", newline="\n")
+        with open_text(names[0]) as games, open_text(names[1]) as positions, open_text(names[2]) as labels:
             for path in paths:
-                game = json.loads(path.read_text(encoding="utf-8"))
+                game = read_game(path)
                 games.write(json.dumps(game, separators=(",", ":")) + "\n")
                 for row in training_positions(game):
                     positions.write(json.dumps(row, separators=(",", ":")) + "\n")
@@ -645,7 +695,8 @@ def export_run(output: Path, manifest: dict, config: dict) -> dict:
                         arrays["game_result"][index] = row["outcome"]
                     index += 1
         if arrays:
-            numpy.savez(temp / "teacher_targets.npz", **arrays)
+            save_arrays = numpy.savez_compressed if compressed else numpy.savez
+            save_arrays(temp / "teacher_targets.npz", **arrays)
             for array in arrays.values():
                 array.flush()
                 array._mmap.close()
@@ -653,7 +704,7 @@ def export_run(output: Path, manifest: dict, config: dict) -> dict:
             (temp / "teacher_targets.npz").replace(output / "teacher_targets.npz")
         else:
             (output / "teacher_targets.npz").unlink(missing_ok=True)
-        for name in ("games.jsonl", "positions.jsonl", "labels.jsonl"):
+        for name in names:
             (temp / name).replace(output / name)
     summary = {"run_id": manifest["run_id"], "games": sum(statuses.values()),
                "statuses": dict(statuses), "training_positions": position_count,
@@ -667,6 +718,112 @@ def export_run(output: Path, manifest: dict, config: dict) -> dict:
                  "value_perspective": "side-to-move",
                  "targets_exported": bool(config["export_targets"] and position_count)})
     return summary
+
+
+class BatchExporter:
+    """Commit independent compressed batches and recover unbatched ledger records."""
+
+    def __init__(self, output: Path, manifest: dict, config: dict) -> None:
+        self.output = output
+        self.manifest = manifest
+        self.config = config
+        self.directory = output / "batches"
+        self.covered: set[str] = set()
+        self.buffer: list[Path] = []
+        self.buffer_ids: set[str] = set()
+        self.statuses: Counter = Counter()
+        self.positions_by_book: Counter = Counter()
+        self.training_count = 0
+        self.completed_batches = 0
+        self.partial_batches = 0
+        self.next_index = 0
+        for path in sorted(self.directory.glob("batch_*/manifest.json")):
+            batch = json.loads(path.read_text(encoding="utf-8"))
+            if batch.get("schema") != "zquoridor.search_games.batch.v1" or batch.get("run_id") != manifest["run_id"]:
+                raise ValueError(f"the saved batch has a different run identity: {path}")
+            identifiers = batch["game_ids"]
+            if len(identifiers) != len(set(identifiers)) or self.covered.intersection(identifiers):
+                raise ValueError(f"the saved batch contains duplicate game identifiers: {path}")
+            expected_id = hashlib.sha256(json.dumps({"run_id": manifest["run_id"],
+                "game_ids": identifiers}, sort_keys=True).encode()).hexdigest()
+            if (batch.get("batch_id") != expected_id or batch.get("game_count") != len(identifiers) or
+                    sum(batch["summary"]["statuses"].values()) != len(identifiers) or
+                    batch.get("completed") != (len(identifiers) == batch["configured_games"])):
+                raise ValueError(f"the saved batch identity or counts do not match: {path}")
+            for name, artifact in batch["artifacts"].items():
+                file = path.parent / name
+                if not file.is_file() or file.stat().st_size != artifact["size"]:
+                    raise ValueError(f"a saved batch artifact is missing or incomplete: {file}")
+            self._register(batch)
+            self.next_index = max(self.next_index, int(batch["batch_index"]) + 1)
+
+    def _register(self, batch: dict) -> None:
+        self.covered.update(batch["game_ids"])
+        self.statuses.update(batch["summary"]["statuses"])
+        self.positions_by_book.update(batch["summary"]["positions_by_book"])
+        self.training_count += int(batch["summary"]["training_positions"])
+        self.completed_batches += int(batch["completed"])
+        self.partial_batches += int(not batch["completed"])
+
+    def add(self, path: Path) -> None:
+        identifier = ledger_game_id(path)
+        if identifier in self.covered or identifier in self.buffer_ids:
+            return
+        self.buffer.append(path)
+        self.buffer_ids.add(identifier)
+        if len(self.buffer) >= self.config.get("batch_games", 250):
+            self.flush()
+
+    def recover(self) -> None:
+        """Read ledger filenames once and export only records absent from batches."""
+        for path in ledger_paths(self.output):
+            self.add(path)
+
+    def flush(self) -> dict | None:
+        if not self.buffer:
+            return None
+        self.directory.mkdir(parents=True, exist_ok=True)
+        paths = sorted(self.buffer)
+        identifiers = [ledger_game_id(path) for path in paths]
+        for path in paths:
+            if read_game(path).get("run_id") != self.manifest["run_id"]:
+                raise ValueError(f"the unbatched game has a different run identity: {path}")
+        identity = {"run_id": self.manifest["run_id"], "game_ids": identifiers}
+        batch_id = hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()
+        with tempfile.TemporaryDirectory(prefix=".batch_export_", dir=self.directory) as temporary:
+            stage = Path(temporary) / "payload"
+            stage.mkdir()
+            summary = export_run(stage, self.manifest, self.config, game_paths=paths, compressed=True)
+            artifacts = {path.name: {"size": path.stat().st_size, "sha256": local_arena._sha256(path)}
+                         for path in sorted(stage.iterdir()) if path.is_file()}
+            batch = {"schema": "zquoridor.search_games.batch.v1", **identity,
+                     "batch_id": batch_id, "batch_index": self.next_index,
+                     "completed": len(paths) == self.config.get("batch_games", 250),
+                     "configured_games": self.config.get("batch_games", 250),
+                     "game_count": len(paths), "first_game_id": identifiers[0],
+                     "last_game_id": identifiers[-1], "summary": summary, "artifacts": artifacts}
+            atomic_json(stage / "manifest.json", batch)
+            destination = self.directory / f"batch_{self.next_index:06d}"
+            if destination.exists():
+                raise ValueError(f"the batch destination already exists: {destination}")
+            stage.replace(destination)
+        self._register(batch)
+        self.next_index += 1
+        self.buffer.clear()
+        self.buffer_ids.clear()
+        self.write_summary()
+        print(json.dumps({"saved_batch": str(destination), "games": len(paths),
+                          "completed": batch["completed"], "batch_id": batch_id}), flush=True)
+        return batch
+
+    def write_summary(self) -> dict:
+        summary = {"run_id": self.manifest["run_id"], "games": len(self.covered),
+                   "statuses": dict(self.statuses), "training_positions": self.training_count,
+                   "positions_by_book": dict(self.positions_by_book), "retries": 0,
+                   "completed_batches": self.completed_batches, "partial_batches": self.partial_batches,
+                   "batch_games": self.config.get("batch_games", 250)}
+        atomic_json(self.output / "summary.json", summary)
+        return summary
 
 
 def engine_setup(config: dict) -> tuple[dict[str, Callable[[], object]], dict[str, Path]]:
@@ -722,6 +879,9 @@ def run(config: dict) -> dict:
                 "temperature_plies": config.get("temperature_plies", 14),
                 "record_both_searches": config.get("record_both_searches", False),
                 "unique_openings_first": config.get("unique_openings_first", False),
+                "batch_games": config.get("batch_games", 250),
+                "export_final_run": config.get("export_final_run", True),
+                "compress_game_ledger": config.get("compress_game_ledger", False),
                 "pairs_by_book": dict(Counter(row["book"] for row in openings)),
                 "unique_openings_by_book": {
                     name: len({row["opening_group"] for row in openings if row["book"] == name})
@@ -736,12 +896,15 @@ def run(config: dict) -> dict:
         factories, artifacts = engine_setup(config)
         artifacts.update({"book_" + name: Path(path) for name, path in config["opening_books"].items()})
         identity = {key: value for key, value in config.items()
-                    if key not in ("output", "resume", "auto_setup", "dry_run", "export_targets")}
+                    if key not in ("output", "resume", "auto_setup", "dry_run", "export_targets", "export_final_run")}
         identity["selected_openings"] = openings
         identity["clock_semantics"] = "configured ply origin; linear decay; nearest millisecond; no retries"
         manifest = local_arena.make_manifest(identity, artifacts)
         manifest["schema"] = "zquoridor.search_games.manifest.v1"
-        pending = prepare_ledger(output, manifest, tasks, config["resume"])
+        batches = BatchExporter(output, manifest, config)
+        pending = prepare_ledger(output, manifest, tasks, config["resume"], batched_games=batches.covered,
+                                 compress_game_ledger=config.get("compress_game_ledger", False))
+        batches.recover()
         print(json.dumps({"run_id": manifest["run_id"], "pending_games": len(pending),
                           "workers": config["workers"], "schedule": schedule}), flush=True)
 
@@ -750,7 +913,7 @@ def run(config: dict) -> dict:
             claim = output / "games" / (name + ".pending")
             atomic_json(claim, {"run_id": manifest["run_id"], **task})
             game = play_game(task, config, manifest["run_id"], factories)
-            atomic_json(output / "games" / (name + ".json"), game)
+            atomic_game(ledger_path(output, task, config.get("compress_game_ledger", False)), game)
             claim.unlink()
             return game
 
@@ -758,6 +921,7 @@ def run(config: dict) -> dict:
             if config["workers"] == 1:
                 for task in pending:
                     game = one(task)
+                    batches.add(ledger_path(output, game, config.get("compress_game_ledger", False)))
                     print(f"Game {task_name(game)}: {game['status']}", flush=True)
                     if game["status"] == "interrupted":
                         break
@@ -772,12 +936,21 @@ def run(config: dict) -> dict:
                             active, return_when=concurrent.futures.FIRST_COMPLETED)
                         for future in completed:
                             game = future.result()
+                            batches.add(ledger_path(output, game, config.get("compress_game_ledger", False)))
                             print(f"Game {task_name(game)}: {game['status']}", flush=True)
                             task = next(remaining, None)
                             if task is not None:
                                 active.add(executor.submit(one, task))
         finally:
-            summary = export_run(output, manifest, config)
+            batches.recover()
+            batches.flush()
+            summary = batches.write_summary()
+            if config.get("export_final_run", True):
+                if len(ledger_paths(output)) != len(batches.covered):
+                    raise ValueError("final exports require every individual game ledger record; "
+                                     "the compressed batches retain saved games; use --no-export-final-run")
+                export_run(output, manifest, config)
+                atomic_json(output / "summary.json", summary)
         return summary
 
 
