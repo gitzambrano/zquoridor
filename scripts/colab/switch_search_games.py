@@ -17,7 +17,7 @@ if str(ROOT) not in sys.path:
 
 from scripts.colab.config import WORKERS
 from scripts.colab.search_games_profile import BOOTLOADER_TEMPLATE, CONFIG as PROFILE_CONFIG, build_worker_profiles
-from scripts.colab.browser_utils import get_notebook_dom_state, is_cdp_reachable, trigger_cell_execution
+from scripts.colab.browser_utils import connect_runtime_if_needed, get_notebook_dom_state, is_cdp_reachable, trigger_cell_execution
 from tools.external.build_lock import build_lock
 
 CONFIG = {
@@ -25,6 +25,9 @@ CONFIG = {
     "revision": PROFILE_CONFIG["revision"],
     "check_interval_seconds": 30,
     "headless": True,
+    "auto_resume": True,
+    "retry_cooldown_seconds": 900,
+    "max_resume_attempts": 3,
     "output": str(ROOT / "artifacts/colab/search_games_handover"),
 }
 
@@ -68,7 +71,13 @@ def run(config: dict) -> None:
               for wid in config["worker_ids"]}
     pages = {}
     handles = []
+    def save_status():
+        temporary = output / "status.tmp"
+        temporary.write_text(json.dumps(states, indent=2), encoding="utf-8")
+        temporary.replace(output / "status.json")
+
     with build_lock(output / "controller_lock"), sync_playwright() as playwright:
+        save_status()
         for wid, state in states.items():
             worker = WORKERS[wid]
             try:
@@ -86,22 +95,24 @@ def run(config: dict) -> None:
                 if page is None:
                     page = context.pages[0] if context.pages else context.new_page()
                     page.goto(worker["notebook_url"], wait_until="domcontentloaded", timeout=60000)
-                page.wait_for_timeout(5000)
+                page.wait_for_timeout(12000)
                 pages[wid] = page
                 previous = get_notebook_dom_state(page, profiles[wid]["target_keywords"])
                 has_collection = page.evaluate("""() => {
                     const cells = globalThis.colab?.global?.notebook?.cells || [];
                     return cells.some(c => c.getText?.().includes('run_search_games.py'));
                 }""")
-                if has_collection and (previous["running"] or previous["pending"]):
+                if has_collection:
                     state["status"] = "collection_starting"
                     print(json.dumps(state), flush=True)
+                    save_status()
                     continue
                 start_handover(page, wid)
                 state["status"] = "handover_requested"
             except Exception as error:
                 state.update(status="blocked", error=str(error))
             print(json.dumps(state), flush=True)
+            save_status()
         while True:
             for wid, page in pages.items():
                 state = states[wid]
@@ -126,20 +137,41 @@ def run(config: dict) -> None:
                                 print(json.dumps(state), flush=True)
                     if state["status"] in ("collection_starting", "collecting"):
                         current = get_notebook_dom_state(page, profiles[wid]["target_keywords"])
+                        if not current["kConnected"]:
+                            connect_runtime_if_needed(page)
                         state["output_preview"] = current["outText"]
+                        state["connected"] = bool(current["kConnected"])
                         if not current["running"] and not current["pending"]:
                             finished = re.search(r'"games":\s*(\d+)', current["outText"])
                             if finished and int(finished[1]) == 2 * PROFILE_CONFIG["pairs"]:
                                 state["status"] = "completed"
                             elif time.time() - state.get("started_at", 0) > 120:
-                                state.update(status="stopped", error=current["outText"])
+                                attempts = state.get("resume_attempts", 0)
+                                elapsed = time.time() - state.get("last_resume_at", 0)
+                                fatal = any(word in current["outText"] for word in (
+                                    "does not match", "different run identity", "modified artifact",
+                                    "cache is absent", "Auth Required", "requires verification"))
+                                if (config.get("auto_resume", True) and not fatal and
+                                        attempts < config.get("max_resume_attempts", 3) and
+                                        elapsed >= config.get("retry_cooldown_seconds", 900)):
+                                    connect_runtime_if_needed(page)
+                                    page.wait_for_timeout(5000)
+                                    confirmed = get_notebook_dom_state(page, profiles[wid]["target_keywords"])
+                                    if not confirmed["running"] and not confirmed["pending"]:
+                                        if trigger_cell_execution(page, profiles[wid], BOOTLOADER_TEMPLATE,
+                                                                  profiles[wid]["target_keywords"], force=True):
+                                            state.update(status="collection_starting", started_at=time.time(),
+                                                         last_resume_at=time.time(), resume_attempts=attempts + 1)
+                                elif fatal or attempts >= config.get("max_resume_attempts", 3):
+                                    state.update(status="stopped", error=current["outText"])
                         elif "pending_games" in current["outText"] or "Game " in current["outText"]:
                             state["status"] = "collecting"
+                            successes = re.findall(r'Game\s+([^:]+):\s+ok', current["outText"])
+                            if successes and successes[-1] != state.get("last_successful_game"):
+                                state.update(last_successful_game=successes[-1], resume_attempts=0)
                 except Exception as error:
                     state.update(status="blocked", error=str(error))
-            temporary = output / "status.tmp"
-            temporary.write_text(json.dumps(states, indent=2), encoding="utf-8")
-            temporary.replace(output / "status.json")
+            save_status()
             if all(s["status"] in ("blocked", "stopped", "completed") for s in states.values()):
                 break
             time.sleep(config["check_interval_seconds"])
@@ -152,6 +184,9 @@ def main() -> None:
     parser.add_argument("--check-interval-seconds", type=int, default=CONFIG["check_interval_seconds"])
     parser.add_argument("--headless", action=argparse.BooleanOptionalAction, default=CONFIG["headless"])
     parser.add_argument("--output", default=CONFIG["output"])
+    parser.add_argument("--auto-resume", action=argparse.BooleanOptionalAction, default=CONFIG["auto_resume"])
+    parser.add_argument("--retry-cooldown-seconds", type=int, default=CONFIG["retry_cooldown_seconds"])
+    parser.add_argument("--max-resume-attempts", type=int, default=CONFIG["max_resume_attempts"])
     args = vars(parser.parse_args())
     run(args)
 

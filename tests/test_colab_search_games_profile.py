@@ -32,7 +32,8 @@ def test_profiles_isolate_five_accounts_without_mutating_existing_jobs():
         )
         assert worker["seed"] == worker_id * 1000001
         assert worker["positions"] == ""
-        assert worker["total_games"] == 10000
+        assert worker["total_games"] == 100000
+        assert worker["batch_games"] == 250
     workers[1]["target_keywords"].append("changed")
     assert colab_config.WORKERS == original
     assert "changed" not in workers[2]["target_keywords"]
@@ -45,7 +46,10 @@ def test_profile_arguments_resolve_to_match_gpu_and_all_default_books():
 
     assert config["mode"] == "match"
     assert config["claustrophobia_device"] == "gpu"
-    assert config["pairs"] == 5000
+    assert config["pairs"] == 50000
+    assert config["batch_games"] == 250
+    assert not config["export_final_run"]
+    assert config["compress_game_ledger"]
     assert config["workers"] == 1
     assert config["schedule_origin"] == "opening"
     assert config["start_move_time_ms"] == 400
@@ -63,10 +67,14 @@ def test_profile_arguments_resolve_to_match_gpu_and_all_default_books():
     assert config["opening_temperature"] == 1.0
     assert config["temperature_plies"] == 14
     assert config["record_both_searches"]
+    assert config["unique_openings_first"]
     config["dry_run"] = True
-    assert run_search_games.run(config)["pairs_by_book"] == {
-        "center_rush": 3500, "normal": 1000, "weakness": 500,
+    plan = run_search_games.run(config)
+    assert plan["planned_games"] == 100000
+    assert plan["pairs_by_book"] == {
+        "center_rush": 35000, "normal": 10000, "weakness": 5000,
     }
+    assert plan["unique_openings_by_book"]["center_rush"] == 5000
 
 
 def test_template_supports_generic_launcher_and_valid_ipython_cell():
@@ -79,7 +87,10 @@ def test_template_supports_generic_launcher_and_valid_ipython_cell():
     assert "git reset" not in cell
     assert "-march=native" not in cell
     assert "/content/zquoridor_search_games/" in cell
-    assert "--pairs 5000" in cell
+    assert "--pairs 50000" in cell
+    assert "--batch-games 250" in cell
+    assert "--no-export-final-run" in cell
+    assert "--compress-game-ledger" in cell
     assert "!python -u tools/run_search_games.py" in cell
     assert "%cd " in cell
     transformed = []
