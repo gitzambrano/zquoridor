@@ -38,6 +38,10 @@ CONFIG = {
         "center_rush": str(ROOT / "tools/external/openings_center_rush_sound_5k.jsonl"),
         "weakness": str(ROOT / "tools/external/weak_openings_mined.jsonl"),
     },
+    "opening_weights": {},
+    "opening_temperature": 0.0,
+    "temperature_plies": 14,
+    "record_both_searches": False,
     "output": str(ROOT / "data/teaching/search_games"),
     "start_move_time_ms": 400,
     "end_move_time_ms": 50,
@@ -67,6 +71,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--mode", choices=("match", "zquoridor-selfplay", "claustrophobia-selfplay"))
     parser.add_argument("--opening-book", action="append", dest="opening_books", metavar="NAME=PATH",
                         help="Replace the default books. Repeat this option for each book.")
+    parser.add_argument("--opening-weight", action="append", dest="opening_weights", metavar="NAME=WEIGHT",
+                        help="Set a nonnegative book weight. Unspecified books use weight 1.")
+    parser.add_argument("--opening-temperature", type=float)
+    parser.add_argument("--temperature-plies", type=int)
     for key in ("pairs", "workers", "seed", "start_move_time_ms", "end_move_time_ms",
                 "decay_start_ply", "decay_end_ply", "max_plies"):
         parser.add_argument("--" + key.replace("_", "-"), type=int)
@@ -77,13 +85,14 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--claustrophobia-device", choices=("cpu", "gpu"))
     parser.add_argument("--schedule-origin", choices=("opening", "game"))
     parser.add_argument("--zq-arg", dest="zq_args", action="append")
-    for key in ("auto_setup", "resume", "export_targets", "dry_run"):
+    for key in ("auto_setup", "resume", "export_targets", "dry_run", "record_both_searches"):
         parser.add_argument("--" + key.replace("_", "-"), action=argparse.BooleanOptionalAction, default=None)
     return parser
 
 
 def resolve_config(args: argparse.Namespace) -> dict:
-    config = {**CONFIG, "opening_books": dict(CONFIG["opening_books"]), "zq_args": list(CONFIG["zq_args"])}
+    config = {**CONFIG, "opening_books": dict(CONFIG["opening_books"]),
+              "opening_weights": dict(CONFIG["opening_weights"]), "zq_args": list(CONFIG["zq_args"])}
     config.update({key: value for key, value in vars(args).items() if value is not None})
     if isinstance(config["opening_books"], list):
         books = {}
@@ -93,6 +102,21 @@ def resolve_config(args: argparse.Namespace) -> dict:
                 raise ValueError("each opening book must have a unique NAME=PATH")
             books[name] = path
         config["opening_books"] = books
+    if isinstance(config["opening_weights"], list):
+        weights = {}
+        for text in config["opening_weights"]:
+            name, separator, value = text.partition("=")
+            if not separator or not name or name in weights:
+                raise ValueError("each opening weight must have a unique NAME=WEIGHT")
+            weights[name] = float(value)
+        config["opening_weights"] = weights
+    opening_quotas(config)
+    if not math.isfinite(config["opening_temperature"]) or config["opening_temperature"] < 0:
+        raise ValueError("opening_temperature must be finite and nonnegative")
+    if config["temperature_plies"] < 0:
+        raise ValueError("temperature_plies must be nonnegative")
+    if config["record_both_searches"] and config["mode"] != "match":
+        raise ValueError("record_both_searches requires match mode")
     for key in ("pairs", "workers", "start_move_time_ms", "end_move_time_ms", "max_plies"):
         if int(config[key]) <= 0:
             raise ValueError(f"{key} must be positive")
@@ -143,12 +167,35 @@ def read_book(name: str, path: Path) -> dict[str, list[dict]]:
     return groups
 
 
+def opening_quotas(config: dict) -> dict[str, int]:
+    """Allocate exact pair quotas by the largest remainder method."""
+    names = sorted(config["opening_books"])
+    explicit = config.get("opening_weights", {})
+    if set(explicit) - set(names):
+        raise ValueError("an opening weight refers to an unknown book")
+    weights = {name: float(explicit.get(name, 1.0)) for name in names}
+    if any(not math.isfinite(weight) or weight < 0 for weight in weights.values()):
+        raise ValueError("opening weights must be finite and nonnegative")
+    total = sum(weights.values())
+    if not math.isfinite(total) or total <= 0:
+        raise ValueError("the opening weights must have positive total mass")
+    fractional = {name: int(config["pairs"]) * weight / total for name, weight in weights.items()}
+    quotas = {name: math.floor(value) for name, value in fractional.items()}
+    tie_order = list(names)
+    random.Random(config["seed"]).shuffle(tie_order)
+    ranking = sorted(tie_order, key=lambda name: -(fractional[name] - quotas[name]))
+    for name in ranking[:int(config["pairs"]) - sum(quotas.values())]:
+        quotas[name] += 1
+    return quotas
+
+
 def select_openings(config: dict) -> list[dict]:
-    """Balance books and categories, then cycle shuffled rows as necessary."""
+    """Allocate weighted books and balanced categories, then cycle shuffled rows."""
     rng = random.Random(config["seed"])
     books = {name: read_book(name, Path(path).resolve())
              for name, path in sorted(config["opening_books"].items())}
-    names = list(books)
+    quotas = opening_quotas(config)
+    names = [name for name, quota in quotas.items() for _ in range(quota)]
     rng.shuffle(names)
     categories = {}
     for name, groups in books.items():
@@ -161,7 +208,7 @@ def select_openings(config: dict) -> list[dict]:
     selected = []
     validated: set[tuple[str, ...]] = set()
     for pair_index in range(config["pairs"]):
-        name = names[pair_index % len(names)]
+        name = names[pair_index]
         category = categories[name][book_counts[name] % len(categories[name])]
         book_counts[name] += 1
         rows = books[name][category]
@@ -254,6 +301,67 @@ def parse_root(info: Sequence[str], referee: local_arena.Referee, move: str, bud
             "action_frame": "global-board-209", "root_value_perspective": "side-to-move"}
 
 
+def parse_zq_root(info: Sequence[str], referee: local_arena.Referee, move: str, budget: int) -> dict:
+    """Read the complete Zquoridor root counters without a sparse policy substitute."""
+    payload = next((line.split("root_json ", 1)[1] for line in reversed(info)
+                    if line.startswith("info string root_json ")), None)
+    if payload is None:
+        raise local_arena.EngineError("Zquoridor did not return complete root JSON. Use an adapter with --dump-root.")
+    raw = json.loads(payload)
+    if (raw.get("policy_frame") != "global-board-209" or
+            raw.get("root_value_perspective") != "side-to-move" or
+            raw.get("side_to_move") != referee.side_to_move):
+        raise local_arena.EngineError("Zquoridor returned an inconsistent root perspective")
+    if (raw.get("move_time_ms") != budget or raw.get("bestmove") != move or
+            raw.get("best_action") != global_action(move)):
+        raise local_arena.EngineError("Zquoridor returned inconsistent search metadata")
+    visits = raw.get("visit_counts")
+    if not isinstance(visits, list) or len(visits) != POLICY_DIM or any(
+            isinstance(n, bool) or not isinstance(n, (int, float)) or not math.isfinite(n) or n < 0
+            for n in visits):
+        raise local_arena.EngineError("Zquoridor returned invalid root visits")
+    legal = {global_action(text) for text in referee.legal_moves()}
+    if any(count and index not in legal for index, count in enumerate(visits)):
+        raise local_arena.EngineError("Zquoridor returned visits on an illegal action")
+    total = sum(visits)
+    value = raw.get("root_value")
+    if value is None:
+        if total:
+            raise local_arena.EngineError("Zquoridor omitted a root value for positive visits")
+    elif isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or not -1 <= value <= 1:
+        raise local_arena.EngineError("Zquoridor returned an invalid root value")
+    if not isinstance(raw.get("root_visits"), (int, float)) or not math.isclose(
+            raw["root_visits"], total, rel_tol=1e-7, abs_tol=1e-6):
+        raise local_arena.EngineError("Zquoridor returned inconsistent visit counts")
+    return {"raw": raw, "visit_counts_global": visits, "root_value": value,
+            "action_frame": "global-board-209", "root_value_perspective": "side-to-move",
+            "target_status": "comparison_only"}
+
+
+def sampled_move(root: dict | None, bestmove: str, referee: local_arena.Referee,
+                 temperature: float, rng: random.Random) -> tuple[str, str]:
+    """Sample legal actual visit counts using a stable exponent calculation."""
+    if temperature <= 0:
+        return bestmove, "bestmove"
+    if root is None:
+        raise local_arena.EngineError("temperature requires the engine's complete root visits")
+    if root["raw"].get("stop_reason") == "solved":
+        return bestmove, "solver_bestmove"
+    candidates = [(move, root["visit_counts_global"][global_action(move)])
+                  for move in sorted(referee.legal_moves())
+                  if root["visit_counts_global"][global_action(move)] > 0]
+    if not candidates:
+        return bestmove, "zero_visits_bestmove"
+    max_log = max(math.log(count) for _, count in candidates)
+    masses = [math.exp((math.log(count) - max_log) / temperature) for _, count in candidates]
+    point = rng.random() * sum(masses)
+    for (move, _), mass in zip(candidates, masses):
+        point -= mass
+        if point < 0:
+            return move, "visit_temperature"
+    return candidates[-1][0], "visit_temperature"
+
+
 def play_game(task: dict, config: dict, run_id: str,
               factories: dict[str, Callable[[], object]]) -> dict:
     """Play one game without retries and retain every completed search response."""
@@ -271,6 +379,8 @@ def play_game(task: dict, config: dict, run_id: str,
     repetition.observe(referee)
     history = game["moves"]
     draw = False
+    seed_text = f"{config.get('seed', 0)}:{task['pair_index']}:{task['zq_player']}:visit-temperature"
+    rng = random.Random(int(hashlib.sha256(seed_text.encode()).hexdigest(), 16))
     try:
         for move in task["opening"]:
             referee.apply(move)
@@ -284,21 +394,38 @@ def play_game(task: dict, config: dict, run_id: str,
             name = names[side]
             schedule_ply = len(history) - (len(task["opening"]) if config["schedule_origin"] == "opening" else 0)
             budget = move_time_ms(schedule_ply, config)
-            move, elapsed, info = players[side].bestmove(
-                list(history), budget=budget, timeout_s=config["move_timeout_s"])
-            move = move.strip().lower()
-            search = {"ply": len(history), "side_to_move": side, "player": name,
-                      "history": list(history), "move": move, "budget_ms": budget,
-                      "schedule_ply": schedule_ply,
-                      "elapsed_ms": float(elapsed) * 1000, "raw_info": list(info)}
-            game["searches"].append(search)
-            if not referee.is_legal_move(move):
-                raise local_arena.IllegalMove(f"{name}: illegal move {move!r}")
-            search["best_action_global"] = global_action(move)
-            if name == "claustrophobia":
-                search["root"] = parse_root(info, referee, move, budget)
-            referee.apply(move)
-            history.append(move)
+            relative_ply = len(history) - len(task["opening"])
+            temperature = (config.get("opening_temperature", 0.0)
+                           if relative_ply < config.get("temperature_plies", 14) else 0.0)
+            paired = config.get("record_both_searches", False)
+            indices = [side, 1 - side] if paired else [side]
+            current_searches = []
+            for index in indices:
+                engine_name = names[index]
+                move, elapsed, info = players[index].bestmove(
+                    list(history), budget=budget, timeout_s=config["move_timeout_s"])
+                move = move.strip().lower()
+                search = {"ply": len(history), "side_to_move": side, "player": engine_name,
+                          "role": "mover" if index == side else "comparison",
+                          "history": list(history), "move": move, "bestmove": move,
+                          "budget_ms": budget, "schedule_ply": schedule_ply,
+                          "elapsed_ms": float(elapsed) * 1000, "raw_info": list(info)}
+                game["searches"].append(search)
+                current_searches.append(search)
+                if not referee.is_legal_move(move):
+                    raise local_arena.IllegalMove(f"{engine_name}: illegal move {move!r}")
+                search["best_action_global"] = global_action(move)
+                if engine_name == "claustrophobia":
+                    search["root"] = parse_root(info, referee, move, budget)
+                elif paired or temperature > 0:
+                    search["root"] = parse_zq_root(info, referee, move, budget)
+            mover = current_searches[0]
+            played, selection = sampled_move(mover.get("root"), mover["bestmove"], referee, temperature, rng)
+            for search in current_searches:
+                search.update(playedmove=played, played_action_global=global_action(played),
+                              temperature=temperature, selection=selection)
+            referee.apply(played)
+            history.append(played)
             if referee.winner is None:
                 draw = repetition.observe(referee)
         game.update(winner=referee.winner, plies=len(history),
@@ -408,7 +535,7 @@ def training_positions(game: dict) -> Iterator[dict]:
         return
     for search in game.get("searches", []):
         root = search.get("root")
-        if not root or root.get("target_status") != "ok":
+        if search.get("player") != "claustrophobia" or not root or root.get("target_status") != "ok":
             continue
         key = f"{game['run_id']}:{game['pair_index']}:{game['zq_player']}:{search['ply']}"
         yield {"schema": "zquoridor.position.v1",
@@ -420,9 +547,13 @@ def training_positions(game: dict) -> Iterator[dict]:
                "opening_index": game["pair_index"], "opening_group": game["opening_group"],
                "policy": root["policy"], "value": root["root_value"],
                "outcome": search["outcome"], "budget_ms": search["budget_ms"],
-               "bestmove": search["move"], "target_kind": "actual-root-visits",
+               "bestmove": search.get("bestmove", search["move"]),
+               "playedmove": search.get("playedmove", search["move"]),
+               "search_role": search.get("role", "mover"), "target_kind": "actual-root-visits",
                "policy_frame": "zquoridor-canonical-209",
                "metadata": {"run_id": game["run_id"], "game_id": task_name(game),
+                            "search_role": search.get("role", "mover"),
+                            "playedmove": search.get("playedmove", search["move"]),
                             "stop_reason": root["raw"].get("stop_reason"),
                             "value_perspective": "side-to-move",
                             "visit_count": sum(root["visit_counts_global"])}}
@@ -511,6 +642,9 @@ def engine_setup(config: dict) -> tuple[dict[str, Callable[[], object]], dict[st
                          zq_adapter=ROOT / "tools/external/zquoridor_uci.cpp")
         artifacts.update({"header_" + path.name: path for path in (ROOT / "src").glob("*.hpp")})
         command = [str(executable), "--nnue", str(nnue), *config["zq_args"]]
+        if config.get("record_both_searches") or config.get("opening_temperature", 0) > 0:
+            if "--dump-root" not in command:
+                command.append("--dump-root")
         factories["zquoridor"] = lambda: local_arena.UciPlayer(
             command, "zquoridor", startup_timeout_s=config["startup_timeout_s"])
     if config["mode"] != "zquoridor-selfplay":
@@ -542,6 +676,10 @@ def run(config: dict) -> dict:
     if config["dry_run"]:
         return {"dry_run": True, "planned_games": len(tasks), "pairs": len(openings),
                 "mode": config["mode"], "workers": config["workers"], "schedule": schedule,
+                "opening_quotas": opening_quotas(config),
+                "opening_temperature": config.get("opening_temperature", 0.0),
+                "temperature_plies": config.get("temperature_plies", 14),
+                "record_both_searches": config.get("record_both_searches", False),
                 "pairs_by_book": dict(Counter(row["book"] for row in openings)),
                 "unique_openings": len({row["opening_group"] for row in openings}),
                 "repeated_opening_pairs": len(openings) - len({row["opening_group"] for row in openings}),

@@ -49,6 +49,12 @@ Check the opening selection before the long run. The default books are committed
   --decay-end-ply 80 \
   --schedule-origin opening \
   --claustrophobia-device gpu \
+  --opening-weight center_rush=7 \
+  --opening-weight normal=2 \
+  --opening-weight weakness=1 \
+  --opening-temperature 1.0 \
+  --temperature-plies 14 \
+  --record-both-searches \
   --opening-book normal=tools/external/openings_irregular_bank.jsonl \
   --opening-book center_rush=tools/external/openings_center_rush_sound_5k.jsonl \
   --opening-book weakness=tools/external/weak_openings_mined.jsonl \
@@ -61,5 +67,7 @@ Run the same command without `--dry-run` to collect games. The schedule uses the
 The output directory stores one JSON record per game under `games/`. It also stores `games.jsonl`, `positions.jsonl`, `labels.jsonl`, `teacher_targets.npz`, `summary.json`, and manifests. Positions include replayable move history. Labels contain normalized 209-action root visit policies and side-to-move root values from the actual Claustrophobia searches. Only complete goal or repetition games contribute training labels.
 
 The runner resumes by default when the manifest matches. Use the same command and output directory after a runtime interruption. A game interrupted during a search is recorded as interrupted and is not retried. The run does not generate missing opening books. Automatic bot setup fetches the pinned Claustrophobia checkpoint; it does not train or create a model.
+
+This command allocates 3500 pairs to Center Rush, 1000 to Normal, and 500 to weakness openings. Temperature 1.0 samples actual visit distributions for the first 14 searched plies after each opening. The record preserves the best move and the sampled move separately. Both engines search each identical position with the same budget. The raw game ledger retains both roots for later comparisons and dataset weighting. Paired searches increase collection time.
 
 To increase weakness-opening diversity, create or provide a larger weakness book before the run. The collector reports repeated openings but does not generate opening variations.

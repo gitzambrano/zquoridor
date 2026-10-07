@@ -2,6 +2,9 @@
 // It intentionally keeps the production Zquoridor search path intact:
 // Negamax + NNUE + McabRunner, with the defaults from the checked-out ref.
 #include <algorithm>
+#include <array>
+#include <cmath>
+#include <iomanip>
 #include <chrono>
 #include <cstdlib>
 #include <iostream>
@@ -57,8 +60,64 @@ static bool parseLegalMove(const qr::State& s, const std::string& text, qr::Move
     return false;
 }
 
+static int globalAction(const qr::Move& move) {
+    return move.isWall ? 81 + (move.a == 0 ? 0 : 64) + move.b * 8 + move.c
+                       : move.a;
+}
+
+// Export the completed root without another search or changes to its state.
+static void dumpSearchRoot(const Runner& runner, const qr::State& state,
+                           const qr::Move& best, int budget, long long elapsed,
+                           const mcab::McabStats& stats) {
+    std::array<double, 209> visits{}, priors{}, values{};
+    std::array<bool, 209> hasValue{};
+    double total = 0.0, weighted = 0.0;
+    const auto* root = runner.search.rootNodeForInspection();
+    const bool valid = runner.activeForThisEngine() && root && root->expanded &&
+                       root->state.hash == state.hash && root->state.turn == state.turn;
+    if (valid) {
+        for (size_t i = 0; i < root->moves.size(); ++i) {
+            const int action = globalAction(root->moves[i]);
+            visits[action] = root->N[i];
+            priors[action] = root->P[i];
+            if (root->N[i] > 0 && std::isfinite(root->W[i])) {
+                const double q = runner.params().backupMode == mcab::BackupMode::AvgBlend
+                    ? root->W[i] / root->N[i] : root->W[i];
+                values[action] = 2.0 * q - 1.0;
+                hasValue[action] = true;
+                weighted += root->N[i] * values[action];
+            }
+            total += root->N[i];
+        }
+    }
+    std::cout << std::setprecision(17)
+              << "info string root_json {\"policy_frame\":\"global-board-209\","
+              << "\"root_value_perspective\":\"side-to-move\",\"side_to_move\":" << state.turn
+              << ",\"bestmove\":\"" << moveToText(best) << "\",\"best_action\":" << globalAction(best)
+              << ",\"move_time_ms\":" << budget << ",\"elapsed_ms\":" << elapsed
+              << ",\"simulations\":" << stats.simulations << ",\"root_visits\":" << total
+              << ",\"root_total_visits\":" << (valid ? root->totalN : 0)
+              << ",\"stop_reason\":\"search-complete\",\"target_status\":\""
+              << (total > 0 ? "ok" : valid ? "excluded_zero_visits" : "unavailable")
+              << "\",\"root_value\":";
+    if (total > 0) std::cout << weighted / total;
+    else std::cout << "null";
+    std::cout << ",\"visit_counts\":[";
+    for (int i = 0; i < 209; ++i) std::cout << (i ? "," : "") << visits[i];
+    std::cout << "],\"priors\":[";
+    for (int i = 0; i < 209; ++i) std::cout << (i ? "," : "") << priors[i];
+    std::cout << "],\"q_values\":[";
+    for (int i = 0; i < 209; ++i) {
+        std::cout << (i ? "," : "");
+        if (hasValue[i]) std::cout << values[i];
+        else std::cout << "null";
+    }
+    std::cout << "]}\n";
+}
+
 struct Options {
     std::string nnuePath;
+    bool dumpRoot = false;
     bool useMcab = true;
     double cpuct = -1.0;
     double scoreScale = -1.0;
@@ -101,6 +160,7 @@ static Options parseArgs(int argc, char** argv) {
             return argv[++i];
         };
         if (a == "--nnue") o.nnuePath = need("--nnue");
+        else if (a == "--dump-root") o.dumpRoot = true;
         else if (a == "--no-mcab") o.useMcab = false;
         else if (a == "--cpuct") o.cpuct = std::atof(need("--cpuct"));
         else if (a == "--score-scale") o.scoreScale = std::atof(need("--score-scale"));
@@ -391,6 +451,7 @@ int main(int argc, char** argv) {
                       << " reuse=" << (params.treeReuse ? 1 : 0)
                       << " treeHit=" << (mstats.treeReused ? 1 : 0)
                       << " reusedNodes=" << mstats.reusedNodes << "\n";
+            if (opt.dumpRoot) dumpSearchRoot(runner, state, best, budgetMs, elapsed, mstats);
             std::cout << "bestmove " << moveToText(best) << "\n" << std::flush;
         } else if (cmd == "quit") {
             break;
