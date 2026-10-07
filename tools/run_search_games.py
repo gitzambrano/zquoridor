@@ -922,7 +922,8 @@ def run(config: dict) -> dict:
                 for task in pending:
                     game = one(task)
                     batches.add(ledger_path(output, game, config.get("compress_game_ledger", False)))
-                    print(f"Game {task_name(game)}: {game['status']}", flush=True)
+                    winner_str = game["players"][game["winner"]] if game.get("winner") is not None else "draw"
+                    print(f"Game {task_name(game)}: {game['status']} | winner={winner_str} ({game.get('plies')} plies)", flush=True)
                     if game["status"] == "interrupted":
                         break
             else:
@@ -937,7 +938,8 @@ def run(config: dict) -> dict:
                         for future in completed:
                             game = future.result()
                             batches.add(ledger_path(output, game, config.get("compress_game_ledger", False)))
-                            print(f"Game {task_name(game)}: {game['status']}", flush=True)
+                            winner_str = game["players"][game["winner"]] if game.get("winner") is not None else "draw"
+                            print(f"Game {task_name(game)}: {game['status']} | winner={winner_str} ({game.get('plies')} plies)", flush=True)
                             task = next(remaining, None)
                             if task is not None:
                                 active.add(executor.submit(one, task))

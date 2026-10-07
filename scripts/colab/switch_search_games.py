@@ -17,7 +17,13 @@ if str(ROOT) not in sys.path:
 
 from scripts.colab.config import WORKERS
 from scripts.colab.search_games_profile import BOOTLOADER_TEMPLATE, CONFIG as PROFILE_CONFIG, build_worker_profiles
-from scripts.colab.browser_utils import connect_runtime_if_needed, get_notebook_dom_state, is_cdp_reachable, trigger_cell_execution
+from scripts.colab.browser_utils import (
+    connect_runtime_if_needed,
+    dismiss_modals,
+    get_notebook_dom_state,
+    is_cdp_reachable,
+    trigger_cell_execution,
+)
 from tools.external.build_lock import build_lock
 
 CONFIG = {
@@ -26,7 +32,7 @@ CONFIG = {
     "check_interval_seconds": 30,
     "headless": True,
     "auto_resume": True,
-    "retry_cooldown_seconds": 900,
+    "retry_cooldown_seconds": 120,
     "max_resume_attempts": 3,
     "output": str(ROOT / "artifacts/colab/search_games_handover"),
 }
@@ -117,6 +123,9 @@ def run(config: dict) -> None:
                     return cells.some(c => c.getText?.().includes('run_search_games.py'));
                 }""")
                 if has_collection:
+                    if not previous["running"] and not previous["pending"]:
+                        trigger_cell_execution(page, profiles[wid], BOOTLOADER_TEMPLATE,
+                                              profiles[wid]["target_keywords"], force=False)
                     state["status"] = "collection_starting"
                     state.setdefault("started_at", time.time())
                     print(json.dumps(state), flush=True)
@@ -195,6 +204,19 @@ def run(config: dict) -> None:
                                 state["started_at"] = time.time()
                                 print(json.dumps(state), flush=True)
                     if state["status"] in ("collection_starting", "collecting"):
+                        dismiss_modals(page)
+                        ctx = contexts.get(wid)
+                        if ctx:
+                            for popup in list(ctx.pages[1:]):
+                                if "accounts.google.com" in popup.url or "oauth" in popup.url:
+                                    try:
+                                        popup.evaluate("""() => {
+                                            const btns = Array.from(document.querySelectorAll('button, [role="button"]'));
+                                            const allowBtn = btns.find(b => (b.innerText || '').trim().toLowerCase() === 'allow');
+                                            if (allowBtn) allowBtn.click();
+                                        }""")
+                                    except Exception:
+                                        pass
                         current = get_notebook_dom_state(page, profiles[wid]["target_keywords"])
                         if not current["kConnected"]:
                             connect_runtime_if_needed(page)
