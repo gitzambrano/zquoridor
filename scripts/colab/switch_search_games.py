@@ -140,19 +140,17 @@ def run(config: dict) -> None:
                 state.update(browser_recovery_attempts=attempts + 1, last_browser_recovery=time.time())
                 try:
                     worker = WORKERS[wid]
-                    context = contexts.get(wid)
-                    if context is None or not is_cdp_reachable(worker["cdp_port"]):
-                        if is_cdp_reachable(worker["cdp_port"]):
-                            browser = playwright.chromium.connect_over_cdp(
-                                f"http://127.0.0.1:{worker['cdp_port']}")
-                            context = browser.contexts[0]
-                            handles.append(browser)
-                        else:
-                            context = playwright.chromium.launch_persistent_context(
-                                worker["profile_dir"], channel="chrome", headless=config["headless"],
-                                args=[f"--remote-debugging-port={worker['cdp_port']}"])
-                            handles.append(context)
-                        contexts[wid] = context
+                    if is_cdp_reachable(worker["cdp_port"]):
+                        browser = playwright.chromium.connect_over_cdp(
+                            f"http://127.0.0.1:{worker['cdp_port']}")
+                        context = browser.contexts[0]
+                        handles.append(browser)
+                    else:
+                        context = playwright.chromium.launch_persistent_context(
+                            worker["profile_dir"], channel="chrome", headless=config["headless"],
+                            args=[f"--remote-debugging-port={worker['cdp_port']}"])
+                        handles.append(context)
+                    contexts[wid] = context
                     page = next((p for p in context.pages if p.url == worker["notebook_url"]), None)
                     if page is None:
                         page = context.new_page()
