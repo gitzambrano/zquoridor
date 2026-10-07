@@ -31,9 +31,10 @@ CONFIG = {
     "zq_move_time_ms": 200,
     "titanium_move_time_ms": 200,
     "claustrophobia_move_time_ms": 200,
-    "claustrophobia_max_sims": 4096,
     "claustrophobia_cpuct": 1.5,
     "claustrophobia_device": "cpu",
+    "clock_initial_ms": 0,
+    "clock_increment_ms": 2000,
     "startup_timeout_s": 120.0,
     "move_timeout_s": 30.0,
     "max_plies": 180,
@@ -63,9 +64,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--zq-move-time-ms", type=int)
     parser.add_argument("--titanium-move-time-ms", type=int)
     parser.add_argument("--claustrophobia-move-time-ms", type=int)
-    parser.add_argument("--claustrophobia-max-sims", type=int)
     parser.add_argument("--claustrophobia-cpuct", type=float)
     parser.add_argument("--claustrophobia-device", choices=("cpu", "gpu"))
+    parser.add_argument("--clock-initial-ms", type=int)
+    parser.add_argument("--clock-increment-ms", type=int)
     parser.add_argument("--startup-timeout-s", type=float)
     parser.add_argument("--move-timeout-s", type=float)
     parser.add_argument("--max-plies", type=int)
@@ -95,12 +97,15 @@ def resolve_config(args: argparse.Namespace) -> dict:
     if isinstance(required, str):
         required = [item.strip() for item in required.split(",") if item.strip()]
     config["required_opening_categories"] = list(dict.fromkeys(required))
+    for key in ("clock_initial_ms", "clock_increment_ms"):
+        if int(config[key]) < 0:
+            raise ValueError(f"{key} must be nonnegative")
     supported = {"titanium", "claustrophobia"}
     unknown = set(config["opponents"]) - supported
     if unknown:
         raise ValueError(f"unknown opponent: {', '.join(sorted(unknown))}")
     for key in ("pairs", "workers", "zq_move_time_ms", "titanium_move_time_ms",
-                "claustrophobia_move_time_ms", "claustrophobia_max_sims", "max_plies", "bootstrap"):
+                "claustrophobia_move_time_ms", "max_plies", "bootstrap"):
         if int(config[key]) <= 0:
             raise ValueError(f"{key} must be positive")
     for key in ("startup_timeout_s", "move_timeout_s", "claustrophobia_cpuct"):
@@ -108,10 +113,10 @@ def resolve_config(args: argparse.Namespace) -> dict:
             raise ValueError(f"{key} must be positive")
     if not 0.0 <= float(config["category_score_threshold"]) <= 100.0:
         raise ValueError("category_score_threshold must be in [0,100]")
-    if "titanium" in config["opponents"] and (
+    if not config["clock_initial_ms"] and "titanium" in config["opponents"] and (
             int(config["titanium_move_time_ms"]) != int(config["zq_move_time_ms"])):
         raise ValueError("Titanium and Zquoridor must use the same move clock")
-    if "claustrophobia" in config["opponents"] and (
+    if not config["clock_initial_ms"] and "claustrophobia" in config["opponents"] and (
             int(config["claustrophobia_move_time_ms"]) != int(config["zq_move_time_ms"])):
         raise ValueError("Claustrophobia and Zquoridor must use the same move clock")
     return config
@@ -214,12 +219,31 @@ def _build_zq(output: Path) -> Path:
     return output.resolve()
 
 
-def _bot_info(name: str, auto_setup: bool) -> dict:
+def _bot_info(name: str, auto_setup: bool, *, native_clock: bool = False) -> dict:
     try:
         from tools.external.bot_setup import ensure_bot
     except ImportError as exc:
         raise RuntimeError("tools.external.bot_setup is not available") from exc
-    return ensure_bot(name, root=ROOT, build=auto_setup)
+    info = ensure_bot(name, root=ROOT, build=auto_setup)
+    if name == "titanium" and native_clock:
+        from tools.build_titanium_clock_bridge import ensure_bridge
+        info["executable"] = ensure_bridge(ROOT, build=auto_setup)
+    return info
+
+
+def budget_metadata(config: dict) -> dict:
+    """Describe the clocks that each engine receives."""
+    result = {}
+    for name, key, device in (
+            ("zquoridor", "zq_move_time_ms", "cpu"),
+            ("titanium", "titanium_move_time_ms", "cpu"),
+            ("claustrophobia", "claustrophobia_move_time_ms", config["claustrophobia_device"])):
+        if config["clock_initial_ms"]:
+            result[name] = {"type": "game_clock", "initial_ms": config["clock_initial_ms"],
+                            "increment_ms": config["clock_increment_ms"], "device": device}
+        else:
+            result[name] = {"type": "move_time_ms", "value": config[key], "device": device}
+    return result
 
 
 def _task_key(row: dict) -> tuple[str, int, int]:
@@ -239,7 +263,7 @@ def run(config: dict) -> dict:
         suffix = ".exe" if sys.platform == "win32" else ""
         zq_executable = _build_zq(ROOT / "bin" / "local_benchmark" / f"zquoridor_uci{suffix}")
 
-    bot_info = {name: _bot_info(name, bool(config["auto_setup"]))
+    bot_info = {name: _bot_info(name, bool(config["auto_setup"]), native_clock=bool(config["clock_initial_ms"]))
                 for name in config["opponents"]}
     if "claustrophobia" in bot_info and "benchmark_bridge" not in bot_info["claustrophobia"]:
         raise RuntimeError(
@@ -259,15 +283,17 @@ def run(config: dict) -> dict:
         str(index): opening_categories[index]
         for index, _ in openings if index in opening_categories
     }
+    clock_label = "native game clock" if config["clock_initial_ms"] else "fixed move time"
+    identity_config["clock_protocol"] = "native-game-clock-v2" if config["clock_initial_ms"] else "fixed-movetime-v2"
     identity_config["compute"] = {
-        "zquoridor": "cpu fixed move time",
-        "titanium": "cpu fixed move time" if "titanium" in bot_info else None,
+        "zquoridor": f"cpu {clock_label}",
+        "titanium": f"cpu {clock_label}" if "titanium" in bot_info else None,
         "claustrophobia": (
-            f"{config['claustrophobia_device']} fixed move time"
+            f"{config['claustrophobia_device']} {clock_label}"
             if "claustrophobia" in bot_info else None
         ),
     }
-    identity_config["claustrophobia_backend"] = "upstream-mcts-python-torch-ipc"
+    identity_config["claustrophobia_backend"] = "deadline-upstream-mcts-python-torch-ipc-v2"
     artifacts = {"zq_executable": zq_executable, "nnue": nnue, "openings": openings_path,
                  "referee": ROOT / "tools/external/local_arena.py"}
     if "titanium" in bot_info:
@@ -314,7 +340,7 @@ def run(config: dict) -> dict:
             opponent_factory = lambda: local_arena.ClaustrophobiaPlayer(
                 Path(info["benchmark_bridge"]), Path(info["checkpoint"]),
                 move_time_ms=int(config["claustrophobia_move_time_ms"]),
-                max_sims=int(config["claustrophobia_max_sims"]),
+                max_sims=4294967295,
                 cpuct=float(config["claustrophobia_cpuct"]),
                 device=str(config["claustrophobia_device"]),
                 startup_timeout_s=float(config["startup_timeout_s"]),
@@ -332,6 +358,8 @@ def run(config: dict) -> dict:
             move_timeout_s=float(config["move_timeout_s"]),
             max_plies=int(config["max_plies"]),
             run_id=manifest["run_id"],
+            clock_initial_ms=int(config["clock_initial_ms"]),
+            clock_increment_ms=int(config["clock_increment_ms"]),
         )
         if opening_index in opening_categories:
             row["opening_category"] = opening_categories[opening_index]
@@ -342,15 +370,10 @@ def run(config: dict) -> dict:
         "pending_games": len(tasks),
         "pairs_per_opponent": config["pairs"],
         "workers": config["workers"],
-        "budgets": {
-            "zquoridor": {"type": "move_time_ms", "value": config["zq_move_time_ms"],
-                           "device": "cpu"},
-            "titanium": {"type": "move_time_ms", "value": config["titanium_move_time_ms"],
-                         "device": "cpu"},
-            "claustrophobia": {"type": "move_time_ms", "value": config["claustrophobia_move_time_ms"],
-                               "max_sims": config["claustrophobia_max_sims"],
-                               "device": config["claustrophobia_device"]},
-        },
+        "clock": {"initial_ms": config["clock_initial_ms"],
+                  "increment_ms": config["clock_increment_ms"],
+                  "protocol": identity_config["clock_protocol"]},
+        "budgets": budget_metadata(config),
     }, indent=2), flush=True)
 
     output.mkdir(parents=True, exist_ok=True)
@@ -387,15 +410,10 @@ def run(config: dict) -> dict:
     report = {
         "schema": "zquoridor.local_benchmark.report.v1",
         "run_id": manifest["run_id"],
-        "budgets": {
-            "zquoridor": {"type": "move_time_ms", "value": config["zq_move_time_ms"],
-                           "device": "cpu"},
-            "titanium": {"type": "move_time_ms", "value": config["titanium_move_time_ms"],
-                         "device": "cpu"},
-            "claustrophobia": {"type": "move_time_ms", "value": config["claustrophobia_move_time_ms"],
-                               "max_sims": config["claustrophobia_max_sims"],
-                               "device": config["claustrophobia_device"]},
-        },
+        "clock": {"initial_ms": config["clock_initial_ms"],
+                  "increment_ms": config["clock_increment_ms"],
+                  "protocol": identity_config["clock_protocol"]},
+        "budgets": budget_metadata(config),
         "summaries": summaries,
     }
     (output / "summary.json").write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")

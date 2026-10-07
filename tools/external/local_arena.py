@@ -138,9 +138,23 @@ class Referee:
                             moves.append(_move_text(row, col) + orientation)
         return moves
 
+    def is_legal_move(self, move: str) -> bool:
+        """Validate one move without enumeration of all legal walls."""
+        text = move.strip().lower()
+        if self.winner is not None or len(text) not in (2, 3):
+            return False
+        if text[0] not in "abcdefghi" or text[1] not in "123456789":
+            return False
+        col, row = ord(text[0]) - ord("a"), ord(text[1]) - ord("1")
+        if len(text) == 2:
+            return (row, col) in self._pawn_destinations()
+        return (text[2] in "hv" and row < 8 and col < 8
+                and self.walls_left[self.side_to_move] > 0
+                and self._wall_legal(row, col, text[2]))
+
     def apply(self, move: str) -> None:
         text = move.strip().lower()
-        if text not in self.legal_moves():
+        if not self.is_legal_move(text):
             raise IllegalMove(f"illegal move {move!r} for player {self.side_to_move}")
         player = self.side_to_move
         col = ord(text[0]) - ord("a")
@@ -401,21 +415,40 @@ class TitaniumPlayer(LinePlayer):
 
     def bestmove(self, history: Sequence[str], *, budget: int,
                  timeout_s: float) -> tuple[str, float, list[str]]:
+        return self._bestmove(history, f"go {budget / 1000.0:.6f}", timeout_s)
+
+    def bestmove_clock(self, history: Sequence[str], *, white_ms: int,
+                       black_ms: int, increment_ms: int,
+                       timeout_s: float) -> tuple[str, float, list[str]]:
+        if min(white_ms, black_ms) <= 0 or increment_ms < 0:
+            raise ValueError("remaining clocks must be positive and increment nonnegative")
+        clocks = (white_ms, black_ms)
+        side = len(history) % 2
+        # Allocation stays inside Titanium's native remaining-clock manager.
+        go = (f"go rem {clocks[side] / 1000.0:.6f} "
+              f"inc {increment_ms / 1000.0:.6f} opp {clocks[1 - side] / 1000.0:.6f}")
+        return self._bestmove(history, go, timeout_s)
+
+    def _bestmove(self, history: Sequence[str], go: str,
+                  timeout_s: float) -> tuple[str, float, list[str]]:
         self._send("position" + (" " + " ".join(history) if history else ""))
         self._wait_token("ready", timeout_s)
         started = time.monotonic()
-        self._send(f"go {budget / 1000.0:.6f}")
+        self._send(go)
         deadline = started + timeout_s
+        info: list[str] = []
         while True:
             line = self._read(max(0.001, deadline - time.monotonic()))
             if line.startswith("error ") or "error" in line.lower():
                 raise EngineError(f"titanium: {line}")
             if line.startswith("bestmove "):
-                return line.split()[1], time.monotonic() - started, []
+                return line.split()[1], time.monotonic() - started, info
+            if line.startswith("info "):
+                info.append(line)
 
 
 class ClaustrophobiaPlayer(LinePlayer):
-    """Use a persistent Claustrophobia model and a fixed move clock."""
+    """Use a persistent Claustrophobia model with per-search move budgets."""
 
     def __init__(self, bridge: Path, checkpoint: Path, *, move_time_ms: int, max_sims: int, cpuct: float,
                  device: str, startup_timeout_s: float = 120.0) -> None:
@@ -428,11 +461,26 @@ class ClaustrophobiaPlayer(LinePlayer):
             env=environment,
         )
         self._wait_token("ready", startup_timeout_s)
+        self.last_info: dict = {}
 
     def bestmove(self, history: Sequence[str], *, budget: int,
                  timeout_s: float) -> tuple[str, float, list[str]]:
+        return self._request(f"position\t{int(budget)}\t" + " ".join(history),
+                             timeout_s=timeout_s, budget=budget)
+
+    def bestmove_clock(self, history: Sequence[str], *, white_ms: int,
+                       black_ms: int, increment_ms: int,
+                       timeout_s: float) -> tuple[str, float, list[str]]:
+        if min(white_ms, black_ms) <= 0 or increment_ms < 0:
+            raise ValueError("remaining clocks must be positive and increment nonnegative")
+        return self._request(f"clock\t{int(white_ms)}\t{int(black_ms)}\t{int(increment_ms)}\t"
+                             + " ".join(history), timeout_s=timeout_s,
+                             clocks=(white_ms, black_ms, increment_ms))
+
+    def _request(self, command: str, *, timeout_s: float, budget: int | None = None,
+                 clocks: tuple[int, int, int] | None = None) -> tuple[str, float, list[str]]:
         started = time.monotonic()
-        self._send("position\t" + " ".join(history))
+        self._send(command)
         line = self._read(timeout_s)
         try:
             result = json.loads(line)
@@ -440,8 +488,19 @@ class ClaustrophobiaPlayer(LinePlayer):
             raise EngineError(f"claustrophobia: invalid JSON output {line!r}") from exc
         if "error" in result:
             raise EngineError(f"claustrophobia: {result['error']}")
-        if int(result.get("move_time_ms", -1)) != budget:
+        if result.get("protocol") != "deadline-and-engine-clock-v2":
+            raise EngineError("claustrophobia: deadline clock protocol is required")
+        if result.get("stop_reason") not in ("deadline", "solved"):
+            raise EngineError("claustrophobia: search did not stop on its clock or a proof")
+        if int(result.get("sims", -1)) != int(result.get("root_visits", -2)):
+            raise EngineError("claustrophobia: reported actual simulations and root visits disagree")
+        if budget is not None and (int(result.get("move_time_ms", -1)) != budget
+                                   or result.get("mode") != "movetime"):
             raise EngineError("claustrophobia: the reported move clock does not match")
+        if clocks is not None and (result.get("mode") != "game-clock" or
+                tuple(result.get(key) for key in ("white_ms", "black_ms", "increment_ms")) != clocks):
+            raise EngineError("claustrophobia: complete game clocks did not reach the engine")
+        self.last_info = result
         return str(result["bestmove"]), time.monotonic() - started, [line]
 
 
@@ -471,6 +530,7 @@ def play_game(*, opponent: str, opening_index: int, opening: Sequence[str],
               if clock_initial_ms > 0 else None)
     repetition = RepetitionTracker()
     repetition_draw = repetition.observe(referee)
+    forfeit: dict | None = None
     try:
         for move in opening:
             referee.apply(move)
@@ -491,25 +551,54 @@ def play_game(*, opponent: str, opening_index: int, opening: Sequence[str],
                     history, budget=budget, timeout_s=move_timeout_s
                 )
             else:
-                if not isinstance(player, UciPlayer):
-                    raise EngineError("game clock mode requires UCI players")
                 clock_before = clocks[side]
-                move, elapsed, move_info = player.bestmove_clock(
-                    history,
-                    white_ms=clocks[0],
-                    black_ms=clocks[1],
-                    increment_ms=int(clock_increment_ms),
-                    timeout_s=move_timeout_s,
-                )
+                if not callable(getattr(player, "bestmove_clock", None)):
+                    raise EngineError(f"{name}: native game-clock protocol is required")
+                move_started = time.monotonic()
+                try:
+                    move, elapsed, move_info = player.bestmove_clock(
+                        history,
+                        white_ms=clocks[0],
+                        black_ms=clocks[1],
+                        increment_ms=int(clock_increment_ms),
+                        timeout_s=max(0.001, clock_before / 1000.0),
+                    )
+                    elapsed = max(elapsed, time.monotonic() - move_started)
+                    budget = clock_before
+                except EngineError as exc:
+                    elapsed = time.monotonic() - move_started
+                    clocks[side] = max(0, clock_before - math.ceil(elapsed * 1000.0))
+                    forfeit = {"side": side, "winner": 1 - side,
+                               "termination": "time" if isinstance(exc, EngineTimeout) else "engine_error",
+                               "error_type": type(exc).__name__, "error": str(exc)}
+                    think[name] += elapsed
+                    move_times.append({"player": name, "budget_ms": clock_before,
+                                       "elapsed_ms": elapsed * 1000.0,
+                                       "clock_before_ms": clock_before, "clock_after_ms": clocks[side],
+                                       "increment_ms": int(clock_increment_ms),
+                                       "clock_protocol": "native-game-clock-v2",
+                                       "termination": forfeit["termination"]})
+                    break
                 elapsed_ms = max(0, math.ceil(elapsed * 1000.0))
                 if elapsed_ms > clock_before:
-                    raise EngineTimeout(
-                        f"{name}: used {elapsed_ms} ms with {clock_before} ms remaining"
-                    )
+                    clocks[side] = 0
+                    forfeit = {"side": side, "winner": 1 - side, "termination": "time",
+                               "error_type": "EngineTimeout",
+                               "error": f"{name}: used {elapsed_ms} ms with {clock_before} ms remaining"}
+                    think[name] += elapsed
+                    timing = {"player": name, "budget_ms": clock_before,
+                              "elapsed_ms": elapsed * 1000.0, "clock_before_ms": clock_before,
+                              "clock_after_ms": 0, "increment_ms": int(clock_increment_ms),
+                              "clock_protocol": "native-game-clock-v2", "termination": "time"}
+                    if move_info:
+                        timing["search_last"] = move_info[-1]
+                    move_times.append(timing)
+                    break
                 clocks[side] = clock_before - elapsed_ms + int(clock_increment_ms)
             think[name] += elapsed
             timing = {"player": name, "budget_ms": budget,
-                      "elapsed_ms": elapsed * 1000.0}
+                      "elapsed_ms": elapsed * 1000.0,
+                      "clock_protocol": "native-game-clock-v2" if clocks is not None else "fixed-movetime-v2"}
             if move_info:
                 timing["search_last"] = move_info[-1]
             if clocks is not None:
@@ -540,7 +629,10 @@ def play_game(*, opponent: str, opening_index: int, opening: Sequence[str],
             history.append(move)
             if referee.winner is None:
                 repetition_draw = repetition.observe(referee)
-        if referee.winner is not None:
+        if forfeit is not None:
+            result = 1.0 if forfeit["winner"] == zq_player else 0.0
+            termination = forfeit["termination"]
+        elif referee.winner is not None:
             result = 1.0 if referee.winner == zq_player else 0.0
             termination = "goal"
         elif repetition_draw:
@@ -555,7 +647,7 @@ def play_game(*, opponent: str, opening_index: int, opening: Sequence[str],
             "repeated_states": repetition.repeated_states,
             "repetition_max_count": repetition.max_count,
             "result": result,
-            "winner": referee.winner,
+            "winner": forfeit["winner"] if forfeit is not None else referee.winner,
             "termination": termination,
             "plies": len(history),
             "moves": history,
@@ -564,6 +656,7 @@ def play_game(*, opponent: str, opening_index: int, opening: Sequence[str],
             "ponder_calls": ponder_calls,
             "move_times": move_times,
             "final_clocks_ms": clocks,
+            "forfeit": forfeit,
         }
     except BaseException as exc:
         if isinstance(exc, KeyboardInterrupt):

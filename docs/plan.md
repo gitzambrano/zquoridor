@@ -1,6 +1,6 @@
 # Zquoridor: Project State, Results, and Roadmap
 
-Last reviewed: 2026-10-03. This document is the single canonical reference for
+Last reviewed: 2026-10-07. This document is the single canonical reference for
 project status, training history, available datasets, self-play configurations,
 experimental measurements, and future plans.
 
@@ -10,6 +10,57 @@ are untracked artifacts outside version control.
 ---
 
 ## 1. Current Production Baseline
+
+### External clock correction and game collection
+
+The previous Claustrophobia benchmark bridge estimated a simulation budget from
+a calibration search. Therefore, those games do not establish strength at a
+fixed 200 ms move time. The historical Claustrophobia scores below remain
+historical records. Do not use those scores as promotion evidence until a
+verified deadline run reproduces the comparison.
+
+The operational clock correction uses a monotonic search deadline for move
+time. Native game clocks pass remaining time and increment to each engine.
+This infrastructure change does not promote an experimental search or network.
+The corrected evaluation campaign remains separate from the production weights.
+
+The requested collection workflow uses actual games against Claustrophobia.
+It preserves opening histories and records root visits and root values from
+the search that selected each move. Collection time decreases from 400 ms to
+50 ms according to a recorded ply schedule. Such games supply training data.
+Their scores do not replace a fixed-time tournament comparison.
+The collector excludes proven solver roots from policy targets because a
+proof backup can increment the root without a matching child visit.
+The collector preserves those searches in the raw game record.
+
+The local CPU protocol check passed six cases on 2026-10-07. The check covered
+200 ms move requests and complete clocks for both colors against Claustrophobia
+and Titanium. Claustrophobia returned a dense 209-action visit vector in its
+canonical frame. The check verified that the visit sum matched the root count.
+The observed driver time for the Claustrophobia 200 ms request was 219 ms.
+The deadline check permits one completed MCTS wave beyond the deadline.
+The raw report is `results/benchmarks/main_clock_smoke.json`.
+
+The final clock check also passed actual 180000 ms remaining clocks and a
+2000 ms increment for both colors against both external engines. A GPU move
+check returned 320 root visits from a 202.782 ms Claustrophobia search for a
+200 ms deadline. These checks validate the protocol, not playing strength.
+The final reports are `results/benchmarks/main_clock_3plus2_validation.json`
+and `results/benchmarks/main_clock_gpu_200ms_validation.json`.
+
+An end-to-end collection check completed two Claustrophobia self-play games
+on GPU at 50 ms per move. The collector exported 108 valid search targets
+and preserved 14 excluded solver roots in the raw records. The existing
+`training/build_teacher_soft.py` converter produced a dataset from all 108
+targets. This check validates collection and format compatibility. It does
+not measure a candidate network or establish a strength gain.
+The artifacts are under `results/benchmarks/main_search_games_complete_smoke_v2/`.
+The default collection plan schedules 3000 games from 1500 opening pairs.
+It selects 1061 unique histories and repeats 439 opening pairs across the
+balanced Normal, Center Rush, and weakness books. Single-move referee validation
+checks only the requested pawn move or wall. An exhaustive action comparison
+across sampled states verified agreement with the complete legal move set.
+All 56 focused clock, referee, build, and collection tests passed.
 
 The table below summarizes the operational state of Zquoridor in production.
 

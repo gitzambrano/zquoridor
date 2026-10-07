@@ -62,6 +62,44 @@ Every public runner adheres to the following contract:
 - **Inputs**: Git repositories and pre-trained checkpoints.
 - **Outputs**: Binaries under `external_bots/`.
 
+### `tools/build_claustrophobia_dynamic_bridge.py`
+- **Purpose**: Builds an isolated Claustrophobia bridge that searches until a monotonic deadline and reports the completed root visits.
+- **Inputs**: The pinned Claustrophobia checkout and local IPC evaluator source. The checkout must match the pinned revision.
+- **Outputs**: A content-addressed bridge build under `results/benchmarks/claustrophobia_dynamic_bridge/`.
+- **Default settings**: `shared_root` is the repository root. `output` is `results/benchmarks/claustrophobia_dynamic_bridge/`.
+- **Key CLI flags**: `--shared-root`, `--output`.
+
+### `tools/build_titanium_clock_bridge.py`
+- **Purpose**: Builds an isolated Titanium executable that accepts remaining time, increment, and opponent time through its UCI clock protocol.
+- **Inputs**: The pinned Titanium checkout. The checkout must match the pinned revision.
+- **Outputs**: A content-addressed executable under `results/benchmarks/titanium_clock_bridge/`.
+- **Default settings**: `shared_root` is the repository root. `output` is `results/benchmarks/titanium_clock_bridge/`.
+- **Key CLI flags**: `--shared-root`, `--output`, `--build-jobs` (default `1`).
+- **Notes**: The builder uses an operating system process lock in the output cache.
+
+### Clock mode in `tools/run_benchmark.py`
+- **Purpose**: Runs the existing paired benchmark with a native game clock instead of a fixed move time.
+- **Inputs**: The selected opening book, Zquoridor executable and weights, and the pinned external bot checkouts.
+- **Outputs**: The usual benchmark game records and summary under the selected output directory.
+- **Default settings**: `clock_initial_ms` is `0`, which selects fixed move time. `clock_increment_ms` is `2000`.
+- **Key CLI flags**: `--clock-initial-ms`, `--clock-increment-ms`. Set a positive initial clock to enable clock mode. For example, `--clock-initial-ms 180000 --clock-increment-ms 2000` selects a 3+2 clock.
+- **Notes**: Clock mode uses the native deadline-aware Claustrophobia bridge and increment-aware Titanium bridge. The benchmark setup builds these isolated tools when required.
+
+### `tools/run_clock_protocol_validation.py`
+- **Purpose**: Checks the deadline-aware Claustrophobia bridge and native clock requests for the pinned external engines.
+- **Inputs**: The pinned bot checkouts and Claustrophobia checkpoint. A Zquoridor executable and weights are optional.
+- **Outputs**: A JSON validation report at `results/benchmarks/clock_protocol_validation.json`.
+- **Default settings**: CPU device, one worker, 80, 200, and 333 ms move budgets, and a 180000 ms initial clock with a 2000 ms increment.
+- **Key CLI flags**: `--shared-root`, `--output`, `--checkpoint`, `--device`, `--workers`, `--movetimes-ms`, `--white-ms`, `--black-ms`, `--increment-ms`, `--zq-executable`, `--weights`.
+
+### `tools/run_search_games.py`
+- **Purpose**: Collects complete games and the actual Claustrophobia root visit policy and value from each Claustrophobia move.
+- **Inputs**: Opening books in JSON or JSONL format, the Zquoridor NNUE weights, and the pinned Claustrophobia checkpoint. Match mode also uses the local Zquoridor engine.
+- **Outputs**: A resumable per-game ledger under `games/`, plus `games.jsonl`, `positions.jsonl`, `labels.jsonl`, `teacher_targets.npz`, a summary, and manifests in the output directory.
+- **Default settings**: Match mode, 1500 opening pairs, one worker, 400 ms per move through searched ply 14 after the opening, and a linear taper to 50 ms at searched ply 80. The default books are `normal` (`openings_irregular_bank.jsonl`), `center_rush` (`openings_center_rush_sound_5k.jsonl`), and `weakness` (`weak_openings_mined.jsonl`). The output directory is `data/teaching/search_games/`. The runner resumes by default and provisions the pinned Claustrophobia checkout and checkpoint.
+- **Key CLI flags**: `--mode` (`match`, `zquoridor-selfplay`, or `claustrophobia-selfplay`), `--pairs`, repeatable `--opening-book NAME=PATH`, `--workers`, `--start-move-time-ms`, `--end-move-time-ms`, `--decay-start-ply`, `--decay-end-ply`, `--schedule-origin` (`opening` or `game`), `--output`, `--claustrophobia-device` (`cpu` or `gpu`), `--resume`, `--export-targets`, and `--dry-run`.
+- **Notes**: The default schedule uses the opening as its origin and rounds to the nearest millisecond. Match mode records Claustrophobia targets on its turns. The `zquoridor-selfplay` mode does not export Claustrophobia targets. Only complete goal or repetition games contribute training targets. Proven solver roots and roots without child visits remain in the raw games but do not supply policy targets. A run marks interrupted games and does not retry them. The runner does not create missing opening books. Weakness rows can repeat when the requested pair count exceeds the book size. The dry run reports unique openings and repeated pairs. See `scripts/colab/SEARCH_GAMES.md` for a Google Colab recipe.
+
 ---
 
 ## 2. Remote and Cloud Self-Play (Google Colab)

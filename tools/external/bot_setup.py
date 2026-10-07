@@ -13,6 +13,7 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[2]
+CONFIG = {"build_jobs": 1}
 TITANIUM_REPOSITORY = "https://github.com/titaniummachine1/titanium-engine.git"
 TITANIUM_SHA = "1ac94755f69799f01b2e06869403e701bbf0bd51"
 CLAUSTROPHOBIA_REPOSITORY = "https://github.com/Plaaasma/Claustrophobia.git"
@@ -205,11 +206,6 @@ def _prepare_claustrophobia_sources(project_root: Path, checkout: Path) -> bool:
             "zq_search_bridge",
             False,
         ),
-        (
-            project_root / "tools" / "external" / "claustrophobia_benchmark_bridge.rs",
-            "zq_benchmark_bridge",
-            False,
-        ),
     ]
     changed = bool(helper_changed)
     for source, name, neural in sources:
@@ -229,10 +225,11 @@ def _executable(path: Path) -> Path:
 
 
 def _find_cargo(project_root: Path) -> str:
+    cargo_name = "cargo.exe" if os.name == "nt" else "cargo"
     candidates = [
         shutil.which("cargo"),
-        str(project_root / "external_bots" / ".toolchain" / "cargo" / "bin" / "cargo.exe"),
-        str(Path.home() / ".cargo" / "bin" / "cargo.exe"),
+        str(project_root / "external_bots" / ".toolchain" / "cargo" / "bin" / cargo_name),
+        str(Path.home() / ".cargo" / "bin" / cargo_name),
     ]
     for candidate in candidates:
         if candidate and Path(candidate).is_file():
@@ -280,6 +277,7 @@ def _build_titanium(project_root: Path, checkout: Path, executable: Path) -> Non
     cargo = _find_cargo(project_root)
     environment = _cargo_environment(project_root)
     environment["RUSTFLAGS"] = "-C target-cpu=native"
+    environment["CARGO_BUILD_JOBS"] = str(CONFIG["build_jobs"])
     _run(
         [cargo, "build", "--release", "--manifest-path", str(checkout / "Cargo.toml"), "--bin", "titanium"],
         env=environment,
@@ -292,9 +290,8 @@ def _build_claustrophobia(project_root: Path, checkout: Path, changed: bool) -> 
     cargo = _find_cargo(project_root)
     release = checkout / "target" / "release"
     targets = ["zq_encode_bridge", "zq_search_bridge"]
-    if (checkout / "src/bin/zq_benchmark_bridge.rs").is_file():
-        targets.append("zq_benchmark_bridge")
     environment = _cargo_environment(project_root)
+    environment["CARGO_BUILD_JOBS"] = str(CONFIG["build_jobs"])
     if os.name == "nt" and Path("C:/mingw64/bin").is_dir():
         environment["PATH"] = "C:/mingw64/bin" + os.pathsep + environment.get("PATH", "")
     command = [cargo, "build", "--release", "--manifest-path", str(checkout / "Cargo.toml")]
@@ -344,11 +341,17 @@ def ensure_bot(name: str, root: Path = ROOT, build: bool = True) -> dict[str, Pa
         if build:
             _build_claustrophobia(project_root, checkout, changed)
         release = checkout / "target" / "release"
+        from tools.build_claustrophobia_dynamic_bridge import ensure_bridge
+        benchmark_bridge = ensure_bridge(
+            shared_root=project_root,
+            output=project_root / "results/benchmarks/claustrophobia_dynamic_bridge",
+            build=build,
+        )
         return {
             "checkout": checkout.resolve(),
             "checkpoint": checkpoint.resolve(),
             "encode_bridge": _executable(release / "zq_encode_bridge").resolve(),
             "search_bridge": _executable(release / "zq_search_bridge").resolve(),
-            "benchmark_bridge": _executable(release / "zq_benchmark_bridge").resolve(),
+            "benchmark_bridge": benchmark_bridge.resolve(),
         }
     raise ValueError(f"Unknown bot: {name}. Select titanium or claustrophobia.")

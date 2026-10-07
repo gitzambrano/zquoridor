@@ -18,7 +18,45 @@ from tools import run_benchmark
 from tools.external import local_arena
 
 
+class ClockMetadataTests(unittest.TestCase):
+    def test_native_game_clock_metadata_matches_the_engine_request(self):
+        config = dict(run_benchmark.CONFIG, clock_initial_ms=180000, clock_increment_ms=2000)
+        budgets = run_benchmark.budget_metadata(config)
+        self.assertEqual(set(budgets), {"zquoridor", "titanium", "claustrophobia"})
+        for budget in budgets.values():
+            self.assertEqual(budget["type"], "game_clock")
+            self.assertEqual((budget["initial_ms"], budget["increment_ms"]), (180000, 2000))
+            self.assertNotIn("value", budget)
+
+    def test_default_metadata_uses_the_fixed_200_ms_clock(self):
+        for budget in run_benchmark.budget_metadata(run_benchmark.CONFIG).values():
+            self.assertEqual((budget["type"], budget["value"]), ("move_time_ms", 200))
+
+
 class RefereeTests(unittest.TestCase):
+    def test_single_move_validation_matches_complete_legal_sets(self) -> None:
+        state = local_arena.Referee()
+        rng = random.Random(20261007)
+        candidates = [chr(97 + col) + str(row + 1)
+                      for row in range(9) for col in range(9)]
+        candidates += [chr(97 + col) + str(row + 1) + orientation
+                       for orientation in ("h", "v") for row in range(8) for col in range(8)]
+        candidates += ["", "a0", "j1", "a10", "i1h", "a9v", "a1x", "e2extra"]
+        for _ in range(20):
+            legal = set(state.legal_moves())
+            for move in candidates:
+                self.assertEqual(state.is_legal_move(move), move in legal, move)
+            self.assertEqual(state.is_legal_move(" E2 "), "e2" in legal)
+            if not legal:
+                break
+            state.apply(rng.choice(sorted(legal)))
+        state.walls_left = [0, 0]
+        legal = set(state.legal_moves())
+        for move in candidates:
+            self.assertEqual(state.is_legal_move(move), move in legal, move)
+        state.winner = 0
+        self.assertFalse(any(state.is_legal_move(move) for move in candidates))
+
     def test_start_has_full_legal_move_set_and_rejects_illegal_pawn_move(self) -> None:
         state = local_arena.Referee()
         legal = state.legal_moves()
