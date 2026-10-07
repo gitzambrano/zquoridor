@@ -105,6 +105,21 @@ Every public runner adheres to the following contract:
 
 ## 2. Remote and Cloud Self-Play (Google Colab)
 
+### `scripts/colab/switch_search_games.py`
+- **Purpose**: Completes the current self-play shard on each account, then launches paired search collection through its notebook. One locked controller monitors all selected accounts.
+- **Inputs**: Authenticated account profiles in `scripts/colab/config.py`, a pinned Main revision, and the collection settings in `scripts/colab/search_games_profile.py`.
+- **Outputs**: Controller status in `artifacts/colab/search_games_handover/status.json` and search game ledgers in each account's Drive directory under `zquoridor_data/claustro_search_games_v1/worker_X`.
+- **Default settings**: Five accounts, one game per account, 5000 pairs per account, 70% Center Rush, 20% Normal, 10% weakness, initial temperature 1.0 for 14 plies, and both engines' searches recorded. Each account uses a distinct seed and a frozen artifact cache.
+- **Key CLI flags**: `--worker-ids`, `--revision`, `--check-interval-seconds`, `--headless`, and `--output`.
+- **Notes**: Stop the old Zquoridor watcher before this controller. The controller requires the Colab runtime terminal. It preserves browser profile locks and does not bypass authentication or runtime limits. A failed handover blocks collection on that account.
+
+### `scripts/colab/finish_current_shard.py`
+- **Purpose**: Completes one native self-play shard before a workflow change. The Linux helper pauses only its Python launcher. It leaves the native child active, verifies aligned binary and metadata files after exit, then terminates the launcher.
+- **Inputs**: Linux process identities and the worker ID.
+- **Outputs**: An atomic JSON status, artifact hashes, and terminal status markers. Errors resume the launcher.
+- **Default settings**: Worker 1, a two-second check interval, and `/content/zquoridor_search_games/handover_worker_1.json`.
+- **Key CLI flags**: `--worker-id`, `--status-path`, and `--poll-seconds`.
+
 ### `scripts/colab/launch_workers.py`
 - **Purpose**: Bootstraps Google Colab self-play workers headlessly via Playwright. Injects the resilient bootloader cell, connects runtimes, and triggers execution.
 - **Inputs**: Authenticated user profiles under `C:\Projetos\TikTok\profiles\` with stored cookies.
