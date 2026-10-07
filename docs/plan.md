@@ -65,7 +65,9 @@ All 56 focused clock, referee, build, and collection tests passed.
 The next Colab collection uses five isolated account outputs. Each account
 schedules 5000 pairs (10000 games): 70% Center Rush, 20% Normal, and 10%
 weakness openings. The selection uses exact weighted quotas and distinct
-account seeds. Temperature 1.0 samples actual root visits during the first
+account seeds. It exhausts unique histories within each book before reuse.
+Each account selects 3500 distinct Center Rush histories, 1000 distinct Normal
+histories, and 63 distinct weakness histories. Temperature 1.0 samples actual root visits during the first
 14 searched plies after each opening. Later plies use the selected best move.
 The record preserves the best move separately from the played move.
 

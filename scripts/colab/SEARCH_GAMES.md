@@ -55,6 +55,7 @@ Check the opening selection before the long run. The default books are committed
   --opening-temperature 1.0 \
   --temperature-plies 14 \
   --record-both-searches \
+  --unique-openings-first \
   --opening-book normal=tools/external/openings_irregular_bank.jsonl \
   --opening-book center_rush=tools/external/openings_center_rush_sound_5k.jsonl \
   --opening-book weakness=tools/external/weak_openings_mined.jsonl \

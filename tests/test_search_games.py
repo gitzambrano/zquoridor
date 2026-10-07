@@ -223,6 +223,39 @@ def test_weighted_quotas_are_exact_and_default_quotas_remain_balanced(tmp_path):
     assert set(balanced.values()) == {500}
 
 
+def test_unique_openings_exhaust_unequal_categories_before_reuse(tmp_path):
+    rows = [{"moves": [], "category": "small"},
+            {"moves": ["e2"], "category": "large"},
+            {"moves": ["d1"], "category": "large"},
+            {"moves": ["f1"], "category": "large"},
+            {"moves": [], "category": "duplicate"}]
+    path = tmp_path / "unequal.jsonl"
+    path.write_text("".join(json.dumps(row) + "\n" for row in rows), encoding="utf-8")
+    config = dict(search_games.CONFIG, opening_books={"unequal": str(path)}, pairs=12,
+                  unique_openings_first=True, seed=39)
+    selected = search_games.select_openings(config)
+    assert selected == search_games.select_openings(config)
+    for start in (0, 4, 8):
+        cycle = selected[start:start + 4]
+        assert len({row["opening_group"] for row in cycle}) == 4
+        assert Counter(tuple(row["opening"]) for row in cycle) == {
+            (): 1, ("e2",): 1, ("d1",): 1, ("f1",): 1}
+    assert len({row["opening_group"] for row in selected}) == 4
+    assert len({row["split"] for row in selected if not row["opening"]}) == 1
+
+
+def test_unique_opening_category_round_robin_skips_exhausted_groups():
+    groups = {"large": [{"id": index} for index in range(4)],
+              "small": [{"id": 4}], "medium": [{"id": 5}, {"id": 6}]}
+    cycle = search_games.unique_book_cycle(groups, ["large", "small", "medium"], random.Random(9))
+    assert [next(cycle)["id"] for _ in range(7)] == [0, 4, 5, 1, 6, 2, 3]
+    assert len({next(cycle)["id"] for _ in range(7)}) == 7
+    parser = search_games.build_parser()
+    assert search_games.resolve_config(parser.parse_args([]))["unique_openings_first"] is False
+    assert search_games.resolve_config(parser.parse_args(["--unique-openings-first"]))["unique_openings_first"] is True
+    assert search_games.resolve_config(parser.parse_args(["--no-unique-openings-first"]))["unique_openings_first"] is False
+
+
 @pytest.mark.parametrize("arguments", [
     ["--opening-weight", "missing=1"],
     ["--opening-weight", "normal=-1"],

@@ -39,6 +39,7 @@ CONFIG = {
         "weakness": str(ROOT / "tools/external/weak_openings_mined.jsonl"),
     },
     "opening_weights": {},
+    "unique_openings_first": False,
     "opening_temperature": 0.0,
     "temperature_plies": 14,
     "record_both_searches": False,
@@ -85,7 +86,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--claustrophobia-device", choices=("cpu", "gpu"))
     parser.add_argument("--schedule-origin", choices=("opening", "game"))
     parser.add_argument("--zq-arg", dest="zq_args", action="append")
-    for key in ("auto_setup", "resume", "export_targets", "dry_run", "record_both_searches"):
+    for key in ("auto_setup", "resume", "export_targets", "dry_run", "record_both_searches",
+                "unique_openings_first"):
         parser.add_argument("--" + key.replace("_", "-"), action=argparse.BooleanOptionalAction, default=None)
     return parser
 
@@ -189,6 +191,28 @@ def opening_quotas(config: dict) -> dict[str, int]:
     return quotas
 
 
+def unique_book_cycle(groups: dict[str, list[dict]], categories: list[str],
+                      rng: random.Random) -> Iterator[dict]:
+    """Exhaust each category once before a new shuffled book cycle."""
+    while True:
+        available = list(categories)
+        offsets: Counter = Counter()
+        cursor = 0
+        while available:
+            cursor %= len(available)
+            category = available[cursor]
+            rows = groups[category]
+            yield rows[offsets[category]]
+            offsets[category] += 1
+            if offsets[category] == len(rows):
+                available.pop(cursor)
+            else:
+                cursor += 1
+        for rows in groups.values():
+            rng.shuffle(rows)
+        rng.shuffle(categories)
+
+
 def select_openings(config: dict) -> list[dict]:
     """Allocate weighted books and balanced categories, then cycle shuffled rows."""
     rng = random.Random(config["seed"])
@@ -199,22 +223,39 @@ def select_openings(config: dict) -> list[dict]:
     rng.shuffle(names)
     categories = {}
     for name, groups in books.items():
+        if config.get("unique_openings_first", False):
+            seen: set[tuple[str, ...]] = set()
+            for category in sorted(groups):
+                unique_rows = []
+                for row in groups[category]:
+                    history = tuple(row["opening"])
+                    if history not in seen:
+                        seen.add(history)
+                        unique_rows.append(row)
+                groups[category] = unique_rows
+            for category in [category for category, rows in groups.items() if not rows]:
+                del groups[category]
         categories[name] = list(sorted(groups))
         rng.shuffle(categories[name])
         for rows in groups.values():
             rng.shuffle(rows)
+    cycles = {name: unique_book_cycle(groups, categories[name], rng)
+              for name, groups in books.items()} if config.get("unique_openings_first", False) else {}
     book_counts: Counter = Counter()
     group_counts: Counter = Counter()
     selected = []
     validated: set[tuple[str, ...]] = set()
     for pair_index in range(config["pairs"]):
         name = names[pair_index]
-        category = categories[name][book_counts[name] % len(categories[name])]
-        book_counts[name] += 1
-        rows = books[name][category]
-        group = (name, category)
-        row = dict(rows[group_counts[group] % len(rows)])
-        group_counts[group] += 1
+        if cycles:
+            row = dict(next(cycles[name]))
+        else:
+            category = categories[name][book_counts[name] % len(categories[name])]
+            book_counts[name] += 1
+            rows = books[name][category]
+            group = (name, category)
+            row = dict(rows[group_counts[group] % len(rows)])
+            group_counts[group] += 1
         history = tuple(row["opening"])
         if history not in validated:
             referee = local_arena.Referee()
@@ -680,7 +721,11 @@ def run(config: dict) -> dict:
                 "opening_temperature": config.get("opening_temperature", 0.0),
                 "temperature_plies": config.get("temperature_plies", 14),
                 "record_both_searches": config.get("record_both_searches", False),
+                "unique_openings_first": config.get("unique_openings_first", False),
                 "pairs_by_book": dict(Counter(row["book"] for row in openings)),
+                "unique_openings_by_book": {
+                    name: len({row["opening_group"] for row in openings if row["book"] == name})
+                    for name in config["opening_books"]},
                 "unique_openings": len({row["opening_group"] for row in openings}),
                 "repeated_opening_pairs": len(openings) - len({row["opening_group"] for row in openings}),
                 "pairs_by_category": dict(Counter(f"{row['book']}:{row['category']}" for row in openings)),
