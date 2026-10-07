@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import gzip
 import random
 from collections import Counter, defaultdict
 from pathlib import Path
@@ -398,3 +399,183 @@ def test_resume_excludes_claimed_interrupted_games_and_rejects_identity_change(t
     assert list(search_games.training_positions(record)) == []
     with pytest.raises(ValueError, match="different run identity"):
         search_games.prepare_ledger(tmp_path, {"run_id": "run-two"}, [task], True)
+
+
+def _save_batch_game(output, game, pair_index):
+    path = output / "games" / f"{pair_index:07d}_0.json"
+    path.parent.mkdir(exist_ok=True)
+    search_games.atomic_json(path, dict(game, pair_index=pair_index))
+    return path
+
+
+def test_batch_export_flushes_threshold_preserves_both_roots_and_hashes_artifacts(tmp_path):
+    game, _ = _paired_game()
+    config = dict(search_games.CONFIG, batch_games=2)
+    writer = search_games.BatchExporter(tmp_path, {"run_id": "fake-run"}, config)
+    first = _save_batch_game(tmp_path, game, 0)
+    writer.add(first)
+    assert not list((tmp_path / "batches").glob("batch_*"))
+    second = _save_batch_game(tmp_path, game, 1)
+    writer.add(second)
+    batch_dir = tmp_path / "batches" / "batch_000000"
+    batch = json.loads((batch_dir / "manifest.json").read_text())
+    assert batch["completed"] is True
+    assert batch["game_ids"] == ["0000000_0", "0000001_0"]
+    assert batch["first_game_id"] == "0000000_0" and batch["last_game_id"] == "0000001_0"
+    assert batch["game_count"] == 2 and batch["summary"]["training_positions"] == 30
+    for name, metadata in batch["artifacts"].items():
+        assert (batch_dir / name).stat().st_size == metadata["size"]
+        assert search_games.local_arena._sha256(batch_dir / name) == metadata["sha256"]
+    with gzip.open(batch_dir / "games.jsonl.gz", "rt", encoding="utf-8") as stream:
+        saved = [json.loads(line) for line in stream]
+    assert len(saved) == 2
+    assert saved[0]["searches"] == game["searches"]
+    assert {row["player"] for row in saved[0]["searches"]} == {"zquoridor", "claustrophobia"}
+    with np.load(batch_dir / "teacher_targets.npz", allow_pickle=False) as arrays:
+        assert arrays["policy"].shape == (30, POLICY_DIM)
+        assert len(set(arrays["id"].tolist())) == 30
+        assert np.allclose(arrays["value"], 0.25)
+    with gzip.open(batch_dir / "positions.jsonl.gz", "rt", encoding="utf-8") as stream:
+        positions = [json.loads(line) for line in stream]
+    assert len(positions) == 30
+    assert writer.write_summary()["completed_batches"] == 1
+
+
+def test_batch_resume_recovers_only_unbatched_games_and_preserves_completed_artifacts(tmp_path):
+    game = _complete_fake_game()
+    config = dict(search_games.CONFIG, batch_games=2)
+    manifest = {"run_id": "fake-run"}
+    writer = search_games.BatchExporter(tmp_path, manifest, config)
+    for pair_index in range(2):
+        writer.add(_save_batch_game(tmp_path, game, pair_index))
+    original = tmp_path / "batches" / "batch_000000"
+    before = {path.name: (path.stat().st_mtime_ns, search_games.local_arena._sha256(path))
+              for path in original.iterdir()}
+    _save_batch_game(tmp_path, game, 2)
+    resumed = search_games.BatchExporter(tmp_path, manifest, config)
+    resumed.recover()
+    assert len(resumed.buffer) == 1
+    partial = resumed.flush()
+    assert partial["completed"] is False and partial["game_ids"] == ["0000002_0"]
+    assert resumed.write_summary()["games"] == 3
+    assert resumed.write_summary()["completed_batches"] == 1
+    assert resumed.write_summary()["partial_batches"] == 1
+    after = {path.name: (path.stat().st_mtime_ns, search_games.local_arena._sha256(path))
+             for path in original.iterdir()}
+    assert after == before
+    repeated = search_games.BatchExporter(tmp_path, manifest, config)
+    repeated.recover()
+    assert repeated.flush() is None and not repeated.buffer
+    assert repeated.write_summary()["training_positions"] == 21
+    assert len(repeated.covered) == 3
+
+
+def test_partial_interrupted_batch_preserves_raw_records_and_excludes_teacher_targets(tmp_path):
+    game = dict(_complete_fake_game(), status="interrupted")
+    config = dict(search_games.CONFIG, batch_games=250)
+    writer = search_games.BatchExporter(tmp_path, {"run_id": "fake-run"}, config)
+    writer.add(_save_batch_game(tmp_path, game, 0))
+    partial = writer.flush()
+    assert partial["completed"] is False and partial["game_count"] == 1
+    assert partial["summary"]["training_positions"] == 0
+    batch_dir = tmp_path / "batches" / "batch_000000"
+    assert not (batch_dir / "teacher_targets.npz").exists()
+    with gzip.open(batch_dir / "games.jsonl.gz", "rt", encoding="utf-8") as stream:
+        preserved = json.loads(stream.readline())
+    assert preserved["searches"] == game["searches"]
+    assert writer.write_summary()["statuses"] == {"interrupted": 1}
+    assert writer.write_summary()["completed_batches"] == 0
+
+
+def test_batch_resume_rejects_duplicate_games_and_missing_artifacts(tmp_path):
+    game = _complete_fake_game()
+    config = dict(search_games.CONFIG, batch_games=1)
+    manifest = {"run_id": "fake-run"}
+    writer = search_games.BatchExporter(tmp_path, manifest, config)
+    writer.add(_save_batch_game(tmp_path, game, 0))
+    writer.add(_save_batch_game(tmp_path, game, 1))
+    batch_path = tmp_path / "batches" / "batch_000001" / "manifest.json"
+    saved = json.loads(batch_path.read_text())
+    search_games.atomic_json(batch_path, dict(saved, game_ids=["0000000_0"]))
+    with pytest.raises(ValueError, match="duplicate game identifiers"):
+        search_games.BatchExporter(tmp_path, manifest, config)
+    search_games.atomic_json(batch_path, saved)
+    (batch_path.parent / "games.jsonl.gz").unlink()
+    with pytest.raises(ValueError, match="missing or incomplete"):
+        search_games.BatchExporter(tmp_path, manifest, config)
+
+
+def test_compressed_ledger_preserves_records_and_claim_resume(tmp_path):
+    game = _complete_fake_game()
+    output = tmp_path / "run"
+    output.mkdir()
+    task = {"pair_index": 0, "zq_player": 0, "book": "normal"}
+    manifest = {"run_id": "fake-run"}
+    assert search_games.prepare_ledger(output, manifest, [task], True, compress_game_ledger=True) == [task]
+    path = search_games.ledger_path(output, task, True)
+    search_games.atomic_game(path, game)
+    assert path.name == "0000000_0.json.gz" and search_games.read_game(path) == game
+    assert search_games.ledger_paths(output) == [path]
+    assert search_games.prepare_ledger(output, manifest, [task], True, compress_game_ledger=True) == []
+    other = dict(task, pair_index=1)
+    claim = output / "games" / "0000001_0.pending"
+    search_games.atomic_json(claim, dict(other, run_id="fake-run"))
+    assert search_games.prepare_ledger(output, manifest, [other], True, compress_game_ledger=True) == []
+    interrupted = search_games.read_game(search_games.ledger_path(output, other, True))
+    assert interrupted["status"] == "interrupted"
+    writer = search_games.BatchExporter(output, manifest, dict(search_games.CONFIG, batch_games=2))
+    writer.recover()
+    assert writer.write_summary()["games"] == 2
+    assert writer.write_summary()["training_positions"] == 7
+    assert writer.write_summary()["statuses"] == {"ok": 1, "interrupted": 1}
+
+
+def test_native_run_flushes_batches_without_final_rebuild_and_resume_does_not_search(tmp_path, monkeypatch):
+    book = tmp_path / "book.jsonl"
+    book.write_text('{"moves":[]}\n', encoding="utf-8")
+    output = tmp_path / "run"
+    calls = []
+    factories = {name: (lambda name=name: _PairedPlayer(name, calls))
+                 for name in ("zquoridor", "claustrophobia")}
+    monkeypatch.setattr(search_games, "engine_setup", lambda config: (factories, {"fixture": Path(__file__)}))
+    config = dict(search_games.CONFIG, opening_books={"normal": str(book)}, pairs=2, batch_games=2,
+                  output=str(output), record_both_searches=True, export_final_run=False,
+                  compress_game_ledger=True)
+    original_export = search_games.export_run
+    exported_chunks = []
+    def scoped_export(*args, **kwargs):
+        assert kwargs.get("game_paths") is not None
+        exported_chunks.append(len(kwargs["game_paths"]))
+        return original_export(*args, **kwargs)
+    monkeypatch.setattr(search_games, "export_run", scoped_export)
+    summary = search_games.run(config)
+    assert summary["games"] == 4 and summary["completed_batches"] == 2
+    assert summary["statuses"] == {"ok": 4}
+    assert exported_chunks == [2, 2]
+    assert len(search_games.ledger_paths(output)) == 4
+    assert all(path.suffix == ".gz" for path in search_games.ledger_paths(output))
+    assert not (output / "games.jsonl").exists()
+    assert not (output / "teacher_targets.npz").exists()
+    searched = len(calls)
+    search_games.ledger_paths(output)[0].unlink()
+    resumed = search_games.run(config)
+    assert resumed == summary and len(calls) == searched
+    assert exported_chunks == [2, 2]
+    manifests = list((output / "batches").glob("batch_*/manifest.json"))
+    assert len(manifests) == 2
+    all_ids = [identifier for path in manifests for identifier in json.loads(path.read_text())["game_ids"]]
+    assert len(all_ids) == len(set(all_ids)) == 4
+    with pytest.raises(ValueError, match="individual game ledger record"):
+        search_games.run(dict(config, export_final_run=True))
+    assert len(calls) == searched
+
+
+def test_default_batch_threshold_is_250_and_cli_supports_scalable_output():
+    parser = search_games.build_parser()
+    defaults = search_games.resolve_config(parser.parse_args([]))
+    assert defaults["batch_games"] == 250 and defaults["export_final_run"] is True
+    assert defaults["compress_game_ledger"] is False
+    config = search_games.resolve_config(parser.parse_args([
+        "--batch-games", "250", "--no-export-final-run", "--compress-game-ledger"]))
+    assert config["batch_games"] == 250 and config["export_final_run"] is False
+    assert config["compress_game_ledger"] is True
