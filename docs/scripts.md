@@ -111,7 +111,7 @@ Every public runner adheres to the following contract:
 - **Outputs**: Controller status in `artifacts/colab/search_games_handover/status.json` and search game ledgers in each account's Drive directory under `zquoridor_data/claustro_search_games_v1/worker_X`.
 - **Default settings**: Five accounts, one game per account, 50000 pairs per account, 250 games per batch, 70% Center Rush, 20% Normal, 10% weakness, initial temperature 1.0 for 14 plies, and both engines' searches recorded. Each account uses a distinct seed and a frozen artifact cache.
 - **Key CLI flags**: `--worker-ids`, `--revision`, `--check-interval-seconds`, `--headless`, and `--output`.
-- **Notes**: Stop the old Zquoridor watcher before this controller. The controller requires the Colab runtime terminal. It preserves browser profile locks and does not bypass authentication or runtime limits. A failed handover blocks collection on that account.
+- **Notes**: Stop the old Zquoridor watcher before this controller. The controller requires the Colab runtime terminal. It preserves browser profile locks and does not bypass authentication or runtime limits. It attempts browser recovery three times per account and reuses an active handover helper. A persistent failure blocks collection on that account.
 
 ### `scripts/colab/watch_search_games.py`
 - **Purpose**: Provides the automatic Python watcher entry point for paired search collection. It completes the initial shard handover and reconnects or resumes the frozen workflow after a notebook disconnect.

@@ -54,6 +54,9 @@ def start_handover(page, worker_id: int) -> None:
     terminal = page.locator('textarea[aria-label="Terminal input"]')
     terminal.wait_for(state="attached", timeout=60000)
     expect(page.locator('.xterm-rows')).to_contain_text('/content', timeout=60000)
+    text = "\n".join(page.locator('.xterm-rows').all_text_contents())
+    if any(f"ZQ_HANDOVER_{stage}_{worker_id}" in text for stage in ("WAITING", "READY")):
+        return
     terminal.focus()
     page.keyboard.type(handover_command(worker_id))
     page.keyboard.press("Enter")
@@ -69,8 +72,18 @@ def run(config: dict) -> None:
     profiles = build_worker_profiles(config={"revision": revision})
     states = {wid: {"worker_id": wid, "status": "pending", "revision": revision}
               for wid in config["worker_ids"]}
+    status_path = output / "status.json"
+    if status_path.is_file():
+        previous_states = json.loads(status_path.read_text(encoding="utf-8"))
+        for wid, state in states.items():
+            previous = previous_states.get(str(wid), {})
+            if previous.get("revision") == revision:
+                for key in ("resume_attempts", "last_resume_at", "last_successful_game", "started_at"):
+                    if key in previous:
+                        state[key] = previous[key]
     pages = {}
     handles = []
+    contexts = {}
     def save_status():
         temporary = output / "status.tmp"
         temporary.write_text(json.dumps(states, indent=2), encoding="utf-8")
@@ -96,6 +109,7 @@ def run(config: dict) -> None:
                     page = context.pages[0] if context.pages else context.new_page()
                     page.goto(worker["notebook_url"], wait_until="domcontentloaded", timeout=60000)
                 page.wait_for_timeout(12000)
+                contexts[wid] = context
                 pages[wid] = page
                 previous = get_notebook_dom_state(page, profiles[wid]["target_keywords"])
                 has_collection = page.evaluate("""() => {
@@ -104,6 +118,7 @@ def run(config: dict) -> None:
                 }""")
                 if has_collection:
                     state["status"] = "collection_starting"
+                    state.setdefault("started_at", time.time())
                     print(json.dumps(state), flush=True)
                     save_status()
                     continue
@@ -114,8 +129,54 @@ def run(config: dict) -> None:
             print(json.dumps(state), flush=True)
             save_status()
         while True:
+            for wid, state in states.items():
+                if state["status"] != "blocked":
+                    continue
+                attempts = state.get("browser_recovery_attempts", 0)
+                if attempts >= config.get("max_resume_attempts", 3):
+                    continue
+                if time.time() - state.get("last_browser_recovery", 0) < 60:
+                    continue
+                state.update(browser_recovery_attempts=attempts + 1, last_browser_recovery=time.time())
+                try:
+                    worker = WORKERS[wid]
+                    context = contexts.get(wid)
+                    if context is None or not is_cdp_reachable(worker["cdp_port"]):
+                        if is_cdp_reachable(worker["cdp_port"]):
+                            browser = playwright.chromium.connect_over_cdp(
+                                f"http://127.0.0.1:{worker['cdp_port']}")
+                            context = browser.contexts[0]
+                            handles.append(browser)
+                        else:
+                            context = playwright.chromium.launch_persistent_context(
+                                worker["profile_dir"], channel="chrome", headless=config["headless"],
+                                args=[f"--remote-debugging-port={worker['cdp_port']}"])
+                            handles.append(context)
+                        contexts[wid] = context
+                    page = next((p for p in context.pages if p.url == worker["notebook_url"]), None)
+                    if page is None:
+                        page = context.new_page()
+                        page.goto(worker["notebook_url"], wait_until="domcontentloaded", timeout=60000)
+                    else:
+                        page.reload(wait_until="domcontentloaded", timeout=60000)
+                    page.wait_for_timeout(12000)
+                    pages[wid] = page
+                    has_collection = page.evaluate("""() => {
+                        const cells = globalThis.colab?.global?.notebook?.cells || [];
+                        return cells.some(c => c.getText?.().includes('run_search_games.py'));
+                    }""")
+                    if has_collection:
+                        state.update(status="collection_starting", started_at=time.time())
+                    else:
+                        start_handover(page, wid)
+                        state["status"] = "handover_requested"
+                    state.pop("error", None)
+                except Exception as error:
+                    state["error"] = str(error)
             for wid, page in pages.items():
                 state = states[wid]
+                if state["status"] in ("blocked", "stopped", "completed"):
+                    continue
                 try:
                     text = "\n".join(page.locator(".xterm-rows").all_text_contents())
                     if state["status"] in ("handover_requested", "waiting_for_saved_shard"):
@@ -172,7 +233,9 @@ def run(config: dict) -> None:
                 except Exception as error:
                     state.update(status="blocked", error=str(error))
             save_status()
-            if all(s["status"] in ("blocked", "stopped", "completed") for s in states.values()):
+            if all(s["status"] in ("stopped", "completed") or
+                   (s["status"] == "blocked" and s.get("browser_recovery_attempts", 0) >=
+                    config.get("max_resume_attempts", 3)) for s in states.values()):
                 break
             time.sleep(config["check_interval_seconds"])
 
