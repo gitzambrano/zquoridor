@@ -15,11 +15,15 @@ except ImportError:
 
 CONFIG = {
     "worker_ids": [1, 2, 3, 4, 5],
-    "revision": "dcfc7f74c07c02e96521fd77d60f50779b84cea7",
+    "revision": "d74ffb6b075f724bf92cb7e3bb728c3b464a65dd",
     "repository_url": "https://github.com/gitzambrano/zquoridor.git",
     "checkout_root": "/content/zquoridor_search_games",
     "drive_root": "/content/drive/MyDrive/zquoridor_data/claustro_search_games_v1",
-    "pairs": 5000,
+    "pairs": 50000,
+    "batch_games": 250,
+    "export_targets": True,
+    "export_final_run": False,
+    "compress_game_ledger": True,
     "workers": 1,
     "seed_stride": 1000001,
     "mode": "match",
@@ -160,6 +164,7 @@ def build_worker_profile(
     arguments = [
         "--mode", str(settings["mode"]),
         "--pairs", str(settings["pairs"]),
+        "--batch-games", str(settings["batch_games"]),
         "--workers", str(settings["workers"]),
         "--seed", str(seed),
         "--claustrophobia-device", str(settings["claustrophobia_device"]),
@@ -176,8 +181,9 @@ def build_worker_profile(
         "--claustrophobia-checkpoint", f"{runtime_dir}/champion.pt",
         "--no-auto-setup",
         "--resume",
-        "--export-targets",
     ]
+    for flag in ("export_targets", "export_final_run", "compress_game_ledger"):
+        arguments.append(("--" if settings[flag] else "--no-") + flag.replace("_", "-"))
     for book, weight in settings["opening_weights"].items():
         arguments.extend(["--opening-weight", f"{book}={weight}"])
     if settings["record_both_searches"]:
@@ -189,6 +195,7 @@ def build_worker_profile(
         drive_dir=drive_dir,
         total_games=int(settings["pairs"]) * 2,
         pairs=int(settings["pairs"]),
+        batch_games=int(settings["batch_games"]),
         seed=seed,
         positions="",
         extra_args=shlex.join(arguments),
