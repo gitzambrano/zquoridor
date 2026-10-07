@@ -117,6 +117,7 @@ Every public runner adheres to the following contract:
 - **Purpose**: Provides the automatic Python watcher entry point for paired search collection. It completes the initial shard handover and reconnects or resumes the frozen workflow after a notebook disconnect.
 - **Inputs and defaults**: Uses `switch_search_games.CONFIG` and the collection profile. The native runner manages every batch and writes it to Drive.
 - **Outputs**: The shared controller status file and remote Drive batch artifacts.
+- **Driver recovery**: A closed browser driver permits three retries with a 60-second delay. A separate watcher lock prevents duplicate controllers during recovery.
 - **Key CLI flags**: The switch flags, plus `--auto-resume`, `--retry-cooldown-seconds`, and `--max-resume-attempts`. Automatic resume permits three attempts with a 900-second cooldown. Identity mismatches and authentication requirements block automatic re-execution.
 
 ### `scripts/colab/finish_current_shard.py`

@@ -90,6 +90,24 @@ reuses an active handover helper and preserves collection resume counters
 across local watcher restarts. A closed browser page and a blank terminal
 prevented the initial handover on two accounts. Collection on those accounts
 remains unconfirmed until runtime output records an active game.
+The browser driver later closed its connection on all five accounts. The
+watcher now permits three driver restarts with a 60-second delay. Collection
+on the five accounts remains unconfirmed.
+
+The local Edge clock_v3 supervisor stopped with incomplete records. One 504
+hybrid game against Titanium exited with process code 15 at 42 plies and
+approximately 78 seconds remaining. The saved data does not identify the
+OS-level cause. The record remains unchanged and blocks promotion. The
+current Main telemetry adapter also differs from the frozen campaign source.
+The resumed campaign uses an archived adapter and nine verified headers with
+the original source hash. It reuses both manifest-verified Main OFF binaries
+and unchanged weights. An inherited startup module selects this archive and
+refuses altered baseline binaries. The campaign keeps its original engine,
+runner, clock, and game identities. It resumed five actual Titanium games
+with a shared ten-CPU affinity. The archive certificate is under
+`results/benchmarks/edge_acc_campaign_clock_v3/frozen_main_reference/` in the
+experimental checkout. The queue startup module is under the same campaign's
+`queue/` directory. No search default or candidate promotion changed Main.
 Before later training, combine the historical and new data, deduplicate state
 identities, and assign shared validation groups across all account outputs.
 Do not concatenate account-specific train and validation splits unchanged.

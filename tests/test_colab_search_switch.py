@@ -43,3 +43,25 @@ def test_existing_handover_does_not_submit_another_helper(monkeypatch):
     import playwright.sync_api
     monkeypatch.setattr(playwright.sync_api, "expect", lambda locator: Expectation())
     switch.start_handover(Page(), 5)
+
+
+def test_watcher_bounds_driver_recovery(monkeypatch, tmp_path):
+    from scripts.colab import watch_search_games as watch
+    calls = []
+    delays = []
+
+    def fail_driver():
+        calls.append(1)
+        raise RuntimeError("Connection closed while reading from the driver")
+
+    monkeypatch.setitem(watch.CONFIG, "output", str(tmp_path))
+    monkeypatch.setattr(watch, "switch_main", fail_driver)
+    monkeypatch.setattr(watch.time, "sleep", delays.append)
+    watch.main()
+    assert len(calls) == 4
+    assert delays == [60, 60, 60]
+
+
+def test_authentication_failure_does_not_restart_driver():
+    from scripts.colab.watch_search_games import driver_failed
+    assert not driver_failed({"1": {"status": "blocked", "error": "Auth Required"}})
