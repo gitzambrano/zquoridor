@@ -15,7 +15,7 @@ except ImportError:
 
 CONFIG = {
     "worker_ids": [1, 2, 3, 4, 5],
-    "revision": "39846cc2ddb0da30ca10b0ce9f41ae72ac95220d",
+    "revision": "dcfc7f74c07c02e96521fd77d60f50779b84cea7",
     "repository_url": "https://github.com/gitzambrano/zquoridor.git",
     "checkout_root": "/content/zquoridor_search_games",
     "drive_root": "/content/drive/MyDrive/zquoridor_data/claustro_search_games_v1",
@@ -33,6 +33,7 @@ CONFIG = {
     "opening_temperature": 1.0,
     "temperature_plies": 14,
     "record_both_searches": True,
+    "unique_openings_first": True,
 }
 
 
@@ -181,6 +182,8 @@ def build_worker_profile(
         arguments.extend(["--opening-weight", f"{book}={weight}"])
     if settings["record_both_searches"]:
         arguments.append("--record-both-searches")
+    if settings["unique_openings_first"]:
+        arguments.append("--unique-openings-first")
     worker.update(
         worker_id=worker_id,
         drive_dir=drive_dir,
