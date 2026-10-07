@@ -84,6 +84,12 @@ directly to Drive. Per-game compressed ledger writes also preserve progress
 between batches. One Python watcher reconnects the notebooks and resumes the
 same pinned workflow after ordinary disconnects. Batching does not depend on
 the local watcher. Interrupted games remain separate from complete games.
+The watcher permits three browser recovery attempts per account. Recovery
+reloads the notebook without interrupting the remote job. The controller
+reuses an active handover helper and preserves collection resume counters
+across local watcher restarts. A closed browser page and a blank terminal
+prevented the initial handover on two accounts. Collection on those accounts
+remains unconfirmed until runtime output records an active game.
 Before later training, combine the historical and new data, deduplicate state
 identities, and assign shared validation groups across all account outputs.
 Do not concatenate account-specific train and validation splits unchanged.
