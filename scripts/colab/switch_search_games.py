@@ -46,12 +46,11 @@ def handover_command(worker_id: int) -> str:
 
 def start_handover(page, worker_id: int) -> None:
     """Request a batch boundary stop through the visible Colab terminal."""
+    from playwright.sync_api import expect
     page.locator('md-text-button[command="show-terminal"]').click()
     terminal = page.locator('textarea[aria-label="Terminal input"]')
     terminal.wait_for(state="attached", timeout=60000)
-    page.wait_for_function(
-        "() => document.querySelector('.xterm-rows')?.textContent.includes('/content')",
-        timeout=60000)
+    expect(page.locator('.xterm-rows')).to_contain_text('/content', timeout=60000)
     terminal.focus()
     page.keyboard.type(handover_command(worker_id))
     page.keyboard.press("Enter")
@@ -99,7 +98,7 @@ def run(config: dict) -> None:
                     print(json.dumps(state), flush=True)
                     continue
                 start_handover(page, wid)
-                state["status"] = "waiting_for_saved_shard"
+                state["status"] = "handover_requested"
             except Exception as error:
                 state.update(status="blocked", error=str(error))
             print(json.dumps(state), flush=True)
@@ -108,9 +107,12 @@ def run(config: dict) -> None:
                 state = states[wid]
                 try:
                     text = "\n".join(page.locator(".xterm-rows").all_text_contents())
-                    if state["status"] == "waiting_for_saved_shard":
+                    if state["status"] in ("handover_requested", "waiting_for_saved_shard"):
                         marker = f"ZQ_HANDOVER_READY_{wid}"
                         failed = f"ZQ_HANDOVER_FAILED_{wid}"
+                        if f"ZQ_HANDOVER_WAITING_{wid}" in text:
+                            state["status"] = "waiting_for_saved_shard"
+                        state["terminal_preview"] = text[-2000:]
                         if failed in text:
                             state.update(status="blocked", error=text[-2500:])
                         elif marker in text:
