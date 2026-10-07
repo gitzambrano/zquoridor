@@ -146,7 +146,7 @@ def dismiss_modals(page: Any) -> bool:
     try:
         return page.evaluate("""() => {
             const buttons = Array.from(document.querySelectorAll(
-                'button, md-text-button, paper-button, .colab-dialog-button, colab-dialog button'
+                'button, md-text-button, paper-button, mwc-button, .colab-dialog-button, colab-dialog button'
             ));
             const targets = [
                 'Executar mesmo assim',
@@ -417,17 +417,31 @@ def get_notebook_dom_state(page: Any, target_keywords: Optional[List[str]] = Non
         let targetCell = null;
         let targetIndex = -1;
 
-        // Search backward for target cell matching keywords
-        for (let i = cells.length - 1; i >= 0; i--) {
-            const txt = (cells[i] && typeof cells[i].getText === 'function') ? cells[i].getText() : '';
-            for (const kw of keywords) {
-                if (txt.includes(kw)) {
+        // Prioritize exact match on primary keyword from the top
+        if (keywords && keywords.length > 0) {
+            for (let i = 0; i < cells.length; i++) {
+                const txt = (cells[i] && typeof cells[i].getText === 'function') ? cells[i].getText() : '';
+                if (txt.includes(keywords[0])) {
                     targetCell = cells[i];
                     targetIndex = i;
                     break;
                 }
             }
-            if (targetCell) break;
+        }
+
+        // Search backward for target cell matching any keywords if not found
+        if (!targetCell) {
+            for (let i = cells.length - 1; i >= 0; i--) {
+                const txt = (cells[i] && typeof cells[i].getText === 'function') ? cells[i].getText() : '';
+                for (const kw of keywords) {
+                    if (txt.includes(kw)) {
+                        targetCell = cells[i];
+                        targetIndex = i;
+                        break;
+                    }
+                }
+                if (targetCell) break;
+            }
         }
 
         // DOM fallback if model is unavailable
@@ -448,21 +462,28 @@ def get_notebook_dom_state(page: Any, target_keywords: Optional[List[str]] = Non
             }
         }
 
-        const isRunningBtn = Array.from(document.querySelectorAll(
-            'colab-run-button[title*="Interromper"], colab-run-button[aria-label*="Interromper"], colab-run-button.running'
-        ));
+        const allRunBtns = Array.from(document.querySelectorAll('colab-run-button'));
+        let hasRunningBtn = false;
+        let hasPendingBtn = false;
+        for (const rb of allRunBtns) {
+            const sr = rb.shadowRoot;
+            const wrap = sr ? sr.querySelector('.cell-execution') : null;
+            const cls = wrap ? wrap.className : '';
+            if (cls.includes('running')) hasRunningBtn = true;
+            if (cls.includes('pending') || cls.includes('waiting')) hasPendingBtn = true;
+        }
 
         const nb = typeof colab !== 'undefined' && colab.global ? colab.global.notebook : null;
-        let running = isRunningBtn.length > 0;
+        let running = hasRunningBtn;
         if (nb && typeof nb.isExecuting === 'function') {
             running = running || nb.isExecuting();
         }
-        let pending = false;
+        let pending = hasPendingBtn;
         let outText = '';
 
         if (targetCell) {
             running = running || (targetCell.isRunning ? targetCell.isRunning() : false);
-            pending = targetCell.isPending ? targetCell.isPending() : false;
+            pending = pending || (targetCell.isPending ? targetCell.isPending() : false);
             const dom = targetCell.getElement ? targetCell.getElement() : (targetCell.element_ || targetCell.dom_);
             const outDiv = dom ? dom.querySelector('.output, colab-output, .output-stream, .output_text') : null;
             outText = outDiv ? outDiv.innerText.slice(-1200) : '';
@@ -598,26 +619,37 @@ def trigger_cell_execution(
 
             const cells = nb.cells;
             let targetCell = null;
-            for (let i = cells.length - 1; i >= 0; i--) {
-                const txt = cells[i].getText ? cells[i].getText() : '';
-                for (const kw of keywords) {
-                    if (txt.includes(kw)) {
+            if (keywords && keywords.length > 0) {
+                for (let i = 0; i < cells.length; i++) {
+                    const txt = cells[i].getText ? cells[i].getText() : '';
+                    if (txt.includes(keywords[0])) {
                         targetCell = cells[i];
                         break;
                     }
                 }
-                if (targetCell) break;
             }
             if (!targetCell) {
-                targetCell = cells[cells.length - 1];
+                for (let i = cells.length - 1; i >= 0; i--) {
+                    const txt = cells[i].getText ? cells[i].getText() : '';
+                    for (const kw of keywords) {
+                        if (txt.includes(kw)) {
+                            targetCell = cells[i];
+                            break;
+                        }
+                    }
+                    if (targetCell) break;
+                }
+            }
+            if (!targetCell) {
+                targetCell = cells[0];
             }
 
             const elem = targetCell.getElement ? targetCell.getElement() : (targetCell.element_ || targetCell.dom_);
             const oldText = targetCell.getText ? targetCell.getText() : '';
-            const isProperZquoridor = oldText.includes('zquoridor') && oldText.includes('run_colab_worker.py');
+            const matchesKeywords = keywords.some(kw => oldText.includes(kw));
 
             if (targetCell.isRunning && targetCell.isRunning()) {
-                if (!force && isProperZquoridor) {
+                if (!force && matchesKeywords) {
                     return { success: true, alreadyRunning: true };
                 }
                 if (typeof targetCell.interrupt === 'function') {
@@ -635,10 +667,16 @@ def trigger_cell_execution(
             }
 
             if (newCode) {
-                if (targetCell.model && targetCell.model.setText) {
+                if (typeof targetCell.setText === 'function') {
+                    targetCell.setText(newCode);
+                }
+                if (targetCell.model && typeof targetCell.model.setText === 'function') {
                     targetCell.model.setText(newCode);
                 }
-                if (targetCell.model && targetCell.model.removeOutputs) {
+                if (targetCell.model && targetCell.model.textModel && typeof targetCell.model.textModel.setValue === 'function') {
+                    targetCell.model.textModel.setValue(newCode);
+                }
+                if (targetCell.model && typeof targetCell.model.removeOutputs === 'function') {
                     targetCell.model.removeOutputs();
                 }
 
@@ -672,25 +710,38 @@ def trigger_cell_execution(
                 }
             }
 
+            if (typeof nb !== 'undefined' && typeof nb.save === 'function') {
+                try { nb.save(); } catch (e) {}
+            }
+
             if (elem && elem.scrollIntoView) elem.scrollIntoView();
 
-            if (typeof targetCell.manualExecute === 'function') {
-                targetCell.manualExecute();
-                return { success: true, method: 'manualExecute' };
-            } else if (elem) {
+            let executed = false;
+            if (elem) {
                 const btn = elem.querySelector('colab-run-button');
                 if (btn) {
                     if (btn.shadowRoot) {
-                        const inner = btn.shadowRoot.querySelector('button, [role="button"]');
-                        if (inner) inner.click();
-                        else btn.click();
+                        const inner = btn.shadowRoot.querySelector('#run-button, button, [role="button"]');
+                        if (inner) {
+                            inner.click();
+                            executed = true;
+                        } else {
+                            btn.click();
+                            executed = true;
+                        }
                     } else {
                         btn.click();
+                        executed = true;
                     }
-                    return { success: true, method: 'colab-run-button' };
                 }
             }
-            return { success: false, reason: 'no_run_method' };
+            if (typeof targetCell.manualExecute === 'function') {
+                try {
+                    targetCell.manualExecute();
+                    executed = true;
+                } catch (e) {}
+            }
+            return { success: executed, method: 'run-button' };
         }""", {"newCode": new_code, "keywords": target_keywords, "force": force})
         time.sleep(3)
         dismiss_modals(page)

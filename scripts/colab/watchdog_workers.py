@@ -84,7 +84,8 @@ def init_worker_session(p: Any, worker: Dict[str, Any], headless: bool, timeout_
             print(f"  Attaching over live CDP on port {cdp_port}...")
             browser = p.chromium.connect_over_cdp(f"http://127.0.0.1:{cdp_port}")
             ctx = browser.contexts[0] if browser.contexts else browser.new_context()
-            page = ctx.pages[0] if ctx.pages else ctx.new_page()
+            colab_pages = [pg for pg in ctx.pages if "colab.research.google.com" in (pg.url or "")]
+            page = colab_pages[0] if colab_pages else (ctx.pages[0] if ctx.pages else ctx.new_page())
             is_cdp = True
         else:
             ctx = launch_stealth_context(
