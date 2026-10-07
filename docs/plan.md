@@ -108,6 +108,18 @@ with a shared ten-CPU affinity. The archive certificate is under
 `results/benchmarks/edge_acc_campaign_clock_v3/frozen_main_reference/` in the
 experimental checkout. The queue startup module is under the same campaign's
 `queue/` directory. No search default or candidate promotion changed Main.
+The matrix report counted single-color openings as complete pairs and combined
+candidate and shared OFF rows in its primary 3+2 totals. The corrected report
+counts only openings with both colors and reports the candidate separately.
+It also permits a complete OFF baseline without a candidate sample. Two
+focused report tests passed. The corrected 504 delta H2H sample has seven
+single games and zero complete pairs. No full 3+2 condition is complete.
+The resumed hybrid 504 Titanium shard later stopped again after its second
+infrastructure attempt. The queue reports a failed task; the child log has
+no exception details. Sixty-two candidate game records remain, including the
+previous code-15 process exit. The OS-level cause remains unresolved. The
+local matrix is inactive until the new failure is diagnosed. No failed or
+interrupted game record was removed or retried as a real clock loss.
 Before later training, combine the historical and new data, deduplicate state
 identities, and assign shared validation groups across all account outputs.
 Do not concatenate account-specific train and validation splits unchanged.
