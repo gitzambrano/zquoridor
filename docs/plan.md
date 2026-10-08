@@ -120,6 +120,14 @@ no exception details. Sixty-two candidate game records remain, including the
 previous code-15 process exit. The OS-level cause remains unresolved. The
 local matrix is inactive until the new failure is diagnosed. No failed or
 interrupted game record was removed or retried as a real clock loss.
+The user later authorized dispatch of every remaining local game. The queue
+resumed with its original frozen identities and the same five H2H or Titanium
+workers and six Claustrophobia workers. The detached launcher requests Windows
+job breakaway and enables Python fault traces. A startup audit records child
+process exit codes in `queue/process_exit_audit.jsonl`. The audit does not
+change game clocks, engine binaries, weights, referee behavior, or game rows.
+The supervisor remains bounded by its existing infrastructure retry policy.
+The unresolved historical engine exit continues to block promotion.
 Before later training, combine the historical and new data, deduplicate state
 identities, and assign shared validation groups across all account outputs.
 Do not concatenate account-specific train and validation splits unchanged.
