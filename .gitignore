@@ -139,3 +139,32 @@ scripts/colab/cookies/
 **/cookies.json
  
 scripts/colab/launch_colab_*.bat
+
+# Experimental archives retain source and metadata, not generated artifacts.
+experimental/**/weights/
+experimental/**/artifacts/
+experimental/benchmarks/
+experimental/experiments/**
+!experimental/experiments/**/
+!experimental/experiments/**/*.architecture.json
+!experimental/experiments/**/*.md
+experimental/experiments/**/mixed_dataset*/
+experimental/experiments/**/*.bin
+experimental/experiments/**/*.npz
+experimental/experiments/**/*.npy
+experimental/experiments/**/*.csv
+experimental/experiments/**/*.jsonl
+experimental/edge_acc/**/__pycache__/
+experimental/edge_acc/**/*.jsonl
+experimental/edge_acc/tools/path_clash_bot_arena/
+experimental/edge_acc/training/
+experimental/edge_acc/build/
+experimental/edge_acc/tools/*
+!experimental/edge_acc/tools/*edge*.py
+!experimental/edge_acc/tools/run_cross_network_h2h.py
+!experimental/edge_acc/tools/run_transform_search_confirmation.py
+!experimental/edge_acc/tools/external/
+experimental/edge_acc/tools/external/*
+!experimental/edge_acc/tools/external/zquoridor_uci.cpp
+# Compatibility alias for the consolidated experimental artifacts.
+results/experiments/

@@ -116,7 +116,7 @@ static void dumpSearchRoot(const Runner& runner, const qr::State& state,
 }
 
 struct Options {
-    std::string nnuePath;
+    std::string nnuePath = "data/nnue/nnue_weights_int8.bin";
     bool dumpRoot = false;
     bool useMcab = true;
     double cpuct = -1.0;
@@ -278,7 +278,7 @@ int main(int argc, char** argv) {
         if (cmd.empty()) continue;
 
         if (cmd == "uci") {
-            std::cout << "id name Zquoridor 3.01\n";
+            std::cout << "id name zQuoridor 4.0\n";
             std::cout << "id author gitzambrano\n";
             std::cout << "uciok\n" << std::flush;
         } else if (cmd == "isready") {

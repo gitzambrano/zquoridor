@@ -1,40 +1,9 @@
-"""
-parity_check.py -- lado Python da checagem de paridade numérica com
-nnue_verify.cpp. Recalcula value_wl/value_aux/policy pra MESMA posição de
-teste fixa (estado inicial + muro H em (3,4) + muro V em (5,2)), usando
-só numpy (sem depender do objeto nn.Module do PyTorch) pra recomputar
-exatamente as fórmulas de nnue.hpp a partir do arquivo de pesos
-exportado. Se bater com a saída de `./nnue_verify data/nnue/nnue_weights.bin`,
-o pipeline export -> load -> forward em C++ está numericamente correto.
+"""Evaluate float and quantized NNUE weights for Python and C++ parity.
 
-CABEÇA AUXILIAR REMOVIDA (2026-08): `value` já foi duas cabeças
-independentes (value_wl/value_aux); a auxiliar (imitação MSE da
-heurística evalSimple) foi removida de nnue.hpp/train_nnue.py por virar
-dead weight -- see the architecture table in docs/plan.md and CLAUDE.md ("Evaluation: what each
-estágio usa"). Este script computa e imprime só value_wl agora.
-
-ALINHADO COM NNUE.HPP (354 features, 2026-08): este script ficou para
-trás duas vezes no passado e as duas vezes o sintoma foi o mesmo (saída
-sem sentido nenhum, porque o load lê o arquivo com o layout errado):
-(1) buckets de muros restantes (WALLS_LEFT_BUCKETS) viraram feature --
-    NUM_FEATURES subiu de 332 para 354;
-(2) buildAccumulator passou a ESPELHAR peão/slot de muro por perspectiva
-    (mirroredPawnCell/mirroredWallSlot em nnue.hpp) -- sem isso a
-    perspectiva 1 lia as linhas de peso da perspectiva 0. As funções
-    mirrored_* abaixo reproduzem esse espelhamento. Se nnue.hpp ganhar
-    feature ou transformação nova, atualize AQUI no mesmo commit.
-
-Também recomputa, de forma totalmente independente do C++, o forward
-QUANTIZADO (int8/int16, mesmas fórmulas de NNUEWeightsQuant em nnue.hpp)
-a partir do arquivo gerado por training/quantize_nnue.py -- ponto de
-atenção: `//` do NumPy arredonda pra baixo (floor); divisão de inteiros
-em C++ trunca em direção a zero. Pra valores negativos os dois divergem
-(ex.: -7 // 2 = -4 em Python, -7 / 2 = -3 em C++), então as divisões de
-dequantização aqui usam `trunc_div` (baseada em np.trunc/np.fix), não
-`//`, pra bater exatamente com nnue.hpp::truncDiv.
-
-Uso:
-    python3 parity_check.py ../data/nnue/nnue_weights.bin [../data/nnue/nnue_weights_int8.bin]
+The default architecture matches the 858-input production network.
+Use --architecture to check an archived network. The verification position
+contains the initial pawns, one horizontal wall, and one vertical wall.
+Integer divisions use truncation toward zero to match C++.
 """
 import os
 import sys
@@ -45,7 +14,8 @@ from student_model import encode_features
 N, WS = 9, 8
 DIST_BUCKETS = 21   # ver DIST_BUCKETS em nnue.hpp (Seção 7.10 do plano)
 WALLS_LEFT_BUCKETS = 11  # WALLS_PER_PLAYER + 1 -- ver WALLS_LEFT_BUCKETS em nnue.hpp
-NUM_FEATURES = 504  # multipath_phase: race + multipath + phase features
+NUM_FEATURES = 858  # Production contact architecture.
+ARCHITECTURE = "multipath_phase_contact_bucketed"
 HIDDEN = 512
 POLICY_OUT = N * N + WS * WS * 2  # 209
 DIST_FEAT_BASE = N * N + N * N + WS * WS * 2              # 290
@@ -296,7 +266,7 @@ def build_feature_vector(own_pawn, opp_pawn, walls_h_bits, walls_v_bits,
         "walls_left_own": np.array([own_walls_left], dtype=np.int64),
         "walls_left_opp": np.array([opp_walls_left], dtype=np.int64),
     }
-    return encode_features(data, np.array([0], dtype=np.int64), "multipath_phase")[0]
+    return encode_features(data, np.array([0], dtype=np.int64), ARCHITECTURE)[0]
 
 
 def build_active_features(own_pawn, opp_pawn, walls_h_bits, walls_v_bits,
@@ -371,11 +341,17 @@ def forward_quant(W, active_feats, total_walls=20):
 
 
 if __name__ == "__main__":
-    if len(sys.argv) not in (2, 3):
-        print(__doc__)
-        sys.exit(1)
-    W = load_weights(sys.argv[1])
-    Wq = load_weights_quant(sys.argv[2]) if len(sys.argv) == 3 else None
+    import argparse
+    from student_model import FEATURES
+    parser = argparse.ArgumentParser(description="Check Python NNUE evaluation for the selected architecture.")
+    parser.add_argument("float_weights")
+    parser.add_argument("int8_weights", nargs="?")
+    parser.add_argument("--architecture", default=ARCHITECTURE, choices=FEATURES)
+    args = parser.parse_args()
+    ARCHITECTURE = args.architecture
+    NUM_FEATURES = FEATURES[ARCHITECTURE]
+    W = load_weights(args.float_weights)
+    Wq = load_weights_quant(args.int8_weights) if args.int8_weights else None
 
     # mesma posição de teste do nnue_verify.cpp: estado inicial + muro H(3,4) + muro V(5,2)
     pawn0 = cell_idx(0, 4)

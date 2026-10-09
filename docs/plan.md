@@ -1,6 +1,6 @@
 # Zquoridor: Project State, Results, and Roadmap
 
-Last reviewed: 2026-10-07. This document is the single canonical reference for
+Last reviewed: 2026-10-08. This document is the single canonical reference for
 project status, training history, available datasets, self-play configurations,
 experimental measurements, and future plans.
 
@@ -10,6 +10,44 @@ are untracked artifacts outside version control.
 ---
 
 ## 1. Current Production Baseline
+
+### Version 4.0 operator promotion (2026-10-08)
+
+The operator explicitly authorized version 4.0 with the 858-input contact model
+and `delta_dense_only` as production defaults. This decision overrides the
+normal evidence gate for this release. The statistical gate did not pass.
+External 200 ms improvement intervals remain inconclusive. Native 3+2 tests
+against Claustrophobia and Main 504 are missing for this configuration.
+The operator stopped local strength tests. No campaign resumes automatically.
+
+The int8 weights have SHA-256
+`f8d85cae979bbf2047532e31daa61859c5f20246fc58de225f85ced0bef8841f`.
+The previous 504 production weights and source remain under
+`experimental/releases/v3_01_504/`. All training experiments now reside under
+`experimental/experiments/`. Edge source and profile definitions reside under
+`experimental/edge_acc/` and `experimental/profiles.json`. Raw campaign records
+reside under `experimental/benchmarks/`. Historical absolute paths use local
+directory junctions. No new branch or worktree represents a profile.
+
+Production enables contact features, dense feature deltas, and BFS replay.
+Accumulator cache variants remain disabled by default. Claustrophobia uses
+actual monotonic deadlines. Titanium uses the corrected clock bridge for both
+fixed move time and native clocks. The benchmark default remains 200 ms.
+Native 3+2 means 180000 ms initial time and 2000 ms increment.
+
+The frozen OFF 858 executable and its stored manifest agree with each other,
+but both differ from the archive certificate. Therefore, those records do not
+supply a certified OFF baseline. A rebuild from certified archived source did
+not reproduce the certified binary hash. The records remain unchanged.
+The historical 504 hybrid process exit remains unresolved.
+
+The exploratory 858 hybrid sample completed 54 games against Claustrophobia
+at native 3+2. Center scored 28.6% across 14 pairs, with a paired bootstrap
+95% interval of 14.3% to 39.3%. Normal scored 15.4% across 13 pairs, with an
+interval of 3.8% to 26.9%. Each book had two actual clock losses. These results
+refer to the hybrid configuration, not the promoted delta-only configuration.
+No 504 OFF native 3+2 Claustrophobia sample exists in the corrected matrix.
+
 
 ### External clock correction and game collection
 
@@ -142,12 +180,12 @@ The table below summarizes the operational state of Zquoridor in production.
 
 | Component | Production Specification |
 | --- | --- |
-| Release | Zquoridor 3.01 |
+| Release | zQuoridor 4.0 |
 | Search Engine | Hybrid PUCT and MCGS graph search with alpha-beta verification, transposition tables, persistent tree reuse, repetition escape, and adaptive time budgeting |
 | Pondering | Opponent-root pondering with subtree reuse. In the browser, background work runs in bounded Web Worker slices |
-| NNUE Architecture | `multipath_phase_bucketed:512`: 504 sparse inputs, 512 SCReLU units, 6 wall-count value heads with 2-layer MLPs (`512 → 32 → 32 → 1`), policy head `512 → 209`, QAT int8 |
-| Production Weights | `data/nnue/nnue_weights.bin` (float32) and `data/nnue/nnue_weights_int8.bin` (int8 quantized, sha256: `f29b4bdde846191a747166885b1523ece5198f067beaa86688e5462e18232792`) |
-| Provenance Directory | `results/experiments/aux_policy_stage_a/Soup_Tri_Equal/` (Convex soup: 33.3% A1 + 33.3% AS1 + 33.4% AS2-ep14) |
+| NNUE Architecture | `multipath_phase_contact_bucketed:512`: 858 sparse inputs, 512 SCReLU units, 6 wall-count value heads with 2-layer MLPs (`512 â†’ 32 â†’ 32 â†’ 1`), policy head `512 â†’ 209`, QAT int8 |
+| Production Weights | `data/nnue/nnue_weights.bin` (float32) and `data/nnue/nnue_weights_int8.bin` (int8 quantized, sha256: `f8d85cae979bbf2047532e31daa61859c5f20246fc58de225f85ced0bef8841f`) |
+| Provenance Directory | `experimental/experiments/contact_soup_tri_512/soup_tri_champion/` |
 | Native Executable | Compiled with `ZQ_NNUE_VALUE_BUCKETS=6` and `ZQ_NNUE_VALUE_DEPTH=2` |
 | Web Platform | WebAssembly build with UCI text protocol, time controls, and analysis engine |
 
@@ -184,7 +222,7 @@ Validation loss values are comparable only within identical datasets and loss ta
 | `multipath_phase_contact_bucketed:512` Arm 1 (Sprint) | 858 / 512 | 21.121M mixture, 30 epochs, QAT, batch 8192, T=2.0, beta=0.15 | 1.31565 | Surpassed 504 Arm 1 val loss (1.31828) | Training complete |
 | `multipath_phase_contact_bucketed:512` Arm 2 (Surprise) | 858 / 512 | 21.121M surprise mixture, 30 epochs, QAT, batch 8192, alpha=0.5, s_max=4.0 | 1.61448 | Surpassed 504 Arm 2 val loss (1.62305) | Training complete |
 | `multipath_phase_contact_bucketed:512` Arm 3 (Regularized) | 858 / 512 | 21.121M surprise mixture, 30 epochs, QAT, batch 8192, beta=0.25 | 1.71567 | Surpassed 504 Arm 3 val loss (1.72065) | Training complete |
-| `multipath_phase_contact_bucketed:512` Tri-Model Soup (`Soup_Tri_Contact`) | 858 / 512 | Convex soup: 33.3% Arm 1 + 33.3% Arm 2 + 33.4% Arm 3, int8 (1,093,668 B) | — | **Full 800g External Battery**: 65.4% Claustro Normal (+110.7 Elo), 58.0% Claustro CR (+56.1 Elo), 71.0% Titanium Normal (+155.5 Elo), 63.0% Titanium CR (+92.5 Elo); 51.5% H2H vs Main 3.01 | Crushes baseline (+78 to +145 Elo); beats Main on Titanium CR (63.0% vs 56.0%), but trails Main 3.01 on Claustro CR (58.0% vs 66.0%) and Titanium Normal (71.0% vs 74.0%). Disqualified from promotion under strict gate. |
+| `multipath_phase_contact_bucketed:512` Tri-Model Soup (`Soup_Tri_Contact`) | 858 / 512 | Convex soup: 33.3% Arm 1 + 33.3% Arm 2 + 33.4% Arm 3, int8 (1,093,668 B) | â€” | **Full 800g External Battery**: 65.4% Claustro Normal (+110.7 Elo), 58.0% Claustro CR (+56.1 Elo), 71.0% Titanium Normal (+155.5 Elo), 63.0% Titanium CR (+92.5 Elo); 51.5% H2H vs Main 3.01 | Crushes baseline (+78 to +145 Elo); beats Main on Titanium CR (63.0% vs 56.0%), but trails Main 3.01 on Claustro CR (58.0% vs 66.0%) and Titanium Normal (71.0% vs 74.0%). Disqualified from promotion under strict gate. |
 
 ---
 
@@ -298,11 +336,11 @@ The experimental candidate `multipath_phase_contact_bucketed:512` (`contact-buck
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |
 | vs Main Champion (Normal) | 100 | 46.5% | -24.4 [-77.7, +27.9] | 3.86 | 20,306 | 3.81 | 23,122 | Baseline retained |
 | vs Main Champion (Center Rush) | 100 | 47.0% | -20.9 [-70.4, +27.9] | 4.36 | 19,095 | 4.34 | 21,223 | Baseline retained |
-| vs Claustrophobia (Normal) | 100 | 55.5% | +38.4 [-20.9, +100.0] | 1.61 | 25,987 | — | — | Solid external win |
-| vs Claustrophobia (Center Rush) | 100 | 46.0% | -27.9 [-85.1, +27.9] | 1.54 | 26,231 | — | — | Narrow external loss |
-| vs Titanium (Normal) | 100 | 61.0% | +77.7 [+27.9, +131.0] | 2.80 | 25,760 | — | — | Clear external win |
-| vs Titanium (Center Rush) | 100 | 54.0% | +27.9 [-20.9, +77.7] | 2.07 | 22,459 | — | — | Solid external win |
-| **Combined External Opponents** | **400** | **54.13%** | **+28.8** | **—** | **—** | **—** | **—** | **Positive external battery** |
+| vs Claustrophobia (Normal) | 100 | 55.5% | +38.4 [-20.9, +100.0] | 1.61 | 25,987 | â€” | â€” | Solid external win |
+| vs Claustrophobia (Center Rush) | 100 | 46.0% | -27.9 [-85.1, +27.9] | 1.54 | 26,231 | â€” | â€” | Narrow external loss |
+| vs Titanium (Normal) | 100 | 61.0% | +77.7 [+27.9, +131.0] | 2.80 | 25,760 | â€” | â€” | Clear external win |
+| vs Titanium (Center Rush) | 100 | 54.0% | +27.9 [-20.9, +77.7] | 2.07 | 22,459 | â€” | â€” | Solid external win |
+| **Combined External Opponents** | **400** | **54.13%** | **+28.8** | **â€”** | **â€”** | **â€”** | **â€”** | **Positive external battery** |
 | **Combined Head-to-Head vs Main** | **200** | **46.75%** | **-22.6** | **4.11** | **19,700** | **4.08** | **22,172** | **Main champion retained** |
 
 #### Battery Analysis and Architectural Decision
@@ -325,13 +363,13 @@ Evaluated training-only auxiliary policy head ($T=2.0, \beta=0.15$) against iden
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |
 | vs Main Champion (Normal) | 100 | **51.5%** | **+10.4 [-38.4, +59.6]** | 3.61 | 22,611 | 3.45 | 22,948 | **Beats Main** |
 | vs Main Champion (Center Rush) | 100 | **51.0%** | **+6.9 [-41.9, +56.1]** | 5.28 | 21,883 | 5.27 | 22,366 | **Beats Main** |
-| vs Claustrophobia (Normal) | 100 | 46.0% | -27.9 [-92.2, +34.9] | 0.63 | 28,306 | — | — | Narrow loss |
-| vs Claustrophobia (Center Rush) | 100 | **54.0%** | **+27.9 [-27.9, +85.1]** | 1.40 | 29,441 | — | — | **Beats Claustrophobia** |
-| vs Titanium (Normal) | 100 | **70.0%** | **+147.2 [+77.7, +230.2]** | 1.77 | 25,214 | — | — | **Decisive win** |
-| vs Titanium (Center Rush) | 100 | **57.0%** | **+49.0 [+0.0, +100.0]** | 2.12 | 21,898 | — | — | **Clear win** |
+| vs Claustrophobia (Normal) | 100 | 46.0% | -27.9 [-92.2, +34.9] | 0.63 | 28,306 | â€” | â€” | Narrow loss |
+| vs Claustrophobia (Center Rush) | 100 | **54.0%** | **+27.9 [-27.9, +85.1]** | 1.40 | 29,441 | â€” | â€” | **Beats Claustrophobia** |
+| vs Titanium (Normal) | 100 | **70.0%** | **+147.2 [+77.7, +230.2]** | 1.77 | 25,214 | â€” | â€” | **Decisive win** |
+| vs Titanium (Center Rush) | 100 | **57.0%** | **+49.0 [+0.0, +100.0]** | 2.12 | 21,898 | â€” | â€” | **Clear win** |
 | **Combined Head-to-Head vs Main** | **200** | **51.25%** | **+8.7** | **4.45** | **22,247** | **4.36** | **22,657** | **Beats Main on both books** |
-| **Combined External Opponents** | **400** | **56.75%** | **+47.3** | **—** | **—** | **—** | **—** | **Strong external battery** |
-| **Total 600-Game Promotion Battery** | **600** | **54.92%** | **+34.3** | **—** | **—** | **—** | **—** | **Positive overall across all 6 sub-suites** |
+| **Combined External Opponents** | **400** | **56.75%** | **+47.3** | **â€”** | **â€”** | **â€”** | **â€”** | **Strong external battery** |
+| **Total 600-Game Promotion Battery** | **600** | **54.92%** | **+34.3** | **â€”** | **â€”** | **â€”** | **â€”** | **Positive overall across all 6 sub-suites** |
 
 ### Candidate `AS1_surprise_aux_t20_b15` Promotion Battery Results (600 games at 200 ms/move)
 
@@ -341,13 +379,13 @@ Evaluated combined candidate pairing Policy Surprise Weighting ($\alpha=0.5, S_{
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |
 | vs Main Champion (Normal) | 100 | **50.5%** | **+3.5 [-52.5, +63.2]** | 4.13 | 21,512 | 4.10 | 21,552 | **Beats Main** |
 | vs Main Champion (Center Rush) | 100 | **51.5%** | **+10.4 [-52.5, +74.1]** | 5.04 | 20,988 | 5.01 | 20,741 | **Beats Main** |
-| vs Claustrophobia (Normal) | 100 | **52.5%** | **+17.4 [-45.4, +81.4]** | 1.28 | 24,964 | — | — | **+45.3 Elo jump over A1 (reverses deficit)** |
-| vs Claustrophobia (Center Rush) | 100 | 49.0% | -6.9 [-70.4, +56.1] | 0.94 | 24,520 | — | — | Narrow external loss |
-| vs Titanium (Normal) | 100 | **67.0%** | **+123.0 [+56.1, +190.8]** | 2.01 | 28,043 | — | — | **Decisive win** |
-| vs Titanium (Center Rush) | 100 | **64.5%** | **+103.7 [+45.4, +164.1]** | 1.93 | 22,041 | — | — | **Decisive win** |
+| vs Claustrophobia (Normal) | 100 | **52.5%** | **+17.4 [-45.4, +81.4]** | 1.28 | 24,964 | â€” | â€” | **+45.3 Elo jump over A1 (reverses deficit)** |
+| vs Claustrophobia (Center Rush) | 100 | 49.0% | -6.9 [-70.4, +56.1] | 0.94 | 24,520 | â€” | â€” | Narrow external loss |
+| vs Titanium (Normal) | 100 | **67.0%** | **+123.0 [+56.1, +190.8]** | 2.01 | 28,043 | â€” | â€” | **Decisive win** |
+| vs Titanium (Center Rush) | 100 | **64.5%** | **+103.7 [+45.4, +164.1]** | 1.93 | 22,041 | â€” | â€” | **Decisive win** |
 | **Combined Head-to-Head vs Main** | **200** | **51.00%** | **+7.0** | **4.59** | **21,250** | **4.56** | **21,146** | **Beats Main on both books** |
-| **Combined External Opponents** | **400** | **58.25%** | **+57.8** | **—** | **—** | **—** | **—** | **Substantial external bot margin** |
-| **Total 600-Game Promotion Battery** | **600** | **55.83%** | **+40.7** | **—** | **—** | **—** | **—** | **+40.7 Elo overall; 5 of 6 sub-suites won** |
+| **Combined External Opponents** | **400** | **58.25%** | **+57.8** | **â€”** | **â€”** | **â€”** | **â€”** | **Substantial external bot margin** |
+| **Total 600-Game Promotion Battery** | **600** | **55.83%** | **+40.7** | **â€”** | **â€”** | **â€”** | **â€”** | **+40.7 Elo overall; 5 of 6 sub-suites won** |
 
 #### Analysis of AS1 Results:
 1. **Surprise Weighting Validation**: Policy surprise weighting proved its core hypothesis on Claustrophobia Normal, reversing A1's 46.0% deficit to a winning **52.5%** (+17.4 Elo, a **+45.3 Elo turnaround**).
@@ -393,12 +431,12 @@ The initial 300-game screening battery (25 opening pairs / 50 games per sub-suit
 | :--- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | :--- |
 | vs Main 3.01 (Normal) | 50 | 50.0% | +0.0 [-70.4, +70.4] | 4.09 | 22,840 | 4.07 | 19,797 | Even (+24.4 Elo vs single contact) |
 | vs Main 3.01 (Center Rush) | 50 | **53.0%** | **+20.9 [-13.9, +70.4]** | 4.27 | 17,451 | 4.30 | 15,571 | **Beats Main** (+41.8 Elo vs single contact) |
-| vs Claustrophobia (Normal) | 50 | **54.0%** | **+27.9 [-56.1, +115.2]** | 1.11 | 18,636 | — | — | Positive external win |
-| vs Claustrophobia (Center Rush) | 50 | **56.0%** | **+41.9 [-41.9, +130.9]** | 1.37 | 21,649 | — | — | **+69.8 Elo swing** over single contact (46%) |
-| vs Titanium (Normal) | 50 | **66.0%** | **+115.2 [+27.9, +219.9]** | 2.08 | 23,164 | — | — | Clear external win |
-| vs Titanium (Center Rush) | 50 | 48.0% | -13.9 [-85.0, +56.1] | 1.86 | 20,188 | — | — | 1-pair deficit (24 vs 26 pts) |
+| vs Claustrophobia (Normal) | 50 | **54.0%** | **+27.9 [-56.1, +115.2]** | 1.11 | 18,636 | â€” | â€” | Positive external win |
+| vs Claustrophobia (Center Rush) | 50 | **56.0%** | **+41.9 [-41.9, +130.9]** | 1.37 | 21,649 | â€” | â€” | **+69.8 Elo swing** over single contact (46%) |
+| vs Titanium (Normal) | 50 | **66.0%** | **+115.2 [+27.9, +219.9]** | 2.08 | 23,164 | â€” | â€” | Clear external win |
+| vs Titanium (Center Rush) | 50 | 48.0% | -13.9 [-85.0, +56.1] | 1.86 | 20,188 | â€” | â€” | 1-pair deficit (24 vs 26 pts) |
 | **Combined H2H vs Main 3.01** | **100** | **51.50%** | **+10.4** | **4.18** | **20,146** | **4.19** | **17,684** | **Positive H2H (+33.0 Elo turnaround)** |
-| **Combined External Bots** | **200** | **56.00%** | **+41.9** | **—** | **—** | **—** | **—** | **Solid external performance** |
+| **Combined External Bots** | **200** | **56.00%** | **+41.9** | **â€”** | **â€”** | **â€”** | **â€”** | **Solid external performance** |
 
 #### Key Findings and Architectural Decision
 1. **Model Soup Effectiveness on 858 Contact Features**: Model Soup dramatically rehabilitated the larger contact architecture. In previous experiments, a single contact checkpoint trailed Main 3.01 at 46.75% (-22.6 Elo) and lost Center Rush to Claustrophobia at 46.0%. `Soup_Tri_Contact` reversed both deficits, achieving **51.5% combined H2H vs Main 3.01** (+10.4 Elo) and **56.0% vs Claustrophobia Center Rush** (+69.8 Elo swing).
@@ -451,3 +489,138 @@ flowchart TD
 - **Mirror reflection regularizes training**: Horizontal symmetry reflection (`mirror_h=True`) prevents sample distribution drift and eliminates lateral bias without additional data collection.
 - **Deduplication eliminates outcome selection bias**: Averaging visit distributions across identical states eliminates noise from individual game trajectories.
 - **Pondering provides massive internal advantage**: Opponent-root pondering with subtree reuse yields a +63.1% win rate over non-pondering configurations without consuming additional clock time during the player's turn.
+
+### 2026-10-08 08:27 BRT: Titanium 858 v3 runner interruption
+
+The audit recorded child PID 30816 exit code 3221225786 (0xC000013A) at 11:27:48 UTC. The operating system cause remains unknown. The supervisor started its second bounded attempt as PID 13168. The child resumed the remaining 75 games and preserved the 25 completed games. The current report contains 29 candidate games and 100 baseline games. No failed game row appears in this sample. Five active game pairs retain CPU affinity 0x3FF and BelowNormal priority. The GPU has more than 2048 MiB free. This interruption does not establish a clock loss or an engine strength result. The complete sample and the cause remain unresolved, so promotion remains blocked. No controller settings or engine identities changed.
+
+### 2026-10-08 09:08 BRT: Matrix worker limits reduced
+
+The operator requested a maximum of four Claustrophobia games, four H2H or Titanium games, and eight CPU cores. The active five-worker Titanium 858 v3 shard stopped after 29 candidate games. The supervisor had already restarted this shard once after child PID 30816 exited with code 3221225786 (0xC000013A). The cause remains unknown. The frozen queue identity check rejected the changed worker profile until the queue identity recorded the new scheduler limits. The archived engine, network weights, protocol, and 92-task plan matched the prior identity. The supervisor resumed as PID 30196 with four workers and an eight-core affinity mask. The current shard resumes the 49 outstanding candidate games after the runner loaded 51 completed candidate rows; completed game rows remain available to the resume logic. At 09:09 BRT, four candidate and four Titanium processes were active. The status telemetry reported 408 MiB free RAM and 5,638 MiB free VRAM. RAM monitoring remains read-only under the operator instruction. This shard remains incomplete, so no strength result is available.
+
+
+### 2026-10-08 09:23 BRT: Second Titanium 858 v3 runner interruption
+
+The exit audit recorded child PID 10784 with code 3221225786 (0xC000013A) at 12:23:20 UTC. The operating system cause remains unknown. The supervisor started attempt 2 as PID 25772 and resumed the unfinished shard. The stored shard then contained 67 candidate game rows and 100 OFF baseline rows. Four game pairs ran with CPU affinity 0xFF and BelowNormal priority. GPU telemetry reported 5,308 MiB free. No failed game row appeared in the stored sample; the complete shard remains pending. The queue limits remain four H2H or Titanium games, four Claustrophobia games, and eight CPUs. RAM telemetry remains read-only. This interruption does not establish a clock loss or strength result.
+
+### 2026-10-08 10:41 BRT: Titanium 858 v3 shard 0 completed
+
+The 858 v3 candidate and OFF baseline completed shard 0 with 100 games per participant. The paired sample reported zero failed games and crashes, with two clock losses. The comparison remains incomplete because three of four shards remain. The queue advanced to the 504 OFF baseline for Titanium shard 1. Four game pairs ran with CPU affinity 0xFF and BelowNormal priority. GPU telemetry reported 5,920 MiB free. RAM telemetry reported 407 MiB free. The operator requested read-only RAM monitoring and disabled RAM-based stops. No strength decision follows from this partial sample.
+
+## Version 4.0 evidence snapshot
+
+The following snapshot retains measured scores, paired confidence intervals,
+parity, and isolated speed from the stopped campaign. The 3+2 status cells
+refer to the campaign target of 100 pairs per book. The exploratory hybrid
+sample remains separate. Historical contaminated retries do not enter the
+corrected native-clock evidence.
+
+## 200 ms matrix
+
+| Network | Variant | Parity | Isolated speed vs OFF | H2H vs OFF | Claustrophobia Center | Claustrophobia Normal | Titanium Center | Titanium Normal | 3+2 H2H | 3+2 Claustrophobia | 3+2 Titanium |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| 504 | off | PASS | 1.000Ã— (3 samples) | All 50.0% theoretical reference; 0 Elo reference; N/A observed games, pairs, and CI; Center 50.0% theoretical reference; 0 Elo reference; N/A observed games, pairs, and CI; Normal 50.0% theoretical reference; 0 Elo reference; N/A observed games, pairs, and CI | 27.3%; -170.6 Elo; 95% CI 22.2â€“32.2%; 100/100 pairs | 24.0%; -200.2 Elo; 95% CI 17.0â€“32.0%; 50/50 pairs | 67.0%; +123.0 Elo; 95% CI 61.0â€“73.0%; 100/100 pairs | 76.0%; +200.2 Elo; 95% CI 68.0â€“83.0%; 50/50 pairs | Center PRELIM incomplete (0/100 pairs, 0 failed); Normal PRELIM incomplete (0/100 pairs, 0 failed); 0/4 shards | Center PRELIM incomplete (0/100 pairs, 0 failed); Normal PRELIM incomplete (0/100 pairs, 0 failed); 0/4 shards | Center PRELIM incomplete (50/100 pairs, 0 failed); Normal PRELIM incomplete (50/100 pairs, 0 failed); 2/4 shards |
+| 504 | delta_dense_only | PASS | 1.431Ã— (3 samples) | All 55.2%; +36.6 Elo; 95% CI 52.0â€“58.5%; 200/200 pairs; Center 54.1%; +28.8 Elo; 95% CI 50.6â€“57.9%; 133/133 pairs; Normal 57.5%; +52.2 Elo; 95% CI 50.7â€“64.2%; 67/67 pairs | 32.8%; -125.0 Elo; 95% CI 27.0â€“38.5%; 100/100 pairs; paired Î” +5.5pp [-0.5, +11.8], Î” +45.6 Elo, 100 pairs | 32.0%; -130.9 Elo; 95% CI 25.0â€“39.0%; 50/50 pairs; paired Î” +8.0pp [-1.0, +17.0], Î” +69.3 Elo, 50 pairs | 70.5%; +151.3 Elo; 95% CI 65.0â€“76.0%; 100/100 pairs; paired Î” +3.5pp [-4.5, +11.5], Î” +28.3 Elo, 100 pairs | 79.0%; +230.2 Elo; 95% CI 71.0â€“86.0%; 50/50 pairs; paired Î” +3.0pp [-7.0, +13.0], Î” +29.9 Elo, 50 pairs | Center PRELIM incomplete (0/100 pairs, 0 failed); Normal PRELIM incomplete (0/100 pairs, 0 failed); 1/4 shards | Center PRELIM incomplete (0/100 pairs, 0 failed); Normal PRELIM incomplete (0/100 pairs, 0 failed); 0/4 shards | Center PRELIM incomplete (50/100 pairs, 0 failed); Normal PRELIM incomplete (50/100 pairs, 0 failed); 2/4 shards |
+| 504 | v3_node_dense_bfs | PASS | 1.457Ã— (3 samples) | All 56.1%; +42.8 Elo; 95% CI 52.1â€“60.0%; 200/200 pairs; Center 54.3%; +30.1 Elo; 95% CI 50.0â€“58.6%; 133/133 pairs; Normal 59.7%; +68.3 Elo; 95% CI 51.5â€“67.9%; 67/67 pairs | 33.0%; -123.0 Elo; 95% CI 28.0â€“38.0%; 100/100 pairs; paired Î” +5.8pp [+1.0, +10.5], Î” +47.6 Elo, 100 pairs | 29.0%; -155.5 Elo; 95% CI 21.5â€“36.5%; 50/50 pairs; paired Î” +5.0pp [-3.5, +13.5], Î” +44.7 Elo, 50 pairs | 68.0%; +130.9 Elo; 95% CI 62.5â€“73.5%; 100/100 pairs; paired Î” +1.0pp [-7.0, +9.0], Î” +7.9 Elo, 100 pairs | 79.0%; +230.2 Elo; 95% CI 71.0â€“87.0%; 50/50 pairs; paired Î” +3.0pp [-6.0, +12.0], Î” +29.9 Elo, 50 pairs | Center PRELIM incomplete (0/100 pairs, 0 failed); Normal PRELIM incomplete (0/100 pairs, 0 failed); 0/4 shards | Center PRELIM incomplete (0/100 pairs, 0 failed); Normal PRELIM incomplete (0/100 pairs, 0 failed); 0/4 shards | Center PRELIM incomplete (27/100 pairs, 0 failed); Normal PRELIM incomplete (26/100 pairs, 0 failed); 2/4 shards |
+| 504 | v3 | PASS | 1.273Ã— (1 samples) | All 52.0%; +13.9 Elo; 95% CI 48.2â€“55.5%; 200/200 pairs; Center 51.1%; +7.8 Elo; 95% CI 46.6â€“55.6%; 133/133 pairs; Normal 53.7%; +26.0 Elo; 95% CI 47.0â€“59.7%; 67/67 pairs | 30.5%; -143.1 Elo; 95% CI 25.5â€“35.5%; 100/100 pairs; paired Î” +3.2pp [-1.5, +8.0], Î” +27.5 Elo, 100 pairs | 22.5%; -214.8 Elo; 95% CI 15.0â€“30.0%; 50/50 pairs; paired Î” -1.5pp [-8.0, +4.5], Î” -14.6 Elo, 50 pairs | 67.5%; +127.0 Elo; 95% CI 61.5â€“73.5%; 100/100 pairs; paired Î” +0.5pp [-6.0, +7.0], Î” +3.9 Elo, 100 pairs | 87.0%; +330.2 Elo; 95% CI 80.0â€“93.0%; 50/50 pairs; paired Î” +11.0pp [+0.0, +21.0], Î” +130.0 Elo, 50 pairs | Center PRELIM incomplete (0/100 pairs, 0 failed); Normal PRELIM incomplete (0/100 pairs, 0 failed); 0/4 shards | Center PRELIM incomplete (0/100 pairs, 0 failed); Normal PRELIM incomplete (0/100 pairs, 0 failed); 0/4 shards | Center PRELIM incomplete (25/100 pairs, 0 failed); Normal PRELIM incomplete (25/100 pairs, 0 failed); 1/4 shards |
+| 858 | off | PASS | 1.000Ã— (3 samples) | All 50.0% theoretical reference; 0 Elo reference; N/A observed games, pairs, and CI; Center 50.0% theoretical reference; 0 Elo reference; N/A observed games, pairs, and CI; Normal 50.0% theoretical reference; 0 Elo reference; N/A observed games, pairs, and CI | 30.5%; -143.1 Elo; 95% CI 25.2â€“35.8%; 100/100 pairs | 19.0%; -251.9 Elo; 95% CI 12.0â€“26.0%; 50/50 pairs | 64.8%; +105.6 Elo; 95% CI 59.0â€“70.8%; 100/100 pairs | 71.0%; +155.5 Elo; 95% CI 61.0â€“80.0%; 50/50 pairs | Center PRELIM incomplete (0/100 pairs, 0 failed); Normal PRELIM incomplete (0/100 pairs, 0 failed); 0/4 shards | Center PRELIM incomplete (8/100 pairs, 0 failed); Normal PRELIM incomplete (10/100 pairs, 0 failed); 1/4 shards | Center PRELIM incomplete (25/100 pairs, 0 failed); Normal PRELIM incomplete (25/100 pairs, 0 failed); 1/4 shards |
+| 858 | delta_dense_only | PASS | 2.017Ã— (3 samples) | All 58.6%; +60.5 Elo; 95% CI 55.1â€“62.1%; 200/200 pairs; Center 58.5%; +59.3 Elo; 95% CI 54.3â€“62.6%; 133/133 pairs; Normal 59.0%; +62.9 Elo; 95% CI 52.2â€“65.7%; 67/67 pairs | 31.5%; -135.0 Elo; 95% CI 26.0â€“37.2%; 100/100 pairs; paired Î” +1.0pp [-4.5, +6.8], Î” +8.1 Elo, 100 pairs | 26.0%; -181.7 Elo; 95% CI 18.0â€“34.0%; 50/50 pairs; paired Î” +7.0pp [-1.0, +15.0], Î” +70.2 Elo, 50 pairs | 71.8%; +161.9 Elo; 95% CI 66.0â€“77.5%; 100/100 pairs; paired Î” +7.0pp [+0.0, +14.0], Î” +56.3 Elo, 100 pairs | 79.0%; +230.2 Elo; 95% CI 71.0â€“87.0%; 50/50 pairs; paired Î” +8.0pp [-3.0, +19.0], Î” +74.6 Elo, 50 pairs | Center PRELIM incomplete (0/100 pairs, 0 failed); Normal PRELIM incomplete (0/100 pairs, 0 failed); 0/4 shards | Center PRELIM incomplete (0/100 pairs, 0 failed); Normal PRELIM incomplete (0/100 pairs, 0 failed); 0/4 shards | Center PRELIM incomplete (25/100 pairs, 0 failed); Normal PRELIM incomplete (25/100 pairs, 0 failed); 1/4 shards |
+| 858 | v3_node_dense_bfs | PASS | 2.063Ã— (3 samples) | All 59.8%; +68.6 Elo; 95% CI 56.2â€“63.2%; 200/200 pairs; Center 58.6%; +60.7 Elo; 95% CI 54.9â€“62.8%; 133/133 pairs; Normal 61.9%; +84.6 Elo; 95% CI 54.9â€“69.0%; 67/67 pairs | 29.2%; -153.4 Elo; 95% CI 23.8â€“34.8%; 100/100 pairs; paired Î” -1.2pp [-5.8, +3.2], Î” -10.4 Elo, 100 pairs | 21.0%; -230.2 Elo; 95% CI 14.0â€“29.0%; 50/50 pairs; paired Î” +2.0pp [-6.0, +10.0], Î” +21.7 Elo, 50 pairs | 69.5%; +143.1 Elo; 95% CI 64.0â€“75.0%; 100/100 pairs; paired Î” +4.8pp [-2.5, +12.0], Î” +37.4 Elo, 100 pairs | 75.0%; +190.8 Elo; 95% CI 67.0â€“83.0%; 50/50 pairs; paired Î” +4.0pp [-7.0, +16.0], Î” +35.3 Elo, 50 pairs | Center PRELIM incomplete (0/100 pairs, 0 failed); Normal PRELIM incomplete (0/100 pairs, 0 failed); 0/4 shards | Center PRELIM incomplete (0/100 pairs, 0 failed); Normal PRELIM incomplete (0/100 pairs, 0 failed); 0/4 shards | Center PRELIM incomplete (25/100 pairs, 0 failed); Normal PRELIM incomplete (25/100 pairs, 0 failed); 1/4 shards |
+| 858 | v3 | PASS | 1.360Ã— (1 samples) | All 50.1%; +0.9 Elo; 95% CI 46.8â€“53.5%; 200/200 pairs; Center 50.0%; +0.0 Elo; 95% CI 45.9â€“54.1%; 133/133 pairs; Normal 50.4%; +2.6 Elo; 95% CI 44.4â€“56.3%; 67/67 pairs | 31.0%; -139.0 Elo; 95% CI 25.5â€“36.5%; 100/100 pairs; paired Î” +0.5pp [-5.0, +6.0], Î” +4.1 Elo, 100 pairs | 21.0%; -230.2 Elo; 95% CI 14.0â€“28.0%; 50/50 pairs; paired Î” +2.0pp [-5.0, +9.0], Î” +21.7 Elo, 50 pairs | 64.5%; +103.7 Elo; 95% CI 59.0â€“70.5%; 100/100 pairs; paired Î” -0.2pp [-7.8, +7.2], Î” -1.9 Elo, 100 pairs | 80.0%; +240.8 Elo; 95% CI 73.0â€“87.0%; 50/50 pairs; paired Î” +9.0pp [-2.0, +20.0], Î” +85.3 Elo, 50 pairs | Center PRELIM incomplete (0/100 pairs, 0 failed); Normal PRELIM incomplete (0/100 pairs, 0 failed); 0/4 shards | Center PRELIM incomplete (0/100 pairs, 0 failed); Normal PRELIM incomplete (0/100 pairs, 0 failed); 0/4 shards | Center PRELIM incomplete (25/100 pairs, 0 failed); Normal PRELIM incomplete (25/100 pairs, 0 failed); 1/4 shards |
+
+## Network weight revalidation at 200 ms
+
+| Weights | Claustrophobia Center | Claustrophobia Normal | Titanium Center | Titanium Normal |
+|---|---|---|---|---|
+| pre300 | 26.2%; -179.5 Elo; 95% CI 20.5â€“32.0%; 100/100 pairs | 19.0%; -251.9 Elo; 95% CI 12.0â€“26.0%; 50/50 pairs | 59.0%; +63.2 Elo; 95% CI 53.5â€“64.5%; 100/100 pairs | 73.5%; +177.2 Elo; 95% CI 65.0â€“81.5%; 50/50 pairs |
+| v300 | 31.2%; -137.0 Elo; 95% CI 26.0â€“36.8%; 100/100 pairs | 21.0%; -230.2 Elo; 95% CI 14.0â€“28.0%; 50/50 pairs | 67.0%; +123.0 Elo; 95% CI 61.5â€“72.5%; 100/100 pairs | 69.0%; +139.0 Elo; 95% CI 61.0â€“77.0%; 50/50 pairs |
+| v301 | 30.5%; -143.1 Elo; 95% CI 25.0â€“36.2%; 100/100 pairs | 25.5%; -186.2 Elo; 95% CI 18.0â€“33.0%; 50/50 pairs | 65.5%; +111.4 Elo; 95% CI 60.0â€“71.0%; 100/100 pairs | 74.5%; +186.2 Elo; 95% CI 67.0â€“82.0%; 50/50 pairs |
+
+H2H weight comparisons
+
+| Comparison | All | Center | Normal |
+|---|---|---|---|
+| v300_vs_pre300 | 56.0%; +41.9 Elo; 95% CI 51.6â€“60.5%; 200/200 pairs | incomplete (0/133 pairs, 0 failed) | incomplete (0/67 pairs, 0 failed) |
+| v301_vs_pre300 | 58.2%; +57.9 Elo; 95% CI 54.2â€“62.3%; 200/200 pairs | incomplete (0/133 pairs, 0 failed) | incomplete (0/67 pairs, 0 failed) |
+| v301_vs_v300 | 52.1%; +14.8 Elo; 95% CI 48.2â€“56.0%; 200/200 pairs | incomplete (0/133 pairs, 0 failed) | incomplete (0/67 pairs, 0 failed) |
+
+### Native 3+2 evidence at the operator stop
+
+This table reads participant results separately. OFF games do not count as candidate games.
+All canonical comparisons remain incomplete. The exploratory hybrid 858 sample appears separately below.
+
+| Network | Search | Opponent | Book | Games | Pairs | Score | Elo vs opponent | Paired 95% score interval | Clock losses | Crashes |
+|---|---|---|---|---:|---:|---:|---:|---|---:|---:|
+| 504 | off | h2h | center | 0 | 0 | missing | missing | unavailable | 0 | 0 |
+| 504 | off | h2h | normal | 0 | 0 | missing | missing | unavailable | 0 | 0 |
+| 504 | off | claustrophobia | center | 0 | 0 | missing | missing | unavailable | 0 | 0 |
+| 504 | off | claustrophobia | normal | 0 | 0 | missing | missing | unavailable | 0 | 0 |
+| 504 | off | titanium | center | 100 | 50 | 50.0% | +0.0 | unavailable | 2 | 0 |
+| 504 | off | titanium | normal | 100 | 50 | 62.0% | +85.0 | unavailable | 2 | 0 |
+| 504 | delta_dense_only | h2h | center | 3 | 0 | 83.3% | +279.6 | unavailable | 0 | 0 |
+| 504 | delta_dense_only | h2h | normal | 4 | 0 | 25.0% | -190.8 | unavailable | 1 | 0 |
+| 504 | delta_dense_only | claustrophobia | center | 0 | 0 | missing | missing | unavailable | 0 | 0 |
+| 504 | delta_dense_only | claustrophobia | normal | 0 | 0 | missing | missing | unavailable | 0 | 0 |
+| 504 | delta_dense_only | titanium | center | 100 | 50 | 51.0% | +6.9 | unavailable | 4 | 0 |
+| 504 | delta_dense_only | titanium | normal | 100 | 50 | 80.0% | +240.8 | unavailable | 0 | 0 |
+| 504 | v3_node_dense_bfs | h2h | center | 0 | 0 | missing | missing | unavailable | 0 | 0 |
+| 504 | v3_node_dense_bfs | h2h | normal | 0 | 0 | missing | missing | unavailable | 0 | 0 |
+| 504 | v3_node_dense_bfs | claustrophobia | center | 0 | 0 | missing | missing | unavailable | 0 | 0 |
+| 504 | v3_node_dense_bfs | claustrophobia | normal | 0 | 0 | missing | missing | unavailable | 0 | 0 |
+| 504 | v3_node_dense_bfs | titanium | center | 64 | 27 | 59.4% | +65.9 | unavailable | 2 | 0 |
+| 504 | v3_node_dense_bfs | titanium | normal | 65 | 26 | 75.4% | +194.4 | unavailable | 0 | 1 |
+| 504 | v3 | h2h | center | 0 | 0 | missing | missing | unavailable | 0 | 0 |
+| 504 | v3 | h2h | normal | 0 | 0 | missing | missing | unavailable | 0 | 0 |
+| 504 | v3 | claustrophobia | center | 0 | 0 | missing | missing | unavailable | 0 | 0 |
+| 504 | v3 | claustrophobia | normal | 0 | 0 | missing | missing | unavailable | 0 | 0 |
+| 504 | v3 | titanium | center | 50 | 25 | 56.0% | +41.9 | unavailable | 1 | 0 |
+| 504 | v3 | titanium | normal | 50 | 25 | 84.0% | +288.1 | unavailable | 0 | 0 |
+| 858 | off | h2h | center | 0 | 0 | missing | missing | unavailable | 0 | 0 |
+| 858 | off | h2h | normal | 0 | 0 | missing | missing | unavailable | 0 | 0 |
+| 858 | off | claustrophobia | center | 28 | 8 | 32.1% | -129.8 | unavailable | 0 | 0 |
+| 858 | off | claustrophobia | normal | 29 | 10 | 10.3% | -375.1 | unavailable | 4 | 0 |
+| 858 | off | titanium | center | 50 | 25 | 58.0% | +56.1 | unavailable | 0 | 0 |
+| 858 | off | titanium | normal | 50 | 25 | 80.0% | +240.8 | unavailable | 0 | 0 |
+| 858 | delta_dense_only | h2h | center | 0 | 0 | missing | missing | unavailable | 0 | 0 |
+| 858 | delta_dense_only | h2h | normal | 0 | 0 | missing | missing | unavailable | 0 | 0 |
+| 858 | delta_dense_only | claustrophobia | center | 0 | 0 | missing | missing | unavailable | 0 | 0 |
+| 858 | delta_dense_only | claustrophobia | normal | 0 | 0 | missing | missing | unavailable | 0 | 0 |
+| 858 | delta_dense_only | titanium | center | 50 | 25 | 62.0% | +85.0 | unavailable | 1 | 0 |
+| 858 | delta_dense_only | titanium | normal | 50 | 25 | 82.0% | +263.4 | unavailable | 0 | 0 |
+| 858 | v3_node_dense_bfs | h2h | center | 0 | 0 | missing | missing | unavailable | 0 | 0 |
+| 858 | v3_node_dense_bfs | h2h | normal | 0 | 0 | missing | missing | unavailable | 0 | 0 |
+| 858 | v3_node_dense_bfs | claustrophobia | center | 0 | 0 | missing | missing | unavailable | 0 | 0 |
+| 858 | v3_node_dense_bfs | claustrophobia | normal | 0 | 0 | missing | missing | unavailable | 0 | 0 |
+| 858 | v3_node_dense_bfs | titanium | center | 50 | 25 | 62.0% | +85.0 | unavailable | 1 | 0 |
+| 858 | v3_node_dense_bfs | titanium | normal | 50 | 25 | 78.0% | +219.9 | unavailable | 0 | 0 |
+| 858 | v3 | h2h | center | 0 | 0 | missing | missing | unavailable | 0 | 0 |
+| 858 | v3 | h2h | normal | 0 | 0 | missing | missing | unavailable | 0 | 0 |
+| 858 | v3 | claustrophobia | center | 0 | 0 | missing | missing | unavailable | 0 | 0 |
+| 858 | v3 | claustrophobia | normal | 0 | 0 | missing | missing | unavailable | 0 | 0 |
+| 858 | v3 | titanium | center | 50 | 25 | 62.0% | +85.0 | unavailable | 2 | 0 |
+| 858 | v3 | titanium | normal | 50 | 25 | 74.0% | +181.7 | unavailable | 0 | 0 |
+| 858 | hybrid exploratory | claustrophobia | center | 28 | 14 | 28.6% | -159.2 | 14.3-39.3% | 2 | 0 |
+| 858 | hybrid exploratory | claustrophobia | normal | 26 | 13 | 15.4% | -296.1 | 3.8-26.9% | 2 | 0 |
+
+The exploratory hybrid sample contains 54 completed games. Its earlier 54 harness error rows remain separate.
+The promoted delta-only configuration has no native 3+2 Claustrophobia sample.
+
+### Version 4.0 release verification
+
+- The complete native build and the WebAssembly build passed.
+- The corrected clock adapters and Python NNUE checks passed 47 focused tests.
+- C++ and Python values agree within 1e-5 in float mode. Quantized values and policy argmax agree for both perspectives.
+- The embedded WebAssembly weights match the production SHA-256.
+- The archived 504 OFF profile compiles from its registered source and loads the archived weights.
+- The UCI adapter identifies version 4.0 and loads production weights without an explicit path.
+- Local strength campaigns and their monitor remain stopped. The Colab watcher and remote jobs remain unchanged.
+
+The legacy wall-quiescence and contempt ablations did not complete. The wall-quiescence corpus
+contains searches with hundreds of millions of nodes and frozen historical
+NNUE outputs. The release check stopped those ablations and retained the source
+unchanged. This check does not establish a passing result for those ablations.
+
+Sixteen native correctness executables passed. The incremental accumulator
+check covered 4758 position-perspective samples with zero differences against
+a complete rebuild. Generated dataset manifests and raw training outputs
+remain local artifacts outside Git.

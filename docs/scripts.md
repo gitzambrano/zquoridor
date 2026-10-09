@@ -269,3 +269,13 @@ Every public runner adheres to the following contract:
 - **Inputs**: Trained student weights and compiled C++ test harness.
 - **Outputs**: Discrepancy report and maximum absolute difference metrics.
 
+
+## Archived profile builder
+
+`experimental/build_profile.py` compiles one registered network and search
+configuration without changing production. `CONFIG` selects the profile,
+registry, output directory, and compiler. The default profile is
+`858_delta_dense_only`. `--profile` overrides one invocation. `--list` lists
+the available configurations without a build. The script checks the weight
+checksum before compilation. It writes executables to
+`experimental/artifacts/bin/`. It does not run games.

@@ -1,0 +1,383 @@
+from __future__ import annotations
+
+import json
+import random
+import subprocess
+import sys
+import tempfile
+import textwrap
+import time
+import unittest
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from tools import run_benchmark
+from tools.external import local_arena
+
+
+class RefereeTests(unittest.TestCase):
+    def test_start_has_full_legal_move_set_and_rejects_illegal_pawn_move(self) -> None:
+        state = local_arena.Referee()
+        legal = state.legal_moves()
+        self.assertEqual(len(legal), 131)
+        self.assertIn("e2", legal)
+        self.assertIn("a1h", legal)
+        with self.assertRaisesRegex(local_arena.IllegalMove, "illegal move"):
+            state.apply("e3")
+
+    def test_referee_implements_straight_jump_and_blocked_jump_diagonals(self) -> None:
+        straight = local_arena.Referee()
+        for move in ("e2", "e8", "e3", "e7", "e4", "e6", "e5"):
+            straight.apply(move)
+        self.assertIn("e7", straight.legal_moves())
+        self.assertNotIn("e6", straight.legal_moves())
+
+        diagonal = local_arena.Referee()
+        for move in ("e2", "e8", "e3", "e7", "e4", "e6", "e5", "e6h"):
+            diagonal.apply(move)
+        self.assertIn("d6", diagonal.legal_moves())
+        self.assertIn("f6", diagonal.legal_moves())
+        self.assertNotIn("e7", diagonal.legal_moves())
+
+    def test_threefold_repetition_uses_complete_state_and_third_occurrence(self) -> None:
+        state = local_arena.Referee()
+        repetition = local_arena.RepetitionTracker()
+        self.assertFalse(repetition.observe(state))
+        cycle = ("e2", "e8", "e1", "e9")
+        for move in cycle:
+            state.apply(move)
+            self.assertFalse(repetition.observe(state))
+        for move in cycle[:-1]:
+            state.apply(move)
+            self.assertFalse(repetition.observe(state))
+        state.apply(cycle[-1])
+        self.assertTrue(repetition.observe(state))
+        self.assertEqual(repetition.max_count, 3)
+        self.assertEqual(repetition.repeated_states, 5)
+
+    def test_referee_rejects_crossing_and_path_blocking_walls(self) -> None:
+        state = local_arena.Referee()
+        state.apply("e2")
+        state.apply("e4h")
+        self.assertNotIn("e4v", state.legal_moves())
+        with self.assertRaises(local_arena.IllegalMove):
+            state.apply("e4v")
+
+        trapped = local_arena.Referee()
+        sequence = (
+            "a6v", "h8v", "e7h", "g6v", "d1v", "e4h",
+            "b6h", "f2h", "h5h", "f3v", "e5v", "g7h",
+        )
+        for move in sequence:
+            trapped.apply(move)
+        # The candidate has no geometric conflict, but it removes the last path.
+        self.assertTrue(trapped._wall_geometry_ok(7, 3, "v"))
+        self.assertNotIn("d8v", trapped.legal_moves())
+
+
+class ProcessTests(unittest.TestCase):
+    def _fake_engine(self, directory: Path, behavior: str) -> list[str]:
+        script = directory / f"fake_{behavior}.py"
+        script.write_text(
+            textwrap.dedent(
+                f"""
+                import sys, time
+                behavior = {behavior!r}
+                last_position = ''
+                for raw in sys.stdin:
+                    cmd = raw.strip()
+                    if cmd == 'uci': print('uciok', flush=True)
+                    elif cmd == 'isready': print('readyok', flush=True)
+                    elif cmd.startswith('position '): last_position = cmd
+                    elif cmd.startswith('go '):
+                        if behavior == 'timeout': time.sleep(30)
+                        elif behavior == 'error': print('info string error fake failure', flush=True)
+                        elif behavior == 'exit': sys.exit(7)
+                        elif behavior == 'clock_echo':
+                            print('info string ' + cmd, flush=True)
+                            print('bestmove e2', flush=True)
+                        elif behavior == 'clock_game':
+                            history = last_position.split(' moves ', 1)
+                            count = len(history[1].split()) if len(history) == 2 else 0
+                            print('bestmove ' + ['e2', 'e8', 'e3', 'e7'][count], flush=True)
+                        elif behavior == 'repeat_game':
+                            history = last_position.split(' moves ', 1)
+                            count = len(history[1].split()) if len(history) == 2 else 0
+                            print('bestmove ' + ['e2', 'e8', 'e1', 'e9'][count % 4], flush=True)
+                        else: print('bestmove e2', flush=True)
+                    elif cmd == 'quit': break
+                """
+            ),
+            encoding="utf-8",
+        )
+        return [sys.executable, str(script)]
+
+    def test_engine_reports_error_output_and_closes_process(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            engine = local_arena.UciPlayer(
+                self._fake_engine(Path(raw), "error"), "fake", startup_timeout_s=1.0
+            )
+            try:
+                with self.assertRaisesRegex(local_arena.EngineError, "fake failure"):
+                    engine.bestmove([], budget=10, timeout_s=1.0)
+            finally:
+                engine.close()
+            self.assertIsNotNone(engine.process.poll())
+
+    def test_engine_timeout_kills_process_tree(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            engine = local_arena.UciPlayer(
+                self._fake_engine(Path(raw), "timeout"), "fake", startup_timeout_s=1.0
+            )
+            started = time.monotonic()
+            with self.assertRaisesRegex(local_arena.EngineTimeout, "timeout"):
+                engine.bestmove([], budget=10, timeout_s=0.15)
+            self.assertLess(time.monotonic() - started, 3.0)
+            self.assertIsNotNone(engine.process.poll())
+
+    def test_uci_clock_command_includes_both_clocks_and_increment(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            engine = local_arena.UciPlayer(
+                self._fake_engine(Path(raw), "clock_echo"), "fake", startup_timeout_s=1.0
+            )
+            try:
+                move, _, info = engine.bestmove_clock(
+                    [], white_ms=180_000, black_ms=179_250,
+                    increment_ms=2_000, timeout_s=1.0,
+                )
+            finally:
+                engine.close()
+            self.assertEqual(move, "e2")
+            self.assertIn(
+                "info string go wtime 180000 btime 179250 winc 2000 binc 2000",
+                info,
+            )
+
+    def test_clock_game_tracks_remaining_time_for_both_players(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            command = self._fake_engine(Path(raw), "clock_game")
+            row = local_arena.play_game(
+                opponent="baseline",
+                opening_index=0,
+                opening=[],
+                zq_player=0,
+                zq_factory=lambda: local_arena.UciPlayer(command, "candidate"),
+                opponent_factory=lambda: local_arena.UciPlayer(command, "baseline"),
+                zq_budget=0,
+                opponent_budget=0,
+                move_timeout_s=1.0,
+                max_plies=4,
+                run_id="clock-test",
+                clock_initial_ms=180_000,
+                clock_increment_ms=2_000,
+            )
+        self.assertEqual(row["status"], "ok")
+        self.assertEqual(row["termination"], "max_plies")
+        self.assertEqual(len(row["move_times"]), 4)
+        self.assertTrue(all("clock_before_ms" in move for move in row["move_times"]))
+        self.assertTrue(all(clock > 180_000 for clock in row["final_clocks_ms"]))
+
+    def test_game_adjudicates_threefold_repetition_before_max_plies(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            command = self._fake_engine(Path(raw), "repeat_game")
+            row = local_arena.play_game(
+                opponent="baseline",
+                opening_index=0,
+                opening=[],
+                zq_player=0,
+                zq_factory=lambda: local_arena.UciPlayer(command, "candidate"),
+                opponent_factory=lambda: local_arena.UciPlayer(command, "baseline"),
+                zq_budget=10,
+                opponent_budget=10,
+                move_timeout_s=1.0,
+                max_plies=20,
+                run_id="repetition-test",
+            )
+        self.assertEqual(row["status"], "ok")
+        self.assertEqual(row["termination"], "repetition")
+        self.assertEqual(row["result"], 0.5)
+        self.assertEqual(row["plies"], 8)
+        self.assertEqual(row["repetition_max_count"], 3)
+
+    def test_failed_game_is_recorded_and_excluded_from_pair_statistic(self) -> None:
+        rows = [
+            {"status": "ok", "opponent": "x", "opening_index": 0,
+             "zq_player": 0, "result": 1.0},
+            {"status": "failed", "opponent": "x", "opening_index": 0,
+             "zq_player": 1, "error": "timeout"},
+            {"status": "ok", "opponent": "x", "opening_index": 1,
+             "zq_player": 0, "result": 0.5},
+            {"status": "ok", "opponent": "x", "opening_index": 1,
+             "zq_player": 1, "result": 1.0},
+        ]
+        report = local_arena.summarize_pairs(rows, bootstrap=1000, seed=9)
+        self.assertEqual(report["failed_games"], 1)
+        self.assertEqual(report["complete_pairs"], 1)
+        self.assertEqual(report["excluded_ok_games"], 1)
+        self.assertEqual(report["score_pct"], 75.0)
+        self.assertEqual(report["repetition_games"], 0)
+
+
+class ResumeAndConfigTests(unittest.TestCase):
+    def test_opening_selection_preserves_seeded_subset_and_row_indices(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            path = Path(raw) / "openings.jsonl"
+            source = [
+                (0, ["e2"]),
+                (2, ["e2", "e8"]),
+                (3, ["e2", "e8", "e3"]),
+                (5, ["e2", "e8", "e3", "e7"]),
+                (6, ["e2", "e8", "e3", "e7", "e4"]),
+            ]
+            rows_by_physical_index = dict(source)
+            path.write_text(
+                '\n'.join(
+                    json.dumps({"moves": rows_by_physical_index[index]})
+                    if index in rows_by_physical_index else ""
+                    for index in range(7)
+                ),
+                encoding="utf-8",
+            )
+            expected = list(source)
+            random.Random(73).shuffle(expected)
+            actual = run_benchmark._read_openings(path, pairs=3, seed=73)
+        self.assertEqual(actual, expected[:3])
+
+    def test_only_selected_openings_are_legality_checked(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            path = Path(raw) / "openings.jsonl"
+            rows = [
+                ["e2"],
+                ["e2", "e8"],
+                ["e2", "e8", "e3"],
+                ["e2", "e8", "e3", "e7"],
+            ]
+            shuffled = list(enumerate(rows))
+            random.Random(11).shuffle(shuffled)
+            selected_indices = {index for index, _ in shuffled[:3]}
+            invalid_index = next(index for index, _ in enumerate(rows)
+                                 if index not in selected_indices)
+            rows[invalid_index] = ["e3"]
+            path.write_text(
+                '\n'.join(json.dumps({"moves": moves}) for moves in rows),
+                encoding="utf-8",
+            )
+            chosen = run_benchmark._read_openings(path, pairs=3, seed=11)
+            self.assertNotIn(invalid_index, {index for index, _ in chosen})
+
+            rows[invalid_index] = ["e2"]
+            rows[selected_indices.pop()] = ["e3"]
+            path.write_text(
+                '\n'.join(json.dumps({"moves": moves}) for moves in rows),
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(ValueError, "invalid opening"):
+                run_benchmark._read_openings(path, pairs=3, seed=11)
+
+    def test_run_id_hashes_complete_config_and_artifacts(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            engine = root / "engine.bin"
+            engine.write_bytes(b"version one")
+            config = {"pairs": 20, "workers": 1, "opponents": ["titanium"]}
+            first = local_arena.make_manifest(config, {"engine": engine})
+            engine.write_bytes(b"version two")
+            second = local_arena.make_manifest(config, {"engine": engine})
+            self.assertNotEqual(first["run_id"], second["run_id"])
+            self.assertNotEqual(first["artifacts"]["engine"]["sha256"],
+                                second["artifacts"]["engine"]["sha256"])
+
+    def test_resume_refuses_a_manifest_mismatch(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            out = Path(raw)
+            first = {"schema": "zquoridor.local_benchmark.manifest.v1", "run_id": "aaa"}
+            second = {"schema": "zquoridor.local_benchmark.manifest.v1", "run_id": "bbb"}
+            local_arena.prepare_resume(out, first)
+            with self.assertRaisesRegex(ValueError, "different benchmark configuration"):
+                local_arena.prepare_resume(out, second)
+
+    def test_cli_overrides_top_config_without_changing_other_defaults(self) -> None:
+        parser = run_benchmark.build_parser()
+        args = parser.parse_args(["--pairs", "2", "--opponents", "titanium",
+                                  "--zq-executable", "custom.exe"])
+        cfg = run_benchmark.resolve_config(args)
+        self.assertEqual(cfg["pairs"], 2)
+        self.assertEqual(cfg["opponents"], ["titanium"])
+        self.assertEqual(cfg["zq_executable"], "custom.exe")
+        self.assertEqual(cfg["workers"], run_benchmark.CONFIG["workers"])
+        self.assertEqual(run_benchmark.CONFIG["opponents"], ["titanium", "claustrophobia"])
+
+    def test_claustrophobia_uses_a_fixed_move_clock(self) -> None:
+        parser = run_benchmark.build_parser()
+        cfg = run_benchmark.resolve_config(parser.parse_args([]))
+        self.assertEqual(cfg["claustrophobia_move_time_ms"], cfg["zq_move_time_ms"])
+        self.assertNotIn("claustrophobia_sims", cfg)
+
+    def test_rejects_unequal_clocks(self) -> None:
+        parser = run_benchmark.build_parser()
+        with self.assertRaisesRegex(ValueError, "same move clock"):
+            run_benchmark.resolve_config(parser.parse_args([
+                "--opponents", "claustrophobia", "--zq-move-time-ms", "200",
+                "--claustrophobia-move-time-ms", "100",
+            ]))
+
+    def test_category_summary_keeps_complete_color_swapped_pairs(self) -> None:
+        rows = [
+            {"status": "ok", "opponent": "claustrophobia", "opening_index": 0,
+             "zq_player": 0, "result": 1.0},
+            {"status": "ok", "opponent": "claustrophobia", "opening_index": 0,
+             "zq_player": 1, "result": 1.0},
+            {"status": "ok", "opponent": "claustrophobia", "opening_index": 1,
+             "zq_player": 0, "result": 1.0},
+            {"status": "ok", "opponent": "claustrophobia", "opening_index": 1,
+             "zq_player": 1, "result": 0.0},
+        ]
+        report = run_benchmark.summarize_by_category(
+            rows, {0: "front_wall", 1: "pawn_jump"}, bootstrap=1000, seed=19
+        )
+        self.assertEqual(report["front_wall"]["complete_pairs"], 1)
+        self.assertEqual(report["front_wall"]["score_pct"], 100.0)
+        self.assertEqual(report["pawn_jump"]["score_pct"], 50.0)
+
+    def test_category_reader_uses_the_same_physical_indices_as_openings(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            path = Path(raw) / "openings.jsonl"
+            path.write_text(
+                '{"moves":[],"category":"first"}\n\n'
+                '{"moves":["e2"],"category":"second"}\n',
+                encoding="utf-8",
+            )
+            categories = run_benchmark._read_opening_categories(path)
+            openings = run_benchmark._read_openings(path, pairs=2, seed=1)
+        self.assertEqual(categories, {0: "first", 2: "second"})
+        self.assertEqual({index for index, _ in openings}, {0, 2})
+
+    def test_category_summary_omits_unlabeled_openings(self) -> None:
+        rows = [
+            {"status": "ok", "opponent": "x", "opening_index": 4,
+             "zq_player": side, "result": 1.0}
+            for side in (0, 1)
+        ]
+        self.assertEqual(
+            run_benchmark.summarize_by_category(rows, {}, bootstrap=1000, seed=2),
+            {},
+        )
+
+    def test_category_gate_requires_every_family_strictly_above_threshold(self) -> None:
+        summaries = {
+            "front_wall": {"score_pct": 61.0},
+            "pawn_jump": {"score_pct": 60.0},
+        }
+        gate = run_benchmark.evaluate_category_gate(
+            summaries, ["front_wall", "pawn_jump", "reed_rear_wall"], 60.0
+        )
+        self.assertFalse(gate["passed"])
+        self.assertEqual(gate["missing_categories"], ["reed_rear_wall"])
+        self.assertEqual(gate["failing_categories"], ["pawn_jump", "reed_rear_wall"])
+
+
+if __name__ == "__main__":
+    unittest.main()

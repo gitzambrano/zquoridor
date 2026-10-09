@@ -1,9 +1,7 @@
-// nnue.hpp -- rede estilo NNUE para a Fase 5 do plano, aqui com pesos
-// ALEATÓRIOS (não treinados). Serve pra: (1) validar que o acumulador é
-// sempre incremental pros dois tipos de lance, (2) medir o custo real do
-// forward pass, (3) servir de "motor de pesos aleatórios" no lugar de um
-// motor puramente aleatório-no-lance.
+// NNUE evaluation with sparse features, incremental accumulators, and quantized weights.
+// The production architecture and search defaults reside in production_config.hpp.
 #pragma once
+#include "production_config.hpp"
 #include <array>
 #include <random>
 #include <cstring>
@@ -11,6 +9,19 @@
 #include <cmath>
 #include <string>
 #include "rules.hpp"
+
+#ifndef ZQ_EXP_EDGE_BFS_REPLAY
+#define ZQ_EXP_EDGE_BFS_REPLAY 0
+#endif
+#ifndef ZQ_EXP_EDGE_FEATURE_DELTA
+#define ZQ_EXP_EDGE_FEATURE_DELTA 0
+#endif
+#ifndef ZQ_EXP_EDGE_DENSE_DELTA
+#define ZQ_EXP_EDGE_DENSE_DELTA 0
+#endif
+#ifndef ZQ_EXP_EDGE_DELTA_ENTRIES
+#define ZQ_EXP_EDGE_DELTA_ENTRIES 4096
+#endif
 
 namespace qr {
 
@@ -64,8 +75,8 @@ inline int wallsLeftBucket(int n) {
 // BASE_FEATURES = 81 (own pawn) + 81 (opponent pawn) + 64 (horizontal
 // walls) + 64 (vertical walls) + 21 own-distance buckets + 21 opponent-
 // distance buckets + 11 own-wall-stock buckets + 11 opponent-wall-stock
-// buckets = 354. Production adds race (102), phase (24), and multipath (24)
-// blocks, for NUM_FEATURES = 504 with the defaults below. Optional feature
+// buckets = 354. Production adds race (102), phase (24), multipath (24),
+// and contact (354) blocks, for NUM_FEATURES = 858 by default. Optional feature
 // blocks change the weight-file layout and therefore require matching NNUE
 // weights; the loader/fingerprint checks reject incompatible architectures.
 #ifndef ZQ_NNUE_RACE_FEATURES
@@ -662,10 +673,47 @@ struct Accumulator {
 // distâncias (a do mover e a do oponente, só que em ordem own/opp
 // trocada) -- com xtable, a segunda chamada acerta cache na hora (posta
 // pela primeira), o que sozinho já elimina metade das BFS pagas aqui.
+#if ZQ_EXP_EDGE_BFS_REPLAY
+struct EdgeDistanceMemoEntry {
+    bool valid = false;
+    uint64_t wallsH = 0, wallsV = 0;
+    int cell = 0, player = 0;
+    PlayerPathCache data;
+};
+#endif
 inline int distLenCached(uint64_t wallsH, uint64_t wallsV, int cell, int player, PlayerPathCacheTable* xtable) {
     if (!xtable) return shortestPathLen(wallsH, wallsV, cell, player);
     PlayerPathCache c;
+#if ZQ_EXP_EDGE_BFS_REPLAY
+    // Replay the original table access. Its hash-only hits remain authoritative.
+    // Only a table miss can use a geometry memo with complete key verification.
+    if (!xtable->get(wallsH, wallsV, cell, player, c)) {
+        static thread_local std::array<EdgeDistanceMemoEntry, 4096> memo{};
+        auto mix = [](uint64_t x) {
+            x = (x ^ (x >> 30)) * 0xBF58476D1CE4E5B9ull;
+            x = (x ^ (x >> 27)) * 0x94D049BB133111EBull;
+            return x ^ (x >> 31);
+        };
+        const uint64_t key = mix(wallsH) ^ mix(wallsV + 0x9E3779B97F4A7C15ull) ^
+                             mix((uint64_t)(cell * 2 + player));
+        auto& entry = memo[(size_t)key & (memo.size() - 1)];
+        if (entry.valid && entry.wallsH == wallsH && entry.wallsV == wallsV &&
+            entry.cell == cell && entry.player == player) {
+            c = entry.data;
+        } else {
+            computeDistFull(wallsH, wallsV, cell, player, c);
+            entry.valid = true;
+            entry.wallsH = wallsH;
+            entry.wallsV = wallsV;
+            entry.cell = cell;
+            entry.player = player;
+            entry.data = c;
+        }
+        xtable->put(wallsH, wallsV, cell, player, c);
+    }
+#else
     computeDistCached(wallsH, wallsV, cell, player, xtable, c);
+#endif
     return cachedShortestPathLen(c);
 }
 
@@ -1150,7 +1198,11 @@ struct NNUEWeightsQuant {
 };
 
 inline NNUEWeightsQuant& weightsQuant() { static NNUEWeightsQuant w; return w; }
-inline bool loadWeightsQuant(const std::string& path) { return weightsQuant().loadFromFile(path); }
+inline uint64_t& edgeDeltaWeightGeneration() { static uint64_t generation = 1; return generation; }
+inline bool loadWeightsQuant(const std::string& path) {
+    ++edgeDeltaWeightGeneration();
+    return weightsQuant().loadFromFile(path);
+}
 
 // true se os pesos do singleton vieram de um loadFromFile bem-sucedido
 // (em vez do estado zerado do construtor). Usado pelos call-sites
@@ -1228,8 +1280,10 @@ inline AccumulatorQuant buildAccumulatorQuant(const State& s, int perspective, P
 // quantizado -- mantida como função separada (em vez de template único)
 // pra não esconder o tipo int32_t/float por trás de deducao automática
 // nos pontos de chamada da busca.
-inline void updateAccumulatorForMoveQuant(AccumulatorQuant& acc, bool viewerIsMover, const State& before, const Move& m,
-                                           PlayerPathCacheTable* xtable = nullptr) {
+template<class Acc>
+inline void updateAccumulatorForMoveQuantKernel(Acc& acc, bool viewerIsMover, const State& before, const Move& m,
+                                           PlayerPathCacheTable* xtable = nullptr,
+                                           const std::array<int, 2>* distances = nullptr) {
 #if ZQ_NNUE_RACE_FEATURES
     const auto previousRaceFeatures = raceFeatures(acc);
 #endif
@@ -1244,7 +1298,7 @@ inline void updateAccumulatorForMoveQuant(AccumulatorQuant& acc, bool viewerIsMo
     if (!m.isWall) {
         int destCell = m.a;
         int moverCell = before.pawn[mover];
-        int newBucket = distBucket(distLenCached(after.wallsH, after.wallsV, destCell, mover, xtable));
+        int newBucket = distances ? (*distances)[0] : distBucket(distLenCached(after.wallsH, after.wallsV, destCell, mover, xtable));
         int viewerPlayer = viewerIsMover ? mover : opp;
         if (viewerIsMover) {
             acc.removeFeature(featOwnPawn(moverCell, viewerPlayer));
@@ -1270,13 +1324,13 @@ inline void updateAccumulatorForMoveQuant(AccumulatorQuant& acc, bool viewerIsMo
         int otherPlayer = 1 - viewerPlayer;
         acc.addFeature(m.a == 0 ? featWallH(slot, viewerPlayer) : featWallV(slot, viewerPlayer));
 
-        int newOwn = distBucket(distLenCached(after.wallsH, after.wallsV, after.pawn[viewerPlayer], viewerPlayer, xtable));
+        int newOwn = distances ? (*distances)[0] : distBucket(distLenCached(after.wallsH, after.wallsV, after.pawn[viewerPlayer], viewerPlayer, xtable));
         if (acc.ownDistBucket != newOwn) {
             acc.removeFeature(featOwnDist(acc.ownDistBucket));
             acc.addFeature(featOwnDist(newOwn));
             acc.ownDistBucket = newOwn;
         }
-        int newOpp = distBucket(distLenCached(after.wallsH, after.wallsV, after.pawn[otherPlayer], otherPlayer, xtable));
+        int newOpp = distances ? (*distances)[1] : distBucket(distLenCached(after.wallsH, after.wallsV, after.pawn[otherPlayer], otherPlayer, xtable));
         if (acc.oppDistBucket != newOpp) {
             acc.removeFeature(featOppDist(acc.oppDistBucket));
             acc.addFeature(featOppDist(newOpp));
@@ -1319,6 +1373,124 @@ inline void updateAccumulatorForMoveQuant(AccumulatorQuant& acc, bool viewerIsMo
     int contactViewer = viewerIsMover ? mover : opp;
     updateContactFeatures(acc, getContactFeatures(before, contactViewer),
                           getContactFeatures(after, contactViewer));
+#endif
+}
+
+// The cache stores an ordered feature transformation, never an accumulator.
+// Bucket metadata forms part of the key because the current lazy path owns it.
+#if ZQ_EXP_EDGE_FEATURE_DELTA
+struct EdgeFeatureDelta {
+    std::array<int16_t, 64> operations{};
+    int count = 0;
+    int ownDistBucket = 0, oppDistBucket = 0;
+    int ownWallsLeftBucket = 0, oppWallsLeftBucket = 0;
+    void addFeature(int index) {
+        assert(count < (int)operations.size());
+        operations[count++] = (int16_t)(index + 1);
+    }
+    void removeFeature(int index) {
+        assert(count < (int)operations.size());
+        operations[count++] = (int16_t)(-index - 1);
+    }
+};
+struct EdgeFeatureDeltaEntry {
+    bool valid = false;
+    uint64_t generation = 0;
+    State before{};
+    Move move = Move::pawn(0);
+    bool viewerIsMover = false;
+    std::array<int, 4> buckets{};
+    std::array<int, 2> distances{};
+    EdgeFeatureDelta delta;
+#if ZQ_EXP_EDGE_DENSE_DELTA
+    std::array<int32_t, HIDDEN> dense{};
+#endif
+};
+inline bool edgeDeltaSameState(const State& a, const State& b) {
+    return a.wallsH == b.wallsH && a.wallsV == b.wallsV &&
+           a.pawn[0] == b.pawn[0] && a.pawn[1] == b.pawn[1] &&
+           a.wallsLeft[0] == b.wallsLeft[0] &&
+           a.wallsLeft[1] == b.wallsLeft[1] && a.turn == b.turn;
+}
+#endif
+inline void updateAccumulatorForMoveQuant(AccumulatorQuant& acc, bool viewerIsMover,
+                                         const State& before, const Move& m,
+                                         PlayerPathCacheTable* xtable = nullptr) {
+#if ZQ_EXP_EDGE_FEATURE_DELTA
+
+    static_assert(ZQ_EXP_EDGE_DELTA_ENTRIES > 0 &&
+                  (ZQ_EXP_EDGE_DELTA_ENTRIES & (ZQ_EXP_EDGE_DELTA_ENTRIES - 1)) == 0,
+                  "The delta cache size must be a power of two.");
+    static thread_local std::vector<EdgeFeatureDeltaEntry> cache(ZQ_EXP_EDGE_DELTA_ENTRIES);
+    const std::array<int, 4> buckets = {acc.ownDistBucket, acc.oppDistBucket,
+                                      acc.ownWallsLeftBucket, acc.oppWallsLeftBucket};
+    // Preserve distance-table accesses, including baseline hash aliases.
+    // The transformation depends on the returned buckets, not only the state.
+    const State after = applyMove(before, m);
+    const int viewer = viewerIsMover ? before.turn : 1 - before.turn;
+    std::array<int, 2> distances{};
+    if (!m.isWall) {
+        distances[0] = distBucket(distLenCached(after.wallsH, after.wallsV,
+                                                m.a, before.turn, xtable));
+    } else {
+        distances[0] = distBucket(distLenCached(after.wallsH, after.wallsV,
+                                                after.pawn[viewer], viewer, xtable));
+        distances[1] = distBucket(distLenCached(after.wallsH, after.wallsV,
+                                                after.pawn[1 - viewer], 1 - viewer, xtable));
+    }
+    uint64_t key = before.hash ^ ((uint64_t)moveToPolicyIndex(m) * 0x9E3779B97F4A7C15ull);
+    key ^= (uint64_t)viewerIsMover * 0xD1B54A32D192ED03ull;
+    for (int bucket : buckets) key = (key ^ (uint64_t)bucket) * 0xBF58476D1CE4E5B9ull;
+    for (int bucket : distances) key = (key ^ (uint64_t)bucket) * 0x94D049BB133111EBull;
+    key ^= key >> 32;
+    auto& entry = cache[(size_t)key & (ZQ_EXP_EDGE_DELTA_ENTRIES - 1)];
+    if (!entry.valid || entry.generation != edgeDeltaWeightGeneration() ||
+        entry.viewerIsMover != viewerIsMover || !(entry.move == m) ||
+        entry.buckets != buckets || entry.distances != distances || !edgeDeltaSameState(entry.before, before)) {
+        entry.valid = true;
+        entry.generation = edgeDeltaWeightGeneration();
+        entry.before = before;
+        entry.move = m;
+        entry.viewerIsMover = viewerIsMover;
+        entry.buckets = buckets;
+        entry.distances = distances;
+        auto& delta = entry.delta;
+        delta.count = 0;
+        delta.ownDistBucket = buckets[0];
+        delta.oppDistBucket = buckets[1];
+        delta.ownWallsLeftBucket = buckets[2];
+        delta.oppWallsLeftBucket = buckets[3];
+        updateAccumulatorForMoveQuantKernel(delta, viewerIsMover, before, m, xtable, &distances);
+#if ZQ_EXP_EDGE_DENSE_DELTA
+        entry.dense.fill(0);
+        for (int j = 0; j < delta.count; ++j) {
+            const int operation = delta.operations[j];
+            const auto& row = weightsQuant().w1[std::abs(operation) - 1];
+            if (operation > 0) {
+                for (int i = 0; i < HIDDEN; ++i) entry.dense[i] += row[i];
+            } else {
+                for (int i = 0; i < HIDDEN; ++i) entry.dense[i] -= row[i];
+            }
+        }
+#endif
+    }
+#if ZQ_EXP_EDGE_DENSE_DELTA
+    // At most 64 int16 weight rows contribute. The sum fits in int32.
+    for (int i = 0; i < HIDDEN; ++i) acc.v[i] += entry.dense[i];
+#else
+    for (int j = 0; j < entry.delta.count; ++j) {
+        const int operation = entry.delta.operations[j];
+        if (operation > 0) acc.addFeature(operation - 1);
+        else acc.removeFeature(-operation - 1);
+    }
+#endif
+    acc.ownDistBucket = entry.delta.ownDistBucket;
+    acc.oppDistBucket = entry.delta.oppDistBucket;
+    acc.ownWallsLeftBucket = entry.delta.ownWallsLeftBucket;
+    acc.oppWallsLeftBucket = entry.delta.oppWallsLeftBucket;
+
+#else
+    updateAccumulatorForMoveQuantKernel(acc, viewerIsMover, before, m, xtable);
 #endif
 }
 

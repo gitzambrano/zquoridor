@@ -1,4 +1,4 @@
-# Zquoridor 3.01
+# zQuoridor 4.0
 
 **[Play Zquoridor in your browser](https://gitzambrano.github.io/zquoridor/)**
 
@@ -50,10 +50,10 @@ or `build\build_wasm.bat` after activating emsdk.
 
 ## NNUE architecture
 
-The production network is `multipath_phase_bucketed:512`. It has 504 sparse inputs, a
+The production network is `multipath_phase_contact_bucketed:512`. It has 858 sparse inputs, a
 512-unit SCReLU accumulator, 6 wall-count value heads with 2-layer MLPs, and a 209-action
 policy head. The inputs describe both pawns, wall occupancy, shortest-path and
-wall-stock buckets, race margin, game phase, and inexpensive multi-path
+wall-stock buckets, race margin, game phase, contact features, and inexpensive multi-path
 geometry. It is trained with quantization-aware training and evaluated as int8
 in the native and WebAssembly engines.
 
@@ -116,3 +116,12 @@ and NNUE parity. Browser tests live in `gui_web/` and use Playwright.
 
 Both projects are valuable public reference engines and external benchmark
 opponents for Zquoridor.
+
+## Version 4.0 configuration
+
+The default search uses dense edge feature deltas and BFS replay. The release
+uses the 858-input contact model soup. The operator authorized this promotion
+with incomplete strength evidence. See `docs/plan.md` for the measured results
+and remaining validation gaps. `data/nnue/release.json` records the release
+identity. Archived networks and search profiles reside in `experimental/`.
+Local strength campaigns remain stopped.

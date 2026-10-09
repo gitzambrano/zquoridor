@@ -49,13 +49,13 @@ from compute_surprise_weights import compute_surprise_weights
 
 CONFIG: Dict[str, Any] = {
     "mode": "all",  # Options: 'arm1', 'arm2', 'arm3', 'soup', 'all'
-    "data": str(ROOT / "results" / "experiments" / "production-central-finetune-20261002" / "mixed_dataset"),
-    "surprise_data": str(ROOT / "results" / "experiments" / "production-central-finetune-20261002" / "mixed_dataset_surprise_v2"),
-    "out_root": str(ROOT / "results" / "experiments" / "production-3.01"),
+    "data": str(ROOT / "experimental" / "experiments" / "production-central-finetune-20261002" / "mixed_dataset"),
+    "surprise_data": str(ROOT / "experimental" / "experiments" / "production-central-finetune-20261002" / "mixed_dataset_surprise_v2"),
+    "out_root": str(ROOT / "experimental" / "experiments" / "production-4.0"),
     "init_from": str(ROOT / "data" / "nnue" / "nnue_weights.bin"),
-    "init_architecture": "multipath_phase_bucketed",
+    "init_architecture": "multipath_phase_contact_bucketed",
     "init_hidden": 512,
-    "architecture": "multipath_phase_bucketed",
+    "architecture": "multipath_phase_contact_bucketed",
     "hidden": 512,
     "epochs": 20,
     "batch_size": 1024,
