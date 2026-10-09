@@ -185,6 +185,18 @@ Every public runner adheres to the following contract:
 - **Outputs**: Formatted JSON array (`tools/external/openings_weakness_variations.json`) and line-delimited JSONL (`tools/external/openings_weakness_variations.jsonl`) compatible with Colab self-play workers.
 - **Key CLI flags**: `--weights`, `--seeds`, `--out-json`, `--out-jsonl`.
 
+### `tools/generate_wall_drops.py`
+- **Purpose**: Generates synthetically perturbed maze positions by placing random legal walls, computes breadth-first shortest path distances, and extracts dense 209-action policy distributions and root values via engine search.
+- **Inputs**: Optional Zquoridor UCI executable path (`--zq-executable`), wall counts (`--min-walls`, `--max-walls`), pawn walk plies (`--pawn-walk-plies`), search move time (`--move-time-ms`), random seed (`--seed`), and split name (`--split`).
+- **Outputs**: Architecture-neutral JSONL positions (`positions.jsonl`), teacher targets (`targets.jsonl`), compressed NumPy arrays (`targets.npz`), and execution manifest (`manifest.json`) under the output directory.
+- **Key CLI flags**: `--count`, `--min-walls`, `--max-walls`, `--pawn-walk-plies`, `--move-time-ms`, `--zq-executable`, `--output`, `--seed`, `--split`, `--no-export-npz`.
+
+### `tools/generate_gumbel_sims.py`
+- **Purpose**: Executes Gumbel AlphaZero planning and Sequential Halving to generate high-density improved policy targets and expected values with focused simulation budgets.
+- **Inputs**: Optional source position corpus (`--source-positions`), Zquoridor UCI executable (`--zq-executable`), candidate pool size (`--top-k`), value scaling factor (`--c-scale`), search time (`--move-time-ms`), random seed (`--seed`), and split name (`--split`).
+- **Outputs**: Refined JSONL positions (`positions.jsonl`), Gumbel teacher targets (`targets.jsonl`), compressed NumPy arrays (`targets.npz`), and execution manifest (`manifest.json`) under the output directory.
+- **Key CLI flags**: `--count`, `--top-k`, `--c-scale`, `--move-time-ms`, `--zq-executable`, `--source-positions`, `--output`, `--seed`, `--split`, `--no-export-npz`.
+
 ---
 
 ## 4. Dataset Preparation and Mixing
