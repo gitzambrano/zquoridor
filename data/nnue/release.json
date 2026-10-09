@@ -1,0 +1,36 @@
+{
+  "schema": "zquoridor.release.v1",
+  "version": "4.0",
+  "date": "2026-10-08",
+  "network": "858",
+  "architecture": "multipath_phase_contact_bucketed",
+  "search": "delta_dense_only",
+  "promotion_basis": "Explicit operator authorization. The strict statistical promotion gate remains incomplete.",
+  "weights": {
+    "nnue_weights.bin": "a5fa6b080a8912411454c83f139fede81d6489db3bf6a5dad7d8f828958ea9a7",
+    "nnue_weights_int8.bin": "f8d85cae979bbf2047532e31daa61859c5f20246fc58de225f85ced0bef8841f"
+  },
+  "previous_release": "experimental/releases/v3_01_504",
+  "experiments": "experimental/profiles.json",
+  "external_clock_protocols": [
+    "fixed-movetime-v2",
+    "native-game-clock-v2"
+  ],
+  "local_campaign_state": "stopped_by_operator",
+  "known_limitations": [
+    "No 858 delta-only native 3+2 Claustrophobia games.",
+    "No 858 delta-only native 3+2 H2H against Main 504.",
+    "External paired 200 ms improvement intervals remain inconclusive.",
+    "Historical OFF 858 artifact does not match the frozen archive certificate.",
+    "One historical 504 hybrid Titanium process exit remains unresolved."
+  ],
+  "validation": {
+    "native_build": "passed",
+    "wasm_build": "passed",
+    "external_clock_and_nnue_python_tests": "47 passed",
+    "nnue_parity": "Both perspectives match. Float tolerance 1e-5. Quantized value and policy argmax match.",
+    "native_correctness": "16 executables passed. Incremental accumulators match rebuild on 4758 positions with zero differences.",
+    "legacy_ablations": "Wall-quiescence and contempt ablations stopped before completion. No passing claim."
+  },
+  "previous_git_commit": "fe5d5fec9451c0258d0a8cfee7cc07eafad5b9a2"
+}

@@ -225,7 +225,7 @@ def _bot_info(name: str, auto_setup: bool, *, native_clock: bool = False) -> dic
     except ImportError as exc:
         raise RuntimeError("tools.external.bot_setup is not available") from exc
     info = ensure_bot(name, root=ROOT, build=auto_setup)
-    if name == "titanium" and native_clock:
+    if name == "titanium":
         from tools.build_titanium_clock_bridge import ensure_bridge
         info["executable"] = ensure_bridge(ROOT, build=auto_setup)
     return info

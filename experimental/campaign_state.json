@@ -1,0 +1,9 @@
+{
+  "state": "stopped_by_operator",
+  "automatic_resume": false,
+  "reason": "The operator promoted version 4.0 and stopped local strength tests.",
+  "completed_canonical_steps": 10,
+  "planned_canonical_steps": 92,
+  "records": "experimental/benchmarks/edge_acc_campaign_clock_v3",
+  "remote_colab_jobs": "unchanged"
+}

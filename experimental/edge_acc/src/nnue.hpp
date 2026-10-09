@@ -1,0 +1,1783 @@
+// nnue.hpp -- rede estilo NNUE para a Fase 5 do plano, aqui com pesos
+// ALEATÓRIOS (não treinados). Serve pra: (1) validar que o acumulador é
+// sempre incremental pros dois tipos de lance, (2) medir o custo real do
+// forward pass, (3) servir de "motor de pesos aleatórios" no lugar de um
+// motor puramente aleatório-no-lance.
+#pragma once
+#include <array>
+#include <random>
+#include <cstring>
+#include <cstdio>
+#include <cmath>
+#include <string>
+#include "rules.hpp"
+
+#ifndef ZQ_EXP_EDGE_BFS_REPLAY
+#define ZQ_EXP_EDGE_BFS_REPLAY 0
+#endif
+#ifndef ZQ_EXP_EDGE_FEATURE_DELTA
+#define ZQ_EXP_EDGE_FEATURE_DELTA 0
+#endif
+#ifndef ZQ_EXP_EDGE_DENSE_DELTA
+#define ZQ_EXP_EDGE_DENSE_DELTA 0
+#endif
+#ifndef ZQ_EXP_EDGE_DELTA_ENTRIES
+#define ZQ_EXP_EDGE_DELTA_ENTRIES 4096
+#endif
+
+namespace qr {
+
+// DIST_BUCKETS: distância BFS (shortestPathLen, rules.hpp) até a linha de
+// chegada, codificada em bucket one-hot (não como escalar cru). Por quê
+// one-hot e não um único float com o valor da distância: o resto da rede
+// já é inteiramente sparse-linear (soma de linhas de w1 por feature
+// ativa) -- um escalar exigiria uma coluna de entrada com "range" != 0/1,
+// o que quebraria a simetria de escala usada na quantização inteira
+// (Seção 7.8: QA assume ativação em [0,QA], coerente com SCReLU em [0,1];
+// um escalar de distância cru viveria numa escala totalmente diferente).
+// One-hot mantém a mesma família de feature dos outros 290 bits e reusa
+// exatamente o mesmo mecanismo incremental (remove bucket antigo, soma
+// bucket novo) já usado pra peão. Custo: 2*DIST_BUCKETS colunas extras em
+// w1, nada nas cabeças -- a rede continua leve (ver nota de tamanho perto
+// de NUM_FEATURES).
+//
+// 21 buckets (0..19 exatos, 20 = "20 ou mais"): cobre com granularidade
+// total a faixa observada em partidas reais (distância inicial é 8;
+// muros bem jogados alongam pra algo como 12-18 num jogo competitivo) e
+// satura de forma grosseira só as posições bem raras/patológicas com
+// muitos muros formando labirinto -- nessas o valor exato importa menos
+// que "sei que está muito longe".
+constexpr int DIST_BUCKETS = 21;
+inline int distBucket(int dist) {
+    if (dist < 0) return 0;             // defensivo: shortestPathLen só devolve -1 se não há
+                                         // caminho, o que a legalidade de muro já impede.
+    return dist >= DIST_BUCKETS ? DIST_BUCKETS - 1 : dist;
+}
+
+// WALLS_LEFT_BUCKETS: muros restantes de cada jogador (0..WALLS_PER_PLAYER,
+// one-hot -- mesma família de codificação de DIST_BUCKETS acima, mesmo
+// motivo: mantém tudo na família sparse-linear/soma-de-linhas-de-w1 usada
+// pro resto do acumulador). ANTES desta sessão (2026-08), wallsLeft NÃO
+// era feature nenhuma -- confirmado por teste (nnue_sign_check.cpp): duas
+// posições idênticas em peões/muros no tabuleiro, diferindo só em
+// "jogador 0 com 10 muros vs. jogador 1 com 0", davam eval NNUE
+// *idêntico*, porque a rede simplesmente não via essa informação (só
+// entrava em evalSimple, a heurística). Rules.hpp já grava
+// State::wallsLeft[2] com WALLS_PER_PLAYER=10 de default, e o formato de
+// self-play (read_selfplay.py: walls_left_own/walls_left_opp) já registra
+// isso por posição -- só faltava usar. WALLS_LEFT_BUCKETS = 11 (0..10,
+// sem "ou mais" como em DIST_BUCKETS -- a contagem real nunca passa de
+// WALLS_PER_PLAYER, não precisa de bucket de saturação).
+constexpr int WALLS_LEFT_BUCKETS = WALLS_PER_PLAYER + 1;   // 11
+inline int wallsLeftBucket(int n) {
+    if (n < 0) return 0;                              // defensivo
+    return n >= WALLS_LEFT_BUCKETS ? WALLS_LEFT_BUCKETS - 1 : n;
+}
+
+// BASE_FEATURES = 81 (own pawn) + 81 (opponent pawn) + 64 (horizontal
+// walls) + 64 (vertical walls) + 21 own-distance buckets + 21 opponent-
+// distance buckets + 11 own-wall-stock buckets + 11 opponent-wall-stock
+// buckets = 354. Production adds race (102), phase (24), and multipath (24)
+// blocks, for NUM_FEATURES = 504 with the defaults below. Optional feature
+// blocks change the weight-file layout and therefore require matching NNUE
+// weights; the loader/fingerprint checks reject incompatible architectures.
+#ifndef ZQ_NNUE_RACE_FEATURES
+#define ZQ_NNUE_RACE_FEATURES 1
+#endif
+#ifndef ZQ_NNUE_MARGIN_REGIME_FEATURES
+#define ZQ_NNUE_MARGIN_REGIME_FEATURES 0
+#endif
+#ifndef ZQ_NNUE_PHASE_FEATURES
+#define ZQ_NNUE_PHASE_FEATURES 1
+#endif
+#ifndef ZQ_NNUE_MULTIPATH_FEATURES
+#define ZQ_NNUE_MULTIPATH_FEATURES 1
+#endif
+#ifndef ZQ_NNUE_CONTACT_FEATURES
+#define ZQ_NNUE_CONTACT_FEATURES 0
+#endif
+#ifndef ZQ_NNUE_HIDDEN
+#define ZQ_NNUE_HIDDEN 512
+#endif
+#ifndef ZQ_NNUE_EXPERIMENTAL_WIDTHS
+#define ZQ_NNUE_EXPERIMENTAL_WIDTHS 0
+#endif
+#ifndef ZQ_NNUE_VALUE_BUCKETS
+#define ZQ_NNUE_VALUE_BUCKETS 6
+#endif
+#ifndef ZQ_NNUE_VALUE_DEPTH
+#define ZQ_NNUE_VALUE_DEPTH 2
+#endif
+constexpr int VALUE_BUCKETS = ZQ_NNUE_VALUE_BUCKETS;
+constexpr int VALUE_DEPTH = ZQ_NNUE_VALUE_DEPTH;
+static_assert(VALUE_BUCKETS == 1 || VALUE_BUCKETS == 6,
+              "VALUE_BUCKETS must be 1 or 6");
+static_assert(VALUE_DEPTH == 1 || VALUE_DEPTH == 2,
+              "VALUE_DEPTH must be 1 or 2");
+
+// Value-head bucket by total remaining walls. The boundaries match
+// phaseFeatureIndices and get_phase_bucket in training/student_model.py.
+inline int getPhaseBucket(int totalWalls) {
+#if ZQ_NNUE_VALUE_BUCKETS == 6
+    if (totalWalls <= 0) return 0;
+    if (totalWalls <= 2) return 1;
+    if (totalWalls <= 5) return 2;
+    if (totalWalls <= 9) return 3;
+    if (totalWalls <= 14) return 4;
+    return 5;
+#else
+    (void)totalWalls;
+    return 0;
+#endif
+}
+constexpr int BASE_FEATURES = N * N + N * N + WS * WS * 2 + 2 * DIST_BUCKETS + 2 * WALLS_LEFT_BUCKETS;
+constexpr int RACE_EXTRA_FEATURES = 102;
+constexpr int MARGIN_REGIME_EXTRA_FEATURES = 132;
+constexpr int PHASE_EXTRA_FEATURES = 24;
+constexpr int MULTIPATH_EXTRA_FEATURES = 24;
+constexpr int CONTACT_EXTRA_FEATURES = 354;
+constexpr int NUM_FEATURES = BASE_FEATURES
+    + (ZQ_NNUE_RACE_FEATURES ? RACE_EXTRA_FEATURES : 0)
+    + (ZQ_NNUE_MARGIN_REGIME_FEATURES ? MARGIN_REGIME_EXTRA_FEATURES : 0)
+    + (ZQ_NNUE_PHASE_FEATURES ? PHASE_EXTRA_FEATURES : 0)
+    + (ZQ_NNUE_MULTIPATH_FEATURES ? MULTIPATH_EXTRA_FEATURES : 0)
+    + (ZQ_NNUE_CONTACT_FEATURES ? CONTACT_EXTRA_FEATURES : 0);
+constexpr int HIDDEN = ZQ_NNUE_HIDDEN;
+static_assert(HIDDEN == 128 || HIDDEN == 256 || HIDDEN == 384 || HIDDEN == 512
+              || (ZQ_NNUE_EXPERIMENTAL_WIDTHS == 1 && (HIDDEN == 768 || HIDDEN == 1024)),
+              "unsupported NNUE width (768/1024 require ZQ_NNUE_EXPERIMENTAL_WIDTHS=1)");
+
+// These relations use the cached distance buckets, without additional BFS.
+inline std::array<int, 3> raceFeatureIndices(int ownDist, int oppDist, int ownWalls, int oppWalls) {
+    int delta = ownDist - oppDist;
+    int margin = delta < -16 ? -16 : (delta > 16 ? 16 : delta);
+    int race = (delta > 0) - (delta < 0) + 1;
+    int ownClass = ownWalls < 3 ? ownWalls : 3;
+    int oppClass = oppWalls < 3 ? oppWalls : 3;
+    return {{BASE_FEATURES + margin + 16,
+             BASE_FEATURES + 33 + ownWalls - oppWalls + 10,
+             BASE_FEATURES + 54 + race * 16 + ownClass * 4 + oppClass}};
+}
+
+template<class Acc> inline std::array<int, 3> raceFeatures(const Acc& acc) {
+    return raceFeatureIndices(acc.ownDistBucket, acc.oppDistBucket,
+                              acc.ownWallsLeftBucket, acc.oppWallsLeftBucket);
+}
+
+template<class Acc> inline void updateRaceFeatures(Acc& acc, const std::array<int, 3>& previous) {
+    auto current = raceFeatures(acc);
+    for (int i = 0; i < 3; ++i) {
+        if (current[i] != previous[i]) {
+            acc.removeFeature(previous[i]);
+            acc.addFeature(current[i]);
+        }
+    }
+}
+
+// 132 features: margin [-16..16] x 4 wall regimes
+inline int marginRegimeFeatureIndex(int ownDist, int oppDist, int ownWalls, int oppWalls) {
+    constexpr int BASE = BASE_FEATURES + (ZQ_NNUE_RACE_FEATURES ? 102 : 0);
+    int delta = ownDist - oppDist;
+    int margin = delta < -16 ? -16 : (delta > 16 ? 16 : delta);
+    int deltaBucket = margin + 16;
+    int regime = 0;
+    if (ownWalls == 0 && oppWalls > 0) regime = 1;
+    else if (ownWalls > 0 && oppWalls == 0) regime = 2;
+    else if (ownWalls == 0 && oppWalls == 0) regime = 3;
+    return BASE + regime * 33 + deltaBucket;
+}
+
+template<class Acc> inline int marginRegimeFeature(const Acc& acc) {
+    return marginRegimeFeatureIndex(acc.ownDistBucket, acc.oppDistBucket,
+                                    acc.ownWallsLeftBucket, acc.oppWallsLeftBucket);
+}
+
+template<class Acc> inline void updateMarginRegimeFeature(Acc& acc, int previous) {
+    int current = marginRegimeFeature(acc);
+    if (current != previous) {
+        acc.removeFeature(previous);
+        acc.addFeature(current);
+    }
+}
+
+// 24 features: wall stock phase (6 buckets) + race x phase (18 buckets)
+inline std::array<int, 2> phaseFeatureIndices(int ownDist, int oppDist, int ownWalls, int oppWalls) {
+    constexpr int BASE = BASE_FEATURES + (ZQ_NNUE_RACE_FEATURES ? 102 : 0)
+                       + (ZQ_NNUE_MARGIN_REGIME_FEATURES ? 132 : 0);
+    int totalW = ownWalls + oppWalls;
+    int phaseBucket = 0;
+    if (totalW >= 1 && totalW <= 2) phaseBucket = 1;
+    else if (totalW >= 3 && totalW <= 5) phaseBucket = 2;
+    else if (totalW >= 6 && totalW <= 9) phaseBucket = 3;
+    else if (totalW >= 10 && totalW <= 14) phaseBucket = 4;
+    else if (totalW >= 15) phaseBucket = 5;
+
+    int delta = ownDist - oppDist;
+    int race = (delta > 0) - (delta < 0) + 1;
+    return {{BASE + phaseBucket, BASE + 6 + race * 6 + phaseBucket}};
+}
+
+template<class Acc> inline std::array<int, 2> phaseFeatures(const Acc& acc) {
+    return phaseFeatureIndices(acc.ownDistBucket, acc.oppDistBucket,
+                               acc.ownWallsLeftBucket, acc.oppWallsLeftBucket);
+}
+
+template<class Acc> inline void updatePhaseFeatures(Acc& acc, const std::array<int, 2>& previous) {
+    auto current = phaseFeatures(acc);
+    for (int i = 0; i < 2; ++i) {
+        if (current[i] != previous[i]) {
+            acc.removeFeature(previous[i]);
+            acc.addFeature(current[i]);
+        }
+    }
+}
+
+constexpr int POLICY_OUT = N * N + WS * WS * 2;             // 81 destino peão + 128 muro = 209
+
+// Espelha a coordenada bruta do tabuleiro para a perspectiva do jogador 1
+// (CORREÇÃO 2026-08 -- bug de assimetria de perspectiva encontrado via
+// nnue_sign_check.cpp: a posição inicial, perfeitamente simétrica, dava
+// eval NNUE diferente pras duas perspectivas, porque featOwnPawn/
+// featWallH/featWallV usavam coordenada CRUA do tabuleiro, só trocando
+// qual peão é "meu" -- sem espelhar linha/coluna. Como o jogador 0 nasce
+// na linha 0 e vai pra linha N-1 (GOAL_ROW em rules.hpp) e o jogador 1 é o
+// espelho disso (nasce em N-1, vai pra 0), canonicalizar exige espelhar a
+// LINHA (r -> N-1-r pra peão / WS-1-r pra muro) quando a perspectiva é do
+// jogador 1 -- a coluna não muda, o tabuleiro não tem assimetria nesse
+// eixo. Perspectiva 0 continua sem transformação nenhuma (é a canônica);
+// SEM isso, a rede precisava aprender duas "geografias" diferentes
+// usando as mesmas colunas de peso, uma pra cada perspectiva.
+inline int mirroredPawnCell(int cell, int perspective) {
+    if (perspective == 0) return cell;
+    return cellIdx(N - 1 - rowOf(cell), colOf(cell));
+}
+inline int mirroredWallSlot(int slot, int perspective) {
+    if (perspective == 0) return slot;
+    int r = slot / WS, c = slot % WS;
+    return (WS - 1 - r) * WS + c;
+}
+
+// 24 cheap multi-path and pawn contact features (zero extra BFS):
+// - 8 directional unblocked exits (4 own, 4 opp: Forward, Backward, Left, Right)
+// - 8 exit count / branching factor one-hot (1=bottleneck, 2=corridor, 3=T-split, 4=open)
+// - 8 pawn contact & jump geometry (head-on jump, lateral, imminent 2, prox 3, far, same col, adj col, wide)
+struct MultipathFeatures {
+    std::array<int, 14> features{};
+    int count = 0;
+    void add(int feat) { features[count++] = feat; }
+};
+
+inline MultipathFeatures getMultipathFeatures(const State& s, int perspective) {
+    MultipathFeatures mf;
+    constexpr int BASE = BASE_FEATURES + (ZQ_NNUE_RACE_FEATURES ? 102 : 0)
+                       + (ZQ_NNUE_MARGIN_REGIME_FEATURES ? 132 : 0)
+                       + (ZQ_NNUE_PHASE_FEATURES ? 24 : 0);
+    int me = perspective, opp = 1 - perspective;
+    int ownCell = s.pawn[me], oppCell = s.pawn[opp];
+
+    int ownFwdDir = (me == 0 ? 1 : 0);
+    int ownBwdDir = (me == 0 ? 0 : 1);
+    int oppFwdDir = (opp == 0 ? 1 : 0);
+    int oppBwdDir = (opp == 0 ? 0 : 1);
+
+    auto unblocked = [&](int cell, int dir) -> bool {
+        return ORTH_NEIGHBOR[(size_t)cell][(size_t)dir] >= 0 &&
+               !edgeBlockedDir(s.wallsH, s.wallsV, cell, dir);
+    };
+
+    bool ownFwd = unblocked(ownCell, ownFwdDir);
+    bool ownBwd = unblocked(ownCell, ownBwdDir);
+    bool ownLft = unblocked(ownCell, 2);
+    bool ownRgt = unblocked(ownCell, 3);
+    if (ownFwd) mf.add(BASE + 0);
+    if (ownBwd) mf.add(BASE + 1);
+    if (ownLft) mf.add(BASE + 2);
+    if (ownRgt) mf.add(BASE + 3);
+
+    bool oppFwd = unblocked(oppCell, oppFwdDir);
+    bool oppBwd = unblocked(oppCell, oppBwdDir);
+    bool oppLft = unblocked(oppCell, 2);
+    bool oppRgt = unblocked(oppCell, 3);
+    if (oppFwd) mf.add(BASE + 4);
+    if (oppBwd) mf.add(BASE + 5);
+    if (oppLft) mf.add(BASE + 6);
+    if (oppRgt) mf.add(BASE + 7);
+
+    int ownExits = (ownFwd ? 1 : 0) + (ownBwd ? 1 : 0) + (ownLft ? 1 : 0) + (ownRgt ? 1 : 0);
+    int oppExits = (oppFwd ? 1 : 0) + (oppBwd ? 1 : 0) + (oppLft ? 1 : 0) + (oppRgt ? 1 : 0);
+    ownExits = std::max(1, std::min(4, ownExits));
+    oppExits = std::max(1, std::min(4, oppExits));
+    mf.add(BASE + 8 + (ownExits - 1));
+    mf.add(BASE + 12 + (oppExits - 1));
+
+    int myCanon = mirroredPawnCell(ownCell, perspective);
+    int opCanon = mirroredPawnCell(oppCell, perspective);
+    int dr = rowOf(opCanon) - rowOf(myCanon);
+    int dc = colOf(opCanon) - colOf(myCanon);
+    int absDc = std::abs(dc);
+    int manhattan = std::abs(dr) + absDc;
+
+    bool headOn = (dr == 1 && dc == 0);
+    bool lateral = (dr == 0 && absDc == 1);
+    bool imminent = (manhattan == 2 && !headOn);
+    bool prox3 = (manhattan == 3);
+    bool far = (manhattan >= 4 && !lateral);
+
+    if (headOn) mf.add(BASE + 16);
+    if (lateral) mf.add(BASE + 17);
+    if (imminent) mf.add(BASE + 18);
+    if (prox3) mf.add(BASE + 19);
+    if (far) mf.add(BASE + 20);
+
+    if (dc == 0) mf.add(BASE + 21);
+    else if (absDc == 1) mf.add(BASE + 22);
+    else mf.add(BASE + 23);
+
+    return mf;
+}
+
+template<class Acc>
+inline void updateMultipathFeatures(Acc& acc, const MultipathFeatures& prev, const MultipathFeatures& curr) {
+    for (int i = 0; i < prev.count; ++i) {
+        int f = prev.features[i];
+        bool stillActive = false;
+        for (int j = 0; j < curr.count; ++j) {
+            if (curr.features[j] == f) { stillActive = true; break; }
+        }
+        if (!stillActive) acc.removeFeature(f);
+    }
+    for (int i = 0; i < curr.count; ++i) {
+        int f = curr.features[i];
+        bool wasActive = false;
+        for (int j = 0; j < prev.count; ++j) {
+            if (prev.features[j] == f) { wasActive = true; break; }
+        }
+        if (!wasActive) acc.addFeature(f);
+    }
+}
+
+// Four active features describe exact pawn relation, local edge masks, and
+// legal jump or diagonal options. The block uses local edge checks only.
+inline std::array<int, 4> getContactFeatures(const State& s, int perspective) {
+    constexpr int BASE = BASE_FEATURES + (ZQ_NNUE_RACE_FEATURES ? RACE_EXTRA_FEATURES : 0)
+                       + (ZQ_NNUE_MARGIN_REGIME_FEATURES ? MARGIN_REGIME_EXTRA_FEATURES : 0)
+                       + (ZQ_NNUE_PHASE_FEATURES ? PHASE_EXTRA_FEATURES : 0)
+                       + (ZQ_NNUE_MULTIPATH_FEATURES ? MULTIPATH_EXTRA_FEATURES : 0);
+    const int ownCell = s.pawn[perspective];
+    const int oppCell = s.pawn[1 - perspective];
+    const int ownCanon = mirroredPawnCell(ownCell, perspective);
+    const int oppCanon = mirroredPawnCell(oppCell, perspective);
+    const int dr = rowOf(oppCanon) - rowOf(ownCanon);
+    const int dc = colOf(oppCanon) - colOf(ownCanon);
+
+    auto rawDir = [perspective](int canonicalDir) {
+        if (perspective == 0 || canonicalDir >= 2) return canonicalDir;
+        return 1 - canonicalDir;
+    };
+    auto isOpen = [&](int cell, int canonicalDir) {
+        const int direction = rawDir(canonicalDir);
+        return ORTH_NEIGHBOR[(size_t)cell][(size_t)direction] >= 0 &&
+               !edgeBlockedDir(s.wallsH, s.wallsV, cell, direction);
+    };
+    auto edgeMask = [&](int cell) {
+        int mask = 0;
+        for (int direction = 0; direction < 4; ++direction)
+            if (!isOpen(cell, direction)) mask |= 1 << direction;
+        return mask;
+    };
+
+    int adjacentDir = -1;
+    if (dr == -1 && dc == 0) adjacentDir = 0;
+    else if (dr == 1 && dc == 0) adjacentDir = 1;
+    else if (dr == 0 && dc == -1) adjacentDir = 2;
+    else if (dr == 0 && dc == 1) adjacentDir = 3;
+
+    int option = 0;
+    if (adjacentDir >= 0) {
+        const bool straight = isOpen(oppCell, adjacentDir);
+        const int firstPerpendicular = adjacentDir < 2 ? 2 : 0;
+        const int secondPerpendicular = adjacentDir < 2 ? 3 : 1;
+        int mask = straight ? 1 : 0;
+        if (!straight && isOpen(oppCell, firstPerpendicular)) mask |= 2;
+        if (!straight && isOpen(oppCell, secondPerpendicular)) mask |= 4;
+        option = 1 + adjacentDir * 8 + mask;
+    }
+
+    return {{BASE + (dr + 8) * 17 + dc + 8,
+             BASE + 289 + edgeMask(ownCell),
+             BASE + 305 + edgeMask(oppCell),
+             BASE + 321 + option}};
+}
+
+template<class Acc>
+inline void updateContactFeatures(Acc& acc, const std::array<int, 4>& previous,
+                                  const std::array<int, 4>& current) {
+    for (int i = 0; i < 4; ++i) {
+        if (previous[i] == current[i]) continue;
+        acc.removeFeature(previous[i]);
+        acc.addFeature(current[i]);
+    }
+}
+
+// Espelha um bitboard de muro inteiro (todos os 64 bits) -- usado por
+// selfplay.hpp pra gravar TrainingSample::wallsH/wallsV JÁ canônicos
+// (mesma perspectiva do mover), em vez de crus. Motivo de gravar já
+// espelhado em vez de espelhar depois em Python: o formato binário de
+// self-play NÃO registra a identidade física (0/1) de quem jogou --
+// só existe aqui, em selfplay.hpp, no momento da gravação (mesmo
+// raciocínio já usado pra TrainingSample::ownDist/oppDist, ver comentário
+// lá). Sem isso, seria impossível reconstruir no lado Python se uma
+// amostra precisa ser espelhada ou não.
+inline uint64_t mirrorWallBitboard(uint64_t bits, int perspective) {
+    if (perspective == 0) return bits;
+    uint64_t out = 0;
+    for (int i = 0; i < WS * WS; i++) {
+        if ((bits >> i) & 1ull) out |= (1ull << mirroredWallSlot(i, perspective));
+    }
+    return out;
+}
+
+// Espelha um Move inteiro (mesma perspectiva) -- usado por selfplay.hpp
+// pra gravar TrainingSample::policyTarget já no mesmo referencial
+// canônico de ownPawn/oppPawn/wallsH/wallsV, senão o alvo de policy
+// ficaria dessincronizado da entrada (rótulo em coordenada crua, feature
+// em coordenada espelhada) pra metade das amostras (as gravadas com
+// mover=jogador 1). A orientação do muro (H/V) não muda no espelho --
+// só a linha, nunca a coluna nem a orientação.
+inline Move mirrorMoveForPerspective(const Move& m, int perspective) {
+    if (perspective == 0) return m;
+    if (!m.isWall) return Move::pawn(mirroredPawnCell(m.a, perspective));
+    int mirroredSlot = mirroredWallSlot(slotIdx(m.b, m.c), perspective);
+    return Move::wall(m.a, mirroredSlot / WS, mirroredSlot % WS);
+}
+
+// índices de feature: [0,81) peão próprio, [81,162) peão oponente,
+// [162,226) muro H, [226,290) muro V, [290,311) bucket dist. própria,
+// [311,332) bucket dist. oponente, [332,343) bucket muros restantes
+// próprios, [343,354) bucket muros restantes do oponente.
+//
+// featOwnPawn/featOppPawn/featWallH/featWallV agora recebem `perspective`
+// (0 ou 1, mesmo valor passado a buildAccumulator/buildAccumulatorQuant)
+// e aplicam o espelho acima -- todo call site precisa passar a
+// perspectiva correta (ver updateAccumulatorForMove(Quant): a perspectiva
+// de um Accumulator não muda durante sua vida, então "viewerPlayer",
+// calculado uma vez por lance a partir de viewerIsMover/mover, É a
+// perspectiva).
+inline int featOwnPawn(int cell, int perspective) { return mirroredPawnCell(cell, perspective); }
+inline int featOppPawn(int cell, int perspective) { return N * N + mirroredPawnCell(cell, perspective); }
+inline int featWallH(int slot, int perspective) { return N * N + N * N + mirroredWallSlot(slot, perspective); }
+inline int featWallV(int slot, int perspective) { return N * N + N * N + WS * WS + mirroredWallSlot(slot, perspective); }
+constexpr int DIST_FEAT_BASE = N * N + N * N + WS * WS * 2;              // 290
+inline int featOwnDist(int bucket) { return DIST_FEAT_BASE + bucket; }
+inline int featOppDist(int bucket) { return DIST_FEAT_BASE + DIST_BUCKETS + bucket; }
+constexpr int WALLS_LEFT_FEAT_BASE = DIST_FEAT_BASE + 2 * DIST_BUCKETS;  // 332
+inline int featOwnWallsLeft(int bucket) { return WALLS_LEFT_FEAT_BASE + bucket; }
+inline int featOppWallsLeft(int bucket) { return WALLS_LEFT_FEAT_BASE + WALLS_LEFT_BUCKETS + bucket; }
+
+// Cabeça de "valor" (mudança 2026-08: cabeça AUXILIAR removida): existia
+// uma cabeça auxiliar HIDDEN->32->1 que fazia regressão MSE contra
+// evalSimple/VALUE_SCALE, pensada só como scaffolding de treino enquanto
+// o self-play não vinha da própria NNUE. Ela nunca era chamada pela busca
+// (só forwardValueWL era) e virou peso morto assim que
+// training/train_nnue.py passou a gravar a própria avaliação da NNUE nos
+// .bin de self-play em vez do score heurístico (ver TrainingSample::
+// evalNNUE em selfplay.hpp) -- esse valor, junto do gameResult real, é o
+// que agora alimenta o alvo de treino da cabeça WL (WL_mod = WL*k +
+// EV*(1-k), k por fonte de dado, ver DATA_SOURCES_DEFAULT em
+// train_nnue.py). See the table in docs/plan.md ("Evaluation: what each
+// estágio usa") para o mapa completo de quem consome o quê.
+struct NNUEWeights {
+    // camada 1 (acumulador): pesos por feature esparsa -> HIDDEN
+    std::vector<std::array<float, HIDDEN>> w1;   // [NUM_FEATURES][HIDDEN]
+    std::array<float, HIDDEN> b1{};
+
+#if ZQ_NNUE_VALUE_BUCKETS == 1 && ZQ_NNUE_VALUE_DEPTH == 1
+    // cabeça de RESULTADO (WL): HIDDEN -> 32 -> 1 (logit único, sem empate)
+    std::array<std::array<float, 32>, HIDDEN> wv1_wl;
+    std::array<float, 32> bv1_wl{};
+    std::array<float, 32> wv2_wl{};
+    float bv2_wl = 0.f;
+#elif ZQ_NNUE_VALUE_DEPTH == 2
+    std::array<std::array<std::array<float, 32>, HIDDEN>, VALUE_BUCKETS> wv1_wl;
+    std::array<std::array<float, 32>, VALUE_BUCKETS> bv1_wl{};
+    std::array<std::array<std::array<float, 32>, 32>, VALUE_BUCKETS> wv2_wl;
+    std::array<std::array<float, 32>, VALUE_BUCKETS> bv2_wl{};
+    std::array<std::array<float, 32>, VALUE_BUCKETS> wv3_wl;
+    std::array<float, VALUE_BUCKETS> bv3_wl{};
+#else
+    std::array<std::array<std::array<float, 32>, HIDDEN>, VALUE_BUCKETS> wv1_wl;
+    std::array<std::array<float, 32>, VALUE_BUCKETS> bv1_wl{};
+    std::array<std::array<float, 32>, VALUE_BUCKETS> wv2_wl;
+    std::array<float, VALUE_BUCKETS> bv2_wl{};
+#endif
+
+    // cabeça de política: HIDDEN -> POLICY_OUT
+    std::vector<std::array<float, HIDDEN>> wp;   // [POLICY_OUT][HIDDEN] (transposto p/ dot direto)
+    std::vector<float> bp;                        // [POLICY_OUT]
+
+    NNUEWeights() { randomInit(12345); }
+
+    void randomInit(uint64_t seed) {
+        std::mt19937_64 rng(seed);
+        std::normal_distribution<float> d1(0.f, 0.05f);   // escala pequena: rede não treinada, só demo/benchmark
+        w1.assign(NUM_FEATURES, {});
+        for (auto& row : w1) for (auto& v : row) v = d1(rng);
+        for (auto& v : b1) v = 0.f;
+
+#if ZQ_NNUE_VALUE_BUCKETS == 1 && ZQ_NNUE_VALUE_DEPTH == 1
+        for (auto& row : wv1_wl) for (auto& v : row) v = d1(rng);
+        for (auto& v : bv1_wl) v = 0.f;
+        for (auto& v : wv2_wl) v = d1(rng);
+        bv2_wl = 0.f;
+#elif ZQ_NNUE_VALUE_DEPTH == 2
+        for (int b = 0; b < VALUE_BUCKETS; ++b) {
+            for (auto& row : wv1_wl[b]) for (auto& v : row) v = d1(rng);
+            for (auto& v : bv1_wl[b]) v = 0.f;
+            for (auto& row : wv2_wl[b]) for (auto& v : row) v = d1(rng);
+            for (auto& v : bv2_wl[b]) v = 0.f;
+            for (auto& v : wv3_wl[b]) v = d1(rng);
+            bv3_wl[b] = 0.f;
+        }
+#else
+        for (int b = 0; b < VALUE_BUCKETS; ++b) {
+            for (auto& row : wv1_wl[b]) for (auto& v : row) v = d1(rng);
+            for (auto& v : bv1_wl[b]) v = 0.f;
+            for (auto& v : wv2_wl[b]) v = d1(rng);
+            bv2_wl[b] = 0.f;
+        }
+#endif
+
+        wp.assign(POLICY_OUT, {});
+        for (auto& row : wp) for (auto& v : row) v = d1(rng);
+        bp.assign(POLICY_OUT, 0.f);
+    }
+
+    bool loadFromFile(const std::string& path) {
+        FILE* f = std::fopen(path.c_str(), "rb");
+        if (!f) return false;
+        bool ok = true;
+        w1.assign(NUM_FEATURES, {});
+        for (auto& row : w1) ok = ok && std::fread(row.data(), sizeof(float), HIDDEN, f) == (size_t)HIDDEN;
+        ok = ok && std::fread(b1.data(), sizeof(float), HIDDEN, f) == (size_t)HIDDEN;
+
+#if ZQ_NNUE_VALUE_BUCKETS == 1 && ZQ_NNUE_VALUE_DEPTH == 1
+        for (auto& row : wv1_wl) ok = ok && std::fread(row.data(), sizeof(float), 32, f) == 32;
+        ok = ok && std::fread(bv1_wl.data(), sizeof(float), 32, f) == 32;
+        ok = ok && std::fread(wv2_wl.data(), sizeof(float), 32, f) == 32;
+        ok = ok && std::fread(&bv2_wl, sizeof(float), 1, f) == 1;
+#elif ZQ_NNUE_VALUE_DEPTH == 2
+        for (int b = 0; b < VALUE_BUCKETS; ++b) {
+            for (auto& row : wv1_wl[b]) ok = ok && std::fread(row.data(), sizeof(float), 32, f) == 32;
+            ok = ok && std::fread(bv1_wl[b].data(), sizeof(float), 32, f) == 32;
+            for (auto& row : wv2_wl[b]) ok = ok && std::fread(row.data(), sizeof(float), 32, f) == 32;
+            ok = ok && std::fread(bv2_wl[b].data(), sizeof(float), 32, f) == 32;
+            ok = ok && std::fread(wv3_wl[b].data(), sizeof(float), 32, f) == 32;
+            ok = ok && std::fread(&bv3_wl[b], sizeof(float), 1, f) == 1;
+        }
+#else
+        for (int b = 0; b < VALUE_BUCKETS; ++b) {
+            for (auto& row : wv1_wl[b]) ok = ok && std::fread(row.data(), sizeof(float), 32, f) == 32;
+            ok = ok && std::fread(bv1_wl[b].data(), sizeof(float), 32, f) == 32;
+            for (auto& row : wv2_wl[b]) ok = ok && std::fread(row.data(), sizeof(float), 32, f) == 32;
+            ok = ok && std::fread(&bv2_wl[b], sizeof(float), 1, f) == 1;
+        }
+#endif
+
+        wp.assign(POLICY_OUT, {});
+        for (auto& row : wp) ok = ok && std::fread(row.data(), sizeof(float), HIDDEN, f) == (size_t)HIDDEN;
+        bp.assign(POLICY_OUT, 0.f);
+        ok = ok && std::fread(bp.data(), sizeof(float), POLICY_OUT, f) == (size_t)POLICY_OUT;
+        std::fclose(f);
+        return ok;
+    }
+
+    bool saveToFile(const std::string& path) const {
+        FILE* f = std::fopen(path.c_str(), "wb");
+        if (!f) return false;
+        for (auto& row : w1) std::fwrite(row.data(), sizeof(float), HIDDEN, f);
+        std::fwrite(b1.data(), sizeof(float), HIDDEN, f);
+
+#if ZQ_NNUE_VALUE_BUCKETS == 1 && ZQ_NNUE_VALUE_DEPTH == 1
+        for (auto& row : wv1_wl) std::fwrite(row.data(), sizeof(float), 32, f);
+        std::fwrite(bv1_wl.data(), sizeof(float), 32, f);
+        std::fwrite(wv2_wl.data(), sizeof(float), 32, f);
+        std::fwrite(&bv2_wl, sizeof(float), 1, f);
+#elif ZQ_NNUE_VALUE_DEPTH == 2
+        for (int b = 0; b < VALUE_BUCKETS; ++b) {
+            for (auto& row : wv1_wl[b]) std::fwrite(row.data(), sizeof(float), 32, f);
+            std::fwrite(bv1_wl[b].data(), sizeof(float), 32, f);
+            for (auto& row : wv2_wl[b]) std::fwrite(row.data(), sizeof(float), 32, f);
+            std::fwrite(bv2_wl[b].data(), sizeof(float), 32, f);
+            std::fwrite(wv3_wl[b].data(), sizeof(float), 32, f);
+            std::fwrite(&bv3_wl[b], sizeof(float), 1, f);
+        }
+#else
+        for (int b = 0; b < VALUE_BUCKETS; ++b) {
+            for (auto& row : wv1_wl[b]) std::fwrite(row.data(), sizeof(float), 32, f);
+            std::fwrite(bv1_wl[b].data(), sizeof(float), 32, f);
+            for (auto& row : wv2_wl[b]) std::fwrite(row.data(), sizeof(float), 32, f);
+            std::fwrite(&bv2_wl[b], sizeof(float), 1, f);
+        }
+#endif
+
+        for (auto& row : wp) std::fwrite(row.data(), sizeof(float), HIDDEN, f);
+        std::fwrite(bp.data(), sizeof(float), POLICY_OUT, f);
+        std::fclose(f);
+        return true;
+    }
+};
+
+inline NNUEWeights& weights() { static NNUEWeights w; return w; }
+
+// Substitui os pesos do singleton pelos de um arquivo treinado (ver
+// NNUEWeights::loadFromFile). Deve ser chamado antes de qualquer
+// buildAccumulator/forward* se o objetivo é usar a rede treinada em vez
+// dos pesos aleatórios de benchmark.
+inline bool loadWeights(const std::string& path) { return weights().loadFromFile(path); }
+
+struct Accumulator {
+    std::array<float, HIDDEN> v{};
+    // bucket de distância BFS atualmente somado no acumulador (own=quem é
+    // "perspectiva", opp=o outro) -- cache que existe só pra evitar
+    // recomputar a distância ANTES do lance via BFS dentro de
+    // updateAccumulatorForMove: só a distância DEPOIS do lance precisa ser
+    // calculada ali, porque a de antes já está guardada aqui desde a
+    // última chamada. Sem esse cache, cada update de muro pagaria 4 BFS
+    // (antes+depois x 2 jogadores) em vez de 2 (só depois), o que deixava
+    // o update incremental de muro mais caro que um recompute completo --
+    // ver benchAccumulatorUpdate em main.cpp.
+    int ownDistBucket = 0;
+    int oppDistBucket = 0;
+    int ownWallsLeftBucket = 0;   // cache do bucket de muros restantes ativo -- mesmo padrão de ownDistBucket
+    int oppWallsLeftBucket = 0;
+
+    void addFeature(int featIdx) {
+        auto& row = weights().w1[featIdx];
+        for (int i = 0; i < HIDDEN; i++) v[i] += row[i];
+    }
+    void removeFeature(int featIdx) {
+        auto& row = weights().w1[featIdx];
+        for (int i = 0; i < HIDDEN; i++) v[i] -= row[i];
+    }
+};
+
+// recomputa do zero -- só usada ao entrar numa posição "fria" (raiz da busca)
+// Ponte pro cache de BFS entre nós (rules.hpp: PlayerPathCacheTable /
+// computeDistCached), pra updateAccumulatorForMove(Quant) parar de pagar
+// shortestPathLen CRU a cada nó. `xtable == nullptr` cai pro
+// comportamento antigo (shortestPathLen direto) -- mantém tune_spsa.cpp,
+// testes em teste/, etc. funcionando sem precisar passar uma tabela.
+// Ganho duplo ao plugar aqui: (1) o mesmo (wallsH,wallsV,pawnCell,player)
+// reaparece o tempo todo entre nós irmãos/transposições (exatamente o que
+// PlayerPathCacheTable já explora pro heurístico); (2) dentro de UM SÓ
+// lance, updateAccumulatorForMove(Quant) é chamada 2x (uma vez por
+// acumulador/perspectiva) e as duas chamadas acabam pedindo as MESMAS duas
+// distâncias (a do mover e a do oponente, só que em ordem own/opp
+// trocada) -- com xtable, a segunda chamada acerta cache na hora (posta
+// pela primeira), o que sozinho já elimina metade das BFS pagas aqui.
+#if ZQ_EXP_EDGE_BFS_REPLAY
+struct EdgeDistanceMemoEntry {
+    bool valid = false;
+    uint64_t wallsH = 0, wallsV = 0;
+    int cell = 0, player = 0;
+    PlayerPathCache data;
+};
+#endif
+inline int distLenCached(uint64_t wallsH, uint64_t wallsV, int cell, int player, PlayerPathCacheTable* xtable) {
+    if (!xtable) return shortestPathLen(wallsH, wallsV, cell, player);
+    PlayerPathCache c;
+#if ZQ_EXP_EDGE_BFS_REPLAY
+    // Replay the original table access. Its hash-only hits remain authoritative.
+    // Only a table miss can use a geometry memo with complete key verification.
+    if (!xtable->get(wallsH, wallsV, cell, player, c)) {
+        static thread_local std::array<EdgeDistanceMemoEntry, 4096> memo{};
+        auto mix = [](uint64_t x) {
+            x = (x ^ (x >> 30)) * 0xBF58476D1CE4E5B9ull;
+            x = (x ^ (x >> 27)) * 0x94D049BB133111EBull;
+            return x ^ (x >> 31);
+        };
+        const uint64_t key = mix(wallsH) ^ mix(wallsV + 0x9E3779B97F4A7C15ull) ^
+                             mix((uint64_t)(cell * 2 + player));
+        auto& entry = memo[(size_t)key & (memo.size() - 1)];
+        if (entry.valid && entry.wallsH == wallsH && entry.wallsV == wallsV &&
+            entry.cell == cell && entry.player == player) {
+            c = entry.data;
+        } else {
+            computeDistFull(wallsH, wallsV, cell, player, c);
+            entry.valid = true;
+            entry.wallsH = wallsH;
+            entry.wallsV = wallsV;
+            entry.cell = cell;
+            entry.player = player;
+            entry.data = c;
+        }
+        xtable->put(wallsH, wallsV, cell, player, c);
+    }
+#else
+    computeDistCached(wallsH, wallsV, cell, player, xtable, c);
+#endif
+    return cachedShortestPathLen(c);
+}
+
+inline Accumulator buildAccumulator(const State& s, int perspective, PlayerPathCacheTable* xtable = nullptr) {
+    Accumulator acc;
+    acc.v = weights().b1;
+    int me = perspective, opp = 1 - perspective;
+    acc.addFeature(featOwnPawn(s.pawn[me], perspective));
+    acc.addFeature(featOppPawn(s.pawn[opp], perspective));
+    for (int i = 0; i < WS * WS; i++) {
+        if ((s.wallsH >> i) & 1ull) acc.addFeature(featWallH(i, perspective));
+        if ((s.wallsV >> i) & 1ull) acc.addFeature(featWallV(i, perspective));
+    }
+    // features de distância BFS (ver nota em DIST_BUCKETS acima): 2 BFS,
+    // O(81) cada, sem alocação (shortestPathLen usa arrays thread_local
+    // fixos) -- barato frente ao custo de recompute total do acumulador,
+    // que já percorre 128 slots de muro.
+    acc.ownDistBucket = distBucket(distLenCached(s.wallsH, s.wallsV, s.pawn[me], me, xtable));
+    acc.oppDistBucket = distBucket(distLenCached(s.wallsH, s.wallsV, s.pawn[opp], opp, xtable));
+    acc.addFeature(featOwnDist(acc.ownDistBucket));
+    acc.addFeature(featOppDist(acc.oppDistBucket));
+    // muros restantes (feature nova, 2026-08 -- ver nota em WALLS_LEFT_BUCKETS acima)
+    acc.ownWallsLeftBucket = wallsLeftBucket(s.wallsLeft[me]);
+    acc.oppWallsLeftBucket = wallsLeftBucket(s.wallsLeft[opp]);
+    acc.addFeature(featOwnWallsLeft(acc.ownWallsLeftBucket));
+    acc.addFeature(featOppWallsLeft(acc.oppWallsLeftBucket));
+#if ZQ_NNUE_RACE_FEATURES
+    for (int feature : raceFeatures(acc)) acc.addFeature(feature);
+#endif
+#if ZQ_NNUE_MARGIN_REGIME_FEATURES
+    acc.addFeature(marginRegimeFeature(acc));
+#endif
+#if ZQ_NNUE_PHASE_FEATURES
+    for (int feature : phaseFeatures(acc)) acc.addFeature(feature);
+#endif
+#if ZQ_NNUE_MULTIPATH_FEATURES
+    auto mp = getMultipathFeatures(s, perspective);
+    for (int i = 0; i < mp.count; ++i) acc.addFeature(mp.features[i]);
+#endif
+#if ZQ_NNUE_CONTACT_FEATURES
+    for (int feature : getContactFeatures(s, perspective)) acc.addFeature(feature);
+#endif
+    return acc;
+}
+
+// SCReLU simplificado (clip 0..1, ao quadrado) -- mesma família usada no Zchezz.
+// Usado só no acumulador (soma de muitas features, precisa de não-linearidade
+// "forte" pra não colapsar em um mapa linear das features de entrada).
+inline float screlu(float x) {
+    float c = x < 0.f ? 0.f : (x > 1.f ? 1.f : x);
+    return c * c;
+}
+
+// Clipped ReLU (clip 0..1, sem elevar ao quadrado) -- usado nas camadas
+// internas dos heads (value1->value2), padrão comum em NNUE pra camadas
+// já quantizáveis em int8/16. Ver nota de correção logo abaixo.
+inline float clippedRelu(float x) {
+    return x < 0.f ? 0.f : (x > 1.f ? 1.f : x);
+}
+
+// CORREÇÃO (pós-treino, Fase 5): a versão original desta função não tinha
+// nenhuma não-linearidade entre as duas camadas lineares do value head
+// (256->32 e 32->1) -- o bias bv1 era somado só depois de já multiplicar
+// por wv2, sem ativação no meio. Como a composição de duas transformações
+// lineares é ela mesma linear, o "bottleneck" de 32 neurônios não tinha
+// efeito nenhum. Corrigido adicionando clippedRelu(h+bv1) antes do
+// produto final com wv2.
+//
+// forwardValueWL é a única cabeça de valor da rede (a cabeça auxiliar de
+// imitação de evalSimple foi removida 2026-08 -- ver nota em NNUEWeights
+// acima); é o logit de resultado (WL, sem empate) que a busca consome via
+// nnueEvalInt.
+inline float forwardValueWL(const Accumulator& acc, int bucket = -1) {
+    if (bucket < 0) {
+        bucket = getPhaseBucket(acc.ownWallsLeftBucket + acc.oppWallsLeftBucket);
+    }
+    std::array<float, 32> h{};
+    auto& W = weights();
+#if ZQ_NNUE_VALUE_BUCKETS == 1 && ZQ_NNUE_VALUE_DEPTH == 1
+    (void)bucket;
+    for (int i = 0; i < HIDDEN; i++) {
+        float a = screlu(acc.v[i]);
+        for (int j = 0; j < 32; j++) h[j] += a * W.wv1_wl[i][j];
+    }
+    float out = W.bv2_wl;
+    for (int j = 0; j < 32; j++) {
+        float hj = clippedRelu(h[j] + W.bv1_wl[j]);
+        out += hj * W.wv2_wl[j];
+    }
+    return out;
+#elif ZQ_NNUE_VALUE_DEPTH == 2
+    for (int i = 0; i < HIDDEN; i++) {
+        float a = screlu(acc.v[i]);
+        for (int j = 0; j < 32; j++) h[j] += a * W.wv1_wl[bucket][i][j];
+    }
+    std::array<float, 32> h2{};
+    for (int j = 0; j < 32; j++) {
+        float hj = clippedRelu(h[j] + W.bv1_wl[bucket][j]);
+        for (int k = 0; k < 32; k++) h2[k] += hj * W.wv2_wl[bucket][j][k];
+    }
+    float out = W.bv3_wl[bucket];
+    for (int k = 0; k < 32; k++) {
+        float hk = clippedRelu(h2[k] + W.bv2_wl[bucket][k]);
+        out += hk * W.wv3_wl[bucket][k];
+    }
+    return out;
+#else
+    for (int i = 0; i < HIDDEN; i++) {
+        float a = screlu(acc.v[i]);
+        for (int j = 0; j < 32; j++) h[j] += a * W.wv1_wl[bucket][i][j];
+    }
+    float out = W.bv2_wl[bucket];
+    for (int j = 0; j < 32; j++) {
+        float hj = clippedRelu(h[j] + W.bv1_wl[bucket][j]);
+        out += hj * W.wv2_wl[bucket][j];
+    }
+    return out;
+#endif
+}
+
+inline void forwardPolicy(const Accumulator& acc, std::array<float, POLICY_OUT>& out) {
+    auto& W = weights();
+    std::array<float, HIDDEN> a;
+    for (int i = 0; i < HIDDEN; i++) a[i] = screlu(acc.v[i]);
+    for (int o = 0; o < POLICY_OUT; o++) {
+        float s = W.bp[o];
+        auto& row = W.wp[o];
+        for (int i = 0; i < HIDDEN; i++) s += a[i] * row[i];
+        out[o] = s;
+    }
+}
+
+// atualização incremental do acumulador para um lance -- peão e muro
+// continuam O(HIDDEN) puro (2 ou 1 feature de tabuleiro trocam, nunca
+// recompute completo). As features de distância BFS são a exceção: não
+// dependem só da célula atual mas da conectividade do grafo inteiro,
+// então cada muro colocado exige recalcular a distância DEPOIS do lance
+// (2 BFS: own e opp). Lances de peão pagam 1 BFS só (a do mover; a do
+// oponente não muda porque nenhum muro foi colocado). O cache
+// ownDistBucket/oppDistBucket evita calcular a distância ANTES do lance --
+// ela já está guardada no acumulador desde o nó anterior.
+//
+// Pré-condição: o chamador precisa passar `viewerIsMover = (acc.viewer ==
+// before.turn)`. A busca mantém SEMPRE DOIS acumuladores por nó: um da
+// perspectiva do jogador 0, outro da perspectiva do jogador 1. Ao
+// aplicar o lance do jogador 0, o acumulador 0 tem `viewerIsMover=true` e
+// o acumulador 1 tem `viewerIsMover=false`.
+//
+// Muro colocado: SÓ o jogador que jogou o muro perde 1 muro em
+// `wallsLeft` (ns.wallsLeft[before.turn] -= 1). O acumulador do mover
+// troca ownWallsLeftBucket; o acumulador do outro troca
+// oppWallsLeftBucket.
+//
+// xtable: cache global de BFS (PlayerPathCacheTable, Prioridade 6b). Se
+// não-nulo, distLenCached consulta o hash da topologia antes de rodar a
+// BFS real. Em caso de acerto, o custo de BFS cai de ~3.5µs pra ~15ns.
+// Passar nullptr preserva a semântica antiga (sempre roda BFS).
+//
+// NOTA DE DESEMPENHO (2026-08): updateAccumulatorForMove era ~15% mais
+// rápida que rebuild completo (benchAccumulatorUpdate em main.cpp: 16.9µs
+// vs 19.8µs); com o xtable ligado nos dois lados da busca, a vantagem
+// cresce porque o update incremental bate no cache com a MESMA taxa de
+// acerto do heurístico (~60%).
+//
+// NOTA DE PERSPECTIVA: m é o lance no referencial CRU do tabuleiro (como
+// legalMoves devolve). featOwnPawn/featWallH/etc. recebem perspective
+// internamente e aplicam o espelho quando viewerPlayer == 1.
+// o lance em `before`. Pré-condição: acc.ownDistBucket/oppDistBucket
+// precisam refletir corretamente `before` (garantido se todo Accumulator
+// nasce de buildAccumulator e só é mutado por esta função).
+inline void updateAccumulatorForMove(Accumulator& acc, bool viewerIsMover, const State& before, const Move& m,
+                                      PlayerPathCacheTable* xtable = nullptr) {
+#if ZQ_NNUE_RACE_FEATURES
+    const auto previousRaceFeatures = raceFeatures(acc);
+#endif
+#if ZQ_NNUE_MARGIN_REGIME_FEATURES
+    const int previousMarginRegime = marginRegimeFeature(acc);
+#endif
+#if ZQ_NNUE_PHASE_FEATURES
+    const auto previousPhaseFeatures = phaseFeatures(acc);
+#endif
+    State after = applyMove(before, m);
+    int mover = before.turn, opp = 1 - mover;
+    if (!m.isWall) {
+        int destCell = m.a;
+        int moverCell = before.pawn[mover];
+        int newBucket = distBucket(distLenCached(after.wallsH, after.wallsV, destCell, mover, xtable));
+        int viewerPlayer = viewerIsMover ? mover : opp;
+        if (viewerIsMover) {
+            acc.removeFeature(featOwnPawn(moverCell, viewerPlayer));
+            acc.addFeature(featOwnPawn(destCell, viewerPlayer));
+            if (acc.ownDistBucket != newBucket) {
+                acc.removeFeature(featOwnDist(acc.ownDistBucket));
+                acc.addFeature(featOwnDist(newBucket));
+                acc.ownDistBucket = newBucket;
+            }
+            // acc.oppDistBucket não muda: lance de peão não altera muro nenhum.
+        } else {
+            acc.removeFeature(featOppPawn(moverCell, viewerPlayer));
+            acc.addFeature(featOppPawn(destCell, viewerPlayer));
+            if (acc.oppDistBucket != newBucket) {
+                acc.removeFeature(featOppDist(acc.oppDistBucket));
+                acc.addFeature(featOppDist(newBucket));
+                acc.oppDistBucket = newBucket;
+            }
+        }
+        // lance de peão não muda wallsLeft de ninguém -- nada a atualizar aqui.
+    } else {
+        int slot = slotIdx(m.b, m.c);
+        int viewerPlayer = viewerIsMover ? mover : opp;
+        int otherPlayer = 1 - viewerPlayer;
+        acc.addFeature(m.a == 0 ? featWallH(slot, viewerPlayer) : featWallV(slot, viewerPlayer));
+
+        int newOwn = distBucket(distLenCached(after.wallsH, after.wallsV, after.pawn[viewerPlayer], viewerPlayer, xtable));
+        if (acc.ownDistBucket != newOwn) {
+            acc.removeFeature(featOwnDist(acc.ownDistBucket));
+            acc.addFeature(featOwnDist(newOwn));
+            acc.ownDistBucket = newOwn;
+        }
+        int newOpp = distBucket(distLenCached(after.wallsH, after.wallsV, after.pawn[otherPlayer], otherPlayer, xtable));
+        if (acc.oppDistBucket != newOpp) {
+            acc.removeFeature(featOppDist(acc.oppDistBucket));
+            acc.addFeature(featOppDist(newOpp));
+            acc.oppDistBucket = newOpp;
+        }
+        // muros restantes: SÓ quem jogou o lance perde 1 muro (regra em
+        // rules.hpp: `ns.wallsLeft[player] -= 1`, nunca os dois). `mover`
+        // é sempre quem jogou -- independente de quem seja o viewer.
+        if (mover == viewerPlayer) {
+            int newBucket = wallsLeftBucket(after.wallsLeft[viewerPlayer]);
+            if (acc.ownWallsLeftBucket != newBucket) {
+                acc.removeFeature(featOwnWallsLeft(acc.ownWallsLeftBucket));
+                acc.addFeature(featOwnWallsLeft(newBucket));
+                acc.ownWallsLeftBucket = newBucket;
+            }
+        } else {
+            int newBucket = wallsLeftBucket(after.wallsLeft[mover]);
+            if (acc.oppWallsLeftBucket != newBucket) {
+                acc.removeFeature(featOppWallsLeft(acc.oppWallsLeftBucket));
+                acc.addFeature(featOppWallsLeft(newBucket));
+                acc.oppWallsLeftBucket = newBucket;
+            }
+        }
+    }
+#if ZQ_NNUE_RACE_FEATURES
+    updateRaceFeatures(acc, previousRaceFeatures);
+#endif
+#if ZQ_NNUE_MARGIN_REGIME_FEATURES
+    updateMarginRegimeFeature(acc, previousMarginRegime);
+#endif
+#if ZQ_NNUE_PHASE_FEATURES
+    updatePhaseFeatures(acc, previousPhaseFeatures);
+#endif
+#if ZQ_NNUE_MULTIPATH_FEATURES
+    int viewerPlayer = viewerIsMover ? mover : opp;
+    auto prevMp = getMultipathFeatures(before, viewerPlayer);
+    auto nextMp = getMultipathFeatures(after, viewerPlayer);
+    updateMultipathFeatures(acc, prevMp, nextMp);
+#endif
+#if ZQ_NNUE_CONTACT_FEATURES
+    int contactViewer = viewerIsMover ? mover : opp;
+    updateContactFeatures(acc, getContactFeatures(before, contactViewer),
+                          getContactFeatures(after, contactViewer));
+#endif
+}
+
+// =========================================================================
+// Quantização int8 -- pipeline estilo NNUE (Stockfish/Zchezz): camada do
+// acumulador em int16 (escala QA), camadas de cabeça (value1/value2 das
+// DUAS cabeças, e policy) em int8 (escala QB), acumulação intermediária em
+// int32. Ver Seção 7.8 do plano para a derivação completa das escalas.
+//
+// MUDANÇA DESTA SESSÃO: QA e QB eram calculados DEPOIS do treino (QA fixo
+// em 255, QB dinâmico a partir do maior peso encontrado). Isso virou
+// quantization-aware training (QAT, nos moldes do nnue-pytorch do
+// Stockfish): QA e QB agora são decididos ANTES do treino (constantes
+// fixas, ver QA_DEFAULT/QB_DEFAULT abaixo) e um WeightClipper (ver
+// train_nnue.py/train_nnue_numpy.py) trava os pesos dentro do range
+// representável em int8/int16 A CADA PASSO do otimizador -- não só
+// arredonda no final. quantize_nnue.py continua existindo (converte o
+// .bin float32 final pro layout int8/int16 abaixo), mas não computa mais
+// QB a partir do maior peso: ele recebe QA/QB já fixos e só arredonda
+// pesos que, graças ao clipper, já deveriam caber no range (o aviso de
+// saturação continua ali como rede de segurança para pesos vindos de um
+// treino sem clipper).
+//
+// Camada 1 (acumulador): w1_i16 = round(w1_f32 * QA), b1_i16 = round(b1_f32 * QA).
+//   acc_i32[h] = b1_i16[h] + soma incremental de w1_i16[feat][h]
+//   (guardado em int32 para não arriscar overflow de int16 mesmo que o
+//   treino produza pesos maiores no futuro; a MATRIZ de pesos em si é
+//   int16, que é onde a quantização realmente importa para tamanho/banda).
+//
+// SCReLU inteira: clamp(acc_i32, 0, QA)^2 / QA -> inteiro em [0, QA],
+// guardado em uint8. Isso é exatamente QA * screlu(acc_f32) a menos do
+// arredondamento da divisão inteira.
+//
+// Camadas de cabeça (value1/value2 da cabeça WL, mais policy 256->209):
+// pesos e bias quantizados com uma ÚNICA escala QB fixa, compartilhada
+// pelas três matrizes (wv1_wl, wv2_wl, wp). bv1/bv2/bp são quantizados em
+// int32 com a escala combinada correta (QA*QB para bv1_wl/bp, que somam
+// diretamente ao produto ativação-uint8 x peso-int8; QA*QB*QB para
+// bv2_wl, que soma ao produto hj(escala QA*QB) x wv2(escala QB)).
+constexpr int32_t QA_DEFAULT = 255;
+// QB fixo (QAT): escolhido para caber com folga o range de pesos que o
+// WeightClipper impõe durante o treino (|w| <= 127/QB_DEFAULT ~= 1.98).
+// Antes da QAT desta sessão, QB era dinâmico e variava por treino (ex.
+// QB=42 medido num treino anterior); agora é uma constante de compilação
+// e de treino compartilhada -- se for alterado aqui, o clipper em
+// train_nnue.py/train_nnue_numpy.py e o default de quantize_nnue.py
+// precisam mudar junto (os três lados assumem o mesmo valor).
+constexpr int32_t QB_DEFAULT = 64;
+
+struct NNUEWeightsQuant {
+    int32_t QA = QA_DEFAULT;
+    int32_t QB = QB_DEFAULT;
+
+    // true assim que loadFromFile termina com sucesso; falso no estado
+    // recém-construído (pesos zerados, ver construtor abaixo) e falso de
+    // novo se um loadFromFile subsequente falhar no meio da leitura (não
+    // dá pra garantir que os vetores ficaram num estado consistente).
+    // Consultável via nnueWeightsLoaded() -- usado pelos call-sites
+    // (selfplay/arena/wasm) para decidir se é seguro ligar EvalMode::NNUE
+    // ou se devem cair para o heurístico.
+    bool loaded = false;
+
+    std::vector<std::array<int16_t, HIDDEN>> w1;  // [NUM_FEATURES][HIDDEN], escala QA
+    std::array<int16_t, HIDDEN> b1{};              // escala QA
+
+#if ZQ_NNUE_VALUE_BUCKETS == 1 && ZQ_NNUE_VALUE_DEPTH == 1
+    // cabeça de RESULTADO (WL) -- única cabeça de valor (cabeça auxiliar
+    // de imitação de evalSimple removida 2026-08, ver nota em NNUEWeights)
+    std::array<std::array<int8_t, 32>, HIDDEN> wv1_wl{}; // escala QB
+    std::array<int32_t, 32> bv1_wl{};                      // escala QA*QB
+    std::array<int8_t, 32> wv2_wl{};                       // escala QB
+    int32_t bv2_wl = 0;                                    // escala QA*QB*QB
+#elif ZQ_NNUE_VALUE_DEPTH == 2
+    std::array<std::array<std::array<int8_t, 32>, HIDDEN>, VALUE_BUCKETS> wv1_wl{};
+    std::array<std::array<int32_t, 32>, VALUE_BUCKETS> bv1_wl{};
+    std::array<std::array<std::array<int8_t, 32>, 32>, VALUE_BUCKETS> wv2_wl{};
+    std::array<std::array<int32_t, 32>, VALUE_BUCKETS> bv2_wl{};
+    std::array<std::array<int8_t, 32>, VALUE_BUCKETS> wv3_wl{};
+    std::array<int32_t, VALUE_BUCKETS> bv3_wl{};
+#else
+    std::array<std::array<std::array<int8_t, 32>, HIDDEN>, VALUE_BUCKETS> wv1_wl{};
+    std::array<std::array<int32_t, 32>, VALUE_BUCKETS> bv1_wl{};
+    std::array<std::array<int8_t, 32>, VALUE_BUCKETS> wv2_wl{};
+    std::array<int32_t, VALUE_BUCKETS> bv2_wl{};
+#endif
+
+    std::vector<std::array<int8_t, HIDDEN>> wp;   // [POLICY_OUT][HIDDEN], escala QB
+    std::vector<int32_t> bp;                       // escala QA*QB
+
+    // CORREÇÃO: antes deste construtor, w1/wp nasciam como std::vector
+    // vazio (tamanho 0) -- só ganhavam tamanho dentro de loadFromFile.
+    // Enquanto todo call-site só ligava setEvalMode(NNUE) depois de
+    // confirmar loadFromFile()==true, isso nunca mordia. Mas com NNUE
+    // virando o default dos binários, existe agora um caminho onde
+    // addFeature()/removeFeature() são chamados (via buildAccumulatorQuant)
+    // ANTES ou SEM um load bem-sucedido -- w1[featIdx] num vetor vazio é
+    // acesso fora dos limites (UB / corrupção de heap silenciosa), não um
+    // valor "0" seguro. Pré-alocar tudo zerado aqui torna o estado
+    // recém-construído seguro de usar (eval neutra, sempre 0) em vez de UB.
+    NNUEWeightsQuant() {
+        w1.assign(NUM_FEATURES, {});
+        wp.assign(POLICY_OUT, {});
+        bp.assign(POLICY_OUT, 0);
+    }
+
+    // Layout do arquivo: cabeçalho [QA:int32][QB:int32] (formato do
+    // cabeçalho NÃO mudou com a QAT -- QA/QB continuam sendo lidos do
+    // próprio arquivo, só que agora são sempre as mesmas duas constantes
+    // fixas gravadas por quantize_nnue.py, em vez de um QB calculado por
+    // arquivo), depois os blocos acima na mesma ordem de campos, sem
+    // padding. Gerado por training/quantize_nnue.py a partir de um .bin
+    // float32 já treinado (ver NNUEWeights::loadFromFile) -- nunca escrito
+    // à mão em C++.
+    bool loadFromFile(const std::string& path) {
+        FILE* f = std::fopen(path.c_str(), "rb");
+        if (!f) return false;
+
+        // Checagem explícita de tamanho ANTES de ler -- não confiar só no
+        // fread() ir falhando por EOF no meio do caminho pra pegar um
+        // arquivo de arquitetura diferente (ex.: pesos do layout antigo,
+        // NUM_FEATURES=332, contra este binário compilado com
+        // NUM_FEATURES=354, 2026-08). Descoberto porque `fread`-e-deixar-
+        // falhar-no-meio É frágil por coincidência: se o total de bytes
+        // dos dois formatos ficasse parecido o suficiente, um arquivo do
+        // layout errado poderia ler campos inteiros com sucesso e só
+        // desalinhar (sem nunca retornar false) -- mesma classe de bug já
+        // encontrada e corrigida em quantize_nnue.py nesta sessão (lá era
+        // uma checagem tautológica; aqui nem havia checagem de tamanho
+        // nenhuma, só o encadeamento de `ok = ok && fread(...)`).
+        std::fseek(f, 0, SEEK_END);
+        long actualBytes = std::ftell(f);
+        std::fseek(f, 0, SEEK_SET);
+
+#if ZQ_NNUE_VALUE_BUCKETS == 1 && ZQ_NNUE_VALUE_DEPTH == 1
+        long valueHeadBytes = (long)HIDDEN * 32 * sizeof(int8_t)
+                            + 32 * sizeof(int32_t)
+                            + 32 * sizeof(int8_t)
+                            + sizeof(int32_t);
+#elif ZQ_NNUE_VALUE_DEPTH == 2
+        long valueHeadBytes = (long)VALUE_BUCKETS * (
+                              (long)HIDDEN * 32 * sizeof(int8_t)
+                            + 32 * sizeof(int32_t)
+                            + 32 * 32 * sizeof(int8_t)
+                            + 32 * sizeof(int32_t)
+                            + 32 * sizeof(int8_t)
+                            + sizeof(int32_t));
+#else
+        long valueHeadBytes = (long)VALUE_BUCKETS * (
+                              (long)HIDDEN * 32 * sizeof(int8_t)
+                            + 32 * sizeof(int32_t)
+                            + 32 * sizeof(int8_t)
+                            + sizeof(int32_t));
+#endif
+
+        long expectedBytes =
+            (long)sizeof(int32_t) * 2                                  // QA, QB
+            + (long)NUM_FEATURES * HIDDEN * sizeof(int16_t)            // w1
+            + (long)HIDDEN * sizeof(int16_t)                           // b1
+            + valueHeadBytes
+            + (long)POLICY_OUT * HIDDEN * sizeof(int8_t)               // wp
+            + (long)POLICY_OUT * sizeof(int32_t);                      // bp
+        if (actualBytes != expectedBytes) {
+            std::fclose(f);
+            std::fprintf(stderr,
+                "[nnue] '%s' tem %ld bytes, esperado %ld para NUM_FEATURES=%d "
+                "(arquivo de arquitetura antiga/diferente? precisa "
+                "retreinar/re-quantizar) -- carregamento recusado.\n",
+                path.c_str(), actualBytes, expectedBytes, NUM_FEATURES);
+            loaded = false;
+            return false;
+        }
+
+        bool ok = true;
+        ok = ok && std::fread(&QA, sizeof(int32_t), 1, f) == 1;
+        ok = ok && std::fread(&QB, sizeof(int32_t), 1, f) == 1;
+
+        w1.assign(NUM_FEATURES, {});
+        for (auto& row : w1) ok = ok && std::fread(row.data(), sizeof(int16_t), HIDDEN, f) == (size_t)HIDDEN;
+        ok = ok && std::fread(b1.data(), sizeof(int16_t), HIDDEN, f) == (size_t)HIDDEN;
+
+#if ZQ_NNUE_VALUE_BUCKETS == 1 && ZQ_NNUE_VALUE_DEPTH == 1
+        for (auto& row : wv1_wl) ok = ok && std::fread(row.data(), sizeof(int8_t), 32, f) == 32;
+        ok = ok && std::fread(bv1_wl.data(), sizeof(int32_t), 32, f) == 32;
+        ok = ok && std::fread(wv2_wl.data(), sizeof(int8_t), 32, f) == 32;
+        ok = ok && std::fread(&bv2_wl, sizeof(int32_t), 1, f) == 1;
+#elif ZQ_NNUE_VALUE_DEPTH == 2
+        for (int b = 0; b < VALUE_BUCKETS; ++b) {
+            for (auto& row : wv1_wl[b]) ok = ok && std::fread(row.data(), sizeof(int8_t), 32, f) == 32;
+            ok = ok && std::fread(bv1_wl[b].data(), sizeof(int32_t), 32, f) == 32;
+            for (auto& row : wv2_wl[b]) ok = ok && std::fread(row.data(), sizeof(int8_t), 32, f) == 32;
+            ok = ok && std::fread(bv2_wl[b].data(), sizeof(int32_t), 32, f) == 32;
+            ok = ok && std::fread(wv3_wl[b].data(), sizeof(int8_t), 32, f) == 32;
+            ok = ok && std::fread(&bv3_wl[b], sizeof(int32_t), 1, f) == 1;
+        }
+#else
+        for (int b = 0; b < VALUE_BUCKETS; ++b) {
+            for (auto& row : wv1_wl[b]) ok = ok && std::fread(row.data(), sizeof(int8_t), 32, f) == 32;
+            ok = ok && std::fread(bv1_wl[b].data(), sizeof(int32_t), 32, f) == 32;
+            for (auto& row : wv2_wl[b]) ok = ok && std::fread(row.data(), sizeof(int8_t), 32, f) == 32;
+            ok = ok && std::fread(&bv2_wl[b], sizeof(int32_t), 1, f) == 1;
+        }
+#endif
+
+        wp.assign(POLICY_OUT, {});
+        for (auto& row : wp) ok = ok && std::fread(row.data(), sizeof(int8_t), HIDDEN, f) == (size_t)HIDDEN;
+        bp.assign(POLICY_OUT, 0);
+        ok = ok && std::fread(bp.data(), sizeof(int32_t), POLICY_OUT, f) == (size_t)POLICY_OUT;
+
+        std::fclose(f);
+        // Se a leitura falhou no meio (arquivo truncado/corrompido), os
+        // vetores podem estar parcialmente preenchidos com lixo do arquivo
+        // anterior -- não é seguro chamar isso de "carregado". `loaded`
+        // fica false nesse caso, e o singleton continua com os pesos
+        // zerados do construtor (ou os do último load bem-sucedido, se
+        // havia um antes desta tentativa).
+        loaded = ok;
+        return ok;
+    }
+};
+
+inline NNUEWeightsQuant& weightsQuant() { static NNUEWeightsQuant w; return w; }
+inline uint64_t& edgeDeltaWeightGeneration() { static uint64_t generation = 1; return generation; }
+inline bool loadWeightsQuant(const std::string& path) {
+    ++edgeDeltaWeightGeneration();
+    return weightsQuant().loadFromFile(path);
+}
+
+// true se os pesos do singleton vieram de um loadFromFile bem-sucedido
+// (em vez do estado zerado do construtor). Usado pelos call-sites
+// (selfplay/arena/wasm) para decidir se é seguro ligar
+// Negamax::EvalMode::NNUE ou se devem cair para o heurístico.
+inline bool nnueWeightsLoaded() { return weightsQuant().loaded; }
+
+// Caminho padrão dos pesos quantizados, relativo à raiz do repositório
+// (mesma convenção usada em README.md/training/quantize_nnue.py e no
+// nome do arquivo publicado por training/train_nnue.py). Usado por
+// selfplay_main.cpp/arena.cpp/engine_wasm.cpp como default quando o
+// caminho não é passado explicitamente -- NNUE é o default dos
+// binários; este é o arquivo que eles tentam carregar automaticamente
+// antes de decidir cair para o heurístico.
+inline std::string defaultNnueWeightsPath() { return "data/nnue/nnue_weights_int8.bin"; }
+
+struct AccumulatorQuant {
+    std::array<int32_t, HIDDEN> v{};
+    int ownDistBucket = 0;   // cache do bucket ativo -- mesma razão de ser do campo em Accumulator (float)
+    int oppDistBucket = 0;
+    int ownWallsLeftBucket = 0;
+    int oppWallsLeftBucket = 0;
+
+    void addFeature(int featIdx) {
+        auto& row = weightsQuant().w1[featIdx];
+        for (int i = 0; i < HIDDEN; i++) v[i] += row[i];
+    }
+    void removeFeature(int featIdx) {
+        auto& row = weightsQuant().w1[featIdx];
+        for (int i = 0; i < HIDDEN; i++) v[i] -= row[i];
+    }
+};
+
+inline AccumulatorQuant buildAccumulatorQuant(const State& s, int perspective, PlayerPathCacheTable* xtable = nullptr) {
+    AccumulatorQuant acc;
+    auto& b1 = weightsQuant().b1;
+    for (int i = 0; i < HIDDEN; i++) acc.v[i] = b1[i];
+    int me = perspective, opp = 1 - perspective;
+    acc.addFeature(featOwnPawn(s.pawn[me], perspective));
+    acc.addFeature(featOppPawn(s.pawn[opp], perspective));
+    for (int i = 0; i < WS * WS; i++) {
+        if ((s.wallsH >> i) & 1ull) acc.addFeature(featWallH(i, perspective));
+        if ((s.wallsV >> i) & 1ull) acc.addFeature(featWallV(i, perspective));
+    }
+    acc.ownDistBucket = distBucket(distLenCached(s.wallsH, s.wallsV, s.pawn[me], me, xtable));
+    acc.oppDistBucket = distBucket(distLenCached(s.wallsH, s.wallsV, s.pawn[opp], opp, xtable));
+    acc.addFeature(featOwnDist(acc.ownDistBucket));
+    acc.addFeature(featOppDist(acc.oppDistBucket));
+    acc.ownWallsLeftBucket = wallsLeftBucket(s.wallsLeft[me]);
+    acc.oppWallsLeftBucket = wallsLeftBucket(s.wallsLeft[opp]);
+    acc.addFeature(featOwnWallsLeft(acc.ownWallsLeftBucket));
+    acc.addFeature(featOppWallsLeft(acc.oppWallsLeftBucket));
+#if ZQ_NNUE_RACE_FEATURES
+    for (int feature : raceFeatures(acc)) acc.addFeature(feature);
+#endif
+#if ZQ_NNUE_MARGIN_REGIME_FEATURES
+    acc.addFeature(marginRegimeFeature(acc));
+#endif
+#if ZQ_NNUE_PHASE_FEATURES
+    for (int feature : phaseFeatures(acc)) acc.addFeature(feature);
+#endif
+#if ZQ_NNUE_MULTIPATH_FEATURES
+    auto mp = getMultipathFeatures(s, perspective);
+    for (int i = 0; i < mp.count; ++i) acc.addFeature(mp.features[i]);
+#endif
+#if ZQ_NNUE_CONTACT_FEATURES
+    for (int feature : getContactFeatures(s, perspective)) acc.addFeature(feature);
+#endif
+    return acc;
+}
+
+// mesma lógica incremental de updateAccumulatorForMove (ver comentário
+// completo lá, incluindo o cache ownDistBucket/oppDistBucket que evita
+// recalcular a distância ANTES do lance), só que sobre o acumulador
+// quantizado -- mantida como função separada (em vez de template único)
+// pra não esconder o tipo int32_t/float por trás de deducao automática
+// nos pontos de chamada da busca.
+template<class Acc>
+inline void updateAccumulatorForMoveQuantKernel(Acc& acc, bool viewerIsMover, const State& before, const Move& m,
+                                           PlayerPathCacheTable* xtable = nullptr,
+                                           const std::array<int, 2>* distances = nullptr) {
+#if ZQ_NNUE_RACE_FEATURES
+    const auto previousRaceFeatures = raceFeatures(acc);
+#endif
+#if ZQ_NNUE_MARGIN_REGIME_FEATURES
+    const int previousMarginRegime = marginRegimeFeature(acc);
+#endif
+#if ZQ_NNUE_PHASE_FEATURES
+    const auto previousPhaseFeatures = phaseFeatures(acc);
+#endif
+    State after = applyMove(before, m);
+    int mover = before.turn, opp = 1 - mover;
+    if (!m.isWall) {
+        int destCell = m.a;
+        int moverCell = before.pawn[mover];
+        int newBucket = distances ? (*distances)[0] : distBucket(distLenCached(after.wallsH, after.wallsV, destCell, mover, xtable));
+        int viewerPlayer = viewerIsMover ? mover : opp;
+        if (viewerIsMover) {
+            acc.removeFeature(featOwnPawn(moverCell, viewerPlayer));
+            acc.addFeature(featOwnPawn(destCell, viewerPlayer));
+            if (acc.ownDistBucket != newBucket) {
+                acc.removeFeature(featOwnDist(acc.ownDistBucket));
+                acc.addFeature(featOwnDist(newBucket));
+                acc.ownDistBucket = newBucket;
+            }
+        } else {
+            acc.removeFeature(featOppPawn(moverCell, viewerPlayer));
+            acc.addFeature(featOppPawn(destCell, viewerPlayer));
+            if (acc.oppDistBucket != newBucket) {
+                acc.removeFeature(featOppDist(acc.oppDistBucket));
+                acc.addFeature(featOppDist(newBucket));
+                acc.oppDistBucket = newBucket;
+            }
+        }
+        // lance de peão não muda wallsLeft de ninguém -- nada a atualizar aqui.
+    } else {
+        int slot = slotIdx(m.b, m.c);
+        int viewerPlayer = viewerIsMover ? mover : opp;
+        int otherPlayer = 1 - viewerPlayer;
+        acc.addFeature(m.a == 0 ? featWallH(slot, viewerPlayer) : featWallV(slot, viewerPlayer));
+
+        int newOwn = distances ? (*distances)[0] : distBucket(distLenCached(after.wallsH, after.wallsV, after.pawn[viewerPlayer], viewerPlayer, xtable));
+        if (acc.ownDistBucket != newOwn) {
+            acc.removeFeature(featOwnDist(acc.ownDistBucket));
+            acc.addFeature(featOwnDist(newOwn));
+            acc.ownDistBucket = newOwn;
+        }
+        int newOpp = distances ? (*distances)[1] : distBucket(distLenCached(after.wallsH, after.wallsV, after.pawn[otherPlayer], otherPlayer, xtable));
+        if (acc.oppDistBucket != newOpp) {
+            acc.removeFeature(featOppDist(acc.oppDistBucket));
+            acc.addFeature(featOppDist(newOpp));
+            acc.oppDistBucket = newOpp;
+        }
+        // muros restantes: SÓ quem jogou perde 1 muro -- ver comentário
+        // equivalente em updateAccumulatorForMove (float).
+        if (mover == viewerPlayer) {
+            int newWlBucket = wallsLeftBucket(after.wallsLeft[viewerPlayer]);
+            if (acc.ownWallsLeftBucket != newWlBucket) {
+                acc.removeFeature(featOwnWallsLeft(acc.ownWallsLeftBucket));
+                acc.addFeature(featOwnWallsLeft(newWlBucket));
+                acc.ownWallsLeftBucket = newWlBucket;
+            }
+        } else {
+            int newWlBucket = wallsLeftBucket(after.wallsLeft[mover]);
+            if (acc.oppWallsLeftBucket != newWlBucket) {
+                acc.removeFeature(featOppWallsLeft(acc.oppWallsLeftBucket));
+                acc.addFeature(featOppWallsLeft(newWlBucket));
+                acc.oppWallsLeftBucket = newWlBucket;
+            }
+        }
+    }
+#if ZQ_NNUE_RACE_FEATURES
+    updateRaceFeatures(acc, previousRaceFeatures);
+#endif
+#if ZQ_NNUE_MARGIN_REGIME_FEATURES
+    updateMarginRegimeFeature(acc, previousMarginRegime);
+#endif
+#if ZQ_NNUE_PHASE_FEATURES
+    updatePhaseFeatures(acc, previousPhaseFeatures);
+#endif
+#if ZQ_NNUE_MULTIPATH_FEATURES
+    int viewerPlayer = viewerIsMover ? mover : opp;
+    auto prevMp = getMultipathFeatures(before, viewerPlayer);
+    auto nextMp = getMultipathFeatures(after, viewerPlayer);
+    updateMultipathFeatures(acc, prevMp, nextMp);
+#endif
+#if ZQ_NNUE_CONTACT_FEATURES
+    int contactViewer = viewerIsMover ? mover : opp;
+    updateContactFeatures(acc, getContactFeatures(before, contactViewer),
+                          getContactFeatures(after, contactViewer));
+#endif
+}
+
+// The cache stores an ordered feature transformation, never an accumulator.
+// Bucket metadata forms part of the key because the current lazy path owns it.
+#if ZQ_EXP_EDGE_FEATURE_DELTA
+struct EdgeFeatureDelta {
+    std::array<int16_t, 64> operations{};
+    int count = 0;
+    int ownDistBucket = 0, oppDistBucket = 0;
+    int ownWallsLeftBucket = 0, oppWallsLeftBucket = 0;
+    void addFeature(int index) {
+        assert(count < (int)operations.size());
+        operations[count++] = (int16_t)(index + 1);
+    }
+    void removeFeature(int index) {
+        assert(count < (int)operations.size());
+        operations[count++] = (int16_t)(-index - 1);
+    }
+};
+struct EdgeFeatureDeltaEntry {
+    bool valid = false;
+    uint64_t generation = 0;
+    State before{};
+    Move move = Move::pawn(0);
+    bool viewerIsMover = false;
+    std::array<int, 4> buckets{};
+    std::array<int, 2> distances{};
+    EdgeFeatureDelta delta;
+#if ZQ_EXP_EDGE_DENSE_DELTA
+    std::array<int32_t, HIDDEN> dense{};
+#endif
+};
+inline bool edgeDeltaSameState(const State& a, const State& b) {
+    return a.wallsH == b.wallsH && a.wallsV == b.wallsV &&
+           a.pawn[0] == b.pawn[0] && a.pawn[1] == b.pawn[1] &&
+           a.wallsLeft[0] == b.wallsLeft[0] &&
+           a.wallsLeft[1] == b.wallsLeft[1] && a.turn == b.turn;
+}
+#endif
+inline void updateAccumulatorForMoveQuant(AccumulatorQuant& acc, bool viewerIsMover,
+                                         const State& before, const Move& m,
+                                         PlayerPathCacheTable* xtable = nullptr) {
+#if ZQ_EXP_EDGE_FEATURE_DELTA
+
+    static_assert(ZQ_EXP_EDGE_DELTA_ENTRIES > 0 &&
+                  (ZQ_EXP_EDGE_DELTA_ENTRIES & (ZQ_EXP_EDGE_DELTA_ENTRIES - 1)) == 0,
+                  "The delta cache size must be a power of two.");
+    static thread_local std::vector<EdgeFeatureDeltaEntry> cache(ZQ_EXP_EDGE_DELTA_ENTRIES);
+    const std::array<int, 4> buckets = {acc.ownDistBucket, acc.oppDistBucket,
+                                      acc.ownWallsLeftBucket, acc.oppWallsLeftBucket};
+    // Preserve distance-table accesses, including baseline hash aliases.
+    // The transformation depends on the returned buckets, not only the state.
+    const State after = applyMove(before, m);
+    const int viewer = viewerIsMover ? before.turn : 1 - before.turn;
+    std::array<int, 2> distances{};
+    if (!m.isWall) {
+        distances[0] = distBucket(distLenCached(after.wallsH, after.wallsV,
+                                                m.a, before.turn, xtable));
+    } else {
+        distances[0] = distBucket(distLenCached(after.wallsH, after.wallsV,
+                                                after.pawn[viewer], viewer, xtable));
+        distances[1] = distBucket(distLenCached(after.wallsH, after.wallsV,
+                                                after.pawn[1 - viewer], 1 - viewer, xtable));
+    }
+    uint64_t key = before.hash ^ ((uint64_t)moveToPolicyIndex(m) * 0x9E3779B97F4A7C15ull);
+    key ^= (uint64_t)viewerIsMover * 0xD1B54A32D192ED03ull;
+    for (int bucket : buckets) key = (key ^ (uint64_t)bucket) * 0xBF58476D1CE4E5B9ull;
+    for (int bucket : distances) key = (key ^ (uint64_t)bucket) * 0x94D049BB133111EBull;
+    key ^= key >> 32;
+    auto& entry = cache[(size_t)key & (ZQ_EXP_EDGE_DELTA_ENTRIES - 1)];
+    if (!entry.valid || entry.generation != edgeDeltaWeightGeneration() ||
+        entry.viewerIsMover != viewerIsMover || !(entry.move == m) ||
+        entry.buckets != buckets || entry.distances != distances || !edgeDeltaSameState(entry.before, before)) {
+        entry.valid = true;
+        entry.generation = edgeDeltaWeightGeneration();
+        entry.before = before;
+        entry.move = m;
+        entry.viewerIsMover = viewerIsMover;
+        entry.buckets = buckets;
+        entry.distances = distances;
+        auto& delta = entry.delta;
+        delta.count = 0;
+        delta.ownDistBucket = buckets[0];
+        delta.oppDistBucket = buckets[1];
+        delta.ownWallsLeftBucket = buckets[2];
+        delta.oppWallsLeftBucket = buckets[3];
+        updateAccumulatorForMoveQuantKernel(delta, viewerIsMover, before, m, xtable, &distances);
+#if ZQ_EXP_EDGE_DENSE_DELTA
+        entry.dense.fill(0);
+        for (int j = 0; j < delta.count; ++j) {
+            const int operation = delta.operations[j];
+            const auto& row = weightsQuant().w1[std::abs(operation) - 1];
+            if (operation > 0) {
+                for (int i = 0; i < HIDDEN; ++i) entry.dense[i] += row[i];
+            } else {
+                for (int i = 0; i < HIDDEN; ++i) entry.dense[i] -= row[i];
+            }
+        }
+#endif
+    }
+#if ZQ_EXP_EDGE_DENSE_DELTA
+    // At most 64 int16 weight rows contribute. The sum fits in int32.
+    for (int i = 0; i < HIDDEN; ++i) acc.v[i] += entry.dense[i];
+#else
+    for (int j = 0; j < entry.delta.count; ++j) {
+        const int operation = entry.delta.operations[j];
+        if (operation > 0) acc.addFeature(operation - 1);
+        else acc.removeFeature(-operation - 1);
+    }
+#endif
+    acc.ownDistBucket = entry.delta.ownDistBucket;
+    acc.oppDistBucket = entry.delta.oppDistBucket;
+    acc.ownWallsLeftBucket = entry.delta.ownWallsLeftBucket;
+    acc.oppWallsLeftBucket = entry.delta.oppWallsLeftBucket;
+
+#else
+    updateAccumulatorForMoveQuantKernel(acc, viewerIsMover, before, m, xtable);
+#endif
+}
+
+// SCReLU inteira: clamp(x,0,QA)^2 / QA, resultado em [0,QA] -> cabe em uint8
+// pra QA <= 255 (QA_DEFAULT). Divisão trunca em direção a zero, mas a
+// entrada do quadrado já é não-negativa aqui, então trunc==floor neste caso
+// específico (a distinção só importa nas divisões finais de dequantização,
+// que podem ser negativas -- ver forwardValueQuant/forwardPolicyQuant).
+inline uint8_t screluQuant(int32_t x, int32_t QA) {
+    int32_t c = x < 0 ? 0 : (x > QA ? QA : x);
+    // perf/speed-elo-100: era int64 -- divisão de 64 bits custa bem mais
+    // que a de 32 e o quadrado (max 255^2 = 65025) cabe em uint32 com
+    // folga. Mesmo quociente inteiro exato.
+    uint32_t sq = (uint32_t)c * (uint32_t)c;
+    return (uint8_t)(sq / (uint32_t)QA);
+}
+
+// Núcleo comum às duas cabeças quantizadas: só muda qual par (wv1,bv1,wv2,
+// bv2) é usado. Mantido como função livre (não template) pelos mesmos
+// motivos do par forwardValue*/forwardValue*Quant já discutidos no
+// restante do arquivo -- tipos explícitos nos pontos de chamada.
+inline float forwardValueHeadQuant(const AccumulatorQuant& acc,
+                                    const std::array<std::array<int8_t, 32>, HIDDEN>& wv1,
+                                    const std::array<int32_t, 32>& bv1,
+                                    const std::array<int8_t, 32>& wv2,
+                                    int32_t bv2) {
+    auto& W = weightsQuant();
+    alignas(32) std::array<uint8_t, HIDDEN> a;
+    for (int i = 0; i < HIDDEN; i++) a[i] = screluQuant(acc.v[i], W.QA);
+
+    // value1 (256->32): escala QA*QB
+    // perf/speed-elo-100: sem o branch por linha (impedia vetorizar); a
+    // ordem de acumulação POR j não muda -> mesmo inteiro exato. Linhas
+    // com ai==0 só somam zeros, que o vetorizado absorve mais barato do
+    // que o custo de predição errada do branch antigo.
+    std::array<int32_t, 32> h{};
+    const int8_t* wv1f = &wv1[0][0];
+    for (int i = 0; i < HIDDEN; i++) {
+        const int32_t ai = a[i];
+        const int8_t* row = wv1f + (size_t)i * 32;
+        for (int j = 0; j < 32; j++) h[j] += ai * (int32_t)row[j];
+    }
+    // clippedRelu inteira: clamp(h+bv1, 0, QA*QB) -- mesma escala combinada
+    int64_t QAQB = (int64_t)W.QA * (int64_t)W.QB;
+    std::array<int32_t, 32> hj{};
+    for (int j = 0; j < 32; j++) {
+        int64_t hv = (int64_t)h[j] + (int64_t)bv1[j];
+        if (hv < 0) hv = 0;
+        if (hv > QAQB) hv = QAQB;
+        hj[j] = (int32_t)hv;
+    }
+    // value2 (32->1): hj (escala QA*QB) x wv2 (escala QB) -> escala QA*QB*QB
+    int64_t out = bv2;
+    for (int j = 0; j < 32; j++) out += (int64_t)hj[j] * (int64_t)wv2[j];
+    int64_t denom = QAQB * (int64_t)W.QB;
+    // Des-escala final: divisão em PONTO FLUTUANTE, não inteira. Só a
+    // divisão da SCReLU (não-negativa, acima) precisa ser inteira de
+    // verdade -- é ela que fecha o loop de ida-e-volta pro domínio uint8
+    // usado no próximo produto interno. Esta aqui é só a conversão do
+    // resultado final pra um score comparável; truncar pra inteiro nesse
+    // ponto jogaria fora toda a parte fracionária do valor (erro medido
+    // de ~1 unidade em vez de ~0,01-0,03 -- bug pego na verificação de
+    // paridade da sessão anterior, ver Seção 7.8 do plano).
+    return (float)((double)out / (double)denom);
+}
+
+#if ZQ_NNUE_VALUE_BUCKETS == 1 && ZQ_NNUE_VALUE_DEPTH == 1
+inline float forwardValueWLQuant(const AccumulatorQuant& acc, int bucket = -1) {
+    (void)bucket;
+    auto& W = weightsQuant();
+    return forwardValueHeadQuant(acc, W.wv1_wl, W.bv1_wl, W.wv2_wl, W.bv2_wl);
+}
+#elif ZQ_NNUE_VALUE_DEPTH == 2
+inline float forwardValueWLQuant(const AccumulatorQuant& acc, int bucket = -1) {
+    if (bucket < 0) {
+        bucket = getPhaseBucket(acc.ownWallsLeftBucket + acc.oppWallsLeftBucket);
+    }
+    auto& W = weightsQuant();
+    alignas(32) std::array<uint8_t, HIDDEN> a;
+    for (int i = 0; i < HIDDEN; i++) a[i] = screluQuant(acc.v[i], W.QA);
+
+    std::array<int32_t, 32> h1{};
+    const int8_t* wv1f = &W.wv1_wl[bucket][0][0];
+    for (int i = 0; i < HIDDEN; i++) {
+        const int32_t ai = a[i];
+        const int8_t* row = wv1f + (size_t)i * 32;
+        for (int j = 0; j < 32; j++) h1[j] += ai * (int32_t)row[j];
+    }
+    const int64_t QAQB = (int64_t)W.QA * (int64_t)W.QB;
+    alignas(32) std::array<uint8_t, 32> h1_q{};
+    for (int j = 0; j < 32; j++) {
+        int64_t hv = (int64_t)h1[j] + (int64_t)W.bv1_wl[bucket][j];
+        if (hv < 0) hv = 0;
+        if (hv > QAQB) hv = QAQB;
+        h1_q[j] = (uint8_t)(hv / W.QB);
+    }
+
+    std::array<int32_t, 32> h2{};
+    const int8_t* wv2f = &W.wv2_wl[bucket][0][0];
+    for (int j = 0; j < 32; j++) {
+        const int32_t hj = h1_q[j];
+        const int8_t* row = wv2f + (size_t)j * 32;
+        for (int k = 0; k < 32; k++) h2[k] += hj * (int32_t)row[k];
+    }
+    std::array<int32_t, 32> h2_clamped{};
+    for (int k = 0; k < 32; k++) {
+        int64_t hv = (int64_t)h2[k] + (int64_t)W.bv2_wl[bucket][k];
+        if (hv < 0) hv = 0;
+        if (hv > QAQB) hv = QAQB;
+        h2_clamped[k] = (int32_t)hv;
+    }
+
+    int64_t out = W.bv3_wl[bucket];
+    for (int k = 0; k < 32; k++) out += (int64_t)h2_clamped[k] * (int64_t)W.wv3_wl[bucket][k];
+    int64_t denom = QAQB * (int64_t)W.QB;
+    return (float)((double)out / (double)denom);
+}
+#else
+inline float forwardValueWLQuant(const AccumulatorQuant& acc, int bucket = -1) {
+    if (bucket < 0) {
+        bucket = getPhaseBucket(acc.ownWallsLeftBucket + acc.oppWallsLeftBucket);
+    }
+    auto& W = weightsQuant();
+    return forwardValueHeadQuant(acc, W.wv1_wl[bucket], W.bv1_wl[bucket], W.wv2_wl[bucket], W.bv2_wl[bucket]);
+}
+#endif
+
+// Probabilidade (sigmoid do logit WL) de que `side` (perspectiva passada a
+// buildAccumulatorQuant) vença a partir desta posição -- usada por
+// selfplay.hpp/arena.cpp para gravar TrainingSample::evalNNUE (a própria
+// avaliação da NNUE, não mais o score heurístico) nos .bin de self-play.
+// Não é chamada pela busca (que usa nnueEvalInt, em unidades inteiras
+// comparáveis a evalSimple, não em probabilidade).
+inline float nnueWinProbQuant(const AccumulatorQuant& acc) {
+    float logit = forwardValueWLQuant(acc);
+    return 1.0f / (1.0f + std::exp(-logit));
+}
+
+inline void forwardPolicyQuant(const AccumulatorQuant& acc, std::array<float, POLICY_OUT>& out) {
+    auto& W = weightsQuant();
+    alignas(32) std::array<uint8_t, HIDDEN> a;
+    for (int i = 0; i < HIDDEN; i++) a[i] = screluQuant(acc.v[i], W.QA);
+
+    // exp/policy-lazy-legal-v7: quando o lado desta perspectiva não possui
+    // mais muros, legalMoves/MCAB jamais podem consumir os 128 logits de
+    // muro. Calculamos somente os 81 destinos de peão, com o MESMO produto
+    // int32 e a MESMA desescala da baseline. Os slots inalcançáveis ficam
+    // zerados defensivamente para evitar lixo caso algum diagnóstico leia
+    // o array inteiro. Com >=1 muro o caminho é exatamente o baseline.
+    const int outputs = (acc.ownWallsLeftBucket == 0) ? (N * N) : POLICY_OUT;
+    if (outputs < POLICY_OUT) out.fill(0.f);
+
+    const double qaqb = (double)((int64_t)W.QA * (int64_t)W.QB);
+    for (int o = 0; o < outputs; o++) {
+        const int8_t* row = W.wp[o].data();
+        const uint8_t* av = a.data();
+        int32_t s = W.bp[o];
+        for (int i = 0; i < HIDDEN; i++)
+            s += (int32_t)av[i] * (int32_t)row[i];
+        out[o] = (float)((double)s / qaqb);
+    }
+}
+
+// =========================================================================
+// AccPair + nnueEvalInt: helpers usados por search.hpp para manter dois
+// acumuladores quantizados (um por perspectiva) na pilha de busca e avaliar
+// folhas via NNUE sem recomputar do zero.
+//
+// NNUE_EVAL_SCALE: fator que mapeia o logit cru da cabeça WL (~[-3,3])
+// para a mesma escala inteira que evalSimple usa (~[-600,600] em posições
+// normais). Mesmo valor que VALUE_SCALE em train_nnue.py -- essencial para
+// que aspiration windows e contempt calibrados para evalSimple continuem
+// funcionando sem re-tuning quando a NNUE assume a avaliação de folha.
+constexpr int NNUE_EVAL_SCALE = 200;
+
+// Par de acumuladores quantizados -- um por perspectiva de jogador.
+// acc[0] = perspectiva do jogador 0 (own=0, opp=1);
+// acc[1] = perspectiva do jogador 1 (own=1, opp=0).
+// Mantidos por search.hpp como pilha de pares (um por ply da busca),
+// atualizados incrementalmente via updateAccumulatorForMoveQuant.
+//
+// Item 3 (update preguiçoso por perspectiva): a cada lance, search.hpp só
+// PRECISA imediatamente da perspectiva de quem vai jogar no filho (é essa
+// que nnueEvalInt lê se o filho for folha). A perspectiva de quem acabou
+// de jogar (o "mover") não é lida no filho -- só volta a ser lida um ply
+// depois, SE a busca chegar lá (nem sempre chega: cutoff de alpha-beta
+// pode podar o resto da subárvore antes disso). pending[p] marca que
+// acc[p] ainda não recebeu o update do último lance -- os dados pra
+// aplicar esse update quando for preciso (pendBefore/pendMove/
+// pendViewerIsMover) ficam guardados aqui. Só existe UM nível de posterga
+// por perspectiva: toda vez que uma perspectiva pending é usada como base
+// pra construir OUTRO AccPair (makeChildAccPair) ou lida (nnueEvalInt),
+// ela é resolvida primeiro (ver resolvePending) -- nunca se acumulam dois
+// lances pendentes na mesma perspectiva ao mesmo tempo.
+//
+// INVARIANTE mantida por makeChildAccPair/buildAccPairRoot (não é
+// responsabilidade de quem chama garantir isso à mão): em qualquer AccPair
+// que search.hpp esteja usando como `curAcc` de um nó com `side = s.turn`,
+// acc[side] NUNCA está pending -- foi resolvida na criação do próprio nó
+// (é a perspectiva "eager" de quem vai jogar ali). Só acc[1-side] (a de
+// quem jogou o lance que levou a este nó) pode estar pending.
+struct AccPair {
+    AccumulatorQuant acc[2];
+    bool pending[2] = {false, false};
+    State pendBefore[2]{};
+    Move pendMove[2]{Move::pawn(0), Move::pawn(0)};
+    bool pendViewerIsMover[2] = {false, false};
+};
+
+// Resolve (se necessário) o update adiado da perspectiva `persp`. Idempotente
+// -- chamar de novo com pending[persp] já false não faz nada. Deve ser
+// chamada antes de: (1) ler acc[persp] para eval, (2) copiar acc[persp]
+// como base de outro AccPair.
+inline void resolvePending(AccPair& ap, int persp, PlayerPathCacheTable* xtable = nullptr) {
+    if (!ap.pending[persp]) return;
+    updateAccumulatorForMoveQuant(ap.acc[persp], ap.pendViewerIsMover[persp],
+                                   ap.pendBefore[persp], ap.pendMove[persp], xtable);
+    ap.pending[persp] = false;
+}
+
+// Constrói `child` a partir de `parent`, aplicando o lance `m` (jogado em
+// `before`, com before.turn == mover do lance). Implementa o Item 3: só a
+// perspectiva de quem vai jogar em `child` (1-mover) é atualizada agora; a
+// do `mover` fica pending. `parent` pode ser mutado (resolvePending da sua
+// própria perspectiva 1-mover, se estava pending -- precisa estar resolvida
+// pra servir de base correta à cópia feita aqui).
+inline void makeChildAccPair(AccPair& parent, AccPair& child, const State& before, const Move& m,
+                              PlayerPathCacheTable* xtable = nullptr) {
+    int mover = before.turn, opp = 1 - mover;
+    // Perspectiva de quem joga em `child` -- precisa estar pronta já.
+    resolvePending(parent, opp, xtable);
+    child.acc[opp] = parent.acc[opp];
+    child.pending[opp] = false;
+    updateAccumulatorForMoveQuant(child.acc[opp], /*viewerIsMover=*/false, before, m, xtable);
+    // Perspectiva de quem jogou -- adia. parent.acc[mover] já está
+    // garantidamente resolvida (invariante da struct: é a perspectiva de
+    // s.turn no nó de `parent`, sempre eager).
+    child.acc[mover] = parent.acc[mover];
+    child.pending[mover] = true;
+    child.pendBefore[mover] = before;
+    child.pendMove[mover] = m;
+    child.pendViewerIsMover[mover] = true;
+}
+
+// Constrói um AccPair "frio" (recompute do zero nas duas perspectivas,
+// sem nada pending) -- uso: raiz de cada busca/iteração de iterative
+// deepening. CORREÇÃO: antes desta função, os 5 call-sites que
+// reconstroem a raiz escreviam direto em nnueAccStack[0].acc[0]/acc[1] sem
+// zerar pending[] -- como nnueAccStack é reaproveitado entre buscas, flags
+// pending de uma busca anterior (junto com pendBefore/pendMove igualmente
+// obsoletos) podiam sobrar no slot raiz e causar uma resolução espúria com
+// dados de outra posição.
+inline AccPair buildAccPairRoot(const State& s, PlayerPathCacheTable* xtable = nullptr) {
+    AccPair ap;
+    ap.acc[0] = buildAccumulatorQuant(s, 0, xtable);
+    ap.acc[1] = buildAccumulatorQuant(s, 1, xtable);
+    ap.pending[0] = false;
+    ap.pending[1] = false;
+    return ap;
+}
+
+// Avaliação NNUE do ponto de vista de `side` (quem vai jogar), em
+// unidades inteiras (escala NNUE_EVAL_SCALE) -- compatível com o valor de
+// retorno de evalSimple/evalSimpleW. Usa a cabeça quantizada de resultado
+// (WL); a cabeça auxiliar (imitação de evalSimple) nunca é chamada pela
+// busca.
+inline int nnueEvalInt(const AccPair& ap, int side) {
+    float logit = forwardValueWLQuant(ap.acc[side]);
+    return (int)std::lround(logit * (float)NNUE_EVAL_SCALE);
+}
+
+// Lê o logit de política (saída crua de forwardPolicyQuant, já calculada
+// UMA VEZ por nó por search.hpp -- ver setPolicyOrderingEnabled) para um
+// lance candidato `m`, do ponto de vista de `side` (quem vai jogar `m`).
+// ATENÇÃO: `policyOut` está na perspectiva CANÔNICA de treino
+// (TrainingSample::policyTarget = moveToPolicyIndex(mirrorMoveForPerspective(
+// chosen, mover)), selfplay.hpp) -- não na coordenada crua do tabuleiro.
+// Por isso `m` precisa ser espelhado via mirrorMoveForPerspective(m, side)
+// ANTES de indexar `policyOut`; indexar com moveToPolicyIndex(m) direto
+// (coordenada crua) leria o logit de um lance DIFERENTE (espelhado) sempre
+// que side==1, silenciosamente -- mesma armadilha documentada em
+// mirrorMoveForPerspective acima.
+inline float policyLogitForMove(const std::array<float, POLICY_OUT>& policyOut, const Move& m, int side) {
+    Move canon = mirrorMoveForPerspective(m, side);
+    return policyOut[moveToPolicyIndex(canon)];
+}
+
+} // namespace qr
