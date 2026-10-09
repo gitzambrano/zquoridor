@@ -15,10 +15,11 @@ except ImportError:
 
 CONFIG = {
     "worker_ids": [1, 2, 3, 4, 5],
-    "revision": "d74ffb6b075f724bf92cb7e3bb728c3b464a65dd",
+    "revision": "38f17b80d4dc1aaa1dc5fbfe65a2f5ac8cd3f07f",
     "repository_url": "https://github.com/gitzambrano/zquoridor.git",
     "checkout_root": "/content/zquoridor_search_games",
-    "drive_root": "/content/drive/MyDrive/zquoridor_data/claustro_search_games_v1",
+    "drive_root": "/content/drive/MyDrive/zquoridor_data/claustro_search_games_v2",
+    "cpu_selfplay_drive_root": "/content/drive/MyDrive/zquoridor_data/selfplay_858_v1",
     "pairs": 50000,
     "batch_games": 250,
     "export_targets": True,
@@ -29,13 +30,13 @@ CONFIG = {
     "mode": "match",
     "claustrophobia_device": "gpu",
     "start_move_time_ms": 400,
-    "end_move_time_ms": 50,
+    "end_move_time_ms": 40,
     "decay_start_ply": 14,
     "decay_end_ply": 80,
     "schedule_origin": "opening",
-    "opening_weights": {"center_rush": 7, "normal": 2, "weakness": 1},
+    "opening_weights": {"center_rush": 5, "normal": 4, "weakness": 1},
     "opening_temperature": 1.0,
-    "temperature_plies": 14,
+    "temperature_plies": 12,
     "record_both_searches": True,
     "unique_openings_first": True,
 }
@@ -67,10 +68,11 @@ if not checkout.exists():
 else:
     actual = subprocess.check_output(['git', '-C', str(checkout), 'rev-parse', 'HEAD'], text=True).strip()
     if actual != revision:
-        raise RuntimeError('The existing checkout does not match the pinned revision.')
+        subprocess.run(['git', '-C', str(checkout), 'fetch', 'origin', revision], check=True)
+        subprocess.run(['git', '-C', str(checkout), 'checkout', '--detach', revision], check=True)
     status = subprocess.check_output(['git', '-C', str(checkout), 'status', '--porcelain'], text=True).strip()
     if status:
-        raise RuntimeError('The existing checkout contains local changes.')
+        subprocess.run(['git', '-C', str(checkout), 'checkout', '--', '.'], check=True)
 
 os.environ['PATH'] = '/root/.cargo/bin:' + os.environ.get('PATH', '')
 if not shutil.which('cargo'):
@@ -88,7 +90,7 @@ if not cache_stamp.is_file():
     if (output_dir / 'manifest.json').is_file():
         raise RuntimeError('The run manifest exists, but its frozen runtime cache is absent.')
     if runtime_cache.exists():
-        raise RuntimeError('The runtime cache is incomplete. Select a new campaign directory.')
+        shutil.rmtree(runtime_cache)
     from tools.external.bot_setup import ensure_bot
     runtime_dir.mkdir(parents=True, exist_ok=True)
     subprocess.run(['g++', '-O3', '-std=c++17', '-mavx2', '-mfma', '-I', str(checkout / 'src'),
@@ -136,6 +138,55 @@ print('Collect Claustrophobia search games for worker {worker_id}.', flush=True)
 """
 
 
+CPU_SELFPLAY_BOOTLOADER = """from google.colab import drive
+import hashlib
+import json
+import os
+from pathlib import Path
+import shutil
+import subprocess
+
+if not Path('/content/drive/MyDrive').is_dir():
+    drive.mount('/content/drive')
+
+assert shutil.which('git') and shutil.which('g++'), 'Install Git and the C++ compiler.'
+checkout = Path({checkout_dir_literal})
+revision = {revision_literal}
+repository_url = {repository_url_literal}
+if not checkout.exists():
+    checkout.parent.mkdir(parents=True, exist_ok=True)
+    subprocess.run(['git', 'clone', '--no-checkout', repository_url, str(checkout)], check=True)
+    subprocess.run(['git', '-C', str(checkout), 'fetch', 'origin', revision], check=True)
+    subprocess.run(['git', '-C', str(checkout), 'checkout', '--detach', revision], check=True)
+else:
+    actual = subprocess.check_output(['git', '-C', str(checkout), 'rev-parse', 'HEAD'], text=True).strip()
+    if actual != revision:
+        subprocess.run(['git', '-C', str(checkout), 'fetch', 'origin', revision], check=True)
+        subprocess.run(['git', '-C', str(checkout), 'checkout', '--detach', revision], check=True)
+    status = subprocess.check_output(['git', '-C', str(checkout), 'status', '--porcelain'], text=True).strip()
+    if status:
+        subprocess.run(['git', '-C', str(checkout), 'checkout', '--', '.'], check=True)
+
+os.chdir(checkout)
+runtime_dir = Path({runtime_dir_literal})
+runtime_dir.mkdir(parents=True, exist_ok=True)
+zq_bin = runtime_dir / 'zquoridor_uci'
+if not zq_bin.exists():
+    subprocess.run(['g++', '-O3', '-std=c++17', '-mavx2', '-mfma', '-I', str(checkout / 'src'),
+                    str(checkout / 'tools/external/zquoridor_uci.cpp'),
+                    '-o', str(zq_bin)], check=True)
+    zq_bin.chmod(0o755)
+
+cpu_flags = Path('/proc/cpuinfo').read_text(encoding='utf-8').lower().split()
+if 'avx2' not in cpu_flags or 'fma' not in cpu_flags:
+    raise RuntimeError('The frozen Main executable requires an AVX2 and FMA CPU.')
+
+print('Collect zQuoridor 4.0 (858) selfplay games for worker {worker_id}.', flush=True)
+%cd {checkout_dir}
+!python -u tools/run_search_games.py {cmd_args}
+"""
+
+
 def build_worker_profile(
     worker_id: int,
     workers: Mapping[int, Mapping[str, Any]] | None = None,
@@ -152,7 +203,18 @@ def build_worker_profile(
     if int(settings["pairs"]) <= 0 or int(settings["workers"]) <= 0:
         raise ValueError("The pair count and worker count must be positive.")
     worker = deepcopy(dict(registry[worker_id]))
-    drive_dir = f"{str(settings['drive_root']).rstrip('/')}/worker_{worker_id}"
+
+    # Worker 2 runs CPU selfplay of network 858 if without GPU
+    is_cpu_selfplay = (worker_id == 2) or (settings.get("mode") == "zquoridor-selfplay")
+
+    if is_cpu_selfplay:
+        drive_root = settings.get("cpu_selfplay_drive_root", "/content/drive/MyDrive/zquoridor_data/selfplay_858_v1")
+        drive_dir = f"{str(drive_root).rstrip('/')}/worker_{worker_id}"
+        mode = "zquoridor-selfplay"
+    else:
+        drive_dir = f"{str(settings['drive_root']).rstrip('/')}/worker_{worker_id}"
+        mode = "match"
+
     checkout_dir = f"{str(settings['checkout_root']).rstrip('/')}/{revision}"
     runtime_dir = (
         f"{str(settings['checkout_root']).rstrip('/')}_runtime/{revision}/worker_{worker_id}"
@@ -161,37 +223,67 @@ def build_worker_profile(
         f"{str(settings['drive_root']).rstrip('/')}/_runtime_worker_{worker_id}/{revision}"
     )
     seed = int(settings["seed_stride"]) * worker_id
-    arguments = [
-        "--mode", str(settings["mode"]),
-        "--pairs", str(settings["pairs"]),
-        "--batch-games", str(settings["batch_games"]),
-        "--workers", str(settings["workers"]),
-        "--seed", str(seed),
-        "--claustrophobia-device", str(settings["claustrophobia_device"]),
-        "--start-move-time-ms", str(settings["start_move_time_ms"]),
-        "--end-move-time-ms", str(settings["end_move_time_ms"]),
-        "--decay-start-ply", str(settings["decay_start_ply"]),
-        "--decay-end-ply", str(settings["decay_end_ply"]),
-        "--schedule-origin", str(settings["schedule_origin"]),
-        "--opening-temperature", str(settings["opening_temperature"]),
-        "--temperature-plies", str(settings["temperature_plies"]),
-        "--output", drive_dir,
-        "--zq-executable", f"{runtime_dir}/zquoridor_uci",
-        "--claustrophobia-bridge", f"{runtime_dir}/zq_benchmark_bridge",
-        "--claustrophobia-checkpoint", f"{runtime_dir}/champion.pt",
-        "--no-auto-setup",
-        "--resume",
-    ]
-    for flag in ("export_targets", "export_final_run", "compress_game_ledger"):
-        arguments.append(("--" if settings[flag] else "--no-") + flag.replace("_", "-"))
-    for book, weight in settings["opening_weights"].items():
-        arguments.extend(["--opening-weight", f"{book}={weight}"])
-    if settings["record_both_searches"]:
-        arguments.append("--record-both-searches")
-    if settings["unique_openings_first"]:
-        arguments.append("--unique-openings-first")
+
+    if is_cpu_selfplay:
+        arguments = [
+            "--mode", "zquoridor-selfplay",
+            "--pairs", str(settings["pairs"]),
+            "--batch-games", str(settings["batch_games"]),
+            "--workers", str(settings["workers"]),
+            "--seed", str(seed),
+            "--start-move-time-ms", str(settings["start_move_time_ms"]),
+            "--end-move-time-ms", str(settings["end_move_time_ms"]),
+            "--decay-start-ply", str(settings["decay_start_ply"]),
+            "--decay-end-ply", str(settings["decay_end_ply"]),
+            "--schedule-origin", str(settings["schedule_origin"]),
+            "--opening-temperature", str(settings["opening_temperature"]),
+            "--temperature-plies", str(settings["temperature_plies"]),
+            "--output", drive_dir,
+            "--zq-executable", f"{runtime_dir}/zquoridor_uci",
+            "--no-auto-setup",
+            "--resume",
+        ]
+        for flag in ("export_targets", "export_final_run", "compress_game_ledger"):
+            arguments.append(("--" if settings[flag] else "--no-") + flag.replace("_", "-"))
+        for book, weight in settings["opening_weights"].items():
+            arguments.extend(["--opening-weight", f"{book}={weight}"])
+        if settings["unique_openings_first"]:
+            arguments.append("--unique-openings-first")
+    else:
+        arguments = [
+            "--mode", "match",
+            "--pairs", str(settings["pairs"]),
+            "--batch-games", str(settings["batch_games"]),
+            "--workers", str(settings["workers"]),
+            "--seed", str(seed),
+            "--claustrophobia-device", str(settings["claustrophobia_device"]),
+            "--start-move-time-ms", str(settings["start_move_time_ms"]),
+            "--end-move-time-ms", str(settings["end_move_time_ms"]),
+            "--decay-start-ply", str(settings["decay_start_ply"]),
+            "--decay-end-ply", str(settings["decay_end_ply"]),
+            "--schedule-origin", str(settings["schedule_origin"]),
+            "--opening-temperature", str(settings["opening_temperature"]),
+            "--temperature-plies", str(settings["temperature_plies"]),
+            "--output", drive_dir,
+            "--zq-executable", f"{runtime_dir}/zquoridor_uci",
+            "--claustrophobia-bridge", f"{runtime_dir}/zq_benchmark_bridge",
+            "--claustrophobia-checkpoint", f"{runtime_dir}/champion.pt",
+            "--no-auto-setup",
+            "--resume",
+        ]
+        for flag in ("export_targets", "export_final_run", "compress_game_ledger"):
+            arguments.append(("--" if settings[flag] else "--no-") + flag.replace("_", "-"))
+        for book, weight in settings["opening_weights"].items():
+            arguments.extend(["--opening-weight", f"{book}={weight}"])
+        if settings["record_both_searches"]:
+            arguments.append("--record-both-searches")
+        if settings["unique_openings_first"]:
+            arguments.append("--unique-openings-first")
+
     worker.update(
         worker_id=worker_id,
+        mode=mode,
+        is_cpu_selfplay=is_cpu_selfplay,
         drive_dir=drive_dir,
         total_games=int(settings["pairs"]) * 2,
         pairs=int(settings["pairs"]),
@@ -199,7 +291,7 @@ def build_worker_profile(
         seed=seed,
         positions="",
         extra_args=shlex.join(arguments),
-        target_keywords=["run_search_games.py", "claustro_search_games_v1"],
+        target_keywords=["run_search_games.py", "claustro_search_games_v2" if not is_cpu_selfplay else "selfplay_858_v1"],
         target_shard_prefix=f"worker_{worker_id}",
         checkout_dir=checkout_dir,
         checkout_dir_literal=repr(checkout_dir),
@@ -226,4 +318,5 @@ def build_worker_profiles(
 
 def render_bootloader(worker: Mapping[str, Any]) -> str:
     """Format the notebook cell through the generic launcher contract."""
-    return BOOTLOADER_TEMPLATE.format(**worker, cmd_args=worker["extra_args"])
+    template = CPU_SELFPLAY_BOOTLOADER if worker.get("is_cpu_selfplay") else BOOTLOADER_TEMPLATE
+    return template.format(**worker, cmd_args=worker["extra_args"])

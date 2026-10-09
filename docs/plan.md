@@ -624,3 +624,37 @@ Sixteen native correctness executables passed. The incremental accumulator
 check covered 4758 position-perspective samples with zero differences against
 a complete rebuild. Generated dataset manifests and raw training outputs
 remain local artifacts outside Git.
+
+---
+
+## 7. Advanced Position Generation and Dense Distillation Roadmap
+
+This section documents planned data-enrichment mechanisms designed to expose
+the neural network to rare topological maze configurations and calibrated policy targets.
+
+### Synthetic maze generation (wall drops)
+
+Standard self-play from initial positions visits a restricted corridor of the
+state space. In particular, extreme maze configurations, bottleneck funnels,
+and late-game zugzwang structures occur with low frequency in early plies.
+
+The runner `tools/generate_wall_drops.py` constructs synthetically perturbed
+states by placing an alternating sequence of legal walls onto the board.
+The referee validates that both pawns preserve open paths to their target goals.
+The runner queries the native engine with `--dump-root` to obtain:
+1. Dense 209-action root visit counts and prior distributions.
+2. Root value evaluations.
+3. Breadth-first shortest path distances ($d_{\text{own}}, d_{\text{opp}}$) for auxiliary supervision.
+
+### Gumbel planning and Sequential Halving
+
+Standard Monte Carlo tree search can over-sample dominant pawn advances while
+under-exploring subtle defensive wall placements under low visit budgets.
+The runner `tools/generate_gumbel_sims.py` implements Gumbel AlphaZero planning:
+1. Samples standard Gumbel noise $g(a) \sim \text{Gumbel}(0, 1)$ across all legal actions.
+2. Selects top-$m$ actions by perturbed logit keys $z(a) = \log P(a) + g(a)$.
+3. Allocates simulation budgets using Sequential Halving, pruning inferior actions across rounds.
+4. Completes the policy target $\pi^*(a)$ across all 209 action slots using the Gumbel completion formula.
+
+The resulting dataset combines high topological diversity with sharp, non-heuristic
+policy supervision suitable for multi-head student distillation.
