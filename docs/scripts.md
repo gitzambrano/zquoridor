@@ -149,6 +149,26 @@ Every public runner adheres to the following contract:
 - **Inputs**: `--worker-id` (single worker) or `--worker-ids` (sequential list).
 - **Outputs**: Updated `cookies.json` in worker profile directory.
 
+### `scripts/colab/dispatch_rich_targets.py`
+- **Purpose**: Autonomous orchestrator that deploys Wall-Drop generation and Gumbel AlphaZero Sequential Halving across all 5 remote Google Colab workers. Handles Google Drive mounts, injects native C++ compile steps, and monitors execution health.
+- **Inputs**: Registered worker definitions in `scripts/colab/config.py`.
+- **Outputs**: Remote execution jobs producing `positions.jsonl`, `targets.jsonl`, and `targets.npz` in Google Drive.
+
+### `scripts/colab/orchestrate_v4.py`
+- **Purpose**: Fleet controller for continuous self-play and Claustrophobia search collection. Detects GPU quota limits, switches to CPU self-play, and keeps browser connections alive.
+- **Inputs**: Worker configuration dictionary and runtime profiles.
+- **Outputs**: Execution monitor log and active game generation on Google Drive.
+
+### `scripts/colab/solve_audio.py`
+- **Purpose**: Solves Google reCAPTCHA v2 audio challenges using the OpenAI Whisper tiny model. Downloads challenge MP3 payloads, resamples to 16 kHz, transcribes spoken text, and submits verification.
+- **Inputs**: CDP port of the target browser instance (defaults to 9005).
+- **Outputs**: Verified reCAPTCHA session.
+
+### `scripts/colab/fix_fleet_popups.py`
+- **Purpose**: Scans all 5 Colab workers for pending Google Drive OAuth consent tabs and reCAPTCHA challenge dialogs, approves permissions, and ensures Cell 0 execution.
+- **Inputs**: Running CDP worker endpoints on ports 9001 to 9005.
+- **Outputs**: Approved permissions and triggered notebook cells.
+
 ### `tools/selfplay/run_colab_worker.py`
 - **Purpose**: Standalone chunked self-play generator designed to execute on Linux/Colab virtual machines.
 - **Inputs**: Opening bank JSONL, self-play binary (`bin/selfplay`), int8 weights.
