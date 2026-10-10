@@ -55,6 +55,8 @@ ENV/
 external_bots/
 data/logs/
 data/nnue/champions/
+profiles/
+scripts/colab/profiles/
 tc_out.txt
 tpa_dbg.exe
 tpa_g.exe

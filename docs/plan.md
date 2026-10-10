@@ -658,3 +658,14 @@ The runner `tools/generate_gumbel_sims.py` implements Gumbel AlphaZero planning:
 
 The resulting dataset combines high topological diversity with sharp, non-heuristic
 policy supervision suitable for multi-head student distillation.
+
+### Remote Fleet Execution: Distributed Wall Drops and Gumbel Targets (2026-10-09)
+
+The operator dispatched the five Google Colab remote workers to generate rich, dense targets across distinct seeds and configurations:
+- Worker 1 (`gustavozambrano`): Wall Drops medium mazes (3 to 8 walls), seed 1000001, target directory `zquoridor_data/wall_drops_v1/worker_1`.
+- Worker 2 (`flightdyn`): Wall Drops extreme mazes (8 to 14 walls), seed 2000002, target directory `zquoridor_data/wall_drops_v1/worker_2`.
+- Worker 3 (`zambraprojects`): Gumbel AlphaZero Sequential Halving (Top-K=8, 15 ms), seed 3000003, target directory `zquoridor_data/gumbel_sims_v1/worker_3`.
+- Worker 4 (`zquoridor`): Gumbel AlphaZero Sequential Halving (Top-K=8, 15 ms), seed 4000004, target directory `zquoridor_data/gumbel_sims_v1/worker_4`.
+- Worker 5 (`gustati2201`): Gumbel Deep Planning (Top-K=16, 20 ms), seed 5000005, target directory `zquoridor_data/gumbel_sims_v1/worker_5`.
+
+Each worker executes the native AVX2 and FMA binary compiled from `main` on the Colab host, writing compressed NPZ arrays containing 209-action policy matrices and 6-dimensional auxiliary features directly to Google Drive.
