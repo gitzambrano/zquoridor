@@ -669,3 +669,12 @@ The operator dispatched the five Google Colab remote workers to generate rich, d
 - Worker 5 (`gustati2201`): Gumbel Deep Planning (Top-K=16, 20 ms), seed 5000005, target directory `zquoridor_data/gumbel_sims_v1/worker_5`.
 
 Each worker executes the native AVX2 and FMA binary compiled from `main` on the Colab host, writing compressed NPZ arrays containing 209-action policy matrices and 6-dimensional auxiliary features directly to Google Drive.
+
+### Fleet Generation Execution Records (2026-10-10)
+
+The first distributed run completed over 3360 monitor cycles across 15 hours:
+- Worker 1 completed its primary batch of 10000 medium maze positions (3 to 8 walls) and saved `targets.npz`, `positions.jsonl`, and `targets.jsonl` to Google Drive.
+- Worker 2 completed its primary batch of 10000 extreme maze positions (8 to 14 walls) and saved corresponding target files to Google Drive.
+- Worker 5 processed over 2210 deep Gumbel Sequential Halving targets (Top-K=16, 20 ms per candidate action).
+- Workers 3 and 4 processed Gumbel Sequential Halving targets (Top-K=8, 15 ms per candidate action).
+- The operator updated the fleet monitor to preserve active execution states across restarts and handle transient cycle errors. The daemon runs continuously in the background.
