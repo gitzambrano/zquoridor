@@ -274,13 +274,17 @@ def deploy_worker(p: Any, wid: int) -> Dict[str, Any]:
     time.sleep(2)
     handle_dialogs(page)
 
-    code = BOOTLOADER_TEMPLATE.format(job_label=spec["job_label"], cli_command=spec["cli_command"])
-    print("  Injecting code into Cell 0...", flush=True)
-    set_cell_code(page, code)
-    time.sleep(2)
+    init_st = get_cell_execution_state(page)
+    if init_st["running"] or init_st["pending"]:
+        print(f"  Worker {wid} is already running/pending! Preserving current execution.", flush=True)
+    else:
+        code = BOOTLOADER_TEMPLATE.format(job_label=spec["job_label"], cli_command=spec["cli_command"])
+        print("  Injecting code into Cell 0...", flush=True)
+        set_cell_code(page, code)
+        time.sleep(2)
 
-    print("  Triggering run execution...", flush=True)
-    click_run_button(page)
+        print("  Triggering run execution...", flush=True)
+        click_run_button(page)
 
     for _ in range(3):
         time.sleep(2)
@@ -317,40 +321,44 @@ def main():
         cycle = 0
         while True:
             cycle += 1
-            time.sleep(25)
-            print(f"\n--- FLEET MONITOR [Cycle {cycle} | {time.strftime('%H:%M:%S')}] ---", flush=True)
+            try:
+                time.sleep(25)
+                print(f"\n--- FLEET MONITOR [Cycle {cycle} | {time.strftime('%H:%M:%S')}] ---", flush=True)
 
-            for wid in [1, 2, 3, 4, 5]:
-                st_info = workers_state.get(wid)
-                if not st_info:
-                    continue
-                page = st_info["page"]
+                for wid in [1, 2, 3, 4, 5]:
+                    st_info = workers_state.get(wid)
+                    if not st_info:
+                        continue
+                    page = st_info["page"]
 
-                try:
-                    handle_dialogs(page)
-                    st = get_cell_execution_state(page)
-                    is_active = st["running"] or st["pending"]
-
-                    if not is_active:
-                        connect_runtime_if_needed(page)
+                    try:
                         handle_dialogs(page)
-                        click_run_button(page)
-                        time.sleep(2)
                         st = get_cell_execution_state(page)
                         is_active = st["running"] or st["pending"]
 
-                    raw_out = st["out"].replace("\n", " ").strip()
-                    out_snip = raw_out[-80:] if raw_out else "(compiling / initializing environment...)"
-                    tag = "RUNNING" if is_active else "STOPPED"
-                    print(f"  Worker {wid} [{st_info['job_label']}] [{tag}] -> {out_snip}", flush=True)
+                        if not is_active:
+                            connect_runtime_if_needed(page)
+                            handle_dialogs(page)
+                            click_run_button(page)
+                            time.sleep(2)
+                            st = get_cell_execution_state(page)
+                            is_active = st["running"] or st["pending"]
 
-                    try:
-                        page.mouse.move(50, 50)
-                    except Exception:
-                        pass
+                        raw_out = st["out"].replace("\n", " ").strip()
+                        out_snip = raw_out[-80:] if raw_out else "(compiling / initializing environment...)"
+                        tag = "RUNNING" if is_active else "STOPPED"
+                        print(f"  Worker {wid} [{st_info['job_label']}] [{tag}] -> {out_snip}", flush=True)
 
-                except Exception as exc:
-                    print(f"  Worker {wid} check error: {exc}", flush=True)
+                        try:
+                            page.mouse.move(50, 50)
+                        except Exception:
+                            pass
+
+                    except Exception as exc:
+                        print(f"  Worker {wid} check error: {exc}", flush=True)
+            except Exception as cycle_exc:
+                print(f"Cycle {cycle} error: {cycle_exc}. Retrying in 10s...", flush=True)
+                time.sleep(10)
 
 
 if __name__ == "__main__":
