@@ -43,7 +43,7 @@ def handle_oauth(ctx):
 
 def solve_recaptcha(page):
     try:
-        anchor_frame = next((f for f in page.frames if "anchor" in f.url and "k=6LfQttQU" in f.url), None)
+        anchor_frame = next((f for f in page.frames if "anchor" in f.url and ("recaptcha" in f.url or "k=" in f.url)), None)
         if anchor_frame:
             anchor = anchor_frame.locator("#recaptcha-anchor")
             if anchor.count() > 0:
