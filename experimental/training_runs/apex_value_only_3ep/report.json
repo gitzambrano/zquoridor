@@ -1,0 +1,113 @@
+{
+  "config": {
+    "archive": "data/teaching/external-value/titanium_mix_v2.zip",
+    "output": "experimental/experiments/external-value-short-20261013",
+    "init": "data/nnue/nnue_weights.bin",
+    "architecture": "multipath_phase_contact_bucketed",
+    "hidden": 512,
+    "epochs": 3,
+    "lr": 1e-05,
+    "batch_size": 2048,
+    "threads": 3,
+    "seed": 20261013,
+    "validation_fraction": 0.05,
+    "disagreement_scale": 3.0
+  },
+  "dataset": {
+    "raw_rows": 408950,
+    "source_counts": {
+      "titanium": 271410,
+      "selfplay": 113087,
+      "deep_golden": 22999,
+      "deep_lesson": 1454
+    },
+    "unique_states": 406139,
+    "usable_states": 406139,
+    "excluded": {},
+    "validation_states": 20011,
+    "split": "Connected game groups and repeated states. Rows without game IDs use state groups.",
+    "duplicate_target": "Mean value for identical state text.",
+    "provenance": "External teacher data. No claim that games involved Zquoridor."
+  },
+  "initial_weights_sha256": "a5fa6b080a8912411454c83f139fede81d6489db3bf6a5dad7d8f828958ea9a7",
+  "archive_sha256": "06dbff4a7dc336e4910ee376cc2cd542176d1b1f253d2c03c5032436d5881621",
+  "baseline_validation": {
+    "bce": 0.4811347655273974,
+    "brier": 0.06915473871267776,
+    "mae_value": 0.3893734971644502
+  },
+  "epochs": [
+    {
+      "epoch": 1,
+      "train_weighted_bce": 0.5342577774853006,
+      "validation": {
+        "bce": 0.4699884759427237,
+        "brier": 0.06485380070075228,
+        "mae_value": 0.39093180147403306
+      }
+    },
+    {
+      "epoch": 2,
+      "train_weighted_bce": 0.5251809680064156,
+      "validation": {
+        "bce": 0.46870705791990186,
+        "brier": 0.06435600968173559,
+        "mae_value": 0.390497280938843
+      }
+    },
+    {
+      "epoch": 3,
+      "train_weighted_bce": 0.5219419151955278,
+      "validation": {
+        "bce": 0.46776531818632566,
+        "brier": 0.06405243138002614,
+        "mae_value": 0.3889157045168126
+      }
+    }
+  ],
+  "best_epoch": 3,
+  "final_validation": {
+    "bce": 0.46776531818632566,
+    "brier": 0.06405243138002614,
+    "mae_value": 0.3889157045168126
+  },
+  "frozen_parameters_unchanged": true,
+  "weight_formula": "1 + 3 * abs(initial_student_probability - teacher_probability), normalized on training rows",
+  "weight_min": 0.6379008293151855,
+  "weight_max": 2.4970486164093018,
+  "training_scope": "Value heads only. Quantization-aware training. Fixed cached accumulator.",
+  "elapsed_seconds": 37.8741021156311,
+  "export": {
+    "schema": "zquoridor.student.v1",
+    "architecture": "multipath_phase_contact_bucketed",
+    "features": 858,
+    "hidden": 512,
+    "value_hidden": 32,
+    "value_buckets": 6,
+    "value_depth": 2,
+    "policy_out": 209,
+    "qa": 255,
+    "qb": 64,
+    "qat": true,
+    "cpp_flags": [
+      "-DZQ_NNUE_RACE_FEATURES=1",
+      "-DZQ_NNUE_MULTIPATH_FEATURES=1",
+      "-DZQ_NNUE_MARGIN_REGIME_FEATURES=0",
+      "-DZQ_NNUE_PHASE_FEATURES=1",
+      "-DZQ_NNUE_CONTACT_FEATURES=1",
+      "-DZQ_NNUE_HIDDEN=512",
+      "-DZQ_NNUE_VALUE_BUCKETS=6",
+      "-DZQ_NNUE_VALUE_DEPTH=2"
+    ],
+    "float_sha256": "32400628a661f42d3fce84d0f7e7e56da34422f3c6c0e2adb1ac633c8657f253",
+    "int8_sha256": "37a89b2426fa7854176bc68bd82ed61caee7c3a27e378e6286e6049daa9ce878"
+  },
+  "strength_status": "No Elo claim. Candidate only. Production files remain unchanged.",
+  "verification": {
+    "native_positions_perspectives": 192,
+    "value_logit_max_abs_error": 4.907226625050498e-09,
+    "policy_logit_max_abs_error": 1.1424145508698302e-05,
+    "native_policy_unchanged": true,
+    "status": "passed"
+  }
+}

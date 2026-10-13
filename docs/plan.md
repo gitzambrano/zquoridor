@@ -46,7 +46,62 @@ exceeded its 180-second limit; its frozen NNUE references describe historical
 weights and search settings. The policy alpha-beta ablation suite was not run.
 No passing claim applies to these two suites.
 
+### Queued apex replay fine-tune (2026-10-13)
+
+The operator requested a mixed-data fine-tune after the width screen.
+`training/run_apex_mix_campaign.py` waits for its complete training, native
+verification, and paired H2H report. It then selects the participant with
+the higher aggregate point score. Equality selects the smaller control.
+This experimental selection does not authorize production promotion.
+
+Both follow-up arms start from the same selected weights. The control uses
+the original replay dataset. The candidate combines replay with the apex
+value pack. Apex receives 10% of training value mass after confidence and
+bounded disagreement weights. Replay retains 90% of value mass and all
+main and auxiliary policy supervision. The original Claustrophobia confidence
+weights remain intact within replay. The apex archive retains its natural
+source distribution, without a separate deep-row boost.
+
+Canonical duplicates receive weighted mean values, without frequency boosts.
+Replay policies remain unchanged. Apex-only states have exact zero main and
+auxiliary policy loss. Their normalized policy arrays are loader placeholders,
+not teacher labels. The runner reports original replay validation separately;
+mixed-dataset raw policy diagnostics include placeholders and must not serve
+as policy quality measurements. Connected apex games and canonical aliases
+inherit the replay validation side on overlap. Groups that overlap both
+replay partitions are excluded from the apex contribution.
+
+Each arm receives 10 epochs with cosine learning rates from 5e-6 to 1e-6,
+QAT, full-network scope, the existing trunk multiplier, and auxiliary policy.
+Native parity and accumulator checks precede two screens: 100 pairs against
+the equally trained replay control and 100 pairs against the selected initial
+network. Both use 200 ms per move and balanced Normal and Center Rush books.
+The planned sample contains 400 games. Results are pending. Artifacts reside
+in `experimental/experiments/apex-mix-after-width-20261013/` and
+`data/teaching/apex-mix-after-width-20261013/`. The runner does not modify
+production weights.
+
 ### Matched width campaign (2026-10-13)
+
+Both arms completed 100 epochs and passed native verification. The 768-unit
+candidate scored 46.0% against the matched 512-unit control across 100 pairs
+and 200 games, with no failures. The point estimate is -27.9 Elo. The paired
+bootstrap 95% score interval is 41.0% to 51.0%. The wider network does not
+demonstrate a strength gain in this screen. Therefore, the queued apex
+campaign selected the 512-unit control as its experimental starting network.
+It completed replay-control training and started mixed candidate training.
+The 4.01 production weights remain unchanged.
+
+`training/run_local_training.py` provides portable 512-, 768-, and 1024-unit
+options. Value targets independently select current or temporal search values,
+with configurable future horizons, horizon coefficients, and outcome mass.
+The operator specified that apex belongs in the data parameters. Therefore,
+`--apex-value-fraction` controls its share without an apex training mode.
+The operator requested a
+local export with source, weights, reports, prepared datasets, and raw teaching
+inputs. The export preserves an active-training snapshot rather than declaring
+the pending apex strength screen complete. Optimizer resume identities contain
+original absolute paths; destination runs must use a new output directory.
 
 The operator requested a network with more capacity than the current model.
 The pilot retains 858 features and compares 768 hidden units against a
@@ -66,7 +121,8 @@ The runner schedules 100 paired openings, equally divided between Normal
 and Center Rush, with 200 ms per move for both native executables. This
 campaign measures the width change against an equally trained control.
 The operator superseded the 10-epoch pilot before its completion. Both arms
-restart under the full 100-epoch cosine schedule. Results are pending.
+restart under the full 100-epoch cosine schedule. The completed screen is
+recorded above.
 Artifacts reside in `experimental/experiments/width-100ep-20261013/`.
 This experiment does not replace production automatically.
 

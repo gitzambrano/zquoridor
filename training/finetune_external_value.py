@@ -13,7 +13,10 @@ import zipfile
 import numpy as np
 import torch
 from torch.nn import functional as F
-from student_model import Student, encode_features, export, get_phase_bucket
+try:
+    from .student_model import Student, encode_features, export, get_phase_bucket
+except ImportError:
+    from student_model import Student, encode_features, export, get_phase_bucket
 
 ROOT = Path(__file__).resolve().parents[1]
 CONFIG = {
@@ -103,7 +106,7 @@ def prepare(cfg, out):
         raise ValueError("The encoder returned an incorrect row count.")
     keys = ['own_pawn', 'opp_pawn', 'walls_h', 'walls_v', 'walls_left_own',
             'walls_left_opp', 'own_dist', 'opp_dist', 'mover']
-    columns = {k: [] for k in keys}; values, splits, sources = [], [], []
+    columns = {k: [] for k in keys}; values, splits, sources, groups = [], [], [], []
     excluded = collections.Counter()
     for row, line in zip(ordered, lines):
         parts = line.split('\t')
@@ -113,6 +116,7 @@ def prepare(cfg, out):
         for k, v in zip(keys, parts[2:]):
             columns[k].append(int(v))
         group = find(row['group'])
+        groups.append(group)
         fraction = int(hashlib.sha256((str(cfg['seed'])+group).encode()).hexdigest()[:16], 16) / 2**64
         splits.append(fraction < cfg['validation_fraction'])
         values.append(row['sum']/row['count'])
@@ -121,6 +125,7 @@ def prepare(cfg, out):
     data['value'] = np.array(values, dtype=np.float32)
     data['is_val'] = np.array(splits, dtype=bool)
     data['source'] = np.array(sources)
+    data['group_id'] = np.array(groups)
     np.savez_compressed(out/'dataset.npz', **data)
     info = dict(raw_rows=sum(counts.values()), source_counts=dict(counts), unique_states=len(records),
                 usable_states=len(values), excluded=dict(excluded), validation_states=sum(splits),

@@ -346,6 +346,43 @@ Every public runner adheres to the following contract:
 
 ## Width comparison runner
 
+### `training/run_local_training.py`
+
+This portable entry point selects hidden widths 512, 768, or 1024.
+`--target-mode current` uses current search values and the selected outcome
+weight. `--target-mode temporal` combines current and future search values.
+`--future-horizons` and `--future-weights` accept JSON lists. Their defaults
+are `[0,4,8,16]` and `[0.5,0.25,0.125,0.0625]`. `--result-weight` defaults
+to 0.1. `--apex-value-fraction` independently selects the apex share of value
+mass; zero excludes apex. Apex is a data-source parameter, not a training mode.
+All choices retain QAT, augmentation, auxiliary policy, and source confidence.
+The default schedule uses 100 epochs and cosine rates from 1e-5 to 1e-7.
+`--data`, `--init-from`, `--out-dir`, `--epochs`, `--lr`, `--min-lr`,
+`--device`, and `--batch-size` override defaults. `--dry-run` prints the
+resolved configuration. `--no-build` skips native compilation and parity.
+Target changes require trajectories or aligned metadata. The runner prepares
+a separate cache when existing targets do not match the requested settings.
+Future value targets preserve the original mover perspective. Policy targets
+remain attached to the current position. Apex-only samples retain their
+provided value because the archive does not supply future trajectories.
+Outputs include weights, architecture metadata, checkpoints, training
+reports, and native verification when enabled. The runner resolves default
+paths relative to its project directory and does not modify production.
+
+### `training/run_apex_mix_campaign.py`
+
+This runner waits for a completed width campaign and its paired match report.
+It prepares a canonical mixed dataset, trains matched replay-only and apex
+arms, verifies native exports, and compares the candidate with both controls.
+`CONFIG` defines the dependency, archive, replay dataset, output paths, value
+fraction, epochs, rates, and game settings. CLI flags override these values.
+`status.json` records the dependency wait and subsequent phases. Outputs
+include the mixed manifest, selected artifact hashes, weights, checkpoints,
+original replay validation, parity reports, games, and `report.json`.
+Policy availability masks exclude apex-only states from both policy losses.
+The original width trainer remains unchanged. Production promotion requires
+a separate operator decision.
+
 ### `training/run_width_pilot.py`
 
 This runner trains a wider candidate and a matched control from the same
