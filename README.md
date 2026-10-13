@@ -1,4 +1,4 @@
-# zQuoridor 4.0
+# zQuoridor 4.01
 
 **[Play Zquoridor in your browser](https://gitzambrano.github.io/zquoridor/)**
 
@@ -13,7 +13,7 @@ or directly in the browser.
 - Hybrid PUCT-guided MCTS/MCGS graph search with alpha-beta support for tactical
   and endgame positions.
 - Multi-bucketed value and policy guidance from a compact quantized NNUE
-  (`multipath_phase_bucketed:512` with 6 wall-count value heads and 2-layer deep MLPs).
+  (`multipath_phase_contact_bucketed:512` with 6 wall-count value heads and 2-layer deep MLPs).
 - Persistent tree reuse, transpositions, repetition handling, and opponent-root
   pondering.
 - Adaptive long-clock node scaling: volatile roots may expand to 96 nodes/ms with
@@ -86,6 +86,23 @@ and NNUE parity. Browser tests live in `gui_web/` and use Playwright.
 | `docs/` | Technical status, roadmap, and operational guides |
 | `data/` | Production weights and local data assets |
 
+## Release 4.01
+
+The release promotes the selected epoch-97 network from a 100-epoch campaign.
+Training uses 1,598,963 unique states, weighted averages for duplicate targets,
+temporal search values, surprise weights, and a training-only auxiliary policy.
+The architecture and search defaults remain compatible with version 4.0.
+
+The candidate scored 60.5% against version 4.0 across 200 paired games at
+200 ms per move. The estimated gain is +74 Elo, with a paired bootstrap
+95% interval of +30 to +119 Elo. The complete screen contains 600 games
+with no failures. External scores improved in both opening books against
+Claustrophobia CPU and Titanium, but the improvement intervals include zero.
+Claustrophobia used approximately 275 ms of actual search despite a 200 ms
+request. These results do not certify equal elapsed time against Claustrophobia
+or describe its GPU strength. See [the release evidence](data/nnue/release_evidence.json)
+and [the project measurements](docs/plan.md).
+
 ## Release 3.0
 
 - Updates production weights to the central fine-tune model (`multipath_phase_bucketed:512`), trained on 21.1M stored-search and balanced canonical positions.
@@ -117,11 +134,11 @@ and NNUE parity. Browser tests live in `gui_web/` and use Playwright.
 Both projects are valuable public reference engines and external benchmark
 opponents for Zquoridor.
 
-## Version 4.0 configuration
+## Version 4.01 configuration
 
 The default search uses dense edge feature deltas and BFS replay. The release
-uses the 858-input contact model soup. The operator authorized this promotion
-with incomplete strength evidence. See `docs/plan.md` for the measured results
-and remaining validation gaps. `data/nnue/release.json` records the release
+uses the 858-input contact network with temporal training. The operator
+authorized this promotion after the paired strength screen. See `docs/plan.md`
+for the measured results and validation limits. `data/nnue/release.json` records the release
 identity. Archived networks and search profiles reside in `experimental/`.
-Local strength campaigns remain stopped.
+The 768-unit width experiment remains separate from production.

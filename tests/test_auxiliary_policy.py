@@ -121,8 +121,8 @@ class AuxiliaryPolicyTests(unittest.TestCase):
             self.assertEqual(manifest["value_buckets"], 6)
 
     def test_deployed_network_size_and_manifest_architecture_unchanged(self):
-        """Confirm that exported int8 size matches production 731,172 bytes."""
-        model = s.Student("multipath_phase_bucketed", 512, qat=True)
+        """Confirm that the auxiliary head preserves the production 858 layout."""
+        model = s.Student("multipath_phase_contact_bucketed", 512, qat=True)
         model.enable_aux_policy()
         with tempfile.TemporaryDirectory() as temp_dir:
             target = Path(temp_dir) / "student.bin"
@@ -131,7 +131,7 @@ class AuxiliaryPolicyTests(unittest.TestCase):
 
             prod_size = (ROOT / "data/nnue/nnue_weights_int8.bin").stat().st_size
             self.assertEqual(int8_file.stat().st_size, prod_size)
-            self.assertEqual(int8_file.stat().st_size, 731172)
+            self.assertEqual(int8_file.stat().st_size, 1093668)
             self.assertEqual(manifest["schema"], "zquoridor.student.v1")
             self.assertEqual(manifest["policy_out"], 209)
             self.assertNotIn("aux_policy", manifest)

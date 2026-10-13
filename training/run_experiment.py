@@ -19,6 +19,7 @@ from pathlib import Path
 import shutil
 import subprocess
 import sys
+import time
 from concurrent.futures import ThreadPoolExecutor
 import numpy as np
 import torch
@@ -255,6 +256,17 @@ def load_dataset(path):
     policy_arr = data["policy"]
     if policy_arr.shape != (n, 209):
         raise ValueError("policy must contain 209-action rows")
+    if "aux_policy_target" in data:
+        auxiliary = data["aux_policy_target"]
+        if auxiliary.shape != (n, 209):
+            raise ValueError("auxiliary policy must contain 209-action rows")
+        for start in range(0, n, 65536):
+            block = np.asarray(auxiliary[start:start + 65536], dtype=np.float32)
+            if not np.isfinite(block).all() or (block < 0).any() or not np.allclose(block.sum(1), 1, atol=0.005):
+                raise ValueError("auxiliary policy rows must be finite and normalized")
+    for key in ("value_sample_weight", "policy_sample_weight", "aux_sample_weight"):
+        if key in data and (data[key].shape != (n,) or not np.isfinite(data[key]).all() or (data[key] <= 0).any()):
+            raise ValueError(f"invalid per-head sample weight: {key}")
     chunk_size = 65_536
     for start_idx in range(0, n, chunk_size):
         chunk = policy_arr[start_idx:start_idx + chunk_size].astype(np.float32)
@@ -396,6 +408,9 @@ def _pinned_tensor(array, use_cuda):
 def _prepare_epoch_block(data, row_indices, config, use_cuda, training, row_order=None, flip_mask=None):
     """Read one mostly-contiguous block and prepare it while the GPU trains the prior block."""
     block = {key: np.asarray(data[key][row_indices]) for key in _EPOCH_FIELDS}
+    for key in ("aux_policy_target", "value_sample_weight", "policy_sample_weight", "aux_sample_weight"):
+        if key in data:
+            block[key] = np.asarray(data[key][row_indices])
     if training:
         if flip_mask is not None:
             block = stochastic_mirror_dict_h(block, row_order, flip_mask)
@@ -411,6 +426,9 @@ def _prepare_epoch_block(data, row_indices, config, use_cuda, training, row_orde
         "v": _pinned_tensor(block["value"].astype(np.float32, copy=False), use_cuda),
         "w": _pinned_tensor(block["weight"].astype(np.float32, copy=False), use_cuda),
     }
+    for key in ("aux_policy_target", "value_sample_weight", "policy_sample_weight", "aux_sample_weight"):
+        if key in block:
+            prepared[key] = _pinned_tensor(block[key].astype(np.float32, copy=False), use_cuda)
     if not training and "source_mass" in data:
         prepared["source_mass"] = _pinned_tensor(
             np.asarray(data["source_mass"][row_indices], dtype=np.float32), use_cuda)
@@ -466,11 +484,18 @@ def _epoch(model, data, indices, config, device, optimizer=None, rng=None):
                 p = prepared["p"][start:end].to(device, non_blocking=use_cuda)
                 v = prepared["v"][start:end].to(device, non_blocking=use_cuda)
                 w = prepared["w"][start:end].to(device, non_blocking=use_cuda)
+                head_weights = {
+                    key: prepared[key][start:end].to(device, non_blocking=use_cuda)
+                    if key in prepared else torch.ones_like(w)
+                    for key in ("value_sample_weight", "policy_sample_weight", "aux_sample_weight")
+                }
 
                 with torch.set_grad_enabled(training):
                     if aux_enabled:
                         logits, policy, aux_policy = model(x, return_aux=True)
-                        p_aux = soften_policy(p, aux_temp)
+                        aux_target = (prepared["aux_policy_target"][start:end].to(device, non_blocking=use_cuda)
+                                      if "aux_policy_target" in prepared else p)
+                        p_aux = soften_policy(aux_target, aux_temp)
                         aux_kl = (p_aux * (p_aux.clamp_min(1e-12).log() - F.log_softmax(aux_policy, dim=1))).sum(1)
                     else:
                         logits, policy = model(x)
@@ -481,9 +506,10 @@ def _epoch(model, data, indices, config, device, optimizer=None, rng=None):
                     vloss = F.binary_cross_entropy_with_logits(logits, target, reduction="none")
                     probability = logits.sigmoid()
                     brier = (probability - target).square()
-                    per_sample_loss = config["policy_weight"] * kl + config["value_weight"] * vloss
+                    per_sample_loss = (config["policy_weight"] * kl * head_weights["policy_sample_weight"]
+                                       + config["value_weight"] * vloss * head_weights["value_sample_weight"])
                     if aux_enabled:
-                        per_sample_loss = per_sample_loss + aux_weight * aux_kl
+                        per_sample_loss = per_sample_loss + aux_weight * aux_kl * head_weights["aux_sample_weight"]
                     mass = w.sum()
                     loss = (per_sample_loss * w).sum() / mass
                     if training:
@@ -671,6 +697,7 @@ def train(config):
         _atomic_torch_save(initial_state, best_checkpoint)
     stopped_early = False
     for epoch in range(start, config["epochs"]):
+        epoch_started = time.monotonic()
         if val_mode != "none" and config["patience"] > 0 and bad >= config["patience"]:
             stopped_early = True
             break
@@ -696,6 +723,7 @@ def train(config):
                 best = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
             else:
                 bad += 1
+        row['elapsed_seconds'] = time.monotonic() - epoch_started
         history.append(row)
         print(json.dumps(row), flush=True)
         state = dict(fingerprint=fingerprint, model=model.state_dict(), optimizer=optimizer.state_dict(),
