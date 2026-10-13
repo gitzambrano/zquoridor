@@ -7,7 +7,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from playwright.sync_api import sync_playwright
-from scripts.colab.browser_utils import dismiss_modals
+from colab.browser_utils import dismiss_modals
 
 def restart_w1():
     with sync_playwright() as p:

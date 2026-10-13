@@ -56,7 +56,8 @@ external_bots/
 data/logs/
 data/nnue/champions/
 profiles/
-scripts/colab/profiles/
+colab/profiles/
+scripts/
 tc_out.txt
 tpa_dbg.exe
 tpa_g.exe
@@ -136,11 +137,11 @@ tools/teacher/launch_synced_contact_after_phase.ps1
 artifacts/
 
 # Colab automation profiles and session cookies
-scripts/colab/profiles/
-scripts/colab/cookies/
+colab/profiles/
+colab/cookies/
 **/cookies.json
  
-scripts/colab/launch_colab_*.bat
+colab/launch_colab_*.bat
 
 # Experimental archives retain source and metadata, not generated artifacts.
 experimental/**/weights/

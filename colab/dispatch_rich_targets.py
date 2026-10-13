@@ -14,8 +14,8 @@ ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from scripts.colab.config import WORKERS
-from scripts.colab.browser_utils import is_cdp_reachable, solve_recaptcha_playwright
+from colab.config import WORKERS
+from colab.browser_utils import is_cdp_reachable, solve_recaptcha_playwright
 
 BOOTLOADER_TEMPLATE = """from google.colab import drive
 import os

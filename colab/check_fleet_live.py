@@ -9,8 +9,8 @@ ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from scripts.colab.search_games_profile import build_worker_profile
-from scripts.colab.browser_utils import dismiss_modals, connect_runtime_if_needed, is_cdp_reachable
+from colab.search_games_profile import build_worker_profile
+from colab.browser_utils import dismiss_modals, connect_runtime_if_needed, is_cdp_reachable
 
 
 def inspect_and_ensure_worker(wid: int) -> dict:

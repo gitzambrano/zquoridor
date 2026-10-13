@@ -7,7 +7,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from playwright.sync_api import sync_playwright
-from scripts.colab.browser_utils import transcribe_audio_bytes
+from colab.browser_utils import transcribe_audio_bytes
 
 def solve_worker_recaptcha(wid, port):
     print(f"=== Solving reCAPTCHA for Worker {wid} (Port {port}) ===", flush=True)

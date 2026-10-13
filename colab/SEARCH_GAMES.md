@@ -78,4 +78,4 @@ To increase weakness-opening diversity, create or provide a larger weakness book
 
 The native runner writes an atomic compressed batch every 250 games. Each batch includes both raw searches, replayable histories, labels, targets, hashes, and a manifest. The compressed per-game ledger preserves progress between batches. The `--no-export-final-run` option avoids a complete ledger rebuild after this large run. Resume uses saved batch identities and game records.
 
-Run `python scripts/colab/watch_search_games.py` locally for automatic notebook reconnection and workflow resume. Use one watcher for the five account profiles. The watcher does not manage individual game batches.
+Run `python colab/watch_search_games.py` locally for automatic notebook reconnection and workflow resume. Use one watcher for the five account profiles. The watcher does not manage individual game batches.

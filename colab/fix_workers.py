@@ -7,7 +7,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from playwright.sync_api import sync_playwright
-from scripts.colab.browser_utils import transcribe_audio_bytes, dismiss_modals
+from colab.browser_utils import transcribe_audio_bytes, dismiss_modals
 
 def inspect_and_fix_worker1():
     print("=== WORKER 1 (Port 9001) ===", flush=True)

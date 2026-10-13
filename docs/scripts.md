@@ -141,72 +141,72 @@ Every public runner adheres to the following contract:
 - **Default settings**: Match mode, 1500 opening pairs, one worker, 400 ms per move through searched ply 14 after the opening, and a linear taper to 50 ms at searched ply 80. The default books are `normal` (`openings_irregular_bank.jsonl`), `center_rush` (`openings_center_rush_sound_5k.jsonl`), and `weakness` (`weak_openings_mined.jsonl`). The output directory is `data/teaching/search_games/`. The runner resumes by default and provisions the pinned Claustrophobia checkout and checkpoint.
 - **Key CLI flags**: `--mode` (`match`, `zquoridor-selfplay`, or `claustrophobia-selfplay`), `--pairs`, repeatable `--opening-book NAME=PATH` and `--opening-weight NAME=WEIGHT`, `--opening-temperature`, `--temperature-plies`, `--record-both-searches`, `--unique-openings-first`, `--batch-games`, `--compress-game-ledger`, `--export-final-run`, `--workers`, `--start-move-time-ms`, `--end-move-time-ms`, `--decay-start-ply`, `--decay-end-ply`, `--schedule-origin` (`opening` or `game`), `--output`, `--claustrophobia-device` (`cpu` or `gpu`), `--resume`, `--export-targets`, and `--dry-run`.
 - **Paired search data**: `--record-both-searches` records both engines on each identical history and budget, including dense root visits, values, and raw engine responses. It preserves the best move separately from the move sampled by temperature. These extra searches increase collection time. The default temperature is zero, the default books have equal weight, and paired searches are disabled by default.
-- **Notes**: The default schedule uses the opening as its origin and rounds to the nearest millisecond. Match mode records Claustrophobia targets on its turns. The `zquoridor-selfplay` mode does not export Claustrophobia targets. Only complete goal or repetition games contribute training targets. Proven solver roots and roots without child visits remain in the raw games but do not supply policy targets. A run marks interrupted games and does not retry them. The runner does not create missing opening books. Weakness rows can repeat when the requested pair count exceeds the book size. The dry run reports unique openings and repeated pairs. See `scripts/colab/SEARCH_GAMES.md` for a Google Colab recipe.
+- **Notes**: The default schedule uses the opening as its origin and rounds to the nearest millisecond. Match mode records Claustrophobia targets on its turns. The `zquoridor-selfplay` mode does not export Claustrophobia targets. Only complete goal or repetition games contribute training targets. Proven solver roots and roots without child visits remain in the raw games but do not supply policy targets. A run marks interrupted games and does not retry them. The runner does not create missing opening books. Weakness rows can repeat when the requested pair count exceeds the book size. The dry run reports unique openings and repeated pairs. See `colab/SEARCH_GAMES.md` for a Google Colab recipe.
 
 ---
 
 ## 2. Remote and Cloud Self-Play (Google Colab)
 
-### `scripts/colab/switch_search_games.py`
+### `colab/switch_search_games.py`
 - **Purpose**: Completes the current self-play shard on each account, then launches paired search collection through its notebook. One locked controller monitors all selected accounts.
-- **Inputs**: Authenticated account profiles in `scripts/colab/config.py`, a pinned Main revision, and the collection settings in `scripts/colab/search_games_profile.py`.
+- **Inputs**: Authenticated account profiles in `colab/config.py`, a pinned Main revision, and the collection settings in `colab/search_games_profile.py`.
 - **Outputs**: Controller status in `artifacts/colab/search_games_handover/status.json` and search game ledgers in each account's Drive directory under `zquoridor_data/claustro_search_games_v1/worker_X`.
 - **Default settings**: Five accounts, one game per account, 50000 pairs per account, 250 games per batch, 70% Center Rush, 20% Normal, 10% weakness, initial temperature 1.0 for 14 plies, and both engines' searches recorded. Each account uses a distinct seed and a frozen artifact cache.
 - **Key CLI flags**: `--worker-ids`, `--revision`, `--check-interval-seconds`, `--headless`, and `--output`.
 - **Notes**: Stop the old Zquoridor watcher before this controller. The controller requires the Colab runtime terminal. It preserves browser profile locks and does not bypass authentication or runtime limits. It attempts browser recovery three times per account and reuses an active handover helper. A persistent failure blocks collection on that account.
 
-### `scripts/colab/watch_search_games.py`
+### `colab/watch_search_games.py`
 - **Purpose**: Provides the automatic Python watcher entry point for paired search collection. It completes the initial shard handover and reconnects or resumes the frozen workflow after a notebook disconnect.
 - **Inputs and defaults**: Uses `switch_search_games.CONFIG` and the collection profile. The native runner manages every batch and writes it to Drive.
 - **Outputs**: The shared controller status file and remote Drive batch artifacts.
 - **Driver recovery**: A closed browser driver permits three retries with a 60-second delay. A separate watcher lock prevents duplicate controllers during recovery.
 - **Key CLI flags**: The switch flags, plus `--auto-resume`, `--retry-cooldown-seconds`, and `--max-resume-attempts`. Automatic resume permits three attempts with a 900-second cooldown. Identity mismatches and authentication requirements block automatic re-execution.
 
-### `scripts/colab/finish_current_shard.py`
+### `colab/finish_current_shard.py`
 - **Purpose**: Completes one native self-play shard before a workflow change. The Linux helper pauses only its Python launcher. It leaves the native child active, verifies aligned binary and metadata files after exit, then terminates the launcher.
 - **Inputs**: Linux process identities and the worker ID.
 - **Outputs**: An atomic JSON status, artifact hashes, and terminal status markers. Errors resume the launcher.
 - **Default settings**: Worker 1, a two-second check interval, and `/content/zquoridor_search_games/handover_worker_1.json`.
 - **Key CLI flags**: `--worker-id`, `--status-path`, and `--poll-seconds`.
 
-### `scripts/colab/launch_workers.py`
+### `colab/launch_workers.py`
 - **Purpose**: Bootstraps Google Colab self-play workers headlessly via Playwright. Injects the resilient bootloader cell, connects runtimes, and triggers execution.
 - **Inputs**: Authenticated user profiles under `C:\Projetos\TikTok\profiles\` with stored cookies.
 - **Outputs**: Active self-play sessions writing to Google Drive and confirmation screenshots in `artifacts/colab/`.
 - **Key CLI flags**: `--worker-ids` (e.g. `1 2 3 4 5`), `--headless`, `--force-restart`.
 
-### `scripts/colab/watchdog_workers.py`
+### `colab/watchdog_workers.py`
 - **Purpose**: Continuous keep-alive monitor for active Google Colab workers. Simulates human idle interactions to prevent disconnects and auto-reconnects dropped runtimes.
-- **Inputs**: Worker registry in `scripts/colab/config.py`.
+- **Inputs**: Worker registry in `colab/config.py`.
 - **Outputs**: Health checks, periodic status screenshots, and automatic cell re-execution.
 - **Key CLI flags**: `--worker-ids`, `--check-interval-seconds`, `--headless`, `--target-delta-positions`.
 
-### `scripts/colab/report_workers.py`
+### `colab/report_workers.py`
 - **Purpose**: Audits live Colab notebook DOM state, current shard indices, and games completed across all workers.
 - **Inputs**: Active browser contexts or profile sessions.
 - **Outputs**: Markdown summary table and per-worker status screenshots.
 
-### `scripts/colab/login_worker.py`
+### `colab/login_worker.py`
 - **Purpose**: Interactive login helper to authenticate Google accounts and export permanent session cookies to `cookies.json`.
 - **Inputs**: `--worker-id` (single worker) or `--worker-ids` (sequential list).
 - **Outputs**: Updated `cookies.json` in worker profile directory.
 
-### `scripts/colab/dispatch_rich_targets.py`
+### `colab/dispatch_rich_targets.py`
 - **Purpose**: Autonomous orchestrator that deploys Wall-Drop generation and Gumbel AlphaZero Sequential Halving across all 5 remote Google Colab workers. Handles Google Drive mounts, injects native C++ compile steps, and monitors execution health.
-- **Inputs**: Registered worker definitions in `scripts/colab/config.py`.
+- **Inputs**: Registered worker definitions in `colab/config.py`.
 - **Outputs**: Remote execution jobs producing `positions.jsonl`, `targets.jsonl`, and `targets.npz` in Google Drive.
 
-### `scripts/colab/orchestrate_v4.py`
+### `colab/orchestrate_v4.py`
 - **Purpose**: Fleet controller for continuous self-play and Claustrophobia search collection. Detects GPU quota limits, switches to CPU self-play, and keeps browser connections alive.
 - **Inputs**: Worker configuration dictionary and runtime profiles.
 - **Outputs**: Execution monitor log and active game generation on Google Drive.
 
-### `scripts/colab/solve_audio.py`
+### `colab/solve_audio.py`
 - **Purpose**: Solves Google reCAPTCHA v2 audio challenges using the OpenAI Whisper tiny model. Downloads challenge MP3 payloads, resamples to 16 kHz, transcribes spoken text, and submits verification.
 - **Inputs**: CDP port of the target browser instance (defaults to 9005).
 - **Outputs**: Verified reCAPTCHA session.
 
-### `scripts/colab/fix_fleet_popups.py`
+### `colab/fix_fleet_popups.py`
 - **Purpose**: Scans all 5 Colab workers for pending Google Drive OAuth consent tabs and reCAPTCHA challenge dialogs, approves permissions, and ensures Cell 0 execution.
 - **Inputs**: Running CDP worker endpoints on ports 9001 to 9005.
 - **Outputs**: Approved permissions and triggered notebook cells.
