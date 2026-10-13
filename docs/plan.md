@@ -76,7 +76,11 @@ QAT, full-network scope, the existing trunk multiplier, and auxiliary policy.
 Native parity and accumulator checks precede two screens: 100 pairs against
 the equally trained replay control and 100 pairs against the selected initial
 network. Both use 200 ms per move and balanced Normal and Center Rush books.
-The planned sample contains 400 games. Results are pending. Artifacts reside
+The planned sample contains 400 games. The first 200 games against the matched
+replay control completed without failures. The apex candidate scored 51.5%,
+or +10.4 Elo. Its paired bootstrap 95% score interval is 46.5% to 56.5%,
+so this screen does not establish a gain. The second 200-game screen against
+the selected initial network remains in progress. Artifacts reside
 in `experimental/experiments/apex-mix-after-width-20261013/` and
 `data/teaching/apex-mix-after-width-20261013/`. The runner does not modify
 production weights.

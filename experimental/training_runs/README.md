@@ -7,8 +7,9 @@ The production network remains version 4.01 under `data/nnue/`.
 
 Widths 512 and 768 have completed matched training. Width 1024 is an available
 architecture option without a completed strength test. The apex replay control
-and mixed candidate have trained weights; their paired strength screens remain
-pending. See [the project measurements](../../docs/plan.md) for interpretation.
+and mixed candidate have trained weights. The first paired screen is recorded
+in `apex_vs_replay_h2h_200ms.json`; the initial-network screen remains pending.
+See [the project measurements](../../docs/plan.md) for interpretation.
 The two older apex value-only experiments retain their exported weights as
 reproducible comparison artifacts. Their checkpoints did not initialize 4.01.
 
