@@ -5,7 +5,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 from playwright.sync_api import sync_playwright
 import time
-from scripts.colab.browser_utils import solve_recaptcha_playwright
+from colab.browser_utils import solve_recaptcha_playwright
 
 with sync_playwright() as p:
     browser = p.chromium.connect_over_cdp("http://127.0.0.1:9004")

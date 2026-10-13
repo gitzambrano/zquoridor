@@ -7,7 +7,7 @@ ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from scripts.colab.config import WORKERS
+from colab.config import WORKERS
 
 def inspect_worker(p, wid: int):
     w = WORKERS[wid]

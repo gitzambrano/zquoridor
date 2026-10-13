@@ -5,7 +5,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from playwright.sync_api import sync_playwright
-from scripts.colab.config import WORKERS
+from colab.config import WORKERS
 
 def check_all_cdp():
     print("=" * 65)

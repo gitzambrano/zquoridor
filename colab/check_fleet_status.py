@@ -6,8 +6,8 @@ if str(REPO_ROOT) not in sys.path:
 
 import time
 from playwright.sync_api import sync_playwright
-from scripts.colab.browser_utils import launch_stealth_context, get_notebook_dom_state
-from scripts.colab.config import WORKERS
+from colab.browser_utils import launch_stealth_context, get_notebook_dom_state
+from colab.config import WORKERS
 
 def check_all():
     for wid in [1, 2, 3, 4, 5]:

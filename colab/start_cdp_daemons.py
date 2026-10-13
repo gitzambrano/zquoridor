@@ -9,7 +9,7 @@ import sys
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from scripts.colab.config import WORKERS
+from colab.config import WORKERS
 
 CHROME_BIN = r"C:\Program Files\Google\Chrome\Application\chrome.exe"
 

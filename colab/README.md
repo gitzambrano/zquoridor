@@ -20,7 +20,7 @@ bootstrap, monitor, and manage remote Google Colab self-play workers for Zquorid
 ### 1. Disparar: `launch_workers.py`
 Bootstraps workers with the resilient self-cloning cell code and starts generation:
 ```bash
-python scripts/colab/launch_workers.py
+python colab/launch_workers.py
 ```
 - Skips workers that are already actively running (to prevent interrupting progress).
 - Connects runtime if disconnected.
@@ -33,7 +33,7 @@ python scripts/colab/launch_workers.py
 ### 2. Monitorar: `watchdog_workers.py`
 Continuous active watchdog and keep-alive monitor:
 ```bash
-python scripts/colab/watchdog_workers.py
+python colab/watchdog_workers.py
 ```
 - Keeps persistent browser sessions open with periodic micro-interactions (mouse moves) to prevent Google Colab idle timeout disconnects.
 - Continuous loop reporting real-time game and position counts.
@@ -43,7 +43,7 @@ python scripts/colab/watchdog_workers.py
 ### 3. Reportar: `report_workers.py` (ou `inspect_workers.py`)
 Snapshot inspection and structured audit:
 ```bash
-python scripts/colab/report_workers.py
+python colab/report_workers.py
 ```
 - Audits runtime status (`CONNECTED`, `CONNECTING`, `DISCONNECTED`).
 - Audits execution status (`ACTIVE RUNNING`, `PENDING VM`, `IDLE`).
@@ -55,13 +55,13 @@ python scripts/colab/report_workers.py
 Administrative operations on Colab notebook environments:
 ```bash
 # Switch accelerator from GPU to standard CPU (resolves quota blocks)
-python scripts/colab/manage_runtime.py --action switch-cpu
+python colab/manage_runtime.py --action switch-cpu
 
 # Terminate stuck ghost sessions in "Gerenciar sessões"
-python scripts/colab/manage_runtime.py --action terminate-active
+python colab/manage_runtime.py --action terminate-active
 
 # Disconnect and delete VM environment
-python scripts/colab/manage_runtime.py --action reset
+python colab/manage_runtime.py --action reset
 ```
 
 ## Resilient Bootloader Logic

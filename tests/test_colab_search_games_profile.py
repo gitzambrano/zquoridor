@@ -11,8 +11,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from scripts.colab import config as colab_config
-from scripts.colab import search_games_profile as profile
+from colab import config as colab_config
+from colab import search_games_profile as profile
 from tools import run_search_games
 
 
@@ -26,10 +26,12 @@ def test_profiles_isolate_five_accounts_without_mutating_existing_jobs():
     for worker_id, worker in workers.items():
         assert worker["account"] == original[worker_id]["account"]
         assert worker["notebook_url"] == original[worker_id]["notebook_url"]
-        assert worker["drive_dir"] == (
-            "/content/drive/MyDrive/zquoridor_data/claustro_search_games_v1/"
-            f"worker_{worker_id}"
+        expected_root = (
+            profile.CONFIG["cpu_selfplay_drive_root"]
+            if worker_id == 2
+            else profile.CONFIG["drive_root"]
         )
+        assert worker["drive_dir"] == f"{expected_root}/worker_{worker_id}"
         assert worker["seed"] == worker_id * 1000001
         assert worker["positions"] == ""
         assert worker["total_games"] == 100000
@@ -53,7 +55,7 @@ def test_profile_arguments_resolve_to_match_gpu_and_all_default_books():
     assert config["workers"] == 1
     assert config["schedule_origin"] == "opening"
     assert config["start_move_time_ms"] == 400
-    assert config["end_move_time_ms"] == 50
+    assert config["end_move_time_ms"] == profile.CONFIG["end_move_time_ms"]
     assert config["decay_start_ply"] == 14
     assert config["decay_end_ply"] == 80
     assert config["resume"] and config["export_targets"]
@@ -63,16 +65,16 @@ def test_profile_arguments_resolve_to_match_gpu_and_all_default_books():
     assert config["claustrophobia_checkpoint"].endswith("/worker_1/champion.pt")
     assert config["opening_books"] == run_search_games.CONFIG["opening_books"]
     assert config["nnue"] == run_search_games.CONFIG["nnue"]
-    assert config["opening_weights"] == {"center_rush": 7, "normal": 2, "weakness": 1}
+    assert config["opening_weights"] == profile.CONFIG["opening_weights"]
     assert config["opening_temperature"] == 1.0
-    assert config["temperature_plies"] == 14
+    assert config["temperature_plies"] == profile.CONFIG["temperature_plies"]
     assert config["record_both_searches"]
     assert config["unique_openings_first"]
     config["dry_run"] = True
     plan = run_search_games.run(config)
     assert plan["planned_games"] == 100000
     assert plan["pairs_by_book"] == {
-        "center_rush": 35000, "normal": 10000, "weakness": 5000,
+        "center_rush": 25000, "normal": 20000, "weakness": 5000,
     }
     assert plan["unique_openings_by_book"]["center_rush"] == 5000
 

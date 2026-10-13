@@ -6,8 +6,8 @@ if str(REPO_ROOT) not in sys.path:
 
 import time
 from playwright.sync_api import sync_playwright
-from scripts.colab.browser_utils import launch_stealth_context
-from scripts.colab.config import WORKERS
+from colab.browser_utils import launch_stealth_context
+from colab.config import WORKERS
 
 def query_fleet():
     print("=" * 65)

@@ -15,9 +15,9 @@ ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from scripts.colab.config import WORKERS
-from scripts.colab.search_games_profile import BOOTLOADER_TEMPLATE, CONFIG as PROFILE_CONFIG, build_worker_profiles
-from scripts.colab.browser_utils import (
+from colab.config import WORKERS
+from colab.search_games_profile import BOOTLOADER_TEMPLATE, CONFIG as PROFILE_CONFIG, build_worker_profiles
+from colab.browser_utils import (
     connect_runtime_if_needed,
     dismiss_modals,
     get_notebook_dom_state,
@@ -42,10 +42,10 @@ def handover_command(worker_id: int) -> str:
     """Fetch the pinned helper and verify its bytes before runtime execution."""
     revision = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip()
     source = subprocess.check_output(
-        ["git", "show", f"{revision}:scripts/colab/finish_current_shard.py"], cwd=ROOT)
+        ["git", "show", f"{revision}:colab/finish_current_shard.py"], cwd=ROOT)
     digest = hashlib.sha256(source).hexdigest()
     url = (f"https://raw.githubusercontent.com/gitzambrano/zquoridor/{revision}/"
-           "scripts/colab/finish_current_shard.py")
+           "colab/finish_current_shard.py")
     destination = f"/tmp/zq_finish_current_shard_{worker_id}.py"
     checksum = f"{digest}  {destination}"
     return (f"curl -fsSL {shlex.quote(url)} -o {destination} && "

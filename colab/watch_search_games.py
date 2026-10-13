@@ -8,7 +8,7 @@ ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from scripts.colab.switch_search_games import CONFIG as SWITCH_CONFIG, main as switch_main
+from colab.switch_search_games import CONFIG as SWITCH_CONFIG, main as switch_main
 from tools.external.build_lock import build_lock
 
 CONFIG = {**SWITCH_CONFIG, "driver_recovery_attempts": 3, "driver_retry_seconds": 60}

@@ -7,7 +7,7 @@ import sys
 
 import pytest
 
-from scripts.colab import finish_current_shard as handover
+from colab import finish_current_shard as handover
 
 
 @pytest.fixture(autouse=True)

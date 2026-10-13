@@ -7,7 +7,7 @@ if str(ROOT) not in sys.path:
 import time
 from playwright.sync_api import sync_playwright
 
-from scripts.colab.browser_utils import solve_recaptcha_playwright
+from colab.browser_utils import solve_recaptcha_playwright
 
 
 def handle_oauth(ctx):

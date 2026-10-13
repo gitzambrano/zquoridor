@@ -583,7 +583,7 @@ def trigger_cell_execution(
                 try:
                     from config import WORKERS
                 except ImportError:
-                    from scripts.colab.config import WORKERS
+                    from colab.config import WORKERS
                 w = WORKERS.get(worker_or_id, {})
             except Exception:
                 w = {}
