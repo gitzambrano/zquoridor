@@ -1,36 +1,38 @@
 {
   "schema": "zquoridor.release.v1",
-  "version": "4.0",
-  "date": "2026-10-08",
+  "version": "4.01",
+  "date": "2026-10-13",
   "network": "858",
   "architecture": "multipath_phase_contact_bucketed",
+  "hidden": 512,
   "search": "delta_dense_only",
-  "promotion_basis": "Explicit operator authorization. The strict statistical promotion gate remains incomplete.",
-  "weights": {
-    "nnue_weights.bin": "a5fa6b080a8912411454c83f139fede81d6489db3bf6a5dad7d8f828958ea9a7",
-    "nnue_weights_int8.bin": "f8d85cae979bbf2047532e31daa61859c5f20246fc58de225f85ced0bef8841f"
+  "training": {
+    "epochs": 100,
+    "selected_epoch": 97,
+    "unique_states": 1598963,
+    "learning_rate_start": 1e-05,
+    "learning_rate_end": 1e-07,
+    "method": "Temporal search-value distillation, weighted target aggregation, surprise weights, and training-only auxiliary policy"
   },
-  "previous_release": "experimental/releases/v3_01_504",
-  "experiments": "experimental/profiles.json",
-  "external_clock_protocols": [
-    "fixed-movetime-v2",
-    "native-game-clock-v2"
-  ],
-  "local_campaign_state": "stopped_by_operator",
+  "promotion_basis": "Explicit operator authorization after 600 games. Every measured book/opponent score improved; external paired improvement intervals include zero.",
+  "weights": {
+    "nnue_weights.bin": "8f2b775c7297f7cc0ea68e3bc0ddeb1fbe752f61fd89a3dd4d3789cbbae33d5a",
+    "nnue_weights_int8.bin": "45fa3ea7db3127a0b907a23d268b0c55c2020e1018513d54bb920cdbe134abe0"
+  },
+  "previous_release": "4.0",
+  "previous_git_commit": "3fd590c7fd75a7190d2eee768f70496fb9290729",
+  "evidence": "data/nnue/release_evidence.json",
   "known_limitations": [
-    "No 858 delta-only native 3+2 Claustrophobia games.",
-    "No 858 delta-only native 3+2 H2H against Main 504.",
-    "External paired 200 ms improvement intervals remain inconclusive.",
-    "Historical OFF 858 artifact does not match the frozen archive certificate.",
-    "One historical 504 hybrid Titanium process exit remains unresolved."
+    "External opponent inference runs on CPU. These results do not measure GPU Claustrophobia.",
+    "All move requests use 200 ms. Claustrophobia completes a synchronous MCTS wave after the deadline and exceeds that budget. The external scores do not certify a strict 200 ms wall-clock comparison.",
+    "External matched score-change intervals include zero. This screen does not establish superiority in every promotion dimension."
   ],
   "validation": {
-    "native_build": "passed",
-    "wasm_build": "passed",
-    "external_clock_and_nnue_python_tests": "47 passed",
-    "nnue_parity": "Both perspectives match. Float tolerance 1e-5. Quantized value and policy argmax match.",
-    "native_correctness": "16 executables passed. Incremental accumulators match rebuild on 4758 positions with zero differences.",
-    "legacy_ablations": "Wall-quiescence and contempt ablations stopped before completion. No passing claim."
-  },
-  "previous_git_commit": "fe5d5fec9451c0258d0a8cfee7cc07eafad5b9a2"
+    "nnue_parity": "passed, 192 perspectives",
+    "native_correctness": "22 executables passed; incremental accumulator equality verified",
+    "browser_bundle": "passed over local HTTP: boot, NNUE mode, engine reply, analysis, I/O; embedded weight hashes match",
+    "native_build": "passed, 24 correctness executables compiled",
+    "python_tests": "37 passed",
+    "legacy_suite_limits": "test_wall_qextension exceeded 180 seconds; test_policy_ab was not run. No passing claim for these two suites."
+  }
 }

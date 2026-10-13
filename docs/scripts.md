@@ -17,6 +17,48 @@ Every public runner adheres to the following contract:
 
 ## 1. Evaluation and Benchmark Runners
 
+### `tools/measure_temporal_strength.py`
+- **Purpose**: Consolidates the requested H2H match and runs a matched external strength screen for the temporal candidate and production baseline.
+- **Inputs**: The H2H game records and summary, the selected opening books, production executable, candidate weights, and baseline weights.
+- **Outputs**: Per-participant external games, paired score-change intervals, category summaries, a consolidated strength report, status, and a report ZIP.
+- **Default settings**: 100 H2H pairs with 50 Normal and 50 Center Rush pairs. The external screen uses 50 pairs per participant and opponent, with 25 pairs per book. All participants receive 200 ms per move. Pondering is disabled. The external adapters use corrected deadline clocks and pinned source revisions.
+- **Compute**: Three CPU workers. External builds and games start after the H2H completes.
+- **Comparison**: The bootstrap resamples identical opening pairs jointly for candidate and baseline. Reported changes exclude unmatched pairs. The runner preserves production weights.
+- **Key CLI flag**: `--output`.
+
+### `training/prepare_temporal_search.py`
+- **Purpose**: Builds value, policy, and auxiliary policy targets from downloaded self-play shards and complete search games.
+- **Inputs**: A JSON or JSONL download ledger with original paths, source kinds, and materialized file paths. Stored shards require aligned V3 binary and metadata files. Complete game archives require root visits, values, histories, and outcomes. Isolated synthetic positions require their aligned target NPZ file.
+- **Outputs**: An identity-checked SQLite cache and a manifest-verified memory-map dataset.
+- **Default settings**: Value horizons of 0, 4, 8, and 16 plies with geometric weights. The terminal outcome contributes 10%. Future values use the current player's perspective. Unavailable horizons are omitted and available weights are normalized. Positions beyond the game endpoint use the known terminal outcome.
+- **Teacher mixture**: Claustrophobia has three times the root contribution of Zquoridor at the same position before search-budget and visit-count adjustments. The auxiliary policy uses equal teacher factors before those quality adjustments. Policies remain tied to the current position.
+- **Sample weights**: Source confidence supplies the base weight. Bounded policy KL surprise and bounded value disagreement supply separate head multipliers. Normalization uses training rows only.
+- **Validation**: Complete game groups determine the split. Canonical states that occur in both splits are excluded. The native encoder checks resources, wall topology, paths, and terminal status.
+- **Key CLI flags**: `--downloads`, `--output`.
+
+### Per-head targets in `training/run_experiment.py`
+- **Purpose**: Trains the main policy, value heads, and optional auxiliary policy with independent supervision.
+- **Optional dataset arrays**: `aux_policy_target`, `value_sample_weight`, `policy_sample_weight`, and `aux_sample_weight`. Existing datasets preserve their original behavior.
+- **Auxiliary policy**: Horizontal augmentation mirrors both policy targets. Temperature softening applies to the auxiliary target. Export omits the auxiliary head.
+- **Schedule**: `--epochs 100 --lr 1e-5 --min-lr 1e-7 --warmup-epochs 0 --schedule cosine --patience 0` executes all 100 epochs with the requested endpoint rates.
+
+### `training/run_temporal_campaign.py`
+- **Purpose**: Waits for the selected download ledger, prepares the temporal dataset, trains 100 epochs, and verifies native exports.
+- **Inputs**: The Drive inventory, completed download ledger, and production 4.0 weights.
+- **Outputs**: Campaign status, logs, epoch checkpoints, training report, float and int8 weights, native candidate, parity report, and a ZIP package.
+- **Default settings**: Production 858-input network, 512 hidden units, full training scope, QAT, auxiliary policy temperature 2, auxiliary loss weight 0.15, cosine learning-rate decay from `1e-5` to `1e-7`, and 100 epochs without early stopping. The accumulator learning rate is one tenth of the base rate. The runner uses three CPU threads and batch size 2048.
+- **Recovery**: `resume.pt` preserves the model, optimizer, schedule position, and random states. The preparer rejects an incompatible cache identity. The runner does not promote production weights.
+- **Key CLI flags**: `--output`, `--dataset`.
+
+### `training/finetune_external_value.py`
+- **Purpose**: Runs one short value-only fine-tune from an external teacher archive. The runner preserves the production weights.
+- **Inputs**: One ZIP file with a gzip JSONL member. Each row supplies a position state, side to move, teacher value, source, and optional game ID. The native `bin/teacher_encode_state` encoder must exist.
+- **Outputs**: A canonical dataset, initial predictions, fixed disagreement weights, epoch exports, a selected checkpoint, and a report in `experimental/experiments/external-value-short-20261013/`.
+- **Default settings**: Three epochs, learning rate `1e-5`, batch size 2048, three CPU threads, and quantization-aware value heads. The accumulator and policy remain fixed. The sample weight is `1 + 3 * abs(initial_student_probability - teacher_probability)`, normalized on training rows.
+- **Key CLI flags**: `--archive`, `--output`, `--init`, `--epochs`, `--lr`, `--min-lr`, `--weight-reference`.
+- **Continuation**: Set `--init` to a previous float candidate. Set `--min-lr` to enable linear decay from `--lr` on epoch 1 to the final rate on the last epoch. Set `--weight-reference` to preserve disagreement weights from an earlier network.
+- **Validation**: The runner reserves approximately 5% by connected game groups and repeated states. Identical state rows receive their mean teacher value. Rows without game IDs use state groups. The runner selects the epoch with the lowest validation BCE. No game-strength claim follows from this metric.
+
 ### `tools/run_complete_promotion_battery.py`
 - **Purpose**: Runs the full evaluation battery for candidate models against the frozen production champion, Claustrophobia, and Titanium. Measures win rates, Elo with 95% bootstrap confidence intervals, average search depth, and nodes per second (NPS).
 - **Inputs**:
@@ -301,6 +343,19 @@ Every public runner adheres to the following contract:
 - **Inputs**: Trained student weights and compiled C++ test harness.
 - **Outputs**: Discrepancy report and maximum absolute difference metrics.
 
+
+## Width comparison runner
+
+### `training/run_width_pilot.py`
+
+This runner trains a wider candidate and a matched control from the same
+reference weights. It verifies native parity and incremental accumulators,
+then runs paired games between the participants. `CONFIG` defines the
+reference directory, dataset, output directory, hidden width, epochs,
+learning rates, openings, and game settings. CLI flags override these values.
+The output contains participant weights, checkpoints, training reports,
+native executables, game transcripts, and `report.json`. `status.json`
+records the active phase. The runner does not change production weights.
 
 ## Archived profile builder
 

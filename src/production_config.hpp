@@ -1,6 +1,6 @@
 #pragma once
 
-// Zquoridor 4.0 uses the 858-input contact network and dense edge deltas.
+// Zquoridor 4.01 uses the 858-input temporal network and dense edge deltas.
 // Explicit build flags select archived architectures and search profiles.
 #ifndef ZQ_NNUE_CONTACT_FEATURES
 #define ZQ_NNUE_CONTACT_FEATURES 1

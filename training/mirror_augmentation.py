@@ -117,5 +117,7 @@ def stochastic_mirror_dict_h(data: dict[str, np.ndarray], indices: np.ndarray, f
         batch["walls_v"][m] = mirror_wall_bitboard_h(batch["walls_v"][m])
     if "policy" in batch:
         batch["policy"][m] = batch["policy"][m][:, ACTION_MIRROR_H]
+    if "aux_policy_target" in batch:
+        batch["aux_policy_target"][m] = batch["aux_policy_target"][m][:, ACTION_MIRROR_H]
     return batch
 

@@ -1,6 +1,6 @@
 # Zquoridor: Project State, Results, and Roadmap
 
-Last reviewed: 2026-10-08. This document is the single canonical reference for
+Last reviewed: 2026-10-13. This document is the single canonical reference for
 project status, training history, available datasets, self-play configurations,
 experimental measurements, and future plans.
 
@@ -10,6 +10,373 @@ are untracked artifacts outside version control.
 ---
 
 ## 1. Current Production Baseline
+
+### Version 4.01 operator promotion (2026-10-13)
+
+The operator authorized promotion and publication of the selected temporal
+epoch-97 candidate. Production now uses its float and int8 weights.
+The architecture remains `multipath_phase_contact_bucketed:512` with the
+existing `delta_dense_only` search. The release has 600 paired-screen games
+and no failures. Every measured opening/opponent score exceeds version 4.0.
+The H2H improvement has a positive paired bootstrap lower bound. External
+improvement intervals include zero. Claustrophobia CPU exceeds the nominal
+200 ms request by approximately 75 ms on average. Therefore, this release
+does not claim equal elapsed time against Claustrophobia or GPU superiority.
+
+`data/nnue/release.json` identifies the weights and training campaign.
+`data/nnue/release_evidence.json` preserves the aggregate measurements and
+timing limits. The browser bundles contain the same promoted int8 weights.
+The previous Git commit retains version 4.0 for rollback.
+
+Release validation compiled all 24 native correctness executables and passed
+22 executables. The focused Python suite passed 37 tests. The browser smoke
+passed boot, engine reply, analysis, and text I/O over local HTTP. Both
+standalone bundles contain the exact promoted int8 weight hash. File navigation
+is restricted by the environment browser policy. The legacy quiescence suite
+exceeded its 180-second limit; its frozen NNUE references describe historical
+weights and search settings. The policy alpha-beta ablation suite was not run.
+No passing claim applies to these two suites.
+
+### Matched width campaign (2026-10-13)
+
+The operator requested a network with more capacity than the current model.
+The pilot retains 858 features and compares 768 hidden units against a
+512-unit control. Both participants start from the selected temporal
+epoch-97 float weights. Both receive 100 additional epochs on the same
+1,598,963-state dataset, identical validation partitions, temporal targets,
+surprise weights, QAT, mirror augmentation, and auxiliary policy loss.
+The cosine learning rate decreases from 1e-5 to 1e-7. The trunk multiplier
+remains 0.1. Seed 20261017 controls both training runs.
+
+The existing width transfer preserves initial QAT outputs exactly. A focused
+check confirmed nonzero gradients for connections from the additional units.
+The deployed parameter count increases from 652,055 to 974,615. Native
+parity and accumulator checks precede the strength screen.
+
+The runner schedules 100 paired openings, equally divided between Normal
+and Center Rush, with 200 ms per move for both native executables. This
+campaign measures the width change against an equally trained control.
+The operator superseded the 10-epoch pilot before its completion. Both arms
+restart under the full 100-epoch cosine schedule. Results are pending.
+Artifacts reside in `experimental/experiments/width-100ep-20261013/`.
+This experiment does not replace production automatically.
+
+#### Architecture and training proposal from external evidence
+
+The public [Arena Field Report](https://claude.ai/artifact/LrcHZeAzVMJYt2kFPtqqLY)
+covers August 2026 games. The operator confirmed that its Zquoridor entry
+does not represent the current network. The architecture proposal uses the
+other engines and does not infer current weaknesses from that historical row.
+
+The strongest engines in the report place quiet structural walls early,
+spend walls and advance in the middlegame, and convert advantages reliably.
+These are associations, not causal ablations or fixed move quotas.
+The reference uses its own raw network and overvalues some race leads while
+undervaluing wall deficits. A 400-simulation rescore changes move-level
+judgements substantially. Therefore, the proposed labels use searched
+teacher values and game outcomes, not unconditional raw-network imitation.
+
+The pinned Claustrophobia checkpoint has 7,108,446 parameters, 20 input
+planes, six 192-channel convolution blocks, and six attention blocks.
+Its encoder supplies exact distance fields, path membership, legal walls,
+wall threats, and wall saliency. Its implementation combines policy/value
+training, batched MCTS, reuse, and outcome/search targets. These components
+do not establish individual Elo effects without ablations.
+
+The public Quoridors browser assets provide two further verified designs.
+[ACE KYA](https://quoridors.com/js/ace/kya-net.js?v=10) uses six input planes,
+12 residual blocks with 96 channels, squeeze-excitation, and policy/value
+heads. Its [search](https://quoridors.com/js/ace/kya-search.js?v=10) uses batched
+PUCT, virtual loss, and loss-valued first-play urgency. The source reports
+nearly equal GPU dispatch time for batches of one and 32. This is a reason
+to measure batched throughput, not to copy its reported speedup to our CPU.
+The deployed fp16 payload contains 2,796,514 folded tensor elements. Its
+SHA-256 is `9eefe0aa785973ac3bab6c893378f22341f2adb01564af8bdd93018cbcc68410`.
+
+[ACE Ishtar](https://quoridors.com/js/ace/ishtar-forward-webgpu.js?v=10) uses
+six planes, 10 residual blocks with 128 channels, squeeze-excitation, spatial
+pawn and wall policy branches, and auxiliary moves-left and victory-margin
+heads. Its browser worker calls an alpha-beta engine. These publicly served
+ports must not be conflated with the original Ishtar or Kya versions in the
+arena. Architecture and checkpoint provenance remain unverified for nmbf.
+
+The transferable hypothesis is spatial depth plus global context and
+policy/value supervision. Width alone adds pattern capacity to the existing
+NNUE representation but does not add residual spatial processing or attention.
+An offline teacher prototype should compare an eight-block, 96-channel SE
+ResNet with a hybrid that appends two attention blocks. Both require the same
+legal policy targets, split, teacher confidence, and outcome checks. Distill
+the selected teacher into NNUE before a CPU deployment comparison.
+
+The pinned Titanium implementation instead combines a compact HalfPW NNUE,
+distance and corridor features, alpha-beta, iterative deepening, transpositions,
+corridor-aware reductions, and exact race bounds. Its corridor attention is
+a search heuristic, not a Transformer layer. This design supports a separate
+representation-and-search route rather than parameter count alone.
+
+Proposed priorities after the matched width campaign:
+
+1. Audit current 4.01 move profiles by phase, seat, race margin, and wall stock.
+   Verify protocol, legal masks, canonicalization, and loaded weight identity.
+2. Relabel errors in balanced positions with searched teachers. Emphasize
+   quiet-wall decisions, stock asymmetry, contact tactics, and conversion.
+   Keep bounded surprise weights and source confidence separate.
+3. Ablate joint wall-stock and corridor/threat features against width alone.
+   Cache geometry and measure encoding cost as well as network throughput.
+4. Train a spatial convolution/attention teacher offline and distill its
+   searched policy and value into the fast NNUE. Keep the auxiliary policy
+   restricted to training. Direct heavy inference requires a separate GPU
+   or root-only deployment experiment and measured timing.
+5. Compare all candidates at equal elapsed search time and record policy
+   quality, calibration by regime, search depth, nodes, and conversion.
+
+### Temporal search training campaign (2026-10-13)
+
+#### Post-training strength measurement
+
+The operator requested a strength measurement for the selected epoch-97
+candidate. The dispatched H2H uses 100 opening pairs: 50 Normal pairs from
+`openings_normal_confirm_400.jsonl` and 50 Center Rush pairs from
+`openings_center_rush_sound_5k.jsonl`. Both participants use the same native
+production executable, explicit network weights, 200 ms per move, and no
+pondering. Seed 20261015 selects and orders the openings.
+
+The external screen compares candidate and production against both
+Claustrophobia and Titanium on identical opening pairs. Each participant
+has 25 pairs per book and opponent. The external opponents use pinned
+revisions and corrected clock bridges. The screen uses CPU inference for
+Claustrophobia. Setup and external games start after H2H completion.
+The combined planned sample is 600 games. The H2H completed all 200 games
+with no failures: 120 wins, 2 draws, and 78 losses for the candidate.
+The candidate scored 60.5%, or +74.1 Elo. The paired bootstrap 95% score
+interval is 54.25% to 66.5%, or +29.6 to +119.1 Elo. The conservative
+paired Hoeffding score bound is 46.92% to 74.08%.
+
+| H2H book | Games | Candidate score | Elo estimate | Paired bootstrap 95% score interval |
+|---|---:|---:|---:|---:|
+| Normal | 100 | 62.5% | +88.7 | 53.5% to 71.5% |
+| Center Rush | 100 | 58.5% | +59.6 | 50.0% to 67.0% |
+
+Two games ended by repetition. No game reached the ply limit. The main
+paired bootstrap supports an aggregate improvement against production at
+200 ms. The Center Rush interval includes equality.
+
+The external screen completed 100 games per participant and opponent, with
+no failures. Each book contains 25 complete paired openings per participant.
+All matched comparisons contain identical opening pairs.
+
+| Opponent | Production score | Candidate score | Paired change | Paired bootstrap 95% change interval |
+|---|---:|---:|---:|---:|
+| Claustrophobia CPU | 54.5% | 63.0% | +8.5 pp | -2.0 to +19.0 pp |
+| Titanium CPU | 60.0% | 65.0% | +5.0 pp | -7.0 to +17.0 pp |
+
+| Opponent and book | Production score | Candidate score | Paired change | Paired bootstrap 95% change interval |
+|---|---:|---:|---:|---:|
+| Claustrophobia Normal | 53.0% | 66.0% | +13.0 pp | -3.0 to +29.0 pp |
+| Claustrophobia Center Rush | 56.0% | 60.0% | +4.0 pp | -10.0 to +18.0 pp |
+| Titanium Normal | 64.0% | 72.0% | +8.0 pp | -12.0 to +28.0 pp |
+| Titanium Center Rush | 56.0% | 58.0% | +2.0 pp | -12.0 to +14.0 pp |
+
+The candidate recorded 63 wins and 37 losses against Claustrophobia, and
+65 wins and 35 losses against Titanium. All 600 planned games completed
+with zero failures. External score-change intervals include zero. The
+screen does not establish superiority across all promotion dimensions.
+
+Every participant received a 200 ms move request. Claustrophobia's
+synchronous MCTS wave exceeded the monotonic deadline. Mean measured
+search time was 275.296 ms against production and 273.932 ms against the
+candidate. Therefore, these external results do not certify strict equal
+wall-clock use at 200 ms. The CPU results do not measure GPU Claustrophobia.
+The H2H remains the direct comparison with the same executable and clock
+behavior for both networks. Production weights remain unchanged.
+
+The final report is `strength_report.json` in the measurement directory.
+`timing.json` records move duration distributions. The complete report
+package is `/workspace/zquoridor_temporal_strength_report.zip`.
+The measurement does not authorize a production promotion.
+
+Records reside in `results/benchmarks/temporal-search-100ep-strength-20261013/`.
+The external controller is `tools/measure_temporal_strength.py`.
+
+The operator authorized 100 epochs with learning-rate endpoints of `1e-5`
+and `1e-7`. This campaign starts from the production 4.0 network. The external
+value-only candidate remains excluded because its paired screen did not
+demonstrate an overall gain and showed a Normal opening regression.
+
+The campaign uses the shared folders from all five accounts. The inventory
+contains 1040 listed files. The selected download set contains 690 files and
+1567256486 bytes. Source families include `selfplay_v301`,
+`selfplay_contact_soup_858`, `selfplay_858_v1`,
+`claustro_search_games_v1`, and `wall_drops_v1`.
+The three listed Gumbel worker folders contain no files in this snapshot.
+Each contact self-play folder listing reaches the connector's 100-file
+limit. Therefore, the inventory does not certify a complete historical
+corpus. The campaign records the exact listed and downloaded subset.
+
+Value targets combine root values at 0, 4, 8, and 16 future plies, with
+geometric weights 0.5, 0.25, 0.125, and 0.0625. The preparer converts all
+future values into the current player's perspective. It normalizes available
+horizon weights, then mixes 90% search evidence with 10% terminal outcome.
+It uses exact ply indices, not stored record offsets. Synthetic isolated
+positions retain their original value targets.
+
+Current-position teacher policies receive quality weights from budget and
+visit count. Claustrophobia receives three times the teacher factor of
+Zquoridor for the main target. The auxiliary target uses equal teacher
+factors before quality weighting. Policy targets do not use future actions.
+Source confidence, bounded policy surprise, and bounded value disagreement
+control separate loss weights. The auxiliary policy uses temperature 2 and
+loss coefficient 0.15. The export omits the auxiliary head.
+
+Complete game groups determine the validation split. Canonical states that
+occur in both splits are excluded. Native encoding validates resources,
+wall topology, paths, and terminal status. The pipeline preserves raw source
+artifacts and applies temporal targets before state deduplication.
+
+Twenty-two focused tests passed. A preparation and training smoke test used
+271593 distinct states, with 259706 training states and 11887 validation
+states. Its joint validation loss changed from 2.141892 to 2.127068 after
+one epoch. This smoke test verifies the pipeline; it does not supply the
+campaign initialization or establish a strength gain. Native parity passed
+on 192 position-perspective samples. The maximum value-logit error was
+below `5e-9`, and the maximum valid policy-logit error was below `1.2e-5`.
+
+The campaign completed all 100 epochs. It uses cosine decay, no warmup, and no early
+stopping. The accumulator learning rate is one tenth of the base rate.
+Checkpoints preserve optimizer and random state. Production files remain
+unchanged. Dataset preparation and training reports contain the measured
+sample counts and final validation results when those stages complete.
+
+The complete selected download set passed byte-size checks with no failures.
+Preparation accepted 2252419 position occurrences. Weighted aggregation
+produced 1598963 unique states: 1527413 training states and 71550 validation
+states. It excluded 32813 states that occurred in both splits. Confidence
+weights use the mean source mass per occurrence, so repeated states do not
+receive an extra frequency multiplier. Value and both policy targets use
+weighted means. Temporal construction precedes aggregation.
+
+The raw accepted sources contain 1583970 contact self-play positions,
+393383 v3.01 self-play positions, 154668 complete-game Zquoridor search
+positions, 100398 Claustrophobia match search positions, and 20000 wall-drop
+positions. Future-horizon evidence exists for 1879663 of the 2232419
+trajectory positions before deduplication. The pipeline excluded nine
+incomplete games and 16604 solver policy roots.
+
+The principal run completed epoch 1 at base learning rate `1e-5`.
+Its validation joint loss is 2.168353, policy KL is 1.193724, value BCE is
+0.446799, and auxiliary policy KL is 0.966955. The epoch took approximately
+87.5 seconds on CPU. No match-strength measurement or production promotion
+follows from these training metrics. The 100-epoch job is complete.
+
+The final learning rate is `1e-7`. Epoch 97 has the lowest validation loss.
+The export uses this checkpoint. The summed epoch duration is approximately
+2 hours and 19 minutes.
+
+| Validation metric | Production initialization | Selected epoch 97 |
+|---|---:|---:|
+| Joint loss | 2.190864 | 2.079536 |
+| Main policy KL | 1.200127 | 1.144735 |
+| Value BCE | 0.447547 | 0.444894 |
+| Value Brier | 0.031726 | 0.030872 |
+| Value MAE | 0.238619 | 0.232486 |
+| Auxiliary policy KL | 1.004680 | 0.922469 |
+
+The native candidate build passed. Python and C++ parity passed on 192
+position-perspective samples. The maximum value-logit error is below
+`5e-9`, and the maximum valid policy-logit error is below `1.2e-5`.
+The native incremental accumulator check passed on 4758 samples with zero
+differences. No post-training match has run. Production remains unchanged.
+The candidate package is `/workspace/zquoridor_temporal_search_100ep.zip`.
+
+Artifacts reside in `data/teaching/drive-temporal-100ep/` and
+`experimental/experiments/temporal-search-100ep-20261013/`.
+The runner is `training/run_temporal_campaign.py`.
+
+### External value fine-tune test (2026-10-13)
+
+#### Ten-epoch continuation and paired screen
+
+The operator requested ten more epochs from the three-epoch candidate.
+The learning rate decreases linearly from `5e-6` on epoch 1 to `1e-6`
+on epoch 10. The run retains the same data split and value-only scope.
+Disagreement weights use the original production network as their fixed
+reference. The run does not blend teacher values with game outcomes.
+
+Epoch 10 has the lowest validation BCE. BCE decreases from 0.467765 to
+0.463611, Brier decreases from 0.064052 to 0.062521, and value MAE decreases
+from 0.388916 to 0.381550. The continuation took approximately 58 seconds
+on CPU. The accumulator and policy parameters remain unchanged.
+The exported candidate passes Python and native parity checks on 192
+position-perspective samples. The maximum value-logit error is below `5e-9`.
+
+The requested H2H screen compares this candidate with the production 4.0
+network before any external-value fine-tuning. Both players use the same
+native executable and 200 ms per move, without pondering. The screen has
+25 Normal opening pairs and 25 Center Rush opening pairs, with swapped
+colors, seed 20261013, and three workers. All 100 games completed with no
+failures. The candidate scored 43 wins, 1 draw, and 56 losses, or 43.5%.
+The Elo point estimate is -45.4. The paired bootstrap 95% score interval
+is 34.5% to 52.5%, or -111.4 to +17.4 Elo. This screen does not establish
+an overall strength gain.
+
+| Opening book | Games | Candidate score | Elo estimate | Paired 95% score interval |
+|---|---:|---:|---:|---:|
+| Normal | 50 | 30.0% | -147.2 | 20.0% to 42.0% |
+| Center Rush | 50 | 57.0% | +49.0 | 46.0% to 68.0% |
+
+The Normal result indicates a regression in this screen. The Center Rush
+result remains inconclusive. The teacher validation loss improved, but the
+candidate did not pass the production promotion requirement. Production
+weights remain unchanged. One game ended by repetition. No game reached
+the ply limit. The sample contains 50 complete pairs and remains a screen.
+
+Continuation artifacts reside in
+`experimental/experiments/external-value-continuation-10ep-20261013/`.
+H2H records reside in
+`results/benchmarks/external-value-10ep-vs-production-200ms/`.
+
+#### Initial three-epoch test
+
+The operator requested one short experiment from `titanium_mix_v2.zip`.
+The teacher data did not come from matches against Zquoridor. The experiment
+uses the external teacher value without a blend with arena game outcomes.
+The teacher architecture and relative strength remain unverified in this test.
+
+The archive contains 408950 rows and 406139 distinct state texts. All distinct
+states passed the native resource, wall topology, path, and terminal checks.
+Repeated state texts receive their mean teacher value. The split reserves
+20011 validation states and uses 386128 training states. Connected game groups
+keep each identified game and repeated state in one split. Rows without game
+IDs use state groups. Self-play trajectory isolation cannot be established
+for rows without game IDs.
+
+The run starts from the production 4.0 float weights and uses three epochs,
+a learning rate of `1e-5`, batch size 2048, and quantization-aware training.
+Only the six value heads change. The accumulator and policy remain fixed.
+The fixed sample weight is `1 + 3 * abs(initial_student_probability -
+teacher_probability)`. Training-set normalization gives weights from 0.638
+to 2.497. The run preserves the source proportions after state deduplication.
+
+| Validation metric | Production initialization | Epoch 1 | Epoch 2 | Epoch 3 |
+|---|---:|---:|---:|---:|
+| BCE | 0.481135 | 0.469988 | 0.468707 | 0.467765 |
+| Brier | 0.069155 | 0.064854 | 0.064356 | 0.064052 |
+| Value MAE | 0.389373 | 0.390932 | 0.390497 | 0.388916 |
+
+Epoch 3 has the lowest validation BCE. BCE decreases by approximately 2.78%,
+and Brier decreases by approximately 7.38%. Value MAE changes little. These
+metrics measure agreement with teacher targets, not match strength.
+
+The run took approximately 38 seconds on CPU after environment setup.
+The exported candidate has int8 SHA-256
+`37a89b2426fa7854176bc68bd82ed61caee7c3a27e378e6286e6049daa9ce878`.
+Python and the native evaluator agree on 192 position-perspective samples.
+The maximum value-logit error is below `5e-9`. Native policy logits remain
+identical to production. No tournament ran, and no promotion occurred.
+Production weights remain unchanged.
+
+The runner is `training/finetune_external_value.py`. Local artifacts reside
+in `experimental/experiments/external-value-short-20261013/`.
 
 ### Version 4.0 operator promotion (2026-10-08)
 
@@ -180,12 +547,12 @@ The table below summarizes the operational state of Zquoridor in production.
 
 | Component | Production Specification |
 | --- | --- |
-| Release | zQuoridor 4.0 |
+| Release | zQuoridor 4.01 |
 | Search Engine | Hybrid PUCT and MCGS graph search with alpha-beta verification, transposition tables, persistent tree reuse, repetition escape, and adaptive time budgeting |
 | Pondering | Opponent-root pondering with subtree reuse. In the browser, background work runs in bounded Web Worker slices |
 | NNUE Architecture | `multipath_phase_contact_bucketed:512`: 858 sparse inputs, 512 SCReLU units, 6 wall-count value heads with 2-layer MLPs (`512 â†’ 32 â†’ 32 â†’ 1`), policy head `512 â†’ 209`, QAT int8 |
-| Production Weights | `data/nnue/nnue_weights.bin` (float32) and `data/nnue/nnue_weights_int8.bin` (int8 quantized, sha256: `f8d85cae979bbf2047532e31daa61859c5f20246fc58de225f85ced0bef8841f`) |
-| Provenance Directory | `experimental/experiments/contact_soup_tri_512/soup_tri_champion/` |
+| Production Weights | `data/nnue/nnue_weights.bin` (float32) and `data/nnue/nnue_weights_int8.bin` (int8 quantized, sha256: `45fa3ea7db3127a0b907a23d268b0c55c2020e1018513d54bb920cdbe134abe0`) |
+| Provenance Directory | `experimental/experiments/temporal-search-100ep-20261013/` (selected epoch 97) |
 | Native Executable | Compiled with `ZQ_NNUE_VALUE_BUCKETS=6` and `ZQ_NNUE_VALUE_DEPTH=2` |
 | Web Platform | WebAssembly build with UCI text protocol, time controls, and analysis engine |
 
