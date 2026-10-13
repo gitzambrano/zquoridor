@@ -1110,3 +1110,14 @@ The first distributed run completed over 3360 monitor cycles across 15 hours:
 - Worker 5 processed over 2210 deep Gumbel Sequential Halving targets (Top-K=16, 20 ms per candidate action).
 - Workers 3 and 4 processed Gumbel Sequential Halving targets (Top-K=8, 15 ms per candidate action).
 - The operator updated the fleet monitor to preserve active execution states across restarts and handle transient cycle errors. The daemon runs continuously in the background.
+
+### Batch 2 Remote Fleet Resumption (2026-10-13)
+
+The operator resumed the generation of rich targets across all five Google Colab remote workers with distinct random seeds and automatic timestamped output preservation:
+- Worker 1: Wall Drops medium mazes (3 to 8 walls), seed 1000011.
+- Worker 2: Wall Drops extreme mazes (8 to 14 walls), seed 2000022.
+- Worker 3: Gumbel AlphaZero Sequential Halving (Top-K=8, 15 ms), seed 3000033.
+- Worker 4: Gumbel AlphaZero Sequential Halving (Top-K=8, 15 ms), seed 4000044.
+- Worker 5: Gumbel Deep Planning (Top-K=16, 20 ms), seed 5000055.
+
+Both `generate_wall_drops.py` and `generate_gumbel_sims.py` verify existing target files and apply an epoch timestamp suffix before saving. This mechanism prevents accidental overwrites of earlier batches on Google Drive. The fleet monitor daemon executes continuously as a background process.
