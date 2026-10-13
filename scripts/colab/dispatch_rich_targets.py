@@ -53,24 +53,24 @@ print('Launching: {job_label}', flush=True)
 
 JOB_SPECS = {
     1: {
-        "job_label": "Wall Drops (Medium Mazes: 3-8 walls)",
-        "cli_command": "python -u tools/generate_wall_drops.py --count 10000 --min-walls 3 --max-walls 8 --pawn-walk-plies 4 --move-time-ms 20 --zq-executable /content/zquoridor_runtime/zquoridor_uci --output /content/drive/MyDrive/zquoridor_data/wall_drops_v1/worker_1 --seed 1000001",
+        "job_label": "Wall Drops (Medium Mazes: 3-8 walls) [Batch 2]",
+        "cli_command": "python -u tools/generate_wall_drops.py --count 10000 --min-walls 3 --max-walls 8 --pawn-walk-plies 4 --move-time-ms 20 --zq-executable /content/zquoridor_runtime/zquoridor_uci --output /content/drive/MyDrive/zquoridor_data/wall_drops_v1/worker_1 --seed 1000011",
     },
     2: {
-        "job_label": "Wall Drops (Extreme Mazes: 8-14 walls)",
-        "cli_command": "python -u tools/generate_wall_drops.py --count 10000 --min-walls 8 --max-walls 14 --pawn-walk-plies 4 --move-time-ms 20 --zq-executable /content/zquoridor_runtime/zquoridor_uci --output /content/drive/MyDrive/zquoridor_data/wall_drops_v1/worker_2 --seed 2000002",
+        "job_label": "Wall Drops (Extreme Mazes: 8-14 walls) [Batch 2]",
+        "cli_command": "python -u tools/generate_wall_drops.py --count 10000 --min-walls 8 --max-walls 14 --pawn-walk-plies 4 --move-time-ms 20 --zq-executable /content/zquoridor_runtime/zquoridor_uci --output /content/drive/MyDrive/zquoridor_data/wall_drops_v1/worker_2 --seed 2000022",
     },
     3: {
-        "job_label": "Gumbel AlphaZero Sequential Halving (Top-K=8, 15ms)",
-        "cli_command": "python -u tools/generate_gumbel_sims.py --count 10000 --top-k 8 --c-scale 2.0 --move-time-ms 15 --zq-executable /content/zquoridor_runtime/zquoridor_uci --output /content/drive/MyDrive/zquoridor_data/gumbel_sims_v1/worker_3 --seed 3000003",
+        "job_label": "Gumbel AlphaZero Sequential Halving (Top-K=8, 15ms) [Batch 2]",
+        "cli_command": "python -u tools/generate_gumbel_sims.py --count 10000 --top-k 8 --c-scale 2.0 --move-time-ms 15 --zq-executable /content/zquoridor_runtime/zquoridor_uci --output /content/drive/MyDrive/zquoridor_data/gumbel_sims_v1/worker_3 --seed 3000033",
     },
     4: {
-        "job_label": "Gumbel AlphaZero Sequential Halving (Top-K=8, 15ms)",
-        "cli_command": "python -u tools/generate_gumbel_sims.py --count 10000 --top-k 8 --c-scale 2.0 --move-time-ms 15 --zq-executable /content/zquoridor_runtime/zquoridor_uci --output /content/drive/MyDrive/zquoridor_data/gumbel_sims_v1/worker_4 --seed 4000004",
+        "job_label": "Gumbel AlphaZero Sequential Halving (Top-K=8, 15ms) [Batch 2]",
+        "cli_command": "python -u tools/generate_gumbel_sims.py --count 10000 --top-k 8 --c-scale 2.0 --move-time-ms 15 --zq-executable /content/zquoridor_runtime/zquoridor_uci --output /content/drive/MyDrive/zquoridor_data/gumbel_sims_v1/worker_4 --seed 4000044",
     },
     5: {
-        "job_label": "Gumbel Deep Planning (Top-K=16, 20ms)",
-        "cli_command": "python -u tools/generate_gumbel_sims.py --count 10000 --top-k 16 --c-scale 2.5 --move-time-ms 20 --zq-executable /content/zquoridor_runtime/zquoridor_uci --output /content/drive/MyDrive/zquoridor_data/gumbel_sims_v1/worker_5 --seed 5000005",
+        "job_label": "Gumbel Deep Planning (Top-K=16, 20ms) [Batch 2]",
+        "cli_command": "python -u tools/generate_gumbel_sims.py --count 10000 --top-k 16 --c-scale 2.5 --move-time-ms 20 --zq-executable /content/zquoridor_runtime/zquoridor_uci --output /content/drive/MyDrive/zquoridor_data/gumbel_sims_v1/worker_5 --seed 5000055",
     },
 }
 

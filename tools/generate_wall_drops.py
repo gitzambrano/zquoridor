@@ -9,6 +9,7 @@ import os
 import random
 import subprocess
 import sys
+import time
 from collections import deque
 from pathlib import Path
 from typing import Sequence
@@ -268,21 +269,23 @@ def run_generation(config: dict) -> dict:
         if generated % 10 == 0 or generated == config["count"]:
             print(f"  Generated {generated}/{config['count']} positions (attempts: {attempts})", flush=True)
 
+    suffix = f"_{int(time.time())}" if (output_dir / "targets.npz").exists() or (output_dir / "positions.jsonl").exists() else ""
+
     # Write JSONL position corpus
-    positions_file = output_dir / "positions.jsonl"
+    positions_file = output_dir / f"positions{suffix}.jsonl"
     with positions_file.open("w", encoding="utf-8") as f_pos:
         for p in positions:
             f_pos.write(dumps(p) + "\n")
 
     # Write JSONL teacher targets
-    targets_file = output_dir / "targets.jsonl"
+    targets_file = output_dir / f"targets{suffix}.jsonl"
     with targets_file.open("w", encoding="utf-8") as f_tgt:
         for lbl in labels:
             f_tgt.write(dumps(lbl) + "\n")
 
     # Export compact NumPy archive if requested
     if config["export_npz"] and positions:
-        npz_file = output_dir / "targets.npz"
+        npz_file = output_dir / f"targets{suffix}.npz"
         np.savez_compressed(
             npz_file,
             policy=np.asarray(policy_matrix, dtype=np.float32),
