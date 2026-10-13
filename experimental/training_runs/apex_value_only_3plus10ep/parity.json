@@ -1,0 +1,7 @@
+{
+  "native_positions_perspectives": 192,
+  "value_logit_max_abs_error": 4.928588870356521e-09,
+  "policy_logit_max_abs_error": 1.1424145508698302e-05,
+  "native_policy_unchanged": true,
+  "status": "passed"
+}

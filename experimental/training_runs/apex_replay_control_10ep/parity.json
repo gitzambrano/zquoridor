@@ -1,0 +1,6 @@
+{
+  "status": "passed",
+  "positions_perspectives": 192,
+  "value_logit_max_abs_error": 9.563894654007754e-07,
+  "policy_logit_max_abs_error": 1.52108154303221e-05
+}

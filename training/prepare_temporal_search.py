@@ -17,6 +17,7 @@ from student_model import Student, encode_features
 from read_selfplay import SAMPLE_DTYPE
 from prepare_replay import META_DTYPE
 from compute_surprise_weights import compute_normalized_multipliers
+from target_options import target_settings
 
 ROOT = Path(__file__).resolve().parents[1]
 CONFIG = {
@@ -24,6 +25,7 @@ CONFIG = {
     'output': str(ROOT/'data/teaching/drive-temporal-100ep/dataset'),
     'reference': str(ROOT/'data/nnue/nnue_weights.bin'),
     'architecture': 'multipath_phase_contact_bucketed', 'hidden': 512,
+    'target_mode': 'temporal',
     'horizons': [0, 4, 8, 16], 'horizon_weights': [0.5, 0.25, 0.125, 0.0625],
     'outcome_weight': 0.1, 'val_fraction': 0.05, 'seed': 20261013,
     'source_weights': {'selfplay_v301': 0.8, 'selfplay_contact_soup_858': 1.0,
@@ -190,7 +192,14 @@ def wall_positions(file, targets_file, cfg, stats):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--downloads',default=CONFIG['downloads']);parser.add_argument('--output',default=CONFIG['output'])
+    parser.add_argument('--reference',default=CONFIG['reference']);parser.add_argument('--hidden',type=int,default=CONFIG['hidden'])
+    parser.add_argument('--architecture',default=CONFIG['architecture'])
+    parser.add_argument('--target-mode',choices=('current','temporal'),default=CONFIG['target_mode'])
+    parser.add_argument('--horizons',type=json.loads,default=None)
+    parser.add_argument('--horizon-weights',type=json.loads,default=None)
+    parser.add_argument('--outcome-weight',type=float,default=CONFIG['outcome_weight'])
     cfg = dict(CONFIG,**vars(parser.parse_args()));out = Path(cfg['output']);out.mkdir(parents=True,exist_ok=True)
+    cfg.update(target_settings(cfg['target_mode'],cfg['horizons'],cfg['horizon_weights'],cfg['outcome_weight']))
     text = Path(cfg['downloads']).read_text()
     files = [json.loads(line) for line in text.splitlines() if line.strip()] if cfg['downloads'].endswith('.jsonl') else json.loads(text)
     lookup = {f['path']:f for f in files}
