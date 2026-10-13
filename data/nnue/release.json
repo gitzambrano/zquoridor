@@ -12,7 +12,16 @@
     "unique_states": 1598963,
     "learning_rate_start": 1e-05,
     "learning_rate_end": 1e-07,
-    "method": "Temporal search-value distillation, weighted target aggregation, surprise weights, and training-only auxiliary policy"
+    "method": "Temporal search-value distillation, weighted target aggregation, surprise weights, and training-only auxiliary policy",
+    "external_value_pack_used": false,
+    "initial_release": "4.0",
+    "data_sources": [
+      "selfplay_v301",
+      "selfplay_contact_soup_858",
+      "selfplay_858_v1",
+      "claustro_search_games_v1",
+      "wall_drops_v1"
+    ]
   },
   "promotion_basis": "Explicit operator authorization after 600 games. Every measured book/opponent score improved; external paired improvement intervals include zero.",
   "weights": {

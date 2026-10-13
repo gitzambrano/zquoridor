@@ -28,6 +28,15 @@ does not claim equal elapsed time against Claustrophobia or GPU superiority.
 timing limits. The browser bundles contain the same promoted int8 weights.
 The previous Git commit retains version 4.0 for rollback.
 
+The 4.01 campaign does not include `titanium_mix_v2.zip`. It starts from
+version 4.0, not from the separate external-value candidate. The ZIP README
+identifies its author as the ace apex team. It describes 271,410 positions
+from Titanium arena games with raw apex values, 113,087 apex self-play
+positions, and 24,453 deep-search corrections. It contains value targets
+only. The earlier value-only QAT test uses this pack and scores 43.5% against
+4.0 in 100 games. Therefore, its checkpoint does not supply the starting
+weights for the temporal campaign or the matched width campaign.
+
 Release validation compiled all 24 native correctness executables and passed
 22 executables. The focused Python suite passed 37 tests. The browser smoke
 passed boot, engine reply, analysis, and text I/O over local HTTP. Both
