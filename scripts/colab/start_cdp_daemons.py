@@ -44,10 +44,10 @@ def start_daemons():
             f"--user-data-dir={profile}",
             "--no-first-run",
             "--no-default-browser-check",
-            "--headless=new",
-            url
+            url,
         ]
-        proc = subprocess.Popen(cmd)
+        creationflags = subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP
+        proc = subprocess.Popen(cmd, creationflags=creationflags, close_fds=True)
         print(f"Worker {wid} (Port {port}): Started chrome.exe (PID {proc.pid})...", flush=True)
 
     time.sleep(5)
