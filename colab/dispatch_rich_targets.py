@@ -127,6 +127,63 @@ def handle_dialogs(page: Any) -> str:
         return "none"
 
 
+def handle_oauth(ctx: Any) -> bool:
+    """Handle any Google OAuth consent popups (e.g. Google Drive access approval)."""
+    try:
+        oauth_pages = [pg for pg in ctx.pages if "accounts.google.com" in (pg.url or "")]
+        if not oauth_pages:
+            return False
+        print(f"  [OAuth] Handling {len(oauth_pages)} OAuth consent popup(s)...", flush=True)
+        for p in oauth_pages[:-1]:
+            try:
+                p.close()
+            except Exception:
+                pass
+        pg = oauth_pages[-1]
+        checkboxes = pg.locator("input[type='checkbox']").all()
+        for cb in checkboxes:
+            if not cb.is_checked():
+                cb.check()
+                time.sleep(0.5)
+        btn = pg.locator("#submit_approve_access, button:has-text('Allow'), button:has-text('Permitir'), button:has-text('Continuar'), button:has-text('Avançar')")
+        if btn.count() > 0 and btn.first.is_visible():
+            print("  [OAuth] Clicking approval button...", flush=True)
+            btn.first.click()
+            time.sleep(3)
+            return True
+    except Exception as exc:
+        print(f"  [OAuth ERROR] {exc}", flush=True)
+    return False
+
+
+def handle_recaptcha(page: Any) -> bool:
+    """Detect and solve any active Google reCAPTCHA challenges."""
+    try:
+        has_iframe = page.evaluate("""() => {
+            const frames = Array.from(document.querySelectorAll('iframe')).map(f => f.src);
+            return frames.some(src => src.includes('recaptcha'));
+        }""")
+        if not has_iframe:
+            return False
+
+        anchor_frame = next((f for f in page.frames if "anchor" in f.url and ("recaptcha" in f.url or "k=" in f.url)), None)
+        if anchor_frame:
+            anchor = anchor_frame.locator("#recaptcha-anchor")
+            if anchor.count() > 0:
+                checked = anchor.get_attribute("aria-checked")
+                if checked == "false":
+                    print("  [reCAPTCHA] Checkbox is unchecked. Clicking anchor...", flush=True)
+                    anchor.evaluate("el => el.click()")
+                    time.sleep(3)
+        bframe = next((f for f in page.frames if "bframe" in f.url), None)
+        if bframe and bframe.locator("#recaptcha-audio-button").count() > 0:
+            print("  [reCAPTCHA] Challenge detected. Solving via Whisper...", flush=True)
+            return solve_recaptcha_playwright(page)
+    except Exception as exc:
+        print(f"  [reCAPTCHA ERROR] {exc}", flush=True)
+    return False
+
+
 def connect_runtime_if_needed(page: Any) -> bool:
     """Ensure runtime is connected if currently disconnected."""
     try:
@@ -294,11 +351,16 @@ def deploy_worker(p: Any, wid: int, force_relaunch: bool = True) -> Dict[str, An
     if not page:
         page = ctx.pages[0] if ctx.pages else ctx.new_page()
         page.goto(w["notebook_url"], wait_until="domcontentloaded", timeout=60000)
+    elif page.url == "about:blank":
+        page.goto(w["notebook_url"], wait_until="domcontentloaded", timeout=60000)
 
     time.sleep(3)
+    handle_oauth(ctx)
+    handle_recaptcha(page)
     handle_dialogs(page)
     connect_runtime_if_needed(page)
     time.sleep(2)
+    handle_oauth(ctx)
     handle_dialogs(page)
 
     has_v401_code = page.evaluate("""() => {
@@ -333,6 +395,8 @@ def deploy_worker(p: Any, wid: int, force_relaunch: bool = True) -> Dict[str, An
 
     for _ in range(3):
         time.sleep(2)
+        handle_oauth(ctx)
+        handle_recaptcha(page)
         handle_dialogs(page)
         connect_runtime_if_needed(page)
 
@@ -367,7 +431,7 @@ def main():
             try:
                 workers_state[wid] = deploy_worker(p, wid, force_relaunch=args.force_relaunch)
             except Exception as exc:
-                print(f"Worker {wid} deployment error: {exc}", flush=True)
+                print(f"Worker {wid} initial deployment error: {exc}", flush=True)
 
         print("\n================ FLEET MONITOR LOOP STARTED ================\n", flush=True)
         cycle = 0
@@ -379,11 +443,28 @@ def main():
 
                 for wid in args.workers:
                     st_info = workers_state.get(wid)
-                    if not st_info:
+                    page = st_info.get("page") if st_info else None
+                    ctx = st_info.get("ctx") if st_info else None
+
+                    # Self-healing: if context was closed or disconnected, recover worker
+                    if not st_info or page is None or page.is_closed():
+                        print(f"  Worker {wid} context lost/closed. Re-deploying and recovering...", flush=True)
+                        try:
+                            workers_state[wid] = deploy_worker(p, wid, force_relaunch=False)
+                            st_info = workers_state.get(wid)
+                            page = st_info.get("page") if st_info else None
+                            ctx = st_info.get("ctx") if st_info else None
+                        except Exception as e:
+                            print(f"  Worker {wid} recovery error: {e}", flush=True)
+                            continue
+
+                    if not page:
                         continue
-                    page = st_info["page"]
 
                     try:
+                        if ctx:
+                            handle_oauth(ctx)
+                        handle_recaptcha(page)
                         handle_dialogs(page)
                         st = get_cell_execution_state(page)
                         is_active = st["running"] or st["pending"]
@@ -418,6 +499,8 @@ def main():
 
                     except Exception as exc:
                         print(f"  Worker {wid} check error: {exc}", flush=True)
+                        if "closed" in str(exc).lower() or "target" in str(exc).lower():
+                            workers_state[wid] = None
             except Exception as cycle_exc:
                 print(f"Cycle {cycle} error: {cycle_exc}. Retrying in 10s...", flush=True)
                 time.sleep(10)
