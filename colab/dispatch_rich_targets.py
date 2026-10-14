@@ -148,28 +148,58 @@ def connect_runtime_if_needed(page: Any) -> bool:
         return False
 
 
+def get_cell_execution_state(page: Any) -> Dict[str, Any]:
+    """Inspect execution status, pending state, and current stdout tail from colab-run-button."""
+    try:
+        return page.evaluate("""() => {
+            let running = false;
+            let pending = false;
+            let out = '';
+
+            const btn = document.querySelector('colab-run-button');
+            const sr = btn ? btn.shadowRoot : null;
+            const wrap = sr ? sr.querySelector('.cell-execution') : null;
+            const cls = wrap ? wrap.className : '';
+            if (cls.includes('running')) running = true;
+            if (cls.includes('pending') || cls.includes('waiting')) pending = true;
+
+            const d = document.querySelector('.output, colab-output, .output-stream, .output_text');
+            out = d ? (d.innerText || '') : '';
+
+            return {
+                running: running,
+                pending: pending,
+                out: out.trim().slice(-300)
+            };
+        }""")
+    except Exception as exc:
+        return {"running": False, "pending": False, "out": f"error: {exc}"}
+
+
 def interrupt_cell(page: Any) -> bool:
     """Interrupt any currently executing cell in the Colab notebook."""
     try:
         return page.evaluate("""() => {
+            const btn = document.querySelector('colab-run-button');
+            const sr = btn ? btn.shadowRoot : null;
+            const wrap = sr ? sr.querySelector('.cell-execution') : null;
+            const cls = wrap ? wrap.className : '';
+            if (cls.includes('running') || cls.includes('pending')) {
+                const inner = sr ? sr.querySelector('#run-button') : null;
+                if (inner) {
+                    inner.click();
+                    return true;
+                }
+            }
             const nb = globalThis.colab?.global?.notebook;
             const cell = nb?.cells ? nb.cells[0] : null;
-            if (cell) {
-                if (typeof cell.interrupt === 'function') {
-                    try { cell.interrupt(); } catch (e) {}
-                }
-                const elem = cell.getElement ? cell.getElement() : (cell.element_ || cell.dom_);
-                if (elem) {
-                    const stopBtn = elem.querySelector('colab-run-button.running, colab-run-button[aria-label*="Interromper"], colab-run-button[title*="Interromper"], colab-run-button[aria-label*="Interrupt"], colab-run-button[title*="Interrupt"]');
-                    if (stopBtn) {
-                        try { stopBtn.click(); } catch (e) {}
-                    }
-                }
+            if (cell && typeof cell.interrupt === 'function') {
+                try { cell.interrupt(); } catch (e) {}
             }
             if (nb && typeof nb.interrupt === 'function') {
                 try { nb.interrupt(); } catch (e) {}
             }
-            return true;
+            return false;
         }""")
     except Exception:
         return False
@@ -217,21 +247,16 @@ def click_run_button(page: Any) -> bool:
     """Click the Run button for Cell 0."""
     try:
         return page.evaluate("""() => {
+            const btn = document.querySelector('colab-run-button');
+            const sr = btn ? btn.shadowRoot : null;
+            const inner = sr ? sr.querySelector('#run-button') : null;
+            if (inner) {
+                inner.click();
+                return true;
+            }
             const nb = globalThis.colab?.global?.notebook;
             const cell = nb?.cells ? nb.cells[0] : null;
-            if (!cell) return false;
-            const elem = cell.getElement ? cell.getElement() : (cell.element_ || cell.dom_);
-            if (elem) {
-                const btn = elem.querySelector('colab-run-button');
-                if (btn && btn.shadowRoot) {
-                    const inner = btn.shadowRoot.querySelector('#run-button, button');
-                    if (inner) {
-                        inner.click();
-                        return true;
-                    }
-                }
-            }
-            if (typeof cell.manualExecute === 'function') {
+            if (cell && typeof cell.manualExecute === 'function') {
                 cell.manualExecute();
                 return true;
             }
@@ -239,44 +264,6 @@ def click_run_button(page: Any) -> bool:
         }""")
     except Exception:
         return False
-
-
-def get_cell_execution_state(page: Any) -> Dict[str, Any]:
-    """Inspect Cell 0 execution status, pending state, and current stdout/stderr tail."""
-    try:
-        return page.evaluate("""() => {
-            const nb = globalThis.colab?.global?.notebook;
-            const cell = nb?.cells ? nb.cells[0] : null;
-            let running = false;
-            let pending = false;
-            let out = '';
-
-            if (cell) {
-                running = cell.isRunning ? cell.isRunning() : false;
-                pending = cell.isPending ? cell.isPending() : false;
-
-                const elem = cell.getElement ? cell.getElement() : (cell.element_ || cell.dom_);
-                if (elem) {
-                    const runBtn = elem.querySelector('colab-run-button');
-                    const sr = runBtn ? runBtn.shadowRoot : null;
-                    const wrap = sr ? sr.querySelector('.cell-execution') : null;
-                    const cls = wrap ? wrap.className : '';
-                    if (cls.includes('running')) running = true;
-                    if (cls.includes('pending') || cls.includes('waiting')) pending = true;
-
-                    const d = elem.querySelector('.output, colab-output, .output-stream, .output_text');
-                    out = d ? (d.innerText || '') : '';
-                }
-            }
-
-            return {
-                running: running,
-                pending: pending,
-                out: out.trim().slice(-300)
-            };
-        }""")
-    except Exception as exc:
-        return {"running": False, "pending": False, "out": f"error: {exc}"}
 
 
 def deploy_worker(p: Any, wid: int, force_relaunch: bool = True) -> Dict[str, Any]:
@@ -314,18 +301,26 @@ def deploy_worker(p: Any, wid: int, force_relaunch: bool = True) -> Dict[str, An
     time.sleep(2)
     handle_dialogs(page)
 
-    init_st = get_cell_execution_state(page)
-    if (init_st["running"] or init_st["pending"]) and not force_relaunch:
-        print(f"  Worker {wid} is already running/pending! Preserving current execution.", flush=True)
+    has_v401_code = page.evaluate("""() => {
+        const c = globalThis.colab?.global?.notebook?.cells?.[0];
+        const t = c && c.getText ? c.getText() : '';
+        return t.includes('v401') && t.includes('zquoridor-4.01');
+    }""")
+
+    st = get_cell_execution_state(page)
+    is_active = st["running"] or st["pending"]
+
+    if is_active and has_v401_code:
+        print(f"  Worker {wid} is already running version 4.01! Preserving current execution.", flush=True)
     else:
-        if init_st["running"] or init_st["pending"]:
-            print(f"  Worker {wid}: Stopping current execution to deploy version 4.01...", flush=True)
+        if is_active:
+            print(f"  Worker {wid}: Stopping current non-4.01 execution...", flush=True)
             interrupt_cell(page)
-            for _ in range(5):
+            for _ in range(6):
                 time.sleep(2)
                 handle_dialogs(page)
-                st_chk = get_cell_execution_state(page)
-                if not (st_chk["running"] or st_chk["pending"]):
+                st_now = get_cell_execution_state(page)
+                if not (st_now["running"] or st_now["pending"]):
                     break
 
         code = BOOTLOADER_TEMPLATE.format(job_label=spec["job_label"], cli_command=spec["cli_command"])
@@ -401,7 +396,7 @@ def main():
                                 const c = globalThis.colab?.global?.notebook?.cells?.[0];
                                 const t = c && c.getText ? c.getText() : '';
                                 return t.includes(kw);
-                            }""", spec["job_label"])
+                            }""", "v401")
                             if not has_code:
                                 code = BOOTLOADER_TEMPLATE.format(job_label=spec["job_label"], cli_command=spec["cli_command"])
                                 set_cell_code(page, code)
