@@ -1125,3 +1125,17 @@ The operator resumed the generation of rich targets across all five Google Colab
 - Worker 5: Gumbel Deep Planning (Top-K=16, 20 ms), seed 5000055.
 
 Both `generate_wall_drops.py` and `generate_gumbel_sims.py` verify existing target files and apply an epoch timestamp suffix before saving. This mechanism prevents accidental overwrites of earlier batches on Google Drive. The fleet monitor daemon executes continuously as a background process.
+
+### Version 4.01 Remote Fleet Simulation Campaign (2026-10-14)
+
+The operator authorized dispatch of the five Google Colab remote workers to generate simulation targets using the promoted version 4.01 engine and int8 weights.
+
+All prior datasets generated under version 4.0 (`wall_drops_v1` and `gumbel_sims_v1`) remain intact and isolated on Google Drive. The new campaign outputs write to dedicated directories:
+- Worker 1 (`worker-1`): Wall Drops v4.01 medium mazes (3 to 8 walls), seed 1000001, target directory `zquoridor_data/wall_drops_v401/worker_1`.
+- Worker 2 (`worker-2`): Wall Drops v4.01 extreme mazes (8 to 14 walls), seed 2000002, target directory `zquoridor_data/wall_drops_v401/worker_2`.
+- Worker 3 (`worker-3`): Gumbel AlphaZero Sequential Halving v4.01 (Top-K=8, 15 ms), seed 3000003, target directory `zquoridor_data/gumbel_sims_v401/worker_3`.
+- Worker 4 (`zquoridor`): Gumbel AlphaZero Sequential Halving v4.01 (Top-K=8, 15 ms), seed 4000044, target directory `zquoridor_data/gumbel_sims_v401/worker_4`.
+- Worker 5 (`worker-5`): Gumbel Deep Planning v4.01 (Top-K=16, 20 ms), seed 5000005, target directory `zquoridor_data/gumbel_sims_v401/worker_5`.
+
+The dispatch bootloader recompiles `zquoridor_uci` directly from `main` with AVX2 and FMA, verifies the `zQuoridor 4.01` UCI identity string, and records explicit `zquoridor-4.01` and `zquoridor-4.01-gumbel` teacher labels in all output metadata.
+
