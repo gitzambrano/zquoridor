@@ -48,9 +48,8 @@ zq_bin.chmod(0o755)
 
 # Verify version 4.01 in UCI identity
 chk = subprocess.run([str(zq_bin)], input='uci\\nquit\\n', capture_output=True, text=True, check=True)
-for line in chk.stdout.splitlines():
-    if 'id name' in line:
-        print(f'Engine verification: {line.strip()}', flush=True)
+ver_lines = [l.strip() for l in chk.stdout.splitlines() if 'id name' in l]
+print('Engine verification:', ver_lines, flush=True)
 
 os.chdir(checkout)
 print('Launching: {job_label}', flush=True)
