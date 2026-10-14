@@ -149,7 +149,16 @@ def set_cell_code(page: Any, code: str) -> bool:
     try:
         return page.evaluate("""async (newCode) => {
             const nb = globalThis.colab?.global?.notebook;
-            if (!nb || !nb.cells || nb.cells.length === 0) return false;
+            if (!nb) return false;
+            if (!nb.cells || nb.cells.length === 0) {
+                if (typeof nb.appendCodeCell === 'function') {
+                    nb.appendCodeCell();
+                } else {
+                    const addBtn = document.querySelector('#toolbar-add-code, colab-toolbar-button#add-code, button[aria-label*="Código"], button[aria-label*="Code"]');
+                    if (addBtn) addBtn.click();
+                }
+            }
+            if (!nb.cells || nb.cells.length === 0) return false;
             const cell = nb.cells[0];
             if (typeof cell.setText === 'function') cell.setText(newCode);
             if (cell.model && typeof cell.model.setText === 'function') cell.model.setText(newCode);
@@ -339,6 +348,16 @@ def main():
                         if not is_active:
                             connect_runtime_if_needed(page)
                             handle_dialogs(page)
+                            has_code = page.evaluate("""(kw) => {
+                                const c = globalThis.colab?.global?.notebook?.cells?.[0];
+                                const t = c && c.getText ? c.getText() : '';
+                                return t.includes(kw);
+                            }""", "zquoridor")
+                            if not has_code:
+                                spec = JOB_SPECS[wid]
+                                code = BOOTLOADER_TEMPLATE.format(job_label=spec["job_label"], cli_command=spec["cli_command"])
+                                set_cell_code(page, code)
+                                time.sleep(2)
                             click_run_button(page)
                             time.sleep(2)
                             st = get_cell_execution_state(page)
