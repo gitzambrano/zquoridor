@@ -39,6 +39,7 @@ CONFIG = {
     "move_time_ms": 20,
     "zq_executable": str(ROOT / "bin" / "zquoridor.exe"),
     "output": str(ROOT / "data/teaching/wall_drops"),
+    "teacher": "zquoridor-4.01",
     "seed": 20261009,
     "export_npz": True,
     "split": "train",
@@ -249,7 +250,7 @@ def run_generation(config: dict) -> dict:
 
         label_record = make_label(
             position=pos_record,
-            teacher="zquoridor-4.0",
+            teacher=config.get("teacher", "zquoridor-4.01"),
             mode="search-root",
             policy=policy,
             value=root_value,
@@ -321,6 +322,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--move-time-ms", type=int, help="Engine search time in milliseconds")
     parser.add_argument("--zq-executable", type=str, help="Path to Zquoridor UCI executable")
     parser.add_argument("--output", type=str, help="Output directory for generated files")
+    parser.add_argument("--teacher", type=str, help="Teacher identity label for generated targets")
     parser.add_argument("--seed", type=int, help="Random number generator seed")
     parser.add_argument("--split", type=str, choices=("train", "val", "test"), help="Dataset split name")
     parser.add_argument("--no-export-npz", dest="export_npz", action="store_false", help="Disable NPZ export")
