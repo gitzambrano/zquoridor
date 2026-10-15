@@ -2,6 +2,9 @@
 // otimizado para nodes/sec alto: peões e muros em inteiros pequenos,
 // muros em bitboards de 64 bits, BFS com arrays fixos (sem alocação).
 #pragma once
+#ifndef ZQ_EXP_SHORTEST_DAG
+#define ZQ_EXP_SHORTEST_DAG 0
+#endif
 #include <cstdint>
 #include <cstdlib>
 #include <cmath>
@@ -433,6 +436,49 @@ inline CellBits floodStepBits(CellBits r, CellBits hblock, CellBits vblock) {
     CellBits west  = (r >> 1) & ~vblock & ~CELL_COL8;
     return r | south | north | east | west;
 }
+
+// Every layer contains ALL squares first reached at a given shortest
+// distance. Restricting each later step to its original layer tests whether
+// at least one ORIGINAL shortest path survives after a candidate wall.
+// If it survives, the new distance is exactly unchanged: adding a wall
+// cannot shorten a path. This is a sufficient-and-necessary condition for
+// preserving the old distance, not merely a single witness-path heuristic.
+struct ShortestDag128 {
+    CellBits layers[N * N + 1] = {};
+    CellBits baseH = 0, baseV = 0;
+    CellBits goal = 0;
+    int distance = -1;
+
+    bool build(uint64_t wallsH, uint64_t wallsV, int startCell, int player) {
+        buildEdgeBlockBits(wallsH, wallsV, baseH, baseV);
+        goal = player == 0 ? CELL_GOAL0 : CELL_GOAL1;
+        layers[0] = CellBits(1) << startCell;
+        CellBits visited = layers[0], wave = layers[0];
+        if (wave & goal) { distance = 0; return true; }
+        for (int d = 1; d <= N * N; ++d) {
+            wave = floodStepBits(wave, baseH, baseV) & ~visited;
+            if (!wave) { distance = -1; return false; }
+            visited |= wave;
+            layers[d] = wave;
+            if (wave & goal) { distance = d; return true; }
+        }
+        distance = -1;
+        return false;
+    }
+
+    bool preservesAfterWall(int orientation, int slot) const {
+        if (distance < 0) return false;
+        if (distance == 0) return true;
+        const CellBits h = baseH | (orientation == 0 ? H_BLOCK_MASK128[(size_t)slot] : CellBits(0));
+        const CellBits v = baseV | (orientation == 1 ? V_BLOCK_MASK128[(size_t)slot] : CellBits(0));
+        CellBits reachable = layers[0];
+        for (int d = 1; d <= distance; ++d) {
+            reachable = floodStepBits(reachable, h, v) & layers[d];
+            if (!reachable) return false;
+        }
+        return (reachable & goal) != 0;
+    }
+};
 
 inline bool hasPathToGoalBlocked(CellBits hblock, CellBits vblock,
                                  int startCell, int player) {
