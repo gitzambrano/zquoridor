@@ -1,0 +1,97 @@
+name: "ZQ isolated TT 4.01 screening"
+on:
+  push:
+    branches:
+      - exp/tt-repetition-safety-20261014
+    paths:
+      - "src/**"
+      - "tests/**"
+      - ".github/workflows/screen-tt-401.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  differential-and-paired-games:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - name: Checkout experiment
+        uses: actions/checkout@v4
+        with:
+          path: candidate
+          ref: ${{ github.sha }}
+
+      - name: Checkout pinned production 4.01
+        uses: actions/checkout@v4
+        with:
+          path: baseline
+          ref: 806a50877f16d6e6f82b65e86d2a27a10916ad13
+
+      - name: Compile and run differential regression tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p candidate/bin baseline/bin
+          g++ -O2 -std=c++17 -DZQ_EXP_TT_REPETITION_GUARD=1 -I candidate/src \
+            candidate/tests/test_tt_repetition_guard.cpp -o candidate/bin/test_tt_401
+          candidate/bin/test_tt_401
+          g++ -O2 -std=c++17 -DZQ_EXP_TT_REPETITION_GUARD=1 -I candidate/src \
+            candidate/tests/test_contempt_repetition.cpp -o candidate/bin/test_contempt_repetition_tt
+          candidate/bin/test_contempt_repetition_tt
+          g++ -O2 -std=c++17 -DZQ_EXP_TT_REPETITION_GUARD=1 -I candidate/src \
+            candidate/tests/test_repetition_diff.cpp -o candidate/bin/test_repetition_diff_tt
+          candidate/bin/test_repetition_diff_tt
+
+      - name: Build matched engines using identical production network
+        shell: bash
+        run: |
+          set -euo pipefail
+          g++ -O3 -std=c++17 -march=native -mavx2 -mfma -DZQ_EXP_TT_REPETITION_GUARD=1 \
+            -I candidate/src candidate/tools/external/zquoridor_uci.cpp \
+            -o candidate/bin/zquoridor_tt
+          g++ -O3 -std=c++17 -march=native -mavx2 -mfma \
+            -I baseline/src baseline/tools/external/zquoridor_uci.cpp \
+            -o baseline/bin/zquoridor_main
+
+      - name: Paired H2H 200ms Normal
+        shell: bash
+        run: |
+          cd candidate
+          python -u tools/match_finalists.py \
+            --engine1-name exp_tt \
+            --engine1-executable bin/zquoridor_tt \
+            --engine1-nnue data/nnue/nnue_weights_int8.bin \
+            --engine2-name production_main_401 \
+            --engine2-executable ../baseline/bin/zquoridor_main \
+            --engine2-nnue data/nnue/nnue_weights_int8.bin \
+            --openings tools/external/openings_normal_confirm_400.jsonl \
+            --pairs 25 --move-time-ms 200 --workers 1 \
+            --seed 20261014 --bootstrap 5000 \
+            --output results/benchmarks/independent_tt_401/normal
+
+      - name: Paired H2H 200ms Center Rush
+        shell: bash
+        run: |
+          cd candidate
+          python -u tools/match_finalists.py \
+            --engine1-name exp_tt \
+            --engine1-executable bin/zquoridor_tt \
+            --engine1-nnue data/nnue/nnue_weights_int8.bin \
+            --engine2-name production_main_401 \
+            --engine2-executable ../baseline/bin/zquoridor_main \
+            --engine2-nnue data/nnue/nnue_weights_int8.bin \
+            --openings tools/external/openings_center_rush_sound_5k.jsonl \
+            --pairs 25 --move-time-ms 200 --workers 1 \
+            --seed 20261014 --bootstrap 5000 \
+            --output results/benchmarks/independent_tt_401/center
+
+      - name: Upload differential screening reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: isolated-tt-401-reports
+          path: candidate/results/benchmarks/independent_tt_401/
+          if-no-files-found: warn
+          retention-days: 21
