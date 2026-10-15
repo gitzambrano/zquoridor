@@ -48,9 +48,9 @@ int main() {
     check(s);
     // Position after two advancing pawn plies: central retreat exists.
     MoveList lm=legalMoves(s);
-    for (const Move& m : lm) if(!m.isWall && m.b==cellIdx(1,4)) {s=applyMove(s,m);break;}
+    for (const Move& m : lm) if(!m.isWall && m.a==cellIdx(1,4)) {s=applyMove(s,m);break;}
     lm=legalMoves(s);
-    for (const Move& m : lm) if(!m.isWall && m.b==cellIdx(7,4)) {s=applyMove(s,m);break;}
+    for (const Move& m : lm) if(!m.isWall && m.a==cellIdx(7,4)) {s=applyMove(s,m);break;}
     check(s);
     std::puts("PW pawn invariant PASS");
     return 0;
