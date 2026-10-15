@@ -306,6 +306,9 @@ struct McabParams {
     // production policy exactly; 1=redundancy, 2=follow-up threat, 3=both.
     int quietWallMode = 0;
     double quietWallWeight = 0.08;
+    // Experimental timing parity for mode=0: charge root preparation
+    // against fixed movetime exactly as quiet-wall candidates already do.
+    bool chargeRootSetup = false;
     bool progressiveWidening = false;   // production default: off until an Elo gate
     int wideningInitialMoves = 16;      // top policy moves available at N=0
     double wideningCoefficient = 2.0;   // added coefficient in c*N^alpha
@@ -467,6 +470,11 @@ struct McabStats {
     long long residualMovesMaterialized = 0;
     long long edgeAccCacheHits = 0;
     long long edgeAccCacheMisses = 0;
+    // Instrumentation for clock fairness and policy-prior setup cost.
+    long long quietSignalUs = 0;
+    long long rootPreparationUs = 0;
+    long long treeSearchUs = 0;
+    int treeBudgetMs = 0;
     bool adaptiveTimeStop = false;
     int adaptiveTargetMs = 0;
     long long adaptiveLeaderChanges = 0;
@@ -1048,19 +1056,13 @@ public:
         if (params.quietWallMode != 0 && !pool[0].terminal &&
             pool[0].expanded && !pool[0].quietRootApplied &&
             !params.progressiveWidening && !kResidualPuct) {
+            const auto scoreStart = std::chrono::steady_clock::now();
             mcabQuietRootPrior(pool[0].state, pool[0].moves, pool[0].P,
                                params.quietWallMode, params.quietWallWeight, 0);
+            mstats.quietSignalUs = std::chrono::duration_cast<std::chrono::microseconds>(
+                std::chrono::steady_clock::now() - scoreStart).count();
             pool[0].quietRootApplied = true;
         }
-        // Preserve the exact fixed-movetime contract: charge quiet-wall root
-        // analysis (and all other pre-tree setup) against the search clock.
-        // Default mode=0 leaves production timing behavior unchanged.
-        if (params.quietWallMode != 0 && timeBudgetMs > 0) {
-            const auto spent = std::chrono::duration_cast<std::chrono::milliseconds>(
-                std::chrono::steady_clock::now() - quietBudgetStart).count();
-            treeBudgetMs = (int)std::max<long long>(1, (long long)timeBudgetMs - spent);
-        }
-
         // inv/ab-policy, direction E: restrict the active root edges to the
         // top-k children of the AB pre-ranking. Applied to a fresh AND to a
         // reused root (each move re-ranks, so yesterday's filter never
@@ -1090,6 +1092,15 @@ public:
         // sob controle de tempo real no arena. `leafDeadline` propaga o teto
         // até engine.searchLeaf (ver evaluateLeaf).
         auto t0 = std::chrono::steady_clock::now();
+        mstats.rootPreparationUs = std::chrono::duration_cast<std::chrono::microseconds>(
+            t0 - quietBudgetStart).count();
+        // Charge *identical* pre-tree operations against the clock when
+        // requested for the baseline; in default mode=0 retain production.
+        if ((params.quietWallMode != 0 || params.chargeRootSetup) && timeBudgetMs > 0) {
+            long long prepCeilingMs = (mstats.rootPreparationUs + 999) / 1000;
+            treeBudgetMs = (int)std::max<long long>(1, (long long)timeBudgetMs - prepCeilingMs);
+        }
+        mstats.treeBudgetMs = treeBudgetMs;
         haveLeafDeadline = (treeBudgetMs > 0);
         if (haveLeafDeadline) leafDeadline = t0 + std::chrono::milliseconds(treeBudgetMs);
 
@@ -1166,6 +1177,9 @@ public:
                 }
             }
         }
+
+        mstats.treeSearchUs = std::chrono::duration_cast<std::chrono::microseconds>(
+            std::chrono::steady_clock::now() - t0).count();
 
         // Passo 6 (Seção 5): escolhe o lance final na raiz.
         MoveT best = pickRootMove(pool[0]);
