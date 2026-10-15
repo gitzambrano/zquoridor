@@ -23,7 +23,7 @@ def measure(engine: str, row: dict, args: list[str]) -> tuple[int, int, int]:
         raise AssertionError("LMR instrumentation absent:\n" + completed.stdout)
     trace = traces[-1]
     def get(name):
-        match = re.search(r"\\b" + name + r"=(\\d+)", trace)
+        match = re.search(r"\b" + name + r"=(\d+)", trace)
         if not match:
             raise AssertionError(f"{name} absent: {trace}")
         return int(match.group(1))
