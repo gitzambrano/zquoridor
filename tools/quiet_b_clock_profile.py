@@ -104,7 +104,6 @@ def profile_engine(config: dict, args: tuple[str, ...], positions: list[tuple[st
         command("uci", "uciok")
         command("isready", "readyok")
         for category, moves in positions:
-            command("ucinewgame", "readyok") if False else None
             process.stdin.write("ucinewgame\n")
             process.stdin.flush()
             cmd = "position startpos" + (" moves " + " ".join(moves) if moves else "")
@@ -118,9 +117,9 @@ def profile_engine(config: dict, args: tuple[str, ...], positions: list[tuple[st
             for key in ("time", "sims", "rootprep_us", "quiet_us",
                         "tree_us", "treebudget_ms", "chargeSetup", "qmode",
                         "treeHit", "reusedNodes", "nodes"):
-                match = re.search(r"(?:^|\\s)" + key + r"=(\\d+)", info)
+                match = re.search(r"(?:^|\s)" + key + r"=(\d+)", info)
                 if key in ("time", "nodes"):
-                    match = re.search(r"(?:^|\\s)" + key + r"\\s+(\\d+)", info)
+                    match = re.search(r"(?:^|\s)" + key + r"\s+(\d+)", info)
                 if match:
                     numeric[key] = int(match.group(1))
             if set(("sims", "rootprep_us", "quiet_us", "tree_us", "treebudget_ms")) - numeric.keys():
