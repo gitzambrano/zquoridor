@@ -120,6 +120,8 @@ struct Options {
     bool dumpRoot = false;
     bool useMcab = true;
     double cpuct = -1.0;
+    int quietWallMode = 0;
+    double quietWallWeight = 0.08;
     double scoreScale = -1.0;
     int nodeBudget = -1;
     int leafDepth = -1;
@@ -163,6 +165,8 @@ static Options parseArgs(int argc, char** argv) {
         else if (a == "--dump-root") o.dumpRoot = true;
         else if (a == "--no-mcab") o.useMcab = false;
         else if (a == "--cpuct") o.cpuct = std::atof(need("--cpuct"));
+        else if (a == "--quiet-walls-mode") o.quietWallMode = std::atoi(need("--quiet-walls-mode"));
+        else if (a == "--quiet-walls-weight") o.quietWallWeight = std::atof(need("--quiet-walls-weight"));
         else if (a == "--score-scale") o.scoreScale = std::atof(need("--score-scale"));
         else if (a == "--nodes") o.nodeBudget = std::atoi(need("--nodes"));
         else if (a == "--leaf-depth") o.leafDepth = std::atoi(need("--leaf-depth"));
@@ -228,6 +232,13 @@ int main(int argc, char** argv) {
     mcab::McabParams params;
     params.enabled = opt.useMcab;
     if (opt.cpuct > 0.0) params.cPuct = opt.cpuct;
+    if (opt.quietWallMode < 0 || opt.quietWallMode > 3 ||
+        opt.quietWallWeight < 0.0 || opt.quietWallWeight > 0.20) {
+        std::cerr << "quiet wall mode must be 0..3, weight must be 0..0.20\n";
+        return 2;
+    }
+    params.quietWallMode = opt.quietWallMode;
+    params.quietWallWeight = opt.quietWallWeight;
     if (opt.scoreScale > 0.0) params.scoreScale = opt.scoreScale;
     params.autoNodeBudget = opt.nodeBudget < 0;
     if (opt.nodeBudget >= 0) params.nodeBudget = opt.nodeBudget;
