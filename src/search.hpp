@@ -162,7 +162,7 @@ inline int lmrReduction(int depth, int moveIndex, double divisor = LMR_DIVISOR) 
     return red;
 }
 
-enum TTFlag : uint8_t { EXACT, LOWER, UPPER };
+enum TTFlag : uint8_t { EXACT, LOWER, UPPER, MOVE_ONLY };
 
 struct TTEntry {
     uint64_t key = 0;
@@ -1310,9 +1310,11 @@ private:
             // paga o custo de legalMoves numa chamada por posicao nova
             // (miss), nao por no.
 #if ZQ_EXP_TT_REPETITION_GUARD
-            // A race draw's contempt score can depend on root parity.
-            // Winning/losing solved values remain safe to cache.
-            if (!raceDraw)
+            // A solved race draw is path-independent unless the optional
+            // root-relative parity adjustment is active. Preserve the
+            // production EXACT cache in the default parity-independent mode;
+            // disabling ALL draws caused repeat solves in 0/0 finals.
+            if (!raceDraw || !parityAnchoredRaceDraw)
 #endif
             store(s.hash, 127, score, EXACT, legalMoves(s)[0]);
             return score;
@@ -1695,10 +1697,14 @@ private:
 
         TTFlag flag = (best <= alphaOrig) ? UPPER : (best >= beta ? LOWER : EXACT);
 #if ZQ_EXP_TT_REPETITION_GUARD
-        // Search values influenced by a hypothetical repetition are path-
-        // dependent and must never become reusable exact/bound TT entries.
+        // Repetition-tainted numeric scores cannot be reused outside this
+        // path. Still retain the best MOVE for PVS ordering and, crucially,
+        // for chooseMove(), which reads the root move from TT after every
+        // completed depth. Dropping the entry entirely leaves a stale root
+        // best move from a previous depth when the current score is tainted.
         if (nodeTainted && repetitionTainted) *repetitionTainted = true;
-        if (!nodeTainted)
+        if (nodeTainted) store(s.hash, depth, best, MOVE_ONLY, bestMove);
+        else
 #endif
         store(s.hash, depth, best, flag, bestMove);
         return best;
@@ -1706,6 +1712,14 @@ private:
 
 #ifdef QR_ENABLE_TEST_HOOKS
 public:
+    bool testTTMoveOnly(uint64_t hash) const {
+        const TTEntry& e = tt[hash & (TT_SIZE - 1)];
+        return e.valid && e.key == hash && e.flag == MOVE_ONLY;
+    }
+    bool testTTReusableScore(uint64_t hash) const {
+        const TTEntry& e = tt[hash & (TT_SIZE - 1)];
+        return e.valid && e.key == hash && e.flag != MOVE_ONLY;
+    }
     bool testHasTTEntry(uint64_t hash) const {
         const TTEntry& e = tt[hash & (TT_SIZE - 1)];
         return e.valid && e.key == hash;
