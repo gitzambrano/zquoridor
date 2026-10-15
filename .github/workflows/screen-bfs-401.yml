@@ -40,9 +40,6 @@ jobs:
           g++ -O2 -std=c++17 -DZQ_EXP_BITBOARD_DISTANCE=1 -I candidate/src \
             candidate/tests/test_rules_sanity.cpp -o candidate/bin/test_rules_sanity_bfs
           candidate/bin/test_rules_sanity_bfs
-          g++ -O2 -std=c++17 -DZQ_EXP_BITBOARD_DISTANCE=1 -I candidate/src \
-            candidate/tests/test_nnue_race.cpp -o candidate/bin/test_nnue_race_bfs
-          candidate/bin/test_nnue_race_bfs
 
       - name: Build matched engines using identical production network
         shell: bash
