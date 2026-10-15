@@ -34,6 +34,42 @@ lack a GPU, so Claustrophobia is evaluated on CPU, and actual elapsed clock
 times must be reported separately; historical CPU wall-clock overruns mean
 requested movetime does not establish equal observed elapsed time.
 
+**Completed results, run 38742279374 (2026-10-15).** The complete
+GitHub Actions battery passed: all 500 H2H games and all 1,600 external
+games (800 B, 800 baseline) produced valid results, without failed games.
+The B-vs-baseline H2H yielded 45.0% / -34.86 Elo in normal openings
+(250 games) and 46.8% / -22.27 Elo in Center Rush (250 games):
+**45.9% / -28.5 Elo combined**. The independent earlier 200-game
+screen yielded 52.25% B and should not be used alone to claim a gain.
+
+Matched external score percentages on precisely identical opening selections,
+seeds and colors (200 games per book/engine/opponent):
+- Claustrophobia CPU normal: main 55.25%, B 56.50% (+1.25 pp).
+- Claustrophobia CPU Center Rush: main 60.25%, B 61.00% (+0.75 pp).
+- Titanium normal: main 72.00%, B 75.00% (+3.00 pp).
+- Titanium Center Rush: main 63.00%, B 61.50% (-1.50 pp).
+
+The combined external changes were +1.00 pp against Claustrophobia and
++0.75 pp against Titanium, which are small and do not establish superiority.
+All ten match jobs and the aggregate job passed. Complete per-game data,
+manifest checksums, aggregate, and bootstrapped intervals are available
+from https://github.com/gitzambrano/zquoridor/actions/runs/38742279374.
+
+**Observed elapsed wall-clock caveat.** Across H2H normal games, B averaged
+172.95 ms/move, baseline 189.91; in Center Rush, B averaged 179.55,
+baseline 191.60. With Claustrophobia, B used 189.5–190.7 ms,
+baseline 204.0–207.0 ms; Claustrophobia CPU itself used 218.3–263.3 ms
+across the four sub-suites. These tests used equal *requested* 200-ms
+movetimes, not identical realized search times; therefore investigate the
+B's reduced clock use and its setup/selection tradeoff before interpreting
+the results as a clean search-quality ablation.
+
+**Disposition.** Do not promote B; its H2H regression and Center Rush
+regression against Titanium fail the project's strict all-dimension
+promotion gate. If revisited, first profile candidate root setup and
+effective simulations under elapsed-time constraints; retest the
+unchanged network on new matched openings.
+
 **Evidence and promotion gate.** Workflow
 `.github/workflows/quiet-walls-b-deep.yml` uploads complete per-game
 records and summaries. Compare win/draw/loss, bootstrap confidence intervals,
