@@ -1,11 +1,47 @@
 # Zquoridor: Project State, Results, and Roadmap
 
-Last reviewed: 2026-10-13. This document is the single canonical reference for
+Last reviewed: 2026-10-15. This document is the single canonical reference for
 project status, training history, available datasets, self-play configurations,
 experimental measurements, and future plans.
 
 Raw datasets, self-play binary shards, logs, checkpoints, and local benchmark outputs
 are untracked artifacts outside version control.
+
+---
+
+## Active Experiment: Quiet-Wall B Deep Confirmation (2026-10-15)
+
+**Scope and isolation.** This experiment remains off production `main` and
+uses the same production NNUE and UCI executable for the B candidate and
+the disabled-heuristic baseline. The candidate enables
+`--quiet-walls-mode 2 --quiet-walls-weight 0.08`. Version 4.01 weights are
+held fixed. No search or network changes are promoted automatically.
+
+**Controlled H2H.** Run 500 new games at fixed 200 ms per move:
+125 color-reversed opening pairs from `openings_normal_confirm_400.jsonl`
+and 125 pairs from `openings_center_rush_sound_5k.jsonl`.
+Seeds: 20261027 and 20261028, respectively.
+
+**External opponents.** Run 400 games for B against **each** of
+Claustrophobia and Titanium (100 color-reversed pairs from each of the two
+books per opponent). Additionally run the unmodified baseline on precisely
+the same opening pairs, colors, and seeds (20261025 / 20261026) to measure
+external score deltas, rather than the candidate's score in isolation.
+All engines receive an explicit 200 ms *movetime* request. Claustrophobia
+uses the pinned deadline-based backend with an effectively unlimited
+simulation cap, **not** a fixed-simulation budget. GitHub-hosted runners
+lack a GPU, so Claustrophobia is evaluated on CPU, and actual elapsed clock
+times must be reported separately; historical CPU wall-clock overruns mean
+requested movetime does not establish equal observed elapsed time.
+
+**Evidence and promotion gate.** Workflow
+`.github/workflows/quiet-walls-b-deep.yml` uploads complete per-game
+records and summaries. Compare win/draw/loss, bootstrap confidence intervals,
+failed or timed-out games, opening categories, actual move time, and
+candidate-minus-baseline score against both external opponents. Confirm
+nonregression on Center Rush before considering any 3+2 follow-up or
+promotion. The first 200-game screening was exploratory and is not evidence
+of a proven Elo increase.
 
 ---
 
