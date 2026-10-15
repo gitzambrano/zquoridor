@@ -9,6 +9,43 @@ are untracked artifacts outside version control.
 
 ---
 
+## Active Experiment: Quiet Wall B Clock and Search Quality A/B (2026-10-15)
+
+The initial 500-game confirmation found B score 45.9% against 4.01
+(-28.5 Elo), while matched external differences were small and mixed.
+B searched for less elapsed time per move than the baseline. The first
+B implementation explicitly charges the entire root setup against the
+200-ms tree budget; baseline mode 0 starts its clock after root setup.
+This experiment separates clock fairness from the value of the proposed
+setup-threat prior.
+
+Use branch `exp/quiet-walls-b-profile-20261015`. The clock-accounting
+change is opt-in: `--charge-root-setup`, which applies root setup
+budget accounting to baseline mode 0 without altering the production
+default. UCI emits setup overhead, quiet-signal microseconds, tree
+milliseconds, and realized simulations per move.
+
+Opening books are generated with `tools/quiet_b_clock_profile.py` and
+have no overlap with the two books' 125 selected openings per category
+in the previous 500-game confirmation. Fixed movetime 200 ms; same
+4.01 NNUE weights, UCI binary, and color-reversed opening pairs.
+Three separate 240-game H2H checks (120 normal and 120 Center Rush):
+- B at 0.08 vs production baseline (reconfirm, *new* openings).
+- B at 0.08 vs baseline with setup charged (clock-parity control).
+- B at 0.04 vs baseline with setup charged (prior-strength ablation).
+
+The profiling job measures 24 new normal + 24 new Center Rush roots
+per engine in independent UCI sessions, comparing production baseline,
+setup-charged baseline, B0.08, and B0.04. Log root preparation,
+quiet-wall evaluation, tree sim counts, and observed elapsed times.
+Game logs also retain per-ply `search_last` in the referee JSONL.
+Do not combine these results with historical matches lacking the
+same opening selection/clock accounting. Do not promote search
+changes without positive matched evidence against production and
+both external opponents.
+
+---
+
 ## Active Experiment: Quiet-Wall B Deep Confirmation (2026-10-15)
 
 **Scope and isolation.** This experiment remains off production `main` and
