@@ -5,6 +5,9 @@
 // Tudo isso é agnóstico à função de avaliação usada na folha
 // (evalSimple hoje, NNUE na Fase 6) -- só reordena/poda lances candidatos.
 #pragma once
+#ifndef ZQ_EXP_TT_REPETITION_GUARD
+#define ZQ_EXP_TT_REPETITION_GUARD 0
+#endif
 #include <chrono>
 #include <algorithm>
 #include <cstring>
@@ -1042,7 +1045,11 @@ private:
     // quiescência de xadrez -- só estende se algum muro crítico do lado a
     // mover melhorar sobre o stand-pat.
     int quiescence(const State& s, int alpha, int beta, int qply, SearchStats& stats, RepetitionTable& reptbl,
-                   bool rootParity, AccPair* curAcc = nullptr) {
+                   bool rootParity, AccPair* curAcc = nullptr
+#if ZQ_EXP_TT_REPETITION_GUARD
+                   , bool* repetitionTainted = nullptr
+#endif
+                   ) {
         stats.nodes++;
         if ((stats.nodes & 0x3FF) == 0 && std::chrono::steady_clock::now() >= deadline) {
             stopped = true;
@@ -1054,7 +1061,12 @@ private:
         // Ver comentário equivalente em negamax() -- mesmo critério de
         // 2 vs 3 ocorrências e mesma âncora de sinal na paridade do ply
         // em relação à raiz (rootParity), não em s.turn.
-        if (reptbl.isRepetitionDraw(s.hash)) return rootParity ? contempt : -contempt;
+        if (reptbl.isRepetitionDraw(s.hash)) {
+#if ZQ_EXP_TT_REPETITION_GUARD
+            if (repetitionTainted) *repetitionTainted = true;
+#endif
+            return rootParity ? contempt : -contempt;
+        }
 
         // Stand-pat: modo NNUE usa o acumulador já pronto (O(HIDDEN×32) ops);
         // modo heurístico usa evalSimpleW que também preenche sideCache/oppCache
@@ -1156,8 +1168,18 @@ private:
                 makeChildAccPair(*curAcc, *childAcc, s, m, &xdistCache);
             }
             reptbl.push(ns.hash, /*irreversible=*/true);  // quiescência só joga muros
-            int score = -quiescence(ns, -beta, -localAlpha, qply + 1, stats, reptbl, !rootParity, childAcc);
+#if ZQ_EXP_TT_REPETITION_GUARD
+            bool childTainted = false;
+#endif
+            int score = -quiescence(ns, -beta, -localAlpha, qply + 1, stats, reptbl, !rootParity, childAcc
+#if ZQ_EXP_TT_REPETITION_GUARD
+                                    , &childTainted
+#endif
+                                    );
             reptbl.pop();
+#if ZQ_EXP_TT_REPETITION_GUARD
+            if (childTainted && repetitionTainted) *repetitionTainted = true;
+#endif
             if (stopped) return 0;
             if (score > best) best = score;
             if (score > localAlpha) localAlpha = score;
@@ -1166,7 +1188,11 @@ private:
         return best;
     }
 
-    int negamax(const State& s, int depth, int alpha, int beta, SearchStats& stats, RepetitionTable& reptbl, AccPair* curAcc = nullptr) {
+    int negamax(const State& s, int depth, int alpha, int beta, SearchStats& stats, RepetitionTable& reptbl, AccPair* curAcc = nullptr
+#if ZQ_EXP_TT_REPETITION_GUARD
+                , bool* repetitionTainted = nullptr
+#endif
+                ) {
         stats.nodes++;
         if ((stats.nodes & 0x3FF) == 0 && std::chrono::steady_clock::now() >= deadline) {
             stopped = true;
@@ -1190,7 +1216,12 @@ private:
         // "Analysis Contempt" ao lado que tem o lance NA RAIZ, não ao
         // lado do nó terminal (ver UCI option "Analysis Contempt": "By
         // default, contempt is set to prefer the side to move [na raiz]").
-        if (reptbl.isRepetitionDraw(s.hash)) return (ply % 2 == 0) ? contempt : -contempt;
+        if (reptbl.isRepetitionDraw(s.hash)) {
+#if ZQ_EXP_TT_REPETITION_GUARD
+            if (repetitionTainted) *repetitionTainted = true;
+#endif
+            return (ply % 2 == 0) ? contempt : -contempt;
+        }
 
         // Final "mãos vazias" (endgame_race.hpp, plano-additional.md
         // Prioridade 4): quando os dois ficam sem muros, a topologia
@@ -1203,6 +1234,9 @@ private:
         // resultado teórico do subjogo (mesmo doravante).
         bool raceResolved = false;
         int raceScore = 0;
+#if ZQ_EXP_TT_REPETITION_GUARD
+        bool raceDraw = false;
+#endif
         if (s.wallsLeft[0] == 0 && s.wallsLeft[1] == 0) {
             // Achado de regressão de nós/s (arena externa): o cache de
             // 1 slot em endgame_race.hpp (indexado só por topologia de
@@ -1238,6 +1272,9 @@ private:
             if (g_raceExactUsedUs < g_raceExactBudgetUs) {
                 auto __raceT0 = std::chrono::steady_clock::now();
                 RaceOutcome ro = resolveEmptyHandedEndgame(s.wallsH, s.wallsV, s.pawn[0], s.pawn[1], s.turn);
+#if ZQ_EXP_TT_REPETITION_GUARD
+                raceDraw = ro.winner == -1;
+#endif
                 g_raceExactUsedUs += std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now() - __raceT0).count();
                 raceResolved = true;
                 if (ro.winner == -1) {
@@ -1272,6 +1309,11 @@ private:
             // qual lance realiza esse valor), mas garante seguranca; so
             // paga o custo de legalMoves numa chamada por posicao nova
             // (miss), nao por no.
+#if ZQ_EXP_TT_REPETITION_GUARD
+            // A race draw's contempt score can depend on root parity.
+            // Winning/losing solved values remain safe to cache.
+            if (!raceDraw)
+#endif
             store(s.hash, 127, score, EXACT, legalMoves(s)[0]);
             return score;
         }
@@ -1302,7 +1344,11 @@ private:
                 if (curAcc) return nnueEvalInt(*curAcc, s.turn);
                 return evalSimpleW(s, s.turn, weights, nullptr, nullptr, &xdistCache);
             }
-            return quiescence(s, alpha, beta, 0, stats, reptbl, ply % 2 == 0, curAcc);
+            return quiescence(s, alpha, beta, 0, stats, reptbl, ply % 2 == 0, curAcc
+#if ZQ_EXP_TT_REPETITION_GUARD
+                              , repetitionTainted
+#endif
+                              );
         }
 
         int alphaOrig = alpha;
@@ -1392,6 +1438,9 @@ private:
         Move bestMove = pawnMoves.empty() ? ttMoveVal : pawnMoves[0];
         bool haveMove = false;
         bool cutoff = false;
+#if ZQ_EXP_TT_REPETITION_GUARD
+        bool nodeTainted = false;
+#endif
         bool ply0 = ply >= 0 && ply < MAX_PLY;
         int moveCount = 0;  // 1-based, TT+peão+muro combinados -- alimenta LMR+PVS abaixo
 
@@ -1435,6 +1484,9 @@ private:
             // do trabalho que roda antes da recursao (push/reptbl etc).
             __builtin_prefetch(&tt[(size_t)(ns.hash & (TT_SIZE - 1))], 1, 3);
             reptbl.push(ns.hash, m.isWall);
+#if ZQ_EXP_TT_REPETITION_GUARD
+            bool childTainted = false;
+#endif
             int score;
             if (!lmrPvsEnabled || moveIndex == 1) {
                 // 1º lance (normalmente o da TT, a aposta da ordenação de
@@ -1442,7 +1494,11 @@ private:
                 // cheia -- é o valor de referência que os demais lances
                 // (busca de janela nula, abaixo) tentam apenas SUPERAR ou
                 // não, sem precisar do valor exato quando não superam.
-                score = -negamax(ns, depth - 1, -beta, -alpha, stats, reptbl, childAcc);
+                score = -negamax(ns, depth - 1, -beta, -alpha, stats, reptbl, childAcc
+#if ZQ_EXP_TT_REPETITION_GUARD
+                                 , &childTainted
+#endif
+                                 );
             } else {
                 // LMR (Prioridade 3): nunca reduz lance killer, nunca
                 // reduz muro "quente" (perto do caminho ótimo do
@@ -1473,23 +1529,38 @@ private:
                 }
                 // PVS (Prioridade 8): janela nula em profundidade (talvez
                 // reduzida por LMR).
-                score = -negamax(ns, depth - 1 - reduction, -alpha - 1, -alpha, stats, reptbl, childAcc);
+                score = -negamax(ns, depth - 1 - reduction, -alpha - 1, -alpha, stats, reptbl, childAcc
+#if ZQ_EXP_TT_REPETITION_GUARD
+                                 , &childTainted
+#endif
+                                 );
                 if (!stopped && reduction > 0 && score > alpha) {
                     // vazou acima de alpha na profundidade reduzida --
                     // reverifica em profundidade CHEIA antes de confiar
                     // (a redução é heurística, não prova nada sozinha),
                     // ainda em janela nula.
-                    score = -negamax(ns, depth - 1, -alpha - 1, -alpha, stats, reptbl, childAcc);
+                    score = -negamax(ns, depth - 1, -alpha - 1, -alpha, stats, reptbl, childAcc
+#if ZQ_EXP_TT_REPETITION_GUARD
+                                 , &childTainted
+#endif
+                                 );
                 }
                 if (!stopped && score > alpha && score < beta) {
                     // janela nula vazou sem provar corte (score<beta) --
                     // só profundidade cheia + janela completa dá o valor
                     // exato aqui (mesmo lance pode genuinamente ser o
                     // novo melhor, não só um pouco melhor que alpha).
-                    score = -negamax(ns, depth - 1, -beta, -alpha, stats, reptbl, childAcc);
+                    score = -negamax(ns, depth - 1, -beta, -alpha, stats, reptbl, childAcc
+#if ZQ_EXP_TT_REPETITION_GUARD
+                                 , &childTainted
+#endif
+                                 );
                 }
             }
             reptbl.pop();
+#if ZQ_EXP_TT_REPETITION_GUARD
+            if (childTainted) nodeTainted = true;
+#endif
             if (stopped) return true;
             if (!haveMove || score > best) { best = score; bestMove = m; haveMove = true; }
             alpha = std::max(alpha, score);
@@ -1623,11 +1694,22 @@ private:
         }
 
         TTFlag flag = (best <= alphaOrig) ? UPPER : (best >= beta ? LOWER : EXACT);
+#if ZQ_EXP_TT_REPETITION_GUARD
+        // Search values influenced by a hypothetical repetition are path-
+        // dependent and must never become reusable exact/bound TT entries.
+        if (nodeTainted && repetitionTainted) *repetitionTainted = true;
+        if (!nodeTainted)
+#endif
         store(s.hash, depth, best, flag, bestMove);
         return best;
     }
 
 #ifdef QR_ENABLE_TEST_HOOKS
+public:
+    bool testHasTTEntry(uint64_t hash) const {
+        const TTEntry& e = tt[hash & (TT_SIZE - 1)];
+        return e.valid && e.key == hash;
+    }
     // wrappers só para teste (test_move_ordering.cpp) -- orderWallMoves/
     // orderPawnMoves são detalhe de implementação privado; produção nunca
     // define QR_ENABLE_TEST_HOOKS, então isso não existe fora dos testes.
