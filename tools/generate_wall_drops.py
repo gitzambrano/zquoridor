@@ -184,109 +184,156 @@ def run_generation(config: dict) -> dict:
     aux_features: list[list[int]] = []
     sample_ids: list[str] = []
 
-    generated = 0
+    positions_file = output_dir / "positions.jsonl"
+    targets_file = output_dir / "targets.jsonl"
+    npz_file = output_dir / "targets.npz"
+    manifest_file = output_dir / "manifest.json"
+
+    # Auto-resume from existing dataset if present
+    if positions_file.exists() and targets_file.exists():
+        with positions_file.open("r", encoding="utf-8") as f_p_in, targets_file.open("r", encoding="utf-8") as f_t_in:
+            for lp, lt in zip(f_p_in, f_t_in):
+                if lp.strip() and lt.strip():
+                    try:
+                        p_rec = json.loads(lp)
+                        l_rec = json.loads(lt)
+                        positions.append(p_rec)
+                        labels.append(l_rec)
+                        policy_matrix.append(l_rec.get("policy", [0.0] * POLICY_DIM))
+                        value_list.append(float(l_rec.get("value", 0.0)))
+                        aux_meta = l_rec.get("metadata", {}).get("aux")
+                        if not aux_meta or len(aux_meta) != 6:
+                            ref = Referee()
+                            for mv in p_rec.get("history", []):
+                                ref.apply(mv)
+                            own_d, opp_d = compute_shortest_paths(ref, ref.side_to_move)
+                            aux_meta = [
+                                own_d,
+                                opp_d,
+                                ref.walls_left[ref.side_to_move],
+                                ref.walls_left[1 - ref.side_to_move],
+                                len(p_rec.get("history", [])),
+                                ref.side_to_move,
+                            ]
+                        aux_features.append(aux_meta)
+                        sample_ids.append(p_rec.get("id", ""))
+                    except Exception:
+                        pass
+        print(f"Resuming wall drops from existing {len(positions)}/{config['count']} records in {output_dir}...", flush=True)
+
+    generated = len(positions)
+    if generated >= config["count"]:
+        print(f"Target count already satisfied ({generated}/{config['count']}) in {output_dir}. Skipping generation.", flush=True)
+        return {"generated": generated, "requested": config["count"], "positions_file": str(positions_file), "targets_file": str(targets_file), "seed": config["seed"]}
+
     attempts = 0
-    max_total_attempts = config["count"] * 10
+    max_total_attempts = config["count"] * 20
 
-    print(f"Generating {config['count']} wall-drop positions with seed {config['seed']}...", flush=True)
+    print(f"Generating wall-drop positions (target: {config['count']}, seed: {config['seed']})...", flush=True)
 
-    while generated < config["count"] and attempts < max_total_attempts:
-        attempts += 1
-        history = generate_wall_drop_history(
-            min_walls=config["min_walls"],
-            max_walls=config["max_walls"],
-            pawn_walk_plies=config["pawn_walk_plies"],
-            rng=rng,
-        )
-        if not history:
-            continue
+    f_pos = positions_file.open("a", encoding="utf-8")
+    f_tgt = targets_file.open("a", encoding="utf-8")
 
-        root_data = query_engine_root(
-            executable=exe_path,
-            history=history,
-            move_time_ms=config["move_time_ms"],
-        )
-        if not root_data or root_data.get("target_status") != "ok":
-            continue
-
-        raw_visits = root_data.get("visit_counts", [])
-        if len(raw_visits) != POLICY_DIM:
-            continue
-
-        total_visits = sum(raw_visits)
-        if total_visits > 0:
-            policy = [float(v) / float(total_visits) for v in raw_visits]
-        else:
-            priors = root_data.get("priors", [])
-            if len(priors) != POLICY_DIM or sum(priors) <= 0:
+    try:
+        while generated < config["count"] and attempts < max_total_attempts:
+            attempts += 1
+            history = generate_wall_drop_history(
+                min_walls=config["min_walls"],
+                max_walls=config["max_walls"],
+                pawn_walk_plies=config["pawn_walk_plies"],
+                rng=rng,
+            )
+            if not history:
                 continue
-            policy = normalize_policy(priors)
 
-        root_value = float(root_data.get("root_value", 0.0))
+            root_data = query_engine_root(
+                executable=exe_path,
+                history=history,
+                move_time_ms=config["move_time_ms"],
+            )
+            if not root_data or root_data.get("target_status") != "ok":
+                continue
 
-        # Reconstruct referee to calculate path distances and wall balance
-        ref = Referee()
-        for mv in history:
-            ref.apply(mv)
+            raw_visits = root_data.get("visit_counts", [])
+            if len(raw_visits) != POLICY_DIM:
+                continue
 
-        own_d, opp_d = compute_shortest_paths(ref, ref.side_to_move)
-        aux_row = [
-            own_d,
-            opp_d,
-            ref.walls_left[ref.side_to_move],
-            ref.walls_left[1 - ref.side_to_move],
-            len(history),
-            ref.side_to_move,
-        ]
+            total_visits = sum(raw_visits)
+            if total_visits > 0:
+                policy = [float(v) / float(total_visits) for v in raw_visits]
+            else:
+                priors = root_data.get("priors", [])
+                if len(priors) != POLICY_DIM or sum(priors) <= 0:
+                    continue
+                policy = normalize_policy(priors)
 
-        pos_record = make_position(
-            history=history,
-            split=config["split"],
-            source="wall_drops",
-            opening_index=-1,
-            ply=len(history),
-            metadata={"generator": "generate_wall_drops.py", "placed_walls": len(history)},
-        )
+            root_value = float(root_data.get("root_value", 0.0))
 
-        label_record = make_label(
-            position=pos_record,
-            teacher=config.get("teacher", "zquoridor-4.01"),
-            mode="search-root",
-            policy=policy,
-            value=root_value,
-            bestmove=root_data.get("bestmove"),
-            budget={"move_time_ms": config["move_time_ms"], "simulations": root_data.get("simulations", 0)},
-            metadata={"aux_shortest_paths": [own_d, opp_d]},
-        )
+            # Reconstruct referee to calculate path distances and wall balance
+            ref = Referee()
+            for mv in history:
+                ref.apply(mv)
 
-        positions.append(pos_record)
-        labels.append(label_record)
-        policy_matrix.append(policy)
-        value_list.append(root_value)
-        aux_features.append(aux_row)
-        sample_ids.append(pos_record["id"])
+            own_d, opp_d = compute_shortest_paths(ref, ref.side_to_move)
+            aux_row = [
+                own_d,
+                opp_d,
+                ref.walls_left[ref.side_to_move],
+                ref.walls_left[1 - ref.side_to_move],
+                len(history),
+                ref.side_to_move,
+            ]
 
-        generated += 1
-        if generated % 10 == 0 or generated == config["count"]:
-            print(f"  Generated {generated}/{config['count']} positions (attempts: {attempts})", flush=True)
+            pos_record = make_position(
+                history=history,
+                split=config["split"],
+                source="wall_drops",
+                opening_index=-1,
+                ply=len(history),
+                metadata={"generator": "generate_wall_drops.py", "placed_walls": len(history)},
+            )
 
-    suffix = f"_{int(time.time())}" if (output_dir / "targets.npz").exists() or (output_dir / "positions.jsonl").exists() else ""
+            label_record = make_label(
+                position=pos_record,
+                teacher=config.get("teacher", "zquoridor-4.01"),
+                mode="search-root",
+                policy=policy,
+                value=root_value,
+                bestmove=root_data.get("bestmove"),
+                budget={"move_time_ms": config["move_time_ms"], "simulations": root_data.get("simulations", 0)},
+                metadata={"aux_shortest_paths": [own_d, opp_d], "aux": aux_row},
+            )
 
-    # Write JSONL position corpus
-    positions_file = output_dir / f"positions{suffix}.jsonl"
-    with positions_file.open("w", encoding="utf-8") as f_pos:
-        for p in positions:
-            f_pos.write(dumps(p) + "\n")
+            positions.append(pos_record)
+            labels.append(label_record)
+            policy_matrix.append(policy)
+            value_list.append(root_value)
+            aux_features.append(aux_row)
+            sample_ids.append(pos_record["id"])
 
-    # Write JSONL teacher targets
-    targets_file = output_dir / f"targets{suffix}.jsonl"
-    with targets_file.open("w", encoding="utf-8") as f_tgt:
-        for lbl in labels:
-            f_tgt.write(dumps(lbl) + "\n")
+            f_pos.write(dumps(pos_record) + "\n")
+            f_tgt.write(dumps(label_record) + "\n")
+            generated += 1
 
-    # Export compact NumPy archive if requested
+            if generated % 10 == 0 or generated == config["count"]:
+                f_pos.flush()
+                f_tgt.flush()
+                print(f"  Generated {generated}/{config['count']} positions (attempts: {attempts})", flush=True)
+
+            if config["export_npz"] and (generated % 250 == 0 or generated == config["count"]):
+                np.savez_compressed(
+                    npz_file,
+                    policy=np.asarray(policy_matrix, dtype=np.float32),
+                    value=np.asarray(value_list, dtype=np.float32),
+                    aux=np.asarray(aux_features, dtype=np.int32),
+                    sample_ids=np.asarray(sample_ids),
+                )
+    finally:
+        f_pos.close()
+        f_tgt.close()
+
+    # Export final compact NumPy archive and manifest
     if config["export_npz"] and positions:
-        npz_file = output_dir / f"targets{suffix}.npz"
         np.savez_compressed(
             npz_file,
             policy=np.asarray(policy_matrix, dtype=np.float32),
@@ -304,7 +351,6 @@ def run_generation(config: dict) -> dict:
         "seed": config["seed"],
     }
 
-    manifest_file = output_dir / "manifest.json"
     with manifest_file.open("w", encoding="utf-8") as f_man:
         json.dump(summary, f_man, indent=2)
 
