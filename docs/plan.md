@@ -1,6 +1,6 @@
 # Zquoridor: Project State, Results, and Roadmap
 
-Last reviewed: 2026-10-13. This document is the single canonical reference for
+Last reviewed: 2026-10-14. This document is the single canonical reference for
 project status, training history, available datasets, self-play configurations,
 experimental measurements, and future plans.
 
@@ -10,6 +10,35 @@ are untracked artifacts outside version control.
 ---
 
 ## 1. Current Production Baseline
+
+### Isolated wall-topology throughput experiment (2026-10-14)
+
+This experiment is **not promoted**. The production baseline is the frozen
+version 4.01 commit `806a50877f16d6e6f82b65e86d2a27a10916ad13`.
+The candidate is developed on `exp/wall-order-path-shortcut-20261014`.
+Production weights, search defaults, and the `main` branch remain unchanged.
+
+Two compile-time experiments default to off:
+- `ZQ_EXP_WALL_ORDER_PATH_SHORTCUT` skips the post-wall shortest-distance
+  lookup during shallow alpha-beta wall ordering when the candidate wall
+  does not touch the existing shortest witness path. Removing edges cannot
+  shorten a path, while the existing witness remains traversable; hence
+  the exact distance delta is zero. This path may be little-used by
+  production MCAB with zero-depth NNUE leaves.
+- `ZQ_EXP_WALL_LEGAL_BLOCK_REUSE` caches the existing 81-cell edge-block
+  masks within one legal-wall enumeration and ORs in the candidate wall
+  for ambiguous flood-fill cases. This targets MCAB expansion directly.
+
+The custom witness-path distance oracle and existing move-ordering tests
+passed on the first candidate build. The combined build also passed the
+existing rule legality regression suite and compilation. Two separate
+GitHub Actions runs were started: order-only `38659962629` and
+order-plus-legal `38660115894`. Their planned paired 200 ms H2H includes
+25 Normal pairs and 25 Center Rush pairs against identical frozen
+production 4.01 weights and code (100 games per run). There is no
+completed score or Elo measurement at the time of this entry.
+The new workflow is `.github/workflows/exp-wall-order-path-shortcut.yml`
+and the review-only PR is #26. No automatic promotion is permitted.
 
 ### Version 4.01 operator promotion (2026-10-13)
 
