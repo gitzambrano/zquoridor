@@ -903,6 +903,12 @@ inline void legalWallMoves(const State& s, int player, MoveList& out,
     // esquerda-direita -- se fecha, cai de volta no hasPathToGoal exato
     // (mesmo comportamento de antes, sem risco de regressão).
     const FlatPostDSU& postDsu = cachedFlatPostDSU(s.wallsH, s.wallsV);
+#if ZQ_EXP_SHORTEST_DAG
+    // Lazy per-player DAG construction: only consider this more expensive
+    // test after the existing witness-path and post-DSU fast filters fail.
+    ShortestDag128 dag0, dag1;
+    bool dag0Ready = false, dag1Ready = false;
+#endif
 
     for (int orientation = 0; orientation < 2; orientation++) {
         uint64_t touch0 = orientation == 0 ? touchH0 : touchV0;
@@ -928,8 +934,27 @@ inline void legalWallMoves(const State& s, int player, MoveList& out,
             uint64_t nh = s.wallsH, nv = s.wallsV;
             if (orientation == 0) nh |= (1ull << slot);
             else nv |= (1ull << slot);
+#if ZQ_EXP_SHORTEST_DAG
+            if (touches0) {
+                if (!dag0Ready) {
+                    dag0.build(s.wallsH, s.wallsV, s.pawn[0], 0);
+                    dag0Ready = true;
+                }
+                if (!dag0.preservesAfterWall(orientation, slot) &&
+                    !hasPathToGoal(nh, nv, s.pawn[0], 0)) continue;
+            }
+            if (touches1) {
+                if (!dag1Ready) {
+                    dag1.build(s.wallsH, s.wallsV, s.pawn[1], 1);
+                    dag1Ready = true;
+                }
+                if (!dag1.preservesAfterWall(orientation, slot) &&
+                    !hasPathToGoal(nh, nv, s.pawn[1], 1)) continue;
+            }
+#else
             if (touches0 && !hasPathToGoal(nh, nv, s.pawn[0], 0)) continue;
             if (touches1 && !hasPathToGoal(nh, nv, s.pawn[1], 1)) continue;
+#endif
             out.push_back(Move::wall(orientation, r, cc));
         }
     }
