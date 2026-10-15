@@ -440,6 +440,9 @@ int main(int argc, char** argv) {
                       << " lmrDepth=" << engine.getLmrMinDepth()
                       << " lmrMove=" << engine.getLmrMinMoveIndex()
                       << " lmrDiv=" << engine.getLmrDivisor()
+                      << " lmrReductions=" << stats.lmrReductions
+                      << " abNodes=" << stats.nodes
+                      << " abLeaves=" << mstats.leafSearches
                       << " policyLmr=" << (engine.isPolicyLmrEnabled() ? 1 : 0)
                       << " policyLmrHot=" << engine.getPolicyLmrHotDelta()
                       << " policyLmrCold=" << engine.getPolicyLmrColdDelta()
