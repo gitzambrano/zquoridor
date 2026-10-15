@@ -188,6 +188,9 @@ struct SearchStats {
     // actually ran (ordering gate passed and NNUE accumulator present).
     // Read-only bookkeeping; nothing in the search depends on it.
     uint64_t policyNodes = 0;
+    // Experimental diagnostic: reductions actually used by AB (not just
+    // moves eligible for LMR). Exposed in the UCI trace.
+    uint64_t lmrReductions = 0;
 };
 
 class Negamax {
@@ -1469,6 +1472,7 @@ private:
                         if (polHave && polLogit <= polMaxLogit - policyLmrColdDelta) reduction += 1;
                         int maxRed = depth / 2;
                         if (reduction > maxRed) reduction = maxRed;
+                        if (reduction > 0) ++stats.lmrReductions;
                     }
                 }
                 // PVS (Prioridade 8): janela nula em profundidade (talvez
