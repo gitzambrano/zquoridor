@@ -37,9 +37,9 @@ jobs:
           g++ -O2 -std=c++17 -DZQ_EXP_TT_REPETITION_GUARD=1 -I candidate/src \
             candidate/tests/test_tt_repetition_guard.cpp -o candidate/bin/test_tt_401
           candidate/bin/test_tt_401
-          g++ -O2 -std=c++17 -DZQ_EXP_TT_REPETITION_GUARD=1 -I candidate/src \
-            candidate/tests/test_contempt_repetition.cpp -o candidate/bin/test_contempt_repetition_tt
-          candidate/bin/test_contempt_repetition_tt
+          # The full contempt agreement suite runs dozens of 30-second
+          # searches and is not a screening test; use focused repetition
+          # parity and poisoning regressions instead.
           g++ -O2 -std=c++17 -DZQ_EXP_TT_REPETITION_GUARD=1 -I candidate/src \
             candidate/tests/test_repetition_diff.cpp -o candidate/bin/test_repetition_diff_tt
           candidate/bin/test_repetition_diff_tt
