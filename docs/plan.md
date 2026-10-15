@@ -1,6 +1,6 @@
 # Zquoridor: Project State, Results, and Roadmap
 
-Last reviewed: 2026-10-13. This document is the single canonical reference for
+Last reviewed: 2026-10-14. This document is the single canonical reference for
 project status, training history, available datasets, self-play configurations,
 experimental measurements, and future plans.
 
@@ -10,6 +10,24 @@ are untracked artifacts outside version control.
 ---
 
 ## 1. Current Production Baseline
+
+### Isolated Distance-only 81-bit parallel BFS screening (2026-10-14)
+
+**Experimental only; no production promotion.** Main is pinned to version
+4.01 commit `806a50877f16d6e6f82b65e86d2a27a10916ad13`.
+Feature opt-in: `ZQ_EXP_BITBOARD_DISTANCE=1`, default off.
+
+Distance-only calls use monotone bitboard flood with unchanged original queue BFS for parent/reach/path robustness. False negatives forbidden. The oracle compares complete distances before/after sampled walls.
+
+Regressions include the candidate-specific `test_bitboard_distance` and the relevant
+existing exact parity/correctness suite. Screening compares separately
+compiled candidate/main binaries loading the same production int8 weights,
+fixed 200 ms move time, identical opening seeds and color swaps, 25
+Normal + 25 Center Rush opening pairs (100 games). Report 95% paired
+uncertainty and speed; do not infer Elo from node rate alone.
+Pending game results do not permit a merge. Use positive H2H and matched
+external opponents before candidate promotion, with actual elapsed clock
+measurement for Claustrophobia, plus 3+2 confirmation.
 
 ### Version 4.01 operator promotion (2026-10-13)
 
