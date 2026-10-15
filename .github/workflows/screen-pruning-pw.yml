@@ -1,0 +1,88 @@
+name: "ZQ 4.01 aggressive pruning - pawn-safe widening"
+on:
+  push:
+    branches: [exp/prune-pw-pawn-401-20261014]
+    paths: ["src/**", "tests/**", ".github/workflows/screen-pruning-pw.yml"]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  paired:
+    runs-on: ubuntu-latest
+    timeout-minutes: 115
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        include:
+          - profile: pw16
+            cli: "--progressive-widening --widening-initial 16 --widening-coeff 2.0 --widening-exp 0.5"
+          - profile: pw8
+            cli: "--progressive-widening --widening-initial 8 --widening-coeff 1.0 --widening-exp 0.5"
+    steps:
+      - name: Checkout candidate
+        uses: actions/checkout@v4
+        with:
+          path: candidate
+          ref: ${{ github.sha }}
+      - name: Checkout frozen main 4.01
+        uses: actions/checkout@v4
+        with:
+          path: baseline
+          ref: 806a50877f16d6e6f82b65e86d2a27a10916ad13
+      - name: Test pawn safety and production MCAB invariants
+        run: |
+          set -euo pipefail
+          mkdir -p candidate/bin baseline/bin
+          g++ -O2 -std=c++17 -DZQ_EXP_PW_KEEP_ALL_PAWNS=1 -I candidate/src \
+            candidate/tests/test_pw_pawn_visibility.cpp -o candidate/bin/test_pawn_pw
+          (cd candidate && bin/test_pawn_pw)
+          g++ -O2 -std=c++17 -DZQ_EXP_PW_KEEP_ALL_PAWNS=1 -I candidate/src \
+            candidate/tests/test_mcab_core.cpp -o candidate/bin/test_mcab_pw
+          (cd candidate && bin/test_mcab_pw)
+      - name: Build identical production NNUE candidates
+        run: |
+          set -euo pipefail
+          g++ -O3 -std=c++17 -march=native -mavx2 -mfma \
+            -DZQ_EXP_PW_KEEP_ALL_PAWNS=1 -I candidate/src \
+            candidate/tools/external/zquoridor_uci.cpp -o candidate/bin/zq_pw
+          g++ -O3 -std=c++17 -march=native -mavx2 -mfma \
+            -I baseline/src baseline/tools/external/zquoridor_uci.cpp -o baseline/bin/zq_main
+      - name: Paired 200ms Normal (40 games)
+        run: |
+          cd candidate
+          python -u tools/match_finalists.py \
+            --engine1-name ${{ matrix.profile }} \
+            --engine1-executable bin/zq_pw \
+            --engine1-args="${{ matrix.cli }}" \
+            --engine1-nnue data/nnue/nnue_weights_int8.bin \
+            --engine2-name main401 \
+            --engine2-executable ../baseline/bin/zq_main \
+            --engine2-nnue data/nnue/nnue_weights_int8.bin \
+            --openings tools/external/openings_normal_confirm_400.jsonl \
+            --pairs 20 --move-time-ms 200 --workers 1 \
+            --seed 20261014 --bootstrap 3000 \
+            --output results/benchmarks/pruning_401/${{ matrix.profile }}/normal
+      - name: Paired 200ms Center Rush (40 games)
+        run: |
+          cd candidate
+          python -u tools/match_finalists.py \
+            --engine1-name ${{ matrix.profile }} \
+            --engine1-executable bin/zq_pw \
+            --engine1-args="${{ matrix.cli }}" \
+            --engine1-nnue data/nnue/nnue_weights_int8.bin \
+            --engine2-name main401 \
+            --engine2-executable ../baseline/bin/zq_main \
+            --engine2-nnue data/nnue/nnue_weights_int8.bin \
+            --openings tools/external/openings_center_rush_sound_5k.jsonl \
+            --pairs 20 --move-time-ms 200 --workers 1 \
+            --seed 20261014 --bootstrap 3000 \
+            --output results/benchmarks/pruning_401/${{ matrix.profile }}/center
+      - name: Upload reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pruning-${{ matrix.profile }}-401
+          path: candidate/results/benchmarks/pruning_401/
+          if-no-files-found: warn
+          retention-days: 14
