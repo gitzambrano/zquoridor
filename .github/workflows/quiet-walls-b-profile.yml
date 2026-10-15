@@ -1,0 +1,191 @@
+name: Quiet Wall B Clock and Search Quality Study
+
+on:
+  push:
+    branches: [exp/quiet-walls-b-profile-20261015]
+    paths:
+      - ".github/workflows/quiet-walls-b-profile.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  PYTHONUNBUFFERED: "1"
+
+jobs:
+  checks:
+    name: checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Python syntax and C++ correctness
+        run: |
+          python -m py_compile tools/quiet_b_clock_profile.py
+          g++ -O2 -std=c++17 -Isrc tests/test_quiet_walls.cpp -o /tmp/test_quiet
+          /tmp/test_quiet
+          g++ -O2 -std=c++17 -Isrc tests/test_mcab_core.cpp -o /tmp/test_mcab
+          /tmp/test_mcab
+          g++ -O3 -std=c++17 -Isrc tools/external/zquoridor_uci.cpp -o /tmp/zquoridor_uci
+          python tools/quiet_b_clock_profile.py --generate-only --output results/quiet_walls/profile/check
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          m=json.loads(Path("results/quiet_walls/profile/check/openings_manifest.json").read_text())
+          for book in m.values():
+              assert not set(book["selected_indices"]) & set(book["prior_indices"])
+              assert book["fresh_pairs"] == 60
+          print("All opening samples are disjoint from previous deep-screen H2H.")
+          PY
+
+  profile:
+    name: root-setup-and-simulation-profile
+    needs: checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Build production-compatible UCI adapter
+        run: |
+          mkdir -p bin/quiet_walls_profile
+          g++ -O3 -std=c++17 -march=native -Isrc tools/external/zquoridor_uci.cpp -o bin/quiet_walls_profile/zquoridor_uci
+      - name: Profile 48 independent 200ms roots per mode
+        run: |
+          python -u tools/quiet_b_clock_profile.py \
+            --sample-per-book 24 --normal-count 60 --center-count 60 \
+            --move-time-ms 200 \
+            --output results/quiet_walls/profile/clock
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: quiet-profile-clock
+          path: results/quiet_walls/profile/clock
+          retention-days: 21
+
+  h2h:
+    name: match-${{ matrix.name }}-240games
+    needs: checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    strategy:
+      fail-fast: false
+      max-parallel: 3
+      matrix:
+        include:
+          - name: B08-default
+            candidate_args: "--quiet-walls-mode 2 --quiet-walls-weight 0.08"
+            baseline_args: ""
+          - name: B08-charged
+            candidate_args: "--quiet-walls-mode 2 --quiet-walls-weight 0.08"
+            baseline_args: "--charge-root-setup"
+          - name: B04-charged
+            candidate_args: "--quiet-walls-mode 2 --quiet-walls-weight 0.04"
+            baseline_args: "--charge-root-setup"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Compile identical network adapter
+        run: |
+          mkdir -p bin/quiet_walls_profile
+          g++ -O3 -std=c++17 -march=native -Isrc tools/external/zquoridor_uci.cpp -o bin/quiet_walls_profile/zquoridor_uci
+      - name: Generate independently selected, non-overlapping books
+        run: |
+          python tools/quiet_b_clock_profile.py --generate-only \
+            --output "results/quiet_walls/profile/matches/${{ matrix.name }}"
+      - name: 120 paired normal-opening games
+        run: |
+          python -u tools/match_finalists.py \
+            --engine1-name "${{ matrix.name }}" --engine2-name baseline_v401 \
+            --engine1-executable bin/quiet_walls_profile/zquoridor_uci \
+            --engine2-executable bin/quiet_walls_profile/zquoridor_uci \
+            --engine1-nnue data/nnue/nnue_weights_int8.bin \
+            --engine2-nnue data/nnue/nnue_weights_int8.bin \
+            --engine1-args="${{ matrix.candidate_args }}" \
+            --engine2-args="${{ matrix.baseline_args }}" \
+            --pairs 60 --workers 2 --move-time-ms 200 \
+            --seed 20261105 \
+            --openings "results/quiet_walls/profile/matches/${{ matrix.name }}/normal_fresh.jsonl" \
+            --output "results/quiet_walls/profile/matches/${{ matrix.name }}/normal"
+      - name: 120 paired Center Rush games
+        run: |
+          python -u tools/match_finalists.py \
+            --engine1-name "${{ matrix.name }}" --engine2-name baseline_v401 \
+            --engine1-executable bin/quiet_walls_profile/zquoridor_uci \
+            --engine2-executable bin/quiet_walls_profile/zquoridor_uci \
+            --engine1-nnue data/nnue/nnue_weights_int8.bin \
+            --engine2-nnue data/nnue/nnue_weights_int8.bin \
+            --engine1-args="${{ matrix.candidate_args }}" \
+            --engine2-args="${{ matrix.baseline_args }}" \
+            --pairs 60 --workers 2 --move-time-ms 200 \
+            --seed 20261106 \
+            --openings "results/quiet_walls/profile/matches/${{ matrix.name }}/center_fresh.jsonl" \
+            --output "results/quiet_walls/profile/matches/${{ matrix.name }}/center"
+      - name: Preserve all measured games, logs and manifests
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: quiet-profile-match-${{ matrix.name }}
+          path: results/quiet_walls/profile/matches/${{ matrix.name }}
+          retention-days: 21
+
+  aggregate:
+    name: aggregate-quiet-B-profile
+    needs: [profile, h2h]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: quiet-profile-*
+          path: artifacts
+      - name: Summarize clock profile, matched games, and confidence intervals
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          results={"h2h":{}, "profile":{}, "missing_artifacts":[]}
+          root=Path("artifacts")
+          profile=root/"quiet-profile-clock"/"clock_profile.json"
+          if profile.exists():
+              d=json.loads(profile.read_text())
+              results["profile"]={k:v["stats"] for k,v in d["modes"].items()}
+              for k,v in results["profile"].items():
+                  print("PROFILE", k, v)
+          else:
+              results["missing_artifacts"].append("quiet-profile-clock")
+          for mode in ("B08-default","B08-charged","B04-charged"):
+              sub={}
+              for book in ("normal","center"):
+                  report=root/f"quiet-profile-match-{mode}"/book/"summary.json"
+                  if not report.exists():
+                      results["missing_artifacts"].append(f"{mode}-{book}")
+                      continue
+                  data=json.loads(report.read_text())
+                  s=data["summary"]
+                  sub[book]={"included_games":s["included_games"],"failed_games":s["failed_games"],
+                             "score_pct":s["score_pct"],"elo":s["elo"],
+                             "paired_bootstrap_95":s.get("paired_bootstrap_95")}
+                  print("H2H",mode,book,sub[book])
+              if len(sub)==2:
+                  total=sum(v["included_games"] for v in sub.values())
+                  pts=sum(v["included_games"]*v["score_pct"] for v in sub.values())/total
+                  sub["combined"]={"games":total,"score_pct":pts}
+              results["h2h"][mode]=sub
+          print("MISSING",results["missing_artifacts"])
+          Path("aggregate").mkdir(exist_ok=True)
+          Path("aggregate/profile-summary.json").write_text(json.dumps(results,indent=2)+"\n")
+          PY
+      - name: Upload consolidated evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: quiet-profile-aggregate
+          path: aggregate
+          retention-days: 21
