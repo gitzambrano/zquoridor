@@ -1,0 +1,107 @@
+name: "ZQ 4.01 1000-game LMR endgames - decision-sensitive gate"
+on:
+  push:
+    branches: [exp/lmr-competitive-endgames-401-20261014]
+    paths:
+      - ".github/workflows/lmr-endgames-1000-gated.yml"
+      - "tools/lmr_endgame_preflight.py"
+      - "tools/generate_ab_gate_openings.py"
+      - "src/search.hpp"
+      - "tools/external/zquoridor_uci.cpp"
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  preflight:
+    runs-on: ubuntu-latest
+    timeout-minutes: 80
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build instrumented production MCAB (no --no-mcab)
+        run: |
+          mkdir -p bin
+          g++ -O3 -std=c++17 -march=native -mavx2 -mfma \
+            -I src tools/external/zquoridor_uci.cpp -o bin/zq_lmr
+      - name: Generate independent verified 0/2 0/4 0/8 endgames
+        run: |
+          set -euo pipefail
+          mkdir -p results/benchmarks/lmr1000/preflight
+          for walls in 2 4 8; do
+            python -u tools/generate_ab_gate_openings.py \
+              --gate mover_empty --opponent-walls "$walls" \
+              --seed 20261016 --count 20 \
+              --output "results/benchmarks/lmr1000/preflight/book_0_$walls.jsonl"
+          done
+      - name: Gate 1000 games on actual LMR-triggered decision differences
+        run: |
+          python -u tools/lmr_endgame_preflight.py \
+            --engine bin/zq_lmr --min-different 3 \
+            --books results/benchmarks/lmr1000/preflight/book_0_{2,4,8}.jsonl \
+            --out results/benchmarks/lmr1000/preflight/differential.json
+      - name: Always preserve preflight evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lmr1000-preflight
+          path: results/benchmarks/lmr1000/preflight/
+          if-no-files-found: warn
+          retention-days: 21
+  confirm:
+    needs: preflight
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    strategy:
+      max-parallel: 5
+      fail-fast: false
+      matrix:
+        include:
+          - id: walls2a
+            walls: 2
+            seed: 20261017
+          - id: walls2b
+            walls: 2
+            seed: 20261018
+          - id: walls4a
+            walls: 4
+            seed: 20261019
+          - id: walls4b
+            walls: 4
+            seed: 20261020
+          - id: walls8a
+            walls: 8
+            seed: 20261021
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+      - name: Build single instrumented engine, identical NNUE and code for both conditions
+        run: |
+          mkdir -p bin
+          g++ -O3 -std=c++17 -march=native -mavx2 -mfma \
+            -I src tools/external/zquoridor_uci.cpp -o bin/zq_lmr
+      - name: Create 100 legal paired production AB endgames
+        run: |
+          python -u tools/generate_ab_gate_openings.py \
+            --gate mover_empty --opponent-walls ${{ matrix.walls }} \
+            --seed ${{ matrix.seed }} --count 100 \
+            --output results/benchmarks/lmr1000/book_${{ matrix.id }}.jsonl
+      - name: Paired 200ms MCAB/AB-leaf search (200 games)
+        run: |
+          python -u tools/match_finalists.py \
+            --engine1-name aggressive_lmr_leaf2 --engine1-executable bin/zq_lmr \
+            --engine1-args="--lmr-min-depth 2 --lmr-min-move 2 --lmr-divisor 1.20" \
+            --engine1-nnue data/nnue/nnue_weights_int8.bin \
+            --engine2-name main_lmr_leaf2 --engine2-executable bin/zq_lmr \
+            --engine2-nnue data/nnue/nnue_weights_int8.bin \
+            --openings results/benchmarks/lmr1000/book_${{ matrix.id }}.jsonl \
+            --pairs 100 --move-time-ms 200 --workers 1 \
+            --seed ${{ matrix.seed }} --bootstrap 5000 \
+            --output results/benchmarks/lmr1000/match_${{ matrix.id }}
+      - name: Upload matched samples and per-opening outcomes
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lmr1000-${{ matrix.id }}
+          path: results/benchmarks/lmr1000/
+          retention-days: 21
+          if-no-files-found: warn
