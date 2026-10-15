@@ -1001,6 +1001,12 @@ private:
                 ? cachedShortestPathLen(*oppCache)
                 : shortestPathLen(s.wallsH, s.wallsV, s.pawn[opp], opp);
         }
+#if ZQ_EXP_SHORTEST_DAG
+        ShortestDag128 dag;
+        const bool haveDag = wallByBFS && before >= 0 &&
+            dag.build(s.wallsH, s.wallsV, s.pawn[opp], opp) &&
+            dag.distance == before;
+#endif
         for (size_t i = 0; i < n; i++) {
             const Move& m = moves[i];
             long long sc = 0;
@@ -1013,11 +1019,20 @@ private:
                 // MESMA topologia base com frequência real, então esta
                 // topologia-depois-do-candidato tende a se repetir entre
                 // chamadas (não só dentro de uma única chamada).
-                State ns = applyMove(s, m);
-                PlayerPathCache afterCache;
-                computeDistCached(ns.wallsH, ns.wallsV, ns.pawn[opp], opp, &xdistCache, afterCache);
-                int after = cachedShortestPathLen(afterCache);
-                sc = (long long)(after - before) * 1000;
+#if ZQ_EXP_SHORTEST_DAG
+                // In the original shortest-path DAG, does ANY optimal route
+                // survive this wall? If yes, the distance delta is EXACTLY 0.
+                // Otherwise fall back to the production cached BFS path.
+                if (!haveDag || !dag.preservesAfterWall(m.a, slotIdx(m.b, m.c))) {
+#endif
+                    State ns = applyMove(s, m);
+                    PlayerPathCache afterCache;
+                    computeDistCached(ns.wallsH, ns.wallsV, ns.pawn[opp], opp, &xdistCache, afterCache);
+                    int after = cachedShortestPathLen(afterCache);
+                    sc = (long long)(after - before) * 1000;
+#if ZQ_EXP_SHORTEST_DAG
+                }
+#endif
             }
             sc += wallEdgeHeat(oppHeat, m.a, m.b, m.c) * catScoreScale;
             sc += history[side][moveToPolicyIndex(m)];

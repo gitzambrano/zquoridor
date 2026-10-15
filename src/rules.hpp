@@ -2,6 +2,9 @@
 // otimizado para nodes/sec alto: peões e muros em inteiros pequenos,
 // muros em bitboards de 64 bits, BFS com arrays fixos (sem alocação).
 #pragma once
+#ifndef ZQ_EXP_SHORTEST_DAG
+#define ZQ_EXP_SHORTEST_DAG 0
+#endif
 #include <cstdint>
 #include <cstdlib>
 #include <cmath>
@@ -434,6 +437,49 @@ inline CellBits floodStepBits(CellBits r, CellBits hblock, CellBits vblock) {
     return r | south | north | east | west;
 }
 
+// Every layer contains ALL squares first reached at a given shortest
+// distance. Restricting each later step to its original layer tests whether
+// at least one ORIGINAL shortest path survives after a candidate wall.
+// If it survives, the new distance is exactly unchanged: adding a wall
+// cannot shorten a path. This is a sufficient-and-necessary condition for
+// preserving the old distance, not merely a single witness-path heuristic.
+struct ShortestDag128 {
+    CellBits layers[N * N + 1] = {};
+    CellBits baseH = 0, baseV = 0;
+    CellBits goal = 0;
+    int distance = -1;
+
+    bool build(uint64_t wallsH, uint64_t wallsV, int startCell, int player) {
+        buildEdgeBlockBits(wallsH, wallsV, baseH, baseV);
+        goal = player == 0 ? CELL_GOAL0 : CELL_GOAL1;
+        layers[0] = CellBits(1) << startCell;
+        CellBits visited = layers[0], wave = layers[0];
+        if (wave & goal) { distance = 0; return true; }
+        for (int d = 1; d <= N * N; ++d) {
+            wave = floodStepBits(wave, baseH, baseV) & ~visited;
+            if (!wave) { distance = -1; return false; }
+            visited |= wave;
+            layers[d] = wave;
+            if (wave & goal) { distance = d; return true; }
+        }
+        distance = -1;
+        return false;
+    }
+
+    bool preservesAfterWall(int orientation, int slot) const {
+        if (distance < 0) return false;
+        if (distance == 0) return true;
+        const CellBits h = baseH | (orientation == 0 ? H_BLOCK_MASK128[(size_t)slot] : CellBits(0));
+        const CellBits v = baseV | (orientation == 1 ? V_BLOCK_MASK128[(size_t)slot] : CellBits(0));
+        CellBits reachable = layers[0];
+        for (int d = 1; d <= distance; ++d) {
+            reachable = floodStepBits(reachable, h, v) & layers[d];
+            if (!reachable) return false;
+        }
+        return (reachable & goal) != 0;
+    }
+};
+
 inline bool hasPathToGoalBlocked(CellBits hblock, CellBits vblock,
                                  int startCell, int player) {
     CellBits f = (CellBits)1 << startCell;
@@ -857,6 +903,12 @@ inline void legalWallMoves(const State& s, int player, MoveList& out,
     // esquerda-direita -- se fecha, cai de volta no hasPathToGoal exato
     // (mesmo comportamento de antes, sem risco de regressão).
     const FlatPostDSU& postDsu = cachedFlatPostDSU(s.wallsH, s.wallsV);
+#if ZQ_EXP_SHORTEST_DAG
+    // Lazy per-player DAG construction: only consider this more expensive
+    // test after the existing witness-path and post-DSU fast filters fail.
+    ShortestDag128 dag0, dag1;
+    bool dag0Ready = false, dag1Ready = false;
+#endif
 
     for (int orientation = 0; orientation < 2; orientation++) {
         uint64_t touch0 = orientation == 0 ? touchH0 : touchV0;
@@ -882,8 +934,27 @@ inline void legalWallMoves(const State& s, int player, MoveList& out,
             uint64_t nh = s.wallsH, nv = s.wallsV;
             if (orientation == 0) nh |= (1ull << slot);
             else nv |= (1ull << slot);
+#if ZQ_EXP_SHORTEST_DAG
+            if (touches0) {
+                if (!dag0Ready) {
+                    dag0.build(s.wallsH, s.wallsV, s.pawn[0], 0);
+                    dag0Ready = true;
+                }
+                if (!dag0.preservesAfterWall(orientation, slot) &&
+                    !hasPathToGoal(nh, nv, s.pawn[0], 0)) continue;
+            }
+            if (touches1) {
+                if (!dag1Ready) {
+                    dag1.build(s.wallsH, s.wallsV, s.pawn[1], 1);
+                    dag1Ready = true;
+                }
+                if (!dag1.preservesAfterWall(orientation, slot) &&
+                    !hasPathToGoal(nh, nv, s.pawn[1], 1)) continue;
+            }
+#else
             if (touches0 && !hasPathToGoal(nh, nv, s.pawn[0], 0)) continue;
             if (touches1 && !hasPathToGoal(nh, nv, s.pawn[1], 1)) continue;
+#endif
             out.push_back(Move::wall(orientation, r, cc));
         }
     }
