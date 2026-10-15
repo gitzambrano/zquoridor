@@ -56,6 +56,9 @@
 #ifndef ZQ_EXP_RESIDUAL_PUCT
 #define ZQ_EXP_RESIDUAL_PUCT 0
 #endif
+#ifndef ZQ_EXP_PW_KEEP_ALL_PAWNS
+#define ZQ_EXP_PW_KEEP_ALL_PAWNS 0
+#endif
 #ifndef ZQ_EXP_EDGE_ACC_CACHE
 #define ZQ_EXP_EDGE_ACC_CACHE 0
 #endif
@@ -1834,10 +1837,14 @@ private:
                 std::iota(order.begin(), order.end(), (size_t)0);
                 std::stable_sort(order.begin(), order.end(),
                                  [&](size_t a, size_t b) {
-                                     if constexpr (kResidualPuct) {
+                                     if constexpr (kResidualPuct || ZQ_EXP_PW_KEEP_ALL_PAWNS) {
+                                         // Production widening may hide legal pawn
+                                         // retreats / jumps when low-prior walls
+                                         // dominate. Always admit every pawn
+                                         // action in the initial active prefix.
                                          const bool aw = mcabIsWall((*node.candidateMoves)[a], 0);
                                          const bool bw = mcabIsWall((*node.candidateMoves)[b], 0);
-                                         if (aw != bw) return !aw; // all pawn moves stay visible
+                                         if (aw != bw) return !aw;
                                      }
                                      return logits[a] > logits[b];
                                  });
