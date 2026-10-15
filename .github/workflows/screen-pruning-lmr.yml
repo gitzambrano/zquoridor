@@ -1,0 +1,70 @@
+name: "ZQ 4.01 aggressive pruning - AB LMR diagnostic"
+on:
+  push:
+    branches: [exp/prune-ab-lmr-401-20261014]
+    paths: ["src/**", "tests/**", ".github/workflows/screen-pruning-lmr.yml"]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  paired:
+    runs-on: ubuntu-latest
+    timeout-minutes: 115
+    steps:
+      - name: Checkout experimental profile
+        uses: actions/checkout@v4
+        with:
+          path: candidate
+          ref: ${{ github.sha }}
+      - name: Checkout frozen 4.01
+        uses: actions/checkout@v4
+        with:
+          path: baseline
+          ref: 806a50877f16d6e6f82b65e86d2a27a10916ad13
+      - name: Verify AB pruning regression tests
+        run: |
+          set -euo pipefail
+          mkdir -p candidate/bin baseline/bin
+          g++ -O2 -std=c++17 -I candidate/src candidate/tests/test_lmr_pvs.cpp -o candidate/bin/test_lmr_pvs
+          (cd candidate && bin/test_lmr_pvs)
+      - name: Build identical AB binaries
+        run: |
+          set -euo pipefail
+          g++ -O3 -std=c++17 -march=native -mavx2 -mfma \
+            -I candidate/src candidate/tools/external/zquoridor_uci.cpp -o candidate/bin/zq_lmr
+          g++ -O3 -std=c++17 -march=native -mavx2 -mfma \
+            -I baseline/src baseline/tools/external/zquoridor_uci.cpp -o baseline/bin/zq_main
+      - name: Paired 200ms pure AB Normal
+        run: |
+          cd candidate
+          python -u tools/match_finalists.py \
+            --engine1-name ab_lmr_165 --engine1-executable bin/zq_lmr \
+            --engine1-args="--no-mcab --lmr-divisor 1.65 --lmr-min-move 2 --lmr-min-depth 3" \
+            --engine1-nnue data/nnue/nnue_weights_int8.bin \
+            --engine2-name main401_ab --engine2-executable ../baseline/bin/zq_main \
+            --engine2-args="--no-mcab" \
+            --engine2-nnue data/nnue/nnue_weights_int8.bin \
+            --openings tools/external/openings_normal_confirm_400.jsonl \
+            --pairs 20 --move-time-ms 200 --workers 1 --seed 20261014 \
+            --bootstrap 3000 --output results/benchmarks/pruning_401/ab_lmr_165/normal
+      - name: Paired 200ms pure AB Center Rush
+        run: |
+          cd candidate
+          python -u tools/match_finalists.py \
+            --engine1-name ab_lmr_165 --engine1-executable bin/zq_lmr \
+            --engine1-args="--no-mcab --lmr-divisor 1.65 --lmr-min-move 2 --lmr-min-depth 3" \
+            --engine1-nnue data/nnue/nnue_weights_int8.bin \
+            --engine2-name main401_ab --engine2-executable ../baseline/bin/zq_main \
+            --engine2-args="--no-mcab" \
+            --engine2-nnue data/nnue/nnue_weights_int8.bin \
+            --openings tools/external/openings_center_rush_sound_5k.jsonl \
+            --pairs 20 --move-time-ms 200 --workers 1 --seed 20261014 \
+            --bootstrap 3000 --output results/benchmarks/pruning_401/ab_lmr_165/center
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pruning-ab-lmr165-401
+          path: candidate/results/benchmarks/pruning_401/
+          if-no-files-found: warn
+          retention-days: 14
