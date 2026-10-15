@@ -1,0 +1,76 @@
+name: ZQ isolated TT alpha-beta diagnostic
+on:
+  push:
+    branches: [exp/tt-repetition-safety-20261014]
+    paths:
+      - ".github/workflows/screen-tt-ab-401.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  ab-only-paired:
+    runs-on: ubuntu-latest
+    timeout-minutes: 110
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: candidate
+          ref: ${{ github.sha }}
+      - uses: actions/checkout@v4
+        with:
+          path: baseline
+          ref: 806a50877f16d6e6f82b65e86d2a27a10916ad13
+      - name: Compile both Alpha-Beta capable binaries
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p candidate/bin baseline/bin
+          g++ -O3 -std=c++17 -march=native -mavx2 -mfma \
+            -DZQ_EXP_TT_REPETITION_GUARD=1 -I candidate/src \
+            candidate/tools/external/zquoridor_uci.cpp -o candidate/bin/zq_tt_ab
+          g++ -O3 -std=c++17 -march=native -mavx2 -mfma \
+            -I baseline/src baseline/tools/external/zquoridor_uci.cpp \
+            -o baseline/bin/zq_main_ab
+      - name: Paired pure AB 200ms Normal
+        shell: bash
+        run: |
+          cd candidate
+          python -u tools/match_finalists.py \
+            --engine1-name tt_guard_ab \
+            --engine1-executable bin/zq_tt_ab \
+            --engine1-nnue data/nnue/nnue_weights_int8.bin \
+            --engine1-args=--no-mcab \
+            --engine2-name main401_ab \
+            --engine2-executable ../baseline/bin/zq_main_ab \
+            --engine2-nnue data/nnue/nnue_weights_int8.bin \
+            --engine2-args=--no-mcab \
+            --openings tools/external/openings_normal_confirm_400.jsonl \
+            --pairs 10 --move-time-ms 200 --workers 1 \
+            --seed 20261014 --bootstrap 5000 \
+            --output results/benchmarks/tt_ab_only/normal
+      - name: Paired pure AB 200ms Center Rush
+        shell: bash
+        run: |
+          cd candidate
+          python -u tools/match_finalists.py \
+            --engine1-name tt_guard_ab \
+            --engine1-executable bin/zq_tt_ab \
+            --engine1-nnue data/nnue/nnue_weights_int8.bin \
+            --engine1-args=--no-mcab \
+            --engine2-name main401_ab \
+            --engine2-executable ../baseline/bin/zq_main_ab \
+            --engine2-nnue data/nnue/nnue_weights_int8.bin \
+            --engine2-args=--no-mcab \
+            --openings tools/external/openings_center_rush_sound_5k.jsonl \
+            --pairs 10 --move-time-ms 200 --workers 1 \
+            --seed 20261014 --bootstrap 5000 \
+            --output results/benchmarks/tt_ab_only/center
+      - name: Upload alpha-beta diagnostic
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tt-guard-401-alpha-beta-diagnostic
+          path: candidate/results/benchmarks/tt_ab_only/
+          if-no-files-found: warn
