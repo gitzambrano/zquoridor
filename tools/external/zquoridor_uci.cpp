@@ -122,6 +122,7 @@ struct Options {
     double cpuct = -1.0;
     int quietWallMode = 0;
     double quietWallWeight = 0.08;
+    bool chargeRootSetup = false;
     double scoreScale = -1.0;
     int nodeBudget = -1;
     int leafDepth = -1;
@@ -167,6 +168,7 @@ static Options parseArgs(int argc, char** argv) {
         else if (a == "--cpuct") o.cpuct = std::atof(need("--cpuct"));
         else if (a == "--quiet-walls-mode") o.quietWallMode = std::atoi(need("--quiet-walls-mode"));
         else if (a == "--quiet-walls-weight") o.quietWallWeight = std::atof(need("--quiet-walls-weight"));
+        else if (a == "--charge-root-setup") o.chargeRootSetup = true;
         else if (a == "--score-scale") o.scoreScale = std::atof(need("--score-scale"));
         else if (a == "--nodes") o.nodeBudget = std::atoi(need("--nodes"));
         else if (a == "--leaf-depth") o.leafDepth = std::atoi(need("--leaf-depth"));
@@ -239,6 +241,7 @@ int main(int argc, char** argv) {
     }
     params.quietWallMode = opt.quietWallMode;
     params.quietWallWeight = opt.quietWallWeight;
+    params.chargeRootSetup = opt.chargeRootSetup;
     if (opt.scoreScale > 0.0) params.scoreScale = opt.scoreScale;
     params.autoNodeBudget = opt.nodeBudget < 0;
     if (opt.nodeBudget >= 0) params.nodeBudget = opt.nodeBudget;
@@ -461,7 +464,14 @@ int main(int argc, char** argv) {
                       << " clearTT=" << (params.clearTTPerMove ? 1 : 0)
                       << " reuse=" << (params.treeReuse ? 1 : 0)
                       << " treeHit=" << (mstats.treeReused ? 1 : 0)
-                      << " reusedNodes=" << mstats.reusedNodes << "\n";
+                      << " reusedNodes=" << mstats.reusedNodes
+                      << " sims=" << mstats.simulations
+                      << " rootprep_us=" << mstats.rootPreparationUs
+                      << " quiet_us=" << mstats.quietSignalUs
+                      << " tree_us=" << mstats.treeSearchUs
+                      << " treebudget_ms=" << mstats.treeBudgetMs
+                      << " chargeSetup=" << (params.chargeRootSetup ? 1 : 0)
+                      << " qmode=" << params.quietWallMode << "\n";
             if (opt.dumpRoot) dumpSearchRoot(runner, state, best, budgetMs, elapsed, mstats);
             std::cout << "bestmove " << moveToText(best) << "\n" << std::flush;
         } else if (cmd == "quit") {
