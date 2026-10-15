@@ -1,0 +1,117 @@
+name: "ZQ 4.01 Variant A H2H: independent 400 at 200ms and 80 at 3+2"
+on:
+  push:
+    branches: [exp/wall-a-h2h-deep-401-20261015]
+    paths: [".github/workflows/confirm-wall-a-deep-h2h.yml", "tools/make_external_confirm_openings.py", "src/**", "tests/**"]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  paired:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        include:
+          - family: normal
+            mode: fixed200
+            source: tools/external/openings_normal_confirm_400.jsonl
+            pairs: 100
+            seed: 20261021
+            base_ms: 0
+            inc_ms: 0
+          - family: center
+            mode: fixed200
+            source: tools/external/openings_center_rush_sound_5k.jsonl
+            pairs: 100
+            seed: 20261021
+            base_ms: 0
+            inc_ms: 0
+          - family: normal
+            mode: clock3p2
+            source: tools/external/openings_normal_confirm_400.jsonl
+            pairs: 20
+            seed: 20261022
+            base_ms: 180000
+            inc_ms: 2000
+          - family: center
+            mode: clock3p2
+            source: tools/external/openings_center_rush_sound_5k.jsonl
+            pairs: 20
+            seed: 20261022
+            base_ms: 180000
+            inc_ms: 2000
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: candidate
+          ref: ${{ github.sha }}
+      - uses: actions/checkout@v4
+        with:
+          path: baseline
+          ref: 806a50877f16d6e6f82b65e86d2a27a10916ad13
+      - name: Test exact wall-distance shortcut and ordering
+        run: |
+          set -euo pipefail
+          mkdir -p candidate/bin baseline/bin
+          g++ -O2 -std=c++17 -I candidate/src candidate/tests/test_wall_order_distance_shortcut.cpp -o candidate/bin/test_shortcut
+          (cd candidate && bin/test_shortcut)
+          g++ -O2 -std=c++17 -DZQ_EXP_WALL_ORDER_PATH_SHORTCUT=1 \
+            -I candidate/src candidate/tests/test_move_ordering.cpp -o candidate/bin/test_order
+          (cd candidate && bin/test_order)
+      - name: Compile original isolated Variant A and frozen production v4.01 with identical weights
+        run: |
+          g++ -O3 -std=c++17 -march=native -mavx2 -mfma \
+            -DZQ_EXP_WALL_ORDER_PATH_SHORTCUT=1 -I candidate/src \
+            candidate/tools/external/zquoridor_uci.cpp -o candidate/bin/zq_a
+          g++ -O3 -std=c++17 -march=native -mavx2 -mfma \
+            -I baseline/src baseline/tools/external/zquoridor_uci.cpp -o baseline/bin/zq_main
+      - name: Select nonoverlapping new openings, excluding all prior 400-game H2H positions
+        run: |
+          set -euo pipefail
+          cd candidate
+          python -u tools/make_external_confirm_openings.py \
+            --source ${{ matrix.source }} --pairs ${{ matrix.pairs }} \
+            --exclude-seed 20261015 --exclude-pairs 100 --seed ${{ matrix.seed }} \
+            --output results/benchmarks/wall_a_deep/book_${{ matrix.family }}_${{ matrix.mode }}.jsonl
+      - name: Run paired search at fixed 200ms or real native 3+2 clocks
+        run: |
+          set -euo pipefail
+          cd candidate
+          python -u tools/match_finalists.py \
+            --engine1-name variant_a --engine1-executable bin/zq_a \
+            --engine1-nnue data/nnue/nnue_weights_int8.bin \
+            --engine2-name main401 --engine2-executable ../baseline/bin/zq_main \
+            --engine2-nnue data/nnue/nnue_weights_int8.bin \
+            --openings results/benchmarks/wall_a_deep/book_${{ matrix.family }}_${{ matrix.mode }}.jsonl \
+            --pairs ${{ matrix.pairs }} --move-time-ms 200 \
+            --base-ms ${{ matrix.base_ms }} --increment-ms ${{ matrix.inc_ms }} \
+            --move-overhead-ms 20 --workers 1 --seed ${{ matrix.seed }} \
+            --bootstrap 10000 \
+            --output results/benchmarks/wall_a_deep/score_${{ matrix.family }}_${{ matrix.mode }}
+      - name: Verify complete, valid, paired match and correct time control
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          p=Path("candidate/results/benchmarks/wall_a_deep/score_${{ matrix.family }}_${{ matrix.mode }}/summary.json")
+          report=json.loads(p.read_text())
+          x=report["summary"]
+          assert x["recorded_games"] == 2*int("${{ matrix.pairs }}")
+          assert x["complete_pairs"] == int("${{ matrix.pairs }}")
+          assert x["failed_games"] == 0
+          assert report["base_ms"] == int("${{ matrix.base_ms }}")
+          assert report["increment_ms"] == int("${{ matrix.inc_ms }}")
+          assert report["move_time_ms"] == (200 if report["base_ms"]==0 else None)
+          print(f"PASS ${{ matrix.mode }} ${{ matrix.family }}: score={x['score_pct']}, games={x['recorded_games']}")
+          PY
+      - name: Upload reproducible pairs, manifest and summary
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: wall-a-deep-${{ matrix.family }}-${{ matrix.mode }}
+          path: candidate/results/benchmarks/wall_a_deep/
+          if-no-files-found: warn
+          retention-days: 21
