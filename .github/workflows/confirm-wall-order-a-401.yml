@@ -1,0 +1,65 @@
+name: "ZQ 4.01 Variant A independent 400-game confirmation"
+on:
+  push:
+    branches: [exp/wall-order-a-confirm-401-20261014]
+    paths: [".github/workflows/confirm-wall-order-a-401.yml", "src/**", "tests/**"]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  h2h:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - family: normal
+            openings: tools/external/openings_normal_confirm_400.jsonl
+          - family: center
+            openings: tools/external/openings_center_rush_sound_5k.jsonl
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: candidate
+          ref: ${{ github.sha }}
+      - uses: actions/checkout@v4
+        with:
+          path: baseline
+          ref: 806a50877f16d6e6f82b65e86d2a27a10916ad13
+      - name: Test witness shortcut and legal paths
+        run: |
+          set -euo pipefail
+          mkdir -p candidate/bin baseline/bin
+          g++ -O2 -std=c++17 -I candidate/src candidate/tests/test_wall_order_distance_shortcut.cpp -o candidate/bin/test_short
+          (cd candidate && bin/test_short)
+          g++ -O2 -std=c++17 -DZQ_EXP_WALL_ORDER_PATH_SHORTCUT=1 -I candidate/src candidate/tests/test_move_ordering.cpp -o candidate/bin/test_order
+          (cd candidate && bin/test_order)
+      - name: Compile only A and pinned main 4.01
+        run: |
+          set -euo pipefail
+          g++ -O3 -std=c++17 -march=native -mavx2 -mfma \
+            -DZQ_EXP_WALL_ORDER_PATH_SHORTCUT=1 \
+            -I candidate/src candidate/tools/external/zquoridor_uci.cpp -o candidate/bin/zq_a
+          g++ -O3 -std=c++17 -march=native -mavx2 -mfma \
+            -I baseline/src baseline/tools/external/zquoridor_uci.cpp -o baseline/bin/zq_main
+      - name: Paired H2H at 200ms (200 games)
+        run: |
+          cd candidate
+          python -u tools/match_finalists.py \
+            --engine1-name variant_a --engine1-executable bin/zq_a \
+            --engine1-nnue data/nnue/nnue_weights_int8.bin \
+            --engine2-name main401 --engine2-executable ../baseline/bin/zq_main \
+            --engine2-nnue data/nnue/nnue_weights_int8.bin \
+            --openings ${{ matrix.openings }} \
+            --pairs 100 --move-time-ms 200 --workers 1 \
+            --seed 20261015 --bootstrap 10000 \
+            --output results/benchmarks/wall_a_confirm/${{ matrix.family }}
+      - name: Upload game-by-game results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: wall-a-confirm-${{ matrix.family }}
+          path: candidate/results/benchmarks/wall_a_confirm/
+          retention-days: 21
+          if-no-files-found: warn
