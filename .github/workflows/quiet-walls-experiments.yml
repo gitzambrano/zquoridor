@@ -1,0 +1,89 @@
+name: Quiet Walls Experimental Screening
+
+on:
+  push:
+    branches:
+      - exp/quiet-walls-a-b-20261015
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  sanity:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compile and execute quiet-wall regression tests
+        run: |
+          g++ -O2 -std=c++17 -Isrc tests/test_quiet_walls.cpp -o /tmp/zq_quiet_tests
+          /tmp/zq_quiet_tests
+          g++ -O2 -std=c++17 -Isrc tests/test_mcab_core.cpp -o /tmp/zq_mcab_tests
+          /tmp/zq_mcab_tests
+      - name: Build production-compatible UCI
+        run: |
+          g++ -O3 -std=c++17 -Isrc tools/external/zquoridor_uci.cpp -o /tmp/zquoridor_uci
+
+  h2h:
+    needs: sanity
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      max-parallel: 3
+      matrix:
+        include:
+          - candidate: A
+            mode: 1
+          - candidate: B
+            mode: 2
+          - candidate: AB
+            mode: 3
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Compile single binary for candidate and baseline
+        run: |
+          mkdir -p bin/quiet_walls
+          g++ -O3 -std=c++17 -march=native -Isrc tools/external/zquoridor_uci.cpp -o bin/quiet_walls/zquoridor_uci
+      - name: Paired 200ms head-to-head on normal openings
+        run: |
+          python -u tools/match_finalists.py \
+            --engine1-name "quiet_${{ matrix.candidate }}" \
+            --engine2-name "main_unchanged" \
+            --engine1-executable bin/quiet_walls/zquoridor_uci \
+            --engine2-executable bin/quiet_walls/zquoridor_uci \
+            --engine1-nnue data/nnue/nnue_weights_int8.bin \
+            --engine2-nnue data/nnue/nnue_weights_int8.bin \
+            --engine1-args "--quiet-walls-mode ${{ matrix.mode }} --quiet-walls-weight 0.08" \
+            --engine2-args "" \
+            --pairs 50 --workers 2 --move-time-ms 200 \
+            --seed 20261015 \
+            --openings tools/external/openings_normal_screen_100.jsonl \
+            --output "results/quiet_walls/${{ matrix.candidate }}/normal"
+      - name: Paired 200ms head-to-head on Center Rush
+        run: |
+          python -u tools/match_finalists.py \
+            --engine1-name "quiet_${{ matrix.candidate }}" \
+            --engine2-name "main_unchanged" \
+            --engine1-executable bin/quiet_walls/zquoridor_uci \
+            --engine2-executable bin/quiet_walls/zquoridor_uci \
+            --engine1-nnue data/nnue/nnue_weights_int8.bin \
+            --engine2-nnue data/nnue/nnue_weights_int8.bin \
+            --engine1-args "--quiet-walls-mode ${{ matrix.mode }} --quiet-walls-weight 0.08" \
+            --engine2-args "" \
+            --pairs 50 --workers 2 --move-time-ms 200 \
+            --seed 20261016 \
+            --openings tools/external/openings_center_rush_sound_5k.jsonl \
+            --output "results/quiet_walls/${{ matrix.candidate }}/center"
+      - name: Upload game records and summaries
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: quiet-walls-${{ matrix.candidate }}
+          path: results/quiet_walls/${{ matrix.candidate }}
+          if-no-files-found: warn
+          retention-days: 14
