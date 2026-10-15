@@ -1,0 +1,93 @@
+name: "ZQ 4.01 corrected TT 1000-game matched confirmation"
+on:
+  push:
+    branches: [exp/tt-fixed-1000-401-20261014]
+    paths:
+      - ".github/workflows/confirm-tt-fixed-1000.yml"
+      - "tools/make_paired_opening_shard.py"
+      - "src/**"
+      - "tests/**"
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  tt-confirm:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      max-parallel: 5
+      matrix:
+        include:
+          - id: normal0
+            source: tools/external/openings_normal_confirm_400.jsonl
+            shards: 2
+            shard: 0
+          - id: normal1
+            source: tools/external/openings_normal_confirm_400.jsonl
+            shards: 2
+            shard: 1
+          - id: center0
+            source: tools/external/openings_center_rush_sound_5k.jsonl
+            shards: 3
+            shard: 0
+          - id: center1
+            source: tools/external/openings_center_rush_sound_5k.jsonl
+            shards: 3
+            shard: 1
+          - id: center2
+            source: tools/external/openings_center_rush_sound_5k.jsonl
+            shards: 3
+            shard: 2
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: candidate
+          ref: ${{ github.sha }}
+      - uses: actions/checkout@v4
+        with:
+          path: baseline
+          ref: 806a50877f16d6e6f82b65e86d2a27a10916ad13
+      - name: Validate TT history and create disjoint paired opening cohort
+        run: |
+          set -euo pipefail
+          mkdir -p candidate/bin baseline/bin
+          g++ -O2 -std=c++17 -DZQ_EXP_TT_REPETITION_GUARD=1 -I candidate/src \
+            candidate/tests/test_tt_repetition_guard.cpp -o candidate/bin/test_tt
+          (cd candidate && bin/test_tt)
+          g++ -O2 -std=c++17 -DZQ_EXP_TT_REPETITION_GUARD=1 -I candidate/src \
+            candidate/tests/test_repetition_diff.cpp -o candidate/bin/test_rep
+          (cd candidate && bin/test_rep)
+          cd candidate
+          python tools/make_paired_opening_shard.py \
+            --source ${{ matrix.source }} --shards ${{ matrix.shards }} --shard ${{ matrix.shard }} \
+            --pairs 100 --seed 20261015 \
+            --output results/benchmarks/tt1000/openings_${{ matrix.id }}.jsonl
+      - name: Build corrected TT vs original v4.01 with same NNUE
+        run: |
+          set -euo pipefail
+          g++ -O3 -std=c++17 -march=native -mavx2 -mfma \
+            -DZQ_EXP_TT_REPETITION_GUARD=1 -I candidate/src \
+            candidate/tools/external/zquoridor_uci.cpp -o candidate/bin/zq_tt_fixed
+          g++ -O3 -std=c++17 -march=native -mavx2 -mfma \
+            -I baseline/src baseline/tools/external/zquoridor_uci.cpp -o baseline/bin/zq_main
+      - name: Paired 200ms H2H (200 games, 100 unique openings)
+        run: |
+          cd candidate
+          python -u tools/match_finalists.py \
+            --engine1-name tt_fixed --engine1-executable bin/zq_tt_fixed \
+            --engine1-nnue data/nnue/nnue_weights_int8.bin \
+            --engine2-name main_401 --engine2-executable ../baseline/bin/zq_main \
+            --engine2-nnue data/nnue/nnue_weights_int8.bin \
+            --openings results/benchmarks/tt1000/openings_${{ matrix.id }}.jsonl \
+            --pairs 100 --move-time-ms 200 --workers 1 --seed 20261015 \
+            --bootstrap 10000 \
+            --output results/benchmarks/tt1000/match_${{ matrix.id }}
+      - name: Upload complete matching artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tt1000-${{ matrix.id }}
+          path: candidate/results/benchmarks/tt1000/
+          if-no-files-found: warn
+          retention-days: 21
