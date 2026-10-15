@@ -302,6 +302,10 @@ struct McabParams {
     double scoreScale = 160.0;           // = NNUE_EVAL_SCALE
     RootSelectMode rootSelectMode = RootSelectMode::MaxVisits;
     BackupMode backupMode = BackupMode::AvgBlend;
+    // Experimental root-only quiet-wall prior mixture. 0 preserves the
+    // production policy exactly; 1=redundancy, 2=follow-up threat, 3=both.
+    int quietWallMode = 0;
+    double quietWallWeight = 0.08;
     bool progressiveWidening = false;   // production default: off until an Elo gate
     int wideningInitialMoves = 16;      // top policy moves available at N=0
     double wideningCoefficient = 2.0;   // added coefficient in c*N^alpha
@@ -616,7 +620,20 @@ inline bool mcabIsWall(const MoveT&, ...) {
     return false;
 }
 
-// inv/ab-policy hooks (directions B and E). Both are optional engine
+// The quiet-wall evaluator lives in the engine rules namespace. Engines or
+// old reference builds without the helper retain their original priors.
+template <typename StateT, typename MoveListT>
+inline auto mcabQuietRootPrior(const StateT& state, const MoveListT& moves,
+                               std::vector<float>& priors, int mode,
+                               double strength, int)
+    -> decltype(quietWallReweight(state, moves, priors, mode, strength), void()) {
+    quietWallReweight(state, moves, priors, mode, strength);
+}
+template <typename StateT, typename MoveListT>
+inline void mcabQuietRootPrior(const StateT&, const MoveListT&,
+                               std::vector<float>&, int, double, ...) {}
+
+// // inv/ab-policy hooks (directions B and E). Both are optional engine
 // capabilities detected by SFINAE, same pattern as mcabPathCache above:
 // refs older than these methods compile fine and simply skip the feature.
 //
@@ -703,6 +720,7 @@ struct MCABNode {
     int graphDepth = -1;           // root-relative ply for safe DAG sharing
     uint32_t graphN = 0;           // MCGS node visits, own side-to-move frame
     double graphW = 0.0;           // MCGS node value sum, own frame
+    bool quietRootApplied = false; // Prevent reapplying the mixture on reused roots.
     bool noised = false;          // ruído de Dirichlet já aplicado a `P` (Seção 9) -- evita
                                   // recompor o ruído sobre si mesmo quando este nó vira raiz
                                   // reaproveitada de novo (Seção 8).
@@ -833,6 +851,7 @@ public:
     MoveT chooseMoveMCAB(Eng& engine, const StateT& root, int maxDepthCap, int timeBudgetMs,
                           SearchStatsT& stats, const RepTblT& gameHistory,
                           McabStats* outStats = nullptr) {
+        const auto quietBudgetStart = std::chrono::steady_clock::now();
         McabStats localStats;
         McabStats& mstats = outStats ? *outStats : localStats;
         mstats = McabStats{};
@@ -1021,6 +1040,25 @@ public:
             pool[0].terminalScore = (wRoot == root.turn) ? MCAB_WIN_SCORE : -MCAB_WIN_SCORE;
         } else if (!pool[0].expanded) {
             expandNode(0, /*depthInTree=*/0, mstats);
+        }
+
+        // Root-only experimental mixture, once per node. Reused roots may have
+        // been created below the root previously; their priors are corrected
+        // upon promotion without discarding any existing visit statistics.
+        if (params.quietWallMode != 0 && !pool[0].terminal &&
+            pool[0].expanded && !pool[0].quietRootApplied &&
+            !params.progressiveWidening && !kResidualPuct) {
+            mcabQuietRootPrior(pool[0].state, pool[0].moves, pool[0].P,
+                               params.quietWallMode, params.quietWallWeight, 0);
+            pool[0].quietRootApplied = true;
+        }
+        // Preserve the exact fixed-movetime contract: charge quiet-wall root
+        // analysis (and all other pre-tree setup) against the search clock.
+        // Default mode=0 leaves production timing behavior unchanged.
+        if (params.quietWallMode != 0 && timeBudgetMs > 0) {
+            const auto spent = std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::steady_clock::now() - quietBudgetStart).count();
+            treeBudgetMs = (int)std::max<long long>(1, (long long)timeBudgetMs - spent);
         }
 
         // inv/ab-policy, direction E: restrict the active root edges to the
