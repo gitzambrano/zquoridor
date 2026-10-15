@@ -1139,3 +1139,11 @@ All prior datasets generated under version 4.0 (`wall_drops_v1` and `gumbel_sims
 
 The dispatch bootloader recompiles `zquoridor_uci` directly from `main` with AVX2 and FMA, verifies the `zQuoridor 4.01` UCI identity string, and records explicit `zquoridor-4.01` and `zquoridor-4.01-gumbel` teacher labels in all output metadata.
 
+### Streaming Persistence and Automatic Resumption Upgrade (2026-10-15)
+
+The overnight fleet execution ran for 1,222 monitor cycles (~9 hours) until remote Google Colab free-tier VMs recycled at their standard quota limits. To prevent loss of in-memory simulation records during VM recycling, both generator tools received major architecture upgrades:
+1. **Incremental JSONL Streaming**: `tools/generate_wall_drops.py` and `tools/generate_gumbel_sims.py` write and flush each generated record to `positions.jsonl` and `targets.jsonl` every 10 samples.
+2. **Periodic NPZ Checkpointing**: Compressed NumPy target archives (`targets.npz`) are re-exported every 250 records and upon job completion.
+3. **Seamless Resumption**: Upon starting, both scripts scan existing `positions.jsonl` and `targets.jsonl` in the destination directory, load previous progress, verify the 6-element auxiliary vectors (`[own_d, opp_d, my_walls, opp_walls, ply, side]`), and resume generation without data loss.
+4. **Fleet Auto-Recovery**: `colab/dispatch_rich_targets.py` automatically updates checkout to latest `origin/main`, compiles the native engine, handles OAuth and dialog approvals, and tracks execution across all five workers continuously.
+
