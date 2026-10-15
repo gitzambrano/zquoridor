@@ -1,0 +1,70 @@
+name: "ZQ 4.01 LMR only in real MCAB AB endgames"
+on:
+  push:
+    branches: [exp/lmr-real-endgames-20261014]
+    paths:
+      - "src/search.hpp"
+      - "tools/external/zquoridor_uci.cpp"
+      - "tools/generate_ab_gate_openings.py"
+      - "tools/check_lmr_gate_trigger.py"
+      - ".github/workflows/screen-lmr-actual-endgame.yml"
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  paired-ab-leaves:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      max-parallel: 3
+      matrix:
+        opponent_walls: [2, 4, 8]
+    steps:
+      - name: Checkout exact v4.01 with LMR counters only
+        uses: actions/checkout@v4
+        with:
+          path: candidate
+          ref: ${{ github.sha }}
+      - name: Compile engine identical for control and candidate
+        run: |
+          set -euo pipefail
+          mkdir -p candidate/bin
+          g++ -O3 -std=c++17 -march=native -mavx2 -mfma \
+            -I candidate/src candidate/tools/external/zquoridor_uci.cpp \
+            -o candidate/bin/zq_lmr_gate
+      - name: Generate and verify referee-legal MCAB 0/N wall gate positions
+        run: |
+          set -euo pipefail
+          cd candidate
+          python -u tools/generate_ab_gate_openings.py \
+            --gate mover_empty --opponent-walls ${{ matrix.opponent_walls }} \
+            --count 40 --seed 20261015 \
+            --output results/benchmarks/lmr_real/book_0_${{ matrix.opponent_walls }}.jsonl
+          if [ "${{ matrix.opponent_walls }}" = "8" ]; then
+            python -u tools/check_lmr_gate_trigger.py \
+              --engine bin/zq_lmr_gate \
+              --book results/benchmarks/lmr_real/book_0_8.jsonl
+          fi
+      - name: Paired 200ms MCAB endgame H2H (40 games, NO --no-mcab)
+        run: |
+          cd candidate
+          python -u tools/match_finalists.py \
+            --engine1-name lmr_leaf2_120 --engine1-executable bin/zq_lmr_gate \
+            --engine1-args="--lmr-min-depth 2 --lmr-min-move 2 --lmr-divisor 1.20" \
+            --engine1-nnue data/nnue/nnue_weights_int8.bin \
+            --engine2-name production_lmr --engine2-executable bin/zq_lmr_gate \
+            --engine2-args="" \
+            --engine2-nnue data/nnue/nnue_weights_int8.bin \
+            --openings results/benchmarks/lmr_real/book_0_${{ matrix.opponent_walls }}.jsonl \
+            --pairs 20 --move-time-ms 200 --workers 1 \
+            --seed 20261015 --bootstrap 5000 \
+            --output results/benchmarks/lmr_real/score_0_${{ matrix.opponent_walls }}
+      - name: Upload proof of activation and paired scores
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lmr-mcab-0-${{ matrix.opponent_walls }}
+          path: candidate/results/benchmarks/lmr_real/
+          if-no-files-found: warn
+          retention-days: 21
