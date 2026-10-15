@@ -11,6 +11,7 @@
 #include <cmath>
 #include "rules.hpp"
 #include "cat.hpp"
+#include "quiet_walls.hpp"
 #include "endgame_race.hpp"
 #include "nnue.hpp"   // AccPair, buildAccPairRoot, makeChildAccPair, nnueEvalInt
 
