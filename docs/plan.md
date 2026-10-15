@@ -1,6 +1,6 @@
 # Zquoridor: Project State, Results, and Roadmap
 
-Last reviewed: 2026-10-13. This document is the single canonical reference for
+Last reviewed: 2026-10-14. This document is the single canonical reference for
 project status, training history, available datasets, self-play configurations,
 experimental measurements, and future plans.
 
@@ -10,6 +10,24 @@ are untracked artifacts outside version control.
 ---
 
 ## 1. Current Production Baseline
+
+### Isolated Path-dependent transposition score guard screening (2026-10-14)
+
+**Experimental only; no production promotion.** Main is pinned to version
+4.01 commit `806a50877f16d6e6f82b65e86d2a27a10916ad13`.
+Feature opt-in: `ZQ_EXP_TT_REPETITION_GUARD=1`, default off.
+
+Pass a taint bit through descendant negamax/quiescence repetition returns and do not store dependent ancestor TT score/bounds. Root-parity dependent solved race draws are not inserted. Fast regression forces a descendant repetition before verifying untainted search can be cached.
+
+Regressions include the candidate-specific `test_tt_repetition_guard` and the relevant
+existing exact parity/correctness suite. Screening compares separately
+compiled candidate/main binaries loading the same production int8 weights,
+fixed 200 ms move time, identical opening seeds and color swaps, 25
+Normal + 25 Center Rush opening pairs (100 games). Report 95% paired
+uncertainty and speed; do not infer Elo from node rate alone.
+Pending game results do not permit a merge. Use positive H2H and matched
+external opponents before candidate promotion, with actual elapsed clock
+measurement for Claustrophobia, plus 3+2 confirmation.
 
 ### Version 4.01 operator promotion (2026-10-13)
 
