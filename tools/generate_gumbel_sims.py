@@ -240,9 +240,55 @@ def run_gumbel_generation(config: dict) -> dict:
     aux_features: list[list[int]] = []
     sample_ids: list[str] = []
 
-    print(f"Executing Gumbel Sequential Halving across {len(input_histories)} positions...", flush=True)
+    positions_file = output_dir / "positions.jsonl"
+    targets_file = output_dir / "targets.jsonl"
+    npz_file = output_dir / "targets.npz"
+    manifest_file = output_dir / "manifest.json"
 
-    for idx, history in enumerate(input_histories):
+    # Auto-resume from existing dataset if present
+    if positions_file.exists() and targets_file.exists():
+        with positions_file.open("r", encoding="utf-8") as f_p_in, targets_file.open("r", encoding="utf-8") as f_t_in:
+            for lp, lt in zip(f_p_in, f_t_in):
+                if lp.strip() and lt.strip():
+                    try:
+                        p_rec = json.loads(lp)
+                        l_rec = json.loads(lt)
+                        positions.append(p_rec)
+                        labels.append(l_rec)
+                        policy_matrix.append(l_rec.get("policy", [0.0] * POLICY_DIM))
+                        value_list.append(float(l_rec.get("value", 0.0)))
+                        aux_meta = l_rec.get("metadata", {}).get("aux")
+                        if not aux_meta or len(aux_meta) != 6:
+                            ref = Referee()
+                            for mv in p_rec.get("history", []):
+                                ref.apply(mv)
+                            own_d, opp_d = compute_shortest_paths(ref, ref.side_to_move)
+                            aux_meta = [
+                                own_d,
+                                opp_d,
+                                ref.walls_left[ref.side_to_move],
+                                ref.walls_left[1 - ref.side_to_move],
+                                len(p_rec.get("history", [])),
+                                ref.side_to_move,
+                            ]
+                        aux_features.append(aux_meta)
+                        sample_ids.append(p_rec.get("id", ""))
+                    except Exception:
+                        pass
+        print(f"Resuming Gumbel simulations from existing {len(positions)}/{config['count']} records in {output_dir}...", flush=True)
+
+    if len(positions) >= config["count"]:
+        print(f"Target count already satisfied ({len(positions)}/{config['count']}) in {output_dir}. Skipping generation.", flush=True)
+        return {"generated": len(positions), "requested": config["count"], "positions_file": str(positions_file), "targets_file": str(targets_file), "seed": config["seed"]}
+
+    print(f"Executing Gumbel Sequential Halving across {len(input_histories)} positions (already processed: {len(positions)})...", flush=True)
+
+    f_pos = positions_file.open("a", encoding="utf-8")
+    f_tgt = targets_file.open("a", encoding="utf-8")
+    start_idx = len(positions)
+
+    for idx in range(start_idx, len(input_histories)):
+        history = input_histories[idx]
         # 1. Query root prior distribution and initial search evaluation
         root_data = query_engine_root(
             executable=exe_path,
@@ -362,7 +408,7 @@ def run_gumbel_generation(config: dict) -> dict:
             value=expected_value,
             bestmove=best_move_str,
             budget={"top_k": config["top_k"], "move_time_ms": config["move_time_ms"]},
-            metadata={"aux_shortest_paths": [own_d, opp_d]},
+            metadata={"aux_shortest_paths": [own_d, opp_d], "aux": aux_row},
         )
 
         positions.append(pos_record)
@@ -372,27 +418,30 @@ def run_gumbel_generation(config: dict) -> dict:
         aux_features.append(aux_row)
         sample_ids.append(pos_record["id"])
 
+        f_pos.write(dumps(pos_record) + "\n")
+        f_tgt.write(dumps(label_record) + "\n")
+
         if (len(positions) % 10 == 0) or len(positions) == config["count"]:
+            f_pos.flush()
+            f_tgt.flush()
             print(f"  Processed {len(positions)}/{config['count']} Gumbel targets", flush=True)
+
+        if config["export_npz"] and (len(positions) % 250 == 0 or len(positions) == config["count"]):
+            np.savez_compressed(
+                npz_file,
+                policy=np.asarray(policy_matrix, dtype=np.float32),
+                value=np.asarray(value_list, dtype=np.float32),
+                aux=np.asarray(aux_features, dtype=np.int32),
+                sample_ids=np.asarray(sample_ids),
+            )
 
         if len(positions) >= config["count"]:
             break
 
-    suffix = f"_{int(time.time())}" if (output_dir / "targets.npz").exists() or (output_dir / "positions.jsonl").exists() else ""
-
-    # Write output artifacts
-    positions_file = output_dir / f"positions{suffix}.jsonl"
-    with positions_file.open("w", encoding="utf-8") as f_pos:
-        for p in positions:
-            f_pos.write(dumps(p) + "\n")
-
-    targets_file = output_dir / f"targets{suffix}.jsonl"
-    with targets_file.open("w", encoding="utf-8") as f_tgt:
-        for lbl in labels:
-            f_tgt.write(dumps(lbl) + "\n")
+    f_pos.close()
+    f_tgt.close()
 
     if config["export_npz"] and positions:
-        npz_file = output_dir / f"targets{suffix}.npz"
         np.savez_compressed(
             npz_file,
             policy=np.asarray(policy_matrix, dtype=np.float32),
@@ -410,7 +459,6 @@ def run_gumbel_generation(config: dict) -> dict:
         "seed": config["seed"],
     }
 
-    manifest_file = output_dir / "manifest.json"
     with manifest_file.open("w", encoding="utf-8") as f_man:
         json.dump(summary, f_man, indent=2)
 
