@@ -1,0 +1,87 @@
+name: "ZQ 4.01 B vs Claustrophobia 200ms - matched A/B CPU"
+on:
+  push:
+    branches: [exp/wall-order-b-vs-claustro-401-20261014]
+    paths: [".github/workflows/screen-wall-b-claustrophobia.yml", "src/**", "tools/**"]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  external:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        include:
+          - engine: variant_b
+            family: normal
+            openings: tools/external/openings_normal_confirm_400.jsonl
+          - engine: main401
+            family: normal
+            openings: tools/external/openings_normal_confirm_400.jsonl
+          - engine: variant_b
+            family: center
+            openings: tools/external/openings_center_rush_sound_5k.jsonl
+          - engine: main401
+            family: center
+            openings: tools/external/openings_center_rush_sound_5k.jsonl
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: candidate
+          ref: ${{ github.sha }}
+      - uses: actions/checkout@v4
+        with:
+          path: baseline
+          ref: 806a50877f16d6e6f82b65e86d2a27a10916ad13
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Cache pinned Claustrophobia weights and Rust crates (never its checkout)
+        uses: actions/cache@v4
+        with:
+          path: |
+            candidate/external_bots/claustrophobia/champion.pt
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: wall-b-claustro-cpu-${{ runner.os }}-${{ hashFiles('candidate/tools/external/bot_setup.py', 'candidate/training/teachers/claustrophobia_inference_worker.py') }}
+          restore-keys: |
+            wall-b-claustro-cpu-${{ runner.os }}-
+      - name: Install fixed CPU inference runtime (GPU unavailable on GitHub-hosted runner)
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install numpy
+          python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
+      - name: Build B and frozen main with identical NNUE weights and toolchain
+        run: |
+          set -euo pipefail
+          mkdir -p candidate/bin baseline/bin
+          g++ -O3 -std=c++17 -march=native -mavx2 -mfma \
+            -DZQ_EXP_WALL_ORDER_PATH_SHORTCUT=1 -DZQ_EXP_WALL_LEGAL_BLOCK_REUSE=1 \
+            -I candidate/src candidate/tools/external/zquoridor_uci.cpp -o candidate/bin/zq_b
+          g++ -O3 -std=c++17 -march=native -mavx2 -mfma \
+            -I baseline/src baseline/tools/external/zquoridor_uci.cpp -o baseline/bin/zq_main
+      - name: Match Claustrophobia with fixed 200ms native deadline (50 games)
+        run: |
+          set -euo pipefail
+          cd candidate
+          if [ "${{ matrix.engine }}" = "variant_b" ]; then exe=bin/zq_b; else exe=../baseline/bin/zq_main; fi
+          python -u tools/run_benchmark.py \
+            --opponents claustrophobia --pairs 25 --workers 1 --seed 20261015 \
+            --openings ${{ matrix.openings }} \
+            --zq-executable "$exe" --nnue data/nnue/nnue_weights_int8.bin \
+            --zq-move-time-ms 200 --claustrophobia-move-time-ms 200 \
+            --claustrophobia-device cpu --clock-initial-ms 0 \
+            --max-plies 180 --bootstrap 5000 \
+            --output results/benchmarks/wall_b_vs_claustro_cpu/${{ matrix.engine }}/${{ matrix.family }}
+      - name: Upload clock-validated game records and summaries
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: wall-b-claustro-cpu-${{ matrix.engine }}-${{ matrix.family }}
+          path: candidate/results/benchmarks/wall_b_vs_claustro_cpu/
+          if-no-files-found: warn
+          retention-days: 21
