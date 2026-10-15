@@ -1,0 +1,53 @@
+name: Quiet Wall B Clock Profile Retry
+
+on:
+  push:
+    branches: [exp/quiet-walls-b-profile-20261015]
+    paths:
+      - ".github/workflows/quiet-walls-profile-retry.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  clock:
+    name: independent-200ms-root-profile
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Compile and syntax-check profiling engine
+        run: |
+          python -m py_compile tools/quiet_b_clock_profile.py
+          mkdir -p bin/quiet_walls_profile
+          g++ -O3 -std=c++17 -march=native -Isrc tools/external/zquoridor_uci.cpp -o bin/quiet_walls_profile/zquoridor_uci
+      - name: Profile 192 fixed-200ms quiet-wall searches
+        run: |
+          python -u tools/quiet_b_clock_profile.py \
+            --sample-per-book 24 --normal-count 60 --center-count 60 \
+            --move-time-ms 200 \
+            --output results/quiet_walls/profile/clock_retry
+      - name: Verify full mode coverage and print controlled comparisons
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          p=Path('results/quiet_walls/profile/clock_retry/clock_profile.json')
+          d=json.loads(p.read_text())
+          assert d["positions_per_mode"] == 48
+          assert set(d["modes"])=={"main","main_charged","B08","B04"}
+          for mode in d["modes"]:
+              assert len(d["modes"][mode]["samples"]) == 48
+              print(mode, d["modes"][mode]["stats"])
+          PY
+      - name: Upload full per-position counters
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: quiet-b-clock-profile-corrected
+          path: results/quiet_walls/profile/clock_retry
+          retention-days: 21
