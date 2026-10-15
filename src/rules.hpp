@@ -2,6 +2,9 @@
 // otimizado para nodes/sec alto: peões e muros em inteiros pequenos,
 // muros em bitboards de 64 bits, BFS com arrays fixos (sem alocação).
 #pragma once
+#ifndef ZQ_EXP_BITBOARD_DISTANCE
+#define ZQ_EXP_BITBOARD_DISTANCE 0
+#endif
 #include <cstdint>
 #include <cstdlib>
 #include <cmath>
@@ -457,9 +460,32 @@ inline bool hasPathToGoal(uint64_t wallsH, uint64_t wallsV,
 // (ver nota grande acima). Mantida com esta assinatura porque é usada
 // fora de search.hpp (nnue.hpp, selfplay.hpp, endgame_race.hpp, testes)
 // em lugares que não têm um PlayerPathCache de nó pra reaproveitar.
+// Optional 81-cell bit-parallel shortest distance. This is deliberately
+// restricted to the distance-only API: computeDistFull/pathRobustness still
+// use the original ordered queue BFS for exact parent/reached semantics.
+inline int shortestPathLenBitboard(uint64_t wallsH, uint64_t wallsV,
+                                   int startCell, int player) {
+    CellBits hblock, vblock;
+    buildEdgeBlockBits(wallsH, wallsV, hblock, vblock);
+    const CellBits goal = player == 0 ? CELL_GOAL0 : CELL_GOAL1;
+    CellBits reached = CellBits(1) << startCell;
+    if (reached & goal) return 0;
+    for (int dist = 1; dist <= N * N; ++dist) {
+        const CellBits next = floodStepBits(reached, hblock, vblock);
+        if (next == reached) return -1;
+        reached = next;
+        if (reached & goal) return dist;
+    }
+    return -1;
+}
+
 inline int shortestPathLen(uint64_t wallsH, uint64_t wallsV, int startCell, int player) {
+#if ZQ_EXP_BITBOARD_DISTANCE
+    return shortestPathLenBitboard(wallsH, wallsV, startCell, player);
+#else
     detail::runBFS(wallsH, wallsV, startCell, player);
     return detail::engine().distToGoal;
+#endif
 }
 
 // Pré-filtro barato antes do BFS caro (Fase 4.2.1 do plano). Calcula, a
