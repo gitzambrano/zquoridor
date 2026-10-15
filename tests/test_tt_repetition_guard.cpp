@@ -20,8 +20,11 @@ int main() {
     history.push(repeatingChild.hash);
     history.push(repeatingChild.hash);
     history.markRoot();
-    if (history.isRepetitionDraw(root.hash) ||
-        !history.isRepetitionDraw(repeatingChild.hash)) return 5;
+    if (history.isRepetitionDraw(root.hash)) return 5;
+    history.push(repeatingChild.hash);
+    const bool repeatsAtChild = history.isRepetitionDraw(repeatingChild.hash);
+    history.pop();
+    if (!repeatsAtChild) return 5;
 
     Negamax engine;
     engine.setQuiescenceEnabled(false);
