@@ -372,11 +372,11 @@ def deploy_worker(p: Any, wid: int, force_relaunch: bool = True) -> Dict[str, An
     st = get_cell_execution_state(page)
     is_active = st["running"] or st["pending"]
 
-    if is_active and has_v401_code:
+    if is_active and has_v401_code and not force_relaunch:
         print(f"  Worker {wid} is already running version 4.01! Preserving current execution.", flush=True)
     else:
         if is_active:
-            print(f"  Worker {wid}: Stopping current non-4.01 execution...", flush=True)
+            print(f"  Worker {wid}: Stopping current execution to ensure latest git commits...", flush=True)
             interrupt_cell(page)
             for _ in range(6):
                 time.sleep(2)
