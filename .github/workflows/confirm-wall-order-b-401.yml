@@ -1,0 +1,65 @@
+name: "ZQ 4.01 Variant B 400-game confirmation"
+on:
+  push:
+    branches: [exp/wall-order-b-large-401-20261014]
+    paths: [".github/workflows/confirm-wall-order-b-401.yml", "src/**", "tests/**"]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  h2h:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - family: normal
+            openings: tools/external/openings_normal_confirm_400.jsonl
+          - family: center
+            openings: tools/external/openings_center_rush_sound_5k.jsonl
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: candidate
+          ref: ${{ github.sha }}
+      - uses: actions/checkout@v4
+        with:
+          path: baseline
+          ref: 806a50877f16d6e6f82b65e86d2a27a10916ad13
+      - name: Verify exact wall ordering and path legality
+        run: |
+          set -euo pipefail
+          mkdir -p candidate/bin baseline/bin
+          g++ -O2 -std=c++17 -I candidate/src candidate/tests/test_wall_order_distance_shortcut.cpp -o candidate/bin/test_wall_short
+          (cd candidate && bin/test_wall_short)
+          g++ -O2 -std=c++17 -DZQ_EXP_WALL_LEGAL_BLOCK_REUSE=1 -I candidate/src candidate/tests/test_rules_sanity.cpp -o candidate/bin/test_rules
+          (cd candidate && bin/test_rules)
+      - name: Build candidate B and pinned production 4.01 with same weights
+        run: |
+          set -euo pipefail
+          g++ -O3 -std=c++17 -march=native -mavx2 -mfma \
+            -DZQ_EXP_WALL_ORDER_PATH_SHORTCUT=1 -DZQ_EXP_WALL_LEGAL_BLOCK_REUSE=1 \
+            -I candidate/src candidate/tools/external/zquoridor_uci.cpp -o candidate/bin/zq_b
+          g++ -O3 -std=c++17 -march=native -mavx2 -mfma \
+            -I baseline/src baseline/tools/external/zquoridor_uci.cpp -o baseline/bin/zq_401
+      - name: H2H paired 200ms (200 games)
+        run: |
+          cd candidate
+          python -u tools/match_finalists.py \
+            --engine1-name variant_b --engine1-executable bin/zq_b \
+            --engine1-nnue data/nnue/nnue_weights_int8.bin \
+            --engine2-name main_401 --engine2-executable ../baseline/bin/zq_401 \
+            --engine2-nnue data/nnue/nnue_weights_int8.bin \
+            --openings ${{ matrix.openings }} \
+            --pairs 100 --move-time-ms 200 --workers 1 \
+            --seed 20261015 --bootstrap 10000 \
+            --output results/benchmarks/wall_b_confirmation/${{ matrix.family }}
+      - name: Upload exact match records
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: wall-b-401-${{ matrix.family }}-200-games
+          path: candidate/results/benchmarks/wall_b_confirmation/
+          retention-days: 21
+          if-no-files-found: warn

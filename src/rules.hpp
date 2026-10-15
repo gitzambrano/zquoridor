@@ -2,6 +2,10 @@
 // otimizado para nodes/sec alto: peões e muros em inteiros pequenos,
 // muros em bitboards de 64 bits, BFS com arrays fixos (sem alocação).
 #pragma once
+
+#ifndef ZQ_EXP_WALL_LEGAL_BLOCK_REUSE
+#define ZQ_EXP_WALL_LEGAL_BLOCK_REUSE 0
+#endif
 #include <cstdint>
 #include <cstdlib>
 #include <cmath>
@@ -857,6 +861,12 @@ inline void legalWallMoves(const State& s, int player, MoveList& out,
     // esquerda-direita -- se fecha, cai de volta no hasPathToGoal exato
     // (mesmo comportamento de antes, sem risco de regressão).
     const FlatPostDSU& postDsu = cachedFlatPostDSU(s.wallsH, s.wallsV);
+#if ZQ_EXP_WALL_LEGAL_BLOCK_REUSE
+    // Reuse the parent graph's edge masks for every ambiguous wall candidate.
+    // Defer their construction until a candidate actually needs flood-fill.
+    CellBits baseHBlock = 0, baseVBlock = 0;
+    bool baseBlocksReady = false;
+#endif
 
     for (int orientation = 0; orientation < 2; orientation++) {
         uint64_t touch0 = orientation == 0 ? touchH0 : touchV0;
@@ -879,11 +889,24 @@ inline void legalWallMoves(const State& s, int player, MoveList& out,
                 out.push_back(Move::wall(orientation, r, cc));
                 continue;
             }
+#if ZQ_EXP_WALL_LEGAL_BLOCK_REUSE
+            if (!baseBlocksReady) {
+                buildEdgeBlockBits(s.wallsH, s.wallsV, baseHBlock, baseVBlock);
+                baseBlocksReady = true;
+            }
+            const CellBits candidateH = baseHBlock |
+                (orientation == 0 ? H_BLOCK_MASK128[(size_t)slot] : CellBits(0));
+            const CellBits candidateV = baseVBlock |
+                (orientation == 1 ? V_BLOCK_MASK128[(size_t)slot] : CellBits(0));
+            if (touches0 && !hasPathToGoalBlocked(candidateH, candidateV, s.pawn[0], 0)) continue;
+            if (touches1 && !hasPathToGoalBlocked(candidateH, candidateV, s.pawn[1], 1)) continue;
+#else
             uint64_t nh = s.wallsH, nv = s.wallsV;
             if (orientation == 0) nh |= (1ull << slot);
             else nv |= (1ull << slot);
             if (touches0 && !hasPathToGoal(nh, nv, s.pawn[0], 0)) continue;
             if (touches1 && !hasPathToGoal(nh, nv, s.pawn[1], 1)) continue;
+#endif
             out.push_back(Move::wall(orientation, r, cc));
         }
     }

@@ -5,6 +5,10 @@
 // Tudo isso é agnóstico à função de avaliação usada na folha
 // (evalSimple hoje, NNUE na Fase 6) -- só reordena/poda lances candidatos.
 #pragma once
+
+#ifndef ZQ_EXP_WALL_ORDER_PATH_SHORTCUT
+#define ZQ_EXP_WALL_ORDER_PATH_SHORTCUT 0
+#endif
 #include <chrono>
 #include <algorithm>
 #include <cstring>
@@ -985,6 +989,15 @@ private:
         bool wallByBFS = ply <= wallBfsOrderMaxPly;
         int opp = 1 - side;
         size_t n = moves.size();
+#if ZQ_EXP_WALL_ORDER_PATH_SHORTCUT
+        // A new wall only removes edges. If it touches no edge of one
+        // existing shortest path, that witness remains valid and the
+        // shortest distance cannot change. Use the cached witness slots;
+        // never reuse its full path cache after changing the topology.
+        uint64_t witnessH = 0, witnessV = 0;
+        if (wallByBFS && oppCache && oppCache->valid)
+            cachedTouchSlots(*oppCache, witnessH, witnessV);
+#endif
 
         std::pair<long long, Move> buf[ORDER_BUF_CAP];
         // `before` não depende do candidato `m` (só de `s`, fixo pra toda
@@ -1005,19 +1018,23 @@ private:
             const Move& m = moves[i];
             long long sc = 0;
             if (wallByBFS) {
-                // quanto o muro aumenta o caminho do oponente até a meta
-                // dele (mesma shortestPathLen já usada em evalSimple).
-                // Prioridade 6b: passa por xdistCache -- restrito a
-                // ply<=WALL_BFS_ORDER_MAX_PLY (perto da raiz), onde nós
-                // IRMÃOS testam os MESMOS candidatos de muro sobre a
-                // MESMA topologia base com frequência real, então esta
-                // topologia-depois-do-candidato tende a se repetir entre
-                // chamadas (não só dentro de uma única chamada).
-                State ns = applyMove(s, m);
-                PlayerPathCache afterCache;
-                computeDistCached(ns.wallsH, ns.wallsV, ns.pawn[opp], opp, &xdistCache, afterCache);
-                int after = cachedShortestPathLen(afterCache);
-                sc = (long long)(after - before) * 1000;
+#if ZQ_EXP_WALL_ORDER_PATH_SHORTCUT
+                // If this wall does not touch the shortest-path witness,
+                // the exact distance delta is zero. Preserve all other
+                // ordering contributions and the baseline scoring scale.
+                const uint64_t witnessSlots = m.a == 0 ? witnessH : witnessV;
+                const bool requiresBfs = !oppCache || !oppCache->valid ||
+                    ((witnessSlots >> slotIdx(m.b, m.c)) & 1ull) != 0;
+                if (requiresBfs) {
+#endif
+                    State ns = applyMove(s, m);
+                    PlayerPathCache afterCache;
+                    computeDistCached(ns.wallsH, ns.wallsV, ns.pawn[opp], opp, &xdistCache, afterCache);
+                    const int after = cachedShortestPathLen(afterCache);
+                    sc = (long long)(after - before) * 1000;
+#if ZQ_EXP_WALL_ORDER_PATH_SHORTCUT
+                }
+#endif
             }
             sc += wallEdgeHeat(oppHeat, m.a, m.b, m.c) * catScoreScale;
             sc += history[side][moveToPolicyIndex(m)];
