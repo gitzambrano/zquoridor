@@ -20,17 +20,20 @@ if str(ROOT) not in sys.path:
 from tools.external.local_arena import Referee
 
 
-def build_gate(index: int, gate: str, seed: int):
+def build_gate(index: int, gate: str, seed: int, opponent_walls: int = 8):
     rng = random.Random(seed + index * 1000003)
     for attempt in range(60):
         ref = Referee()
         moves = []
-        # All P0 turns place a wall (10 in total); P1 places either 2 or 10.
-        # After 20 plies, the side to move is always P0.
+        # P0 spends 10 walls, P1 spends 10-opponent_walls walls.
+        # After 20 plies the side to move is P0. We use legal move replay
+        # rather than editing wall counts by hand.
+        opp_slots = ({1, 13} if opponent_walls == 8 else
+                     set([1 + 2 * k for k in range(10 - opponent_walls)]))
         try:
             for ply in range(20):
                 current = ref.side_to_move
-                place_wall = current == 0 or gate == "both_empty" or ply in (1, 13)
+                place_wall = current == 0 or gate == "both_empty" or ply in opp_slots
                 all_legal = ref.legal_moves()
                 if place_wall:
                     candidates = [m for m in all_legal if len(m) == 3]
@@ -46,7 +49,7 @@ def build_gate(index: int, gate: str, seed: int):
                 choice = candidates[0]
                 ref.apply(choice)
                 moves.append(choice)
-            expected = (0, 0) if gate == "both_empty" else (0, 8)
+            expected = (0, 0) if gate == "both_empty" else (0, opponent_walls)
             if ref.winner is not None or ref.side_to_move != 0 or tuple(ref.walls_left) != expected:
                 raise ValueError("bad gate or premature terminal")
             return {"moves": moves, "category": gate, "wall_stocks": list(ref.walls_left)}
@@ -59,6 +62,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--gate", choices=["mover_empty", "both_empty"], required=True)
     ap.add_argument("--count", type=int, default=40)
+    ap.add_argument("--opponent-walls", type=int, choices=[0, 2, 4, 8], default=8)
     ap.add_argument("--seed", type=int, default=20261015)
     ap.add_argument("--output", required=True)
     args = ap.parse_args()
@@ -66,7 +70,7 @@ def main():
         raise ValueError("count must be positive")
     rows, unique = [], set()
     for i in range(args.count):
-        r = build_gate(i, args.gate, args.seed)
+        r = build_gate(i, args.gate, args.seed, args.opponent_walls)
         k = tuple(r["moves"])
         if k in unique:
             raise AssertionError(f"duplicate gate opening {i}")
@@ -75,7 +79,7 @@ def main():
     target = Path(args.output)
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text("".join(json.dumps(r) + "\n" for r in rows), encoding="utf-8")
-    print(f"Generated {len(rows)} verified {args.gate} positions -> {target}", flush=True)
+    print(f"Generated {len(rows)} verified {args.gate} positions, opponent={args.opponent_walls} walls -> {target}", flush=True)
 
 
 if __name__ == "__main__":
