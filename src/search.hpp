@@ -1705,6 +1705,11 @@ private:
     }
 
 #ifdef QR_ENABLE_TEST_HOOKS
+public:
+    bool testHasTTEntry(uint64_t hash) const {
+        const TTEntry& e = tt[hash & (TT_SIZE - 1)];
+        return e.valid && e.key == hash;
+    }
     // wrappers só para teste (test_move_ordering.cpp) -- orderWallMoves/
     // orderPawnMoves são detalhe de implementação privado; produção nunca
     // define QR_ENABLE_TEST_HOOKS, então isso não existe fora dos testes.
