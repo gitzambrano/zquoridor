@@ -1,0 +1,99 @@
+name: Wall Order Witness Shortcut Screening
+
+on:
+  push:
+    branches:
+      - exp/wall-order-path-shortcut-20261014
+    paths:
+      - src/search.hpp
+      - tests/test_wall_order_distance_shortcut.cpp
+      - .github/workflows/exp-wall-order-path-shortcut.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify-and-screen:
+    runs-on: ubuntu-latest
+    timeout-minutes: 115
+    steps:
+      - name: Checkout candidate
+        uses: actions/checkout@v4
+        with:
+          path: candidate
+          ref: ${{ github.sha }}
+
+      - name: Checkout frozen production 4.01 baseline
+        uses: actions/checkout@v4
+        with:
+          path: baseline
+          ref: 806a50877f16d6e6f82b65e86d2a27a10916ad13
+
+      - name: Verify exact distance oracle and existing ordering tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p candidate/bin
+          g++ -std=c++17 -O2 -I candidate/src \
+            candidate/tests/test_wall_order_distance_shortcut.cpp \
+            -o candidate/bin/test_wall_order_distance_shortcut
+          candidate/bin/test_wall_order_distance_shortcut
+          g++ -std=c++17 -O2 -DZQ_EXP_WALL_ORDER_PATH_SHORTCUT=1 \
+            -I candidate/src candidate/tests/test_move_ordering.cpp \
+            -o candidate/bin/test_move_ordering_shortcut
+          candidate/bin/test_move_ordering_shortcut
+
+      - name: Build matched UCI engines
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p candidate/bin baseline/bin
+          g++ -O3 -std=c++17 -march=native -mavx2 -mfma \
+            -DZQ_EXP_WALL_ORDER_PATH_SHORTCUT=1 \
+            -I candidate/src candidate/tools/external/zquoridor_uci.cpp \
+            -o candidate/bin/zquoridor_uci_experiment
+          g++ -O3 -std=c++17 -march=native -mavx2 -mfma \
+            -I baseline/src baseline/tools/external/zquoridor_uci.cpp \
+            -o baseline/bin/zquoridor_uci_main
+
+      - name: H2H 200ms paired Normal
+        shell: bash
+        run: |
+          cd candidate
+          python -u tools/match_finalists.py \
+            --engine1-name wall_order_shortcut \
+            --engine1-executable bin/zquoridor_uci_experiment \
+            --engine1-nnue data/nnue/nnue_weights_int8.bin \
+            --engine2-name main_401 \
+            --engine2-executable ../baseline/bin/zquoridor_uci_main \
+            --engine2-nnue data/nnue/nnue_weights_int8.bin \
+            --openings tools/external/openings_normal_confirm_400.jsonl \
+            --pairs 25 --move-time-ms 200 --workers 1 \
+            --seed 20261014 --bootstrap 3000 \
+            --output results/benchmarks/exp_wall_shortcut/normal
+
+      - name: H2H 200ms paired Center Rush
+        shell: bash
+        run: |
+          cd candidate
+          python -u tools/match_finalists.py \
+            --engine1-name wall_order_shortcut \
+            --engine1-executable bin/zquoridor_uci_experiment \
+            --engine1-nnue data/nnue/nnue_weights_int8.bin \
+            --engine2-name main_401 \
+            --engine2-executable ../baseline/bin/zquoridor_uci_main \
+            --engine2-nnue data/nnue/nnue_weights_int8.bin \
+            --openings tools/external/openings_center_rush_sound_5k.jsonl \
+            --pairs 25 --move-time-ms 200 --workers 1 \
+            --seed 20261014 --bootstrap 3000 \
+            --output results/benchmarks/exp_wall_shortcut/center
+
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: wall-order-path-shortcut-screening
+          path: candidate/results/benchmarks/exp_wall_shortcut/
+          if-no-files-found: warn
+          retention-days: 21
