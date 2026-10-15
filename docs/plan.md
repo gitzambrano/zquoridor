@@ -34,6 +34,28 @@ Three separate 240-game H2H checks (120 normal and 120 Center Rush):
 - B at 0.08 vs baseline with setup charged (clock-parity control).
 - B at 0.04 vs baseline with setup charged (prior-strength ablation).
 
+**Root profile completed, run 38760266925.** The first profiling
+job failed due to an escaping error in the metrics parser only; it
+did not reveal an engine failure. After repairing the parser, a
+standalone profiling run completed and verified all 192 searches
+(48 identical new positions per mode, fixed 200-ms requests).
+
+| Root metric (mean) | Baseline | Baseline, charged | B 0.08 | B 0.04 |
+|---|---:|---:|---:|---:|
+| Root preparation, ms | 0.404 | 0.604 | 1.086 | 1.129 |
+| Quiet signal generation, ms | 0 | 0 | 0.680 | 0.693 |
+| Tree search budget, ms | 200.00 | 198.94 | 198.19 | 198.08 |
+| Simulations | 7,334 | 7,275 | 7,297 | 7,384 |
+
+The quiet-wall root overhead is below one millisecond in the sampled
+nonterminal openings. The approximately 12–17 ms average difference
+in game-length measured move timings cannot be attributed to this
+root-prior generation alone. Earlier assumptions about a large
+quiet-root CPU deficit are **not supported** by this controlled root
+measurement; game-stage variation, terminal/empty-stock shortcuts,
+or move distribution may matter. Do not attribute the observed
+H2H loss to lost simulation budget without game-stage evidence.
+
 The profiling job measures 24 new normal + 24 new Center Rush roots
 per engine in independent UCI sessions, comparing production baseline,
 setup-charged baseline, B0.08, and B0.04. Log root preparation,
