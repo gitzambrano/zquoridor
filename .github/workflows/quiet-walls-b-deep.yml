@@ -1,0 +1,277 @@
+name: Quiet Walls B Deep Confirmation
+
+on:
+  push:
+    branches:
+      - exp/quiet-walls-b-deep-20261015
+    paths:
+      - ".github/workflows/quiet-walls-b-deep.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  PYTHONUNBUFFERED: "1"
+
+jobs:
+  checks:
+    name: compile-and-check
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Quiet wall geometry regression tests
+        run: |
+          g++ -O2 -std=c++17 -Isrc tests/test_quiet_walls.cpp -o /tmp/zq_quiet_tests
+          /tmp/zq_quiet_tests
+          g++ -O2 -std=c++17 -Isrc tests/test_mcab_core.cpp -o /tmp/zq_mcab_tests
+          /tmp/zq_mcab_tests
+          g++ -O3 -std=c++17 -Isrc tools/external/zquoridor_uci.cpp -o /tmp/zquoridor_uci
+
+  h2h:
+    name: h2h-B-${{ matrix.book }}-250games
+    needs: checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        include:
+          - book: normal
+            openings: tools/external/openings_normal_confirm_400.jsonl
+            seed: 20261027
+          - book: center
+            openings: tools/external/openings_center_rush_sound_5k.jsonl
+            seed: 20261028
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Compile same engine for candidate and baseline
+        run: |
+          mkdir -p bin/quiet_walls_deep
+          g++ -O3 -std=c++17 -march=native -Isrc tools/external/zquoridor_uci.cpp -o bin/quiet_walls_deep/zquoridor_uci
+      - name: 250 games paired at fixed 200ms (B vs unchanged baseline)
+        run: |
+          python -u tools/match_finalists.py \
+            --engine1-name quiet_B \
+            --engine2-name baseline_v401 \
+            --engine1-executable bin/quiet_walls_deep/zquoridor_uci \
+            --engine2-executable bin/quiet_walls_deep/zquoridor_uci \
+            --engine1-nnue data/nnue/nnue_weights_int8.bin \
+            --engine2-nnue data/nnue/nnue_weights_int8.bin \
+            --engine1-args="--quiet-walls-mode 2 --quiet-walls-weight 0.08" \
+            --engine2-args="" \
+            --pairs 125 --workers 2 --move-time-ms 200 \
+            --seed "${{ matrix.seed }}" \
+            --openings "${{ matrix.openings }}" \
+            --output "results/quiet_walls/deep/h2h/${{ matrix.book }}"
+      - name: Upload H2H game records and confidence intervals
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: quiet-b-h2h-${{ matrix.book }}
+          path: results/quiet_walls/deep/h2h/${{ matrix.book }}
+          if-no-files-found: warn
+          retention-days: 21
+
+  external:
+    name: ext-${{ matrix.opponent }}-${{ matrix.variant }}-${{ matrix.book }}-200games
+    needs: checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        include:
+          - opponent: claustrophobia
+            variant: B
+            book: normal
+            openings: tools/external/openings_normal_confirm_400.jsonl
+            seed: 20261025
+          - opponent: claustrophobia
+            variant: B
+            book: center
+            openings: tools/external/openings_center_rush_sound_5k.jsonl
+            seed: 20261026
+          - opponent: claustrophobia
+            variant: main
+            book: normal
+            openings: tools/external/openings_normal_confirm_400.jsonl
+            seed: 20261025
+          - opponent: claustrophobia
+            variant: main
+            book: center
+            openings: tools/external/openings_center_rush_sound_5k.jsonl
+            seed: 20261026
+          - opponent: titanium
+            variant: B
+            book: normal
+            openings: tools/external/openings_normal_confirm_400.jsonl
+            seed: 20261025
+          - opponent: titanium
+            variant: B
+            book: center
+            openings: tools/external/openings_center_rush_sound_5k.jsonl
+            seed: 20261026
+          - opponent: titanium
+            variant: main
+            book: normal
+            openings: tools/external/openings_normal_confirm_400.jsonl
+            seed: 20261025
+          - opponent: titanium
+            variant: main
+            book: center
+            openings: tools/external/openings_center_rush_sound_5k.jsonl
+            seed: 20261026
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Cache safely pinned Claustrophobia model and Cargo dependencies
+        if: matrix.opponent == 'claustrophobia'
+        uses: actions/cache@v4
+        with:
+          path: |
+            external_bots/claustrophobia/champion.pt
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: quiet-b-claustro-safe-${{ runner.os }}-${{ hashFiles('tools/external/bot_setup.py', 'tools/external/claustrophobia_benchmark_bridge.rs', 'training/teachers/claustrophobia_ipc_eval.rs', 'training/teachers/claustrophobia_inference_worker.py') }}
+          restore-keys: |
+            quiet-b-claustro-safe-${{ runner.os }}-
+      - name: Install Claustrophobia CPU inference dependencies
+        if: matrix.opponent == 'claustrophobia'
+        run: |
+          python -m pip install numpy
+          python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
+      - name: Compile identical ZQuoridor code and NNUE
+        run: |
+          mkdir -p bin/quiet_walls_deep
+          g++ -O3 -std=c++17 -march=native -Isrc tools/external/zquoridor_uci.cpp -o bin/quiet_walls_deep/zquoridor_uci
+      - name: 200 color-paired fixed-movetime games vs external opponent
+        shell: bash
+        run: |
+          set -euo pipefail
+          variant_args=()
+          if [[ "${{ matrix.variant }}" == "B" ]]; then
+            variant_args=(--zq-arg=--quiet-walls-mode --zq-arg=2 --zq-arg=--quiet-walls-weight --zq-arg=0.08)
+          fi
+          python -u tools/run_benchmark.py \
+            --opponents "${{ matrix.opponent }}" \
+            --pairs 100 --workers 1 \
+            --seed "${{ matrix.seed }}" \
+            --openings "${{ matrix.openings }}" \
+            --output "results/quiet_walls/deep/external/${{ matrix.opponent }}-${{ matrix.variant }}-${{ matrix.book }}" \
+            --zq-executable bin/quiet_walls_deep/zquoridor_uci \
+            --nnue data/nnue/nnue_weights_int8.bin \
+            --zq-move-time-ms 200 \
+            --claustrophobia-move-time-ms 200 \
+            --titanium-move-time-ms 200 \
+            --claustrophobia-device cpu \
+            --bootstrap 5000 \
+            "${variant_args[@]}"
+      - name: Upload complete records for elapsed-clock analysis
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: quiet-b-ext-${{ matrix.opponent }}-${{ matrix.variant }}-${{ matrix.book }}
+          path: results/quiet_walls/deep/external/${{ matrix.opponent }}-${{ matrix.variant }}-${{ matrix.book }}
+          if-no-files-found: warn
+          retention-days: 21
+
+  aggregate:
+    name: collect-and-compare
+    needs: [h2h, external]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: quiet-b-*
+          path: artifacts
+      - name: Consolidate H2H and paired external calibration
+        run: |
+          python - <<'PY'
+          import json
+          import statistics
+          from pathlib import Path
+
+          root = Path("artifacts")
+          rows, timing = [], []
+          for folder in sorted(root.glob("quiet-b-*")):
+              report_path = next(folder.rglob("summary.json"), None)
+              if report_path is None:
+                  rows.append({"artifact": folder.name, "missing_summary": True})
+                  continue
+              report = json.loads(report_path.read_text())
+              if folder.name.startswith("quiet-b-h2h-"):
+                  summary = report.get("summary") or {}
+                  rows.append({"artifact": folder.name, "category": "h2h",
+                               "variant": "B", "summary": summary})
+              else:
+                  _, _, _, opponent, variant, book = folder.name.split("-")
+                  summary = (report.get("summaries") or {}).get(opponent, {})
+                  rows.append({"artifact": folder.name, "category": "external",
+                               "opponent": opponent, "variant": variant,
+                               "book": book, "summary": summary})
+              games_file = next(folder.rglob("games.jsonl"), None)
+              if games_file is not None:
+                  by_player = {}
+                  for line in games_file.read_text().splitlines():
+                      if not line.strip():
+                          continue
+                      for event in json.loads(line).get("move_times", []):
+                          who = event.get("player")
+                          if who and "elapsed_ms" in event:
+                              by_player.setdefault(who, []).append(float(event["elapsed_ms"]))
+                  for player, ms in by_player.items():
+                      timing.append({"artifact": folder.name, "player": player,
+                                     "moves": len(ms), "mean_elapsed_ms": round(statistics.mean(ms), 2),
+                                     "p95_elapsed_ms": round(sorted(ms)[int(0.95 * (len(ms)-1))], 2)})
+          by_key = {(r.get("opponent"), r.get("book"), r.get("variant")): r
+                    for r in rows if r.get("category") == "external"}
+          deltas = []
+          for opponent in ("claustrophobia", "titanium"):
+              for book in ("normal", "center"):
+                  base = by_key.get((opponent, book, "main"))
+                  cand = by_key.get((opponent, book, "B"))
+                  b = (base or {}).get("summary", {}).get("score_pct")
+                  c = (cand or {}).get("summary", {}).get("score_pct")
+                  deltas.append({"opponent": opponent, "book": book,
+                                 "main_score_pct": b, "B_score_pct": c,
+                                 "delta_pp": (round(c-b, 4) if c is not None and b is not None else None)})
+          expected = {f"quiet-b-h2h-{b}" for b in ("normal", "center")}
+          expected |= {f"quiet-b-ext-{o}-{v}-{b}" for o in ("claustrophobia", "titanium")
+                      for v in ("main", "B") for b in ("normal", "center")}
+          missing = sorted(expected - {r["artifact"] for r in rows})
+          result = {"schema": "zquoridor.quiet_b_deep.v1",
+                    "target": {"h2h_games": 500, "external_games_per_opponent_for_B": 400,
+                               "baseline_calibration_games_per_opponent": 400,
+                               "movetime_ms": 200, "claustrophobia_device": "cpu"},
+                    "rows": rows, "external_deltas": deltas,
+                    "move_timings": timing, "missing_artifacts": missing}
+          Path("aggregate").mkdir(exist_ok=True)
+          Path("aggregate/quiet_b_deep.json").write_text(json.dumps(result, indent=2)+"\n")
+          for row in rows:
+              s = row.get("summary", {})
+              print(row["artifact"], "games", s.get("included_games"),
+                    "failed", s.get("failed_games"), "score", s.get("score_pct"),
+                    "elo", s.get("elo"), "95% CI", s.get("elo_ci_95"))
+          print("EXTERNAL DELTAS:", json.dumps(deltas, indent=2))
+          print("TIMINGS:", json.dumps(timing, indent=2))
+          print("MISSING ARTIFACTS:", missing)
+          PY
+      - name: Upload consolidated report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: quiet-b-deep-aggregate
+          path: aggregate/
+          retention-days: 21
