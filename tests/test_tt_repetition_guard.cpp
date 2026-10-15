@@ -30,16 +30,16 @@ int main() {
     engine.setQuiescenceEnabled(false);
     SearchStats stats;
     engine.searchLeaf(root, 1, stats, history);
-    if (engine.testHasTTEntry(root.hash)) {
-        std::fprintf(stderr, "FAILED: path-dependent root stored in TT\n");
+    if (!engine.testTTMoveOnly(root.hash) || engine.testTTReusableScore(root.hash)) {
+        std::fprintf(stderr, "FAILED: tainted root must keep move-only ordering, never score/bound\n");
         return 1;
     }
 
     RepetitionTable clean;
     clean.markRoot();
     const int reused = engine.searchLeaf(root, 1, stats, clean);
-    if (!engine.testHasTTEntry(root.hash)) {
-        std::fprintf(stderr, "FAILED: history-independent result not cached\n");
+    if (!engine.testTTReusableScore(root.hash) || engine.testTTMoveOnly(root.hash)) {
+        std::fprintf(stderr, "FAILED: history-independent score not cached\n");
         return 2;
     }
 
@@ -50,6 +50,6 @@ int main() {
         std::fprintf(stderr, "FAILED: clean search differs after tainted search: %d != %d\n",reused,reference);
         return 6;
     }
-    std::printf("TT repetition guard PASS: tainted TT suppressed, clean TT admitted, scores match\n");
+    std::printf("TT repetition gate fix PASS: tainted root MOVE_ONLY; clean TT score admitted; scores match\n");
     return 0;
 }
