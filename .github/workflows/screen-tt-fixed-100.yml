@@ -1,0 +1,67 @@
+name: "ZQ 4.01 corrected TT - 100-game matched selfplay"
+on:
+  push:
+    branches: [exp/tt-fixed-100-20261014]
+    paths: [".github/workflows/screen-tt-fixed-100.yml", "src/**", "tests/**"]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  paired:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - family: normal
+            openings: tools/external/openings_normal_confirm_400.jsonl
+          - family: center
+            openings: tools/external/openings_center_rush_sound_5k.jsonl
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: candidate
+          ref: ${{ github.sha }}
+      - uses: actions/checkout@v4
+        with:
+          path: baseline
+          ref: 806a50877f16d6e6f82b65e86d2a27a10916ad13
+      - name: Test history-dependent TT score safety and legal repetition
+        run: |
+          set -euo pipefail
+          mkdir -p candidate/bin baseline/bin
+          g++ -O2 -std=c++17 -DZQ_EXP_TT_REPETITION_GUARD=1 \
+            -I candidate/src candidate/tests/test_tt_repetition_guard.cpp -o candidate/bin/tt_safety
+          (cd candidate && bin/tt_safety)
+          g++ -O2 -std=c++17 -DZQ_EXP_TT_REPETITION_GUARD=1 \
+            -I candidate/src candidate/tests/test_repetition_diff.cpp -o candidate/bin/repetition_diff
+          (cd candidate && bin/repetition_diff)
+      - name: Build corrected TT and exact 4.01 control
+        run: |
+          set -euo pipefail
+          g++ -O3 -std=c++17 -march=native -mavx2 -mfma \
+            -DZQ_EXP_TT_REPETITION_GUARD=1 -I candidate/src \
+            candidate/tools/external/zquoridor_uci.cpp -o candidate/bin/zq_tt_fixed
+          g++ -O3 -std=c++17 -march=native -mavx2 -mfma \
+            -I baseline/src baseline/tools/external/zquoridor_uci.cpp -o baseline/bin/zq_main
+      - name: Paired normal/central selfplay at exactly 200ms (50 games each)
+        run: |
+          cd candidate
+          python -u tools/match_finalists.py \
+            --engine1-name tt_fixed --engine1-executable bin/zq_tt_fixed \
+            --engine1-nnue data/nnue/nnue_weights_int8.bin \
+            --engine2-name main401 --engine2-executable ../baseline/bin/zq_main \
+            --engine2-nnue data/nnue/nnue_weights_int8.bin \
+            --openings ${{ matrix.openings }} \
+            --pairs 25 --move-time-ms 200 --workers 1 --seed 20261015 \
+            --bootstrap 5000 \
+            --output results/benchmarks/tt_fixed_100/${{ matrix.family }}
+      - name: Upload opening-level scores
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tt-fixed100-${{ matrix.family }}
+          path: candidate/results/benchmarks/tt_fixed_100/
+          if-no-files-found: warn
+          retention-days: 21
