@@ -200,13 +200,31 @@ static Options parseArgs(int argc, char** argv) {
 
 int main(int argc, char** argv) {
     const Options opt = parseArgs(argc, argv);
-    if (opt.nnuePath.empty()) {
-        std::cerr << "--nnue PATH is required\n";
-        return 2;
+    std::string nnuePath = opt.nnuePath;
+    if (nnuePath.empty()) {
+        nnuePath = qr::defaultNnueWeightsPath();
     }
-    if (!qr::loadWeightsQuant(opt.nnuePath)) {
-        std::cerr << "failed to load NNUE weights: " << opt.nnuePath << "\n";
-        return 3;
+    if (!qr::loadWeightsQuant(nnuePath)) {
+        std::vector<std::string> fallbacks = {
+            "data/nnue/nnue_weights_int8.bin",
+            "../data/nnue/nnue_weights_int8.bin",
+            "/content/zquoridor/data/nnue/nnue_weights_int8.bin",
+            "/content/Zquoridor/data/nnue/nnue_weights_int8.bin",
+            "results/experiments/contact_soup_tri_512/soup_tri_champion/student_int8.bin",
+            "../results/experiments/contact_soup_tri_512/soup_tri_champion/student_int8.bin"
+        };
+        bool loaded = false;
+        for (const auto& fb : fallbacks) {
+            if (qr::loadWeightsQuant(fb)) {
+                loaded = true;
+                nnuePath = fb;
+                break;
+            }
+        }
+        if (!loaded) {
+            std::cerr << "failed to load NNUE weights: " << (opt.nnuePath.empty() ? nnuePath : opt.nnuePath) << "\n";
+            return 3;
+        }
     }
 
     qr::Negamax engine;

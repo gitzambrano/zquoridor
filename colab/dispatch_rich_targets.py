@@ -25,7 +25,11 @@ import subprocess
 from pathlib import Path
 
 if not Path('/content/drive/MyDrive').is_dir():
-    drive.mount('/content/drive')
+    try:
+        drive.mount('/content/drive')
+    except Exception as e:
+        print('Initial drive mount failed, attempting force remount:', e, flush=True)
+        drive.mount('/content/drive', force_remount=True)
 
 checkout = Path('/content/zquoridor')
 if not checkout.exists():
@@ -35,6 +39,8 @@ else:
     print('Updating repository to latest main...', flush=True)
     subprocess.run(['git', '-C', str(checkout), 'fetch', 'origin', 'main'], check=True)
     subprocess.run(['git', '-C', str(checkout), 'reset', '--hard', 'origin/main'], check=True)
+
+os.chdir(checkout)
 
 runtime_dir = Path('/content/zquoridor_runtime')
 runtime_dir.mkdir(parents=True, exist_ok=True)
@@ -47,11 +53,10 @@ subprocess.run(['g++', '-O3', '-std=c++17', '-mavx2', '-mfma',
 zq_bin.chmod(0o755)
 
 # Verify version 4.01 in UCI identity
-chk = subprocess.run([str(zq_bin)], input='uci\\nquit\\n', capture_output=True, text=True, check=True)
+chk = subprocess.run([str(zq_bin)], input='uci\\nquit\\n', capture_output=True, text=True, check=True, cwd=str(checkout))
 ver_lines = [l.strip() for l in chk.stdout.splitlines() if 'id name' in l]
 print('Engine verification:', ver_lines, flush=True)
 
-os.chdir(checkout)
 print('Launching: {job_label}', flush=True)
 !{cli_command}
 """
@@ -84,7 +89,7 @@ def handle_dialogs(page: Any) -> str:
     """Handle all known Colab modals accurately without closing them erroneously."""
     try:
         res = page.evaluate("""() => {
-            const dialogs = Array.from(document.querySelectorAll('mwc-dialog, colab-dialog')).filter(d => d.open || d.offsetParent !== null);
+            const dialogs = Array.from(document.querySelectorAll('mwc-dialog, colab-dialog, paper-dialog, md-dialog, .modal-dialog')).filter(d => d.open || d.offsetParent !== null || (window.getComputedStyle(d).display !== 'none' && window.getComputedStyle(d).visibility !== 'hidden'));
             for (const d of dialogs) {
                 const txt = (d.innerText || '');
                 if (txt.includes('limites de uso do Colab') || txt.includes('GPU usage limits') || txt.includes('limite de uso') || txt.includes('usage limits')) {
@@ -96,11 +101,13 @@ def handle_dialogs(page: Any) -> str:
                         }
                     }
                 }
-                for (const b of d.querySelectorAll('button, md-text-button, mwc-button, paper-button')) {
-                    const btxt = (b.innerText || '').toLowerCase();
-                    if (btxt.includes('conectar ao google drive') || btxt.includes('connect to google drive')) {
-                        b.click();
-                        return { action: 'drive_connected' };
+                if (txt.includes('Google Drive') || txt.includes('drive')) {
+                    for (const b of d.querySelectorAll('button, md-text-button, mwc-button, paper-button, #ok')) {
+                        const btxt = (b.innerText || '').toLowerCase();
+                        if (btxt.includes('conectar') || btxt.includes('connect') || btxt.includes('permitir') || btxt.includes('allow') || b.id === 'ok') {
+                            b.click();
+                            return { action: 'drive_connected' };
+                        }
                     }
                 }
                 for (const b of d.querySelectorAll('button, md-text-button, mwc-button, paper-button')) {
@@ -110,7 +117,7 @@ def handle_dialogs(page: Any) -> str:
                         return { action: 'run_anyway' };
                     }
                 }
-                if (txt.includes('disconnected') || txt.includes('desconectado') || txt.includes('Falha ao executar')) {
+                if (txt.includes('disconnected') || txt.includes('desconectado') || txt.includes('Falha ao executar') || txt.includes('Erro ao executar')) {
                     for (const b of d.querySelectorAll('button, md-text-button, mwc-button, paper-button')) {
                         const btxt = (b.innerText || '').toLowerCase();
                         if (btxt.includes('cancelar') || btxt.includes('ok') || btxt.includes('fechar') || btxt.includes('close')) {
@@ -140,6 +147,14 @@ def handle_oauth(ctx: Any) -> bool:
             except Exception:
                 pass
         pg = oauth_pages[-1]
+
+        # Handle account selection tile if present
+        acc_tiles = pg.locator("[data-identifier], [data-email]")
+        if acc_tiles.count() > 0:
+            print("  [OAuth] Account tile found, clicking...", flush=True)
+            acc_tiles.first.click()
+            time.sleep(2)
+
         checkboxes = pg.locator("input[type='checkbox']").all()
         for cb in checkboxes:
             if not cb.is_checked():
@@ -188,6 +203,10 @@ def connect_runtime_if_needed(page: Any) -> bool:
     """Ensure runtime is connected if currently disconnected."""
     try:
         return page.evaluate("""() => {
+            const nb = globalThis.colab?.global?.notebook;
+            if (nb && typeof nb.connectKernel === 'function') {
+                try { nb.connectKernel(); } catch (e) {}
+            }
             const btn = document.querySelector('colab-connect-button');
             if (btn && btn.shadowRoot) {
                 const conn = btn.shadowRoot.querySelector('#connect');
@@ -206,31 +225,50 @@ def connect_runtime_if_needed(page: Any) -> bool:
 
 
 def get_cell_execution_state(page: Any) -> Dict[str, Any]:
-    """Inspect execution status, pending state, and current stdout tail from colab-run-button."""
+    """Inspect execution status, pending state, error state, and current stdout tail."""
     try:
         return page.evaluate("""() => {
             let running = false;
             let pending = false;
+            let hasError = false;
             let out = '';
+
+            const nb = globalThis.colab?.global?.notebook;
+            const cell = nb?.cells?.[0];
+            const isBusy = cell ? !!cell.busy : false;
+            const lastFailed = cell ? !!cell.lastExecutionFailed : false;
 
             const btn = document.querySelector('colab-run-button');
             const sr = btn ? btn.shadowRoot : null;
             const wrap = sr ? sr.querySelector('.cell-execution') : null;
             const cls = wrap ? wrap.className : '';
-            if (cls.includes('running')) running = true;
-            if (cls.includes('pending') || cls.includes('waiting')) pending = true;
 
-            const d = document.querySelector('.output, colab-output, .output-stream, .output_text');
-            out = d ? (d.innerText || '') : '';
+            // If it is busy, running, or animating, it is actively executing!
+            if (isBusy || cls.includes('running') || cls.includes('animating')) {
+                running = true;
+                hasError = false;
+            } else {
+                running = false;
+                if (cls.includes('error') || lastFailed) {
+                    hasError = true;
+                }
+            }
+            if (cls.includes('pending') || cls.includes('waiting')) {
+                pending = true;
+            }
+
+            const streams = Array.from(document.querySelectorAll('.output-stream, colab-output, .output_text'));
+            out = streams.map(s => s.innerText || '').join('\\n');
 
             return {
                 running: running,
                 pending: pending,
-                out: out.trim().slice(-300)
+                hasError: hasError,
+                out: out.trim().slice(-400)
             };
         }""")
     except Exception as exc:
-        return {"running": False, "pending": False, "out": f"error: {exc}"}
+        return {"running": False, "pending": False, "hasError": True, "out": f"error: {exc}"}
 
 
 def interrupt_cell(page: Any) -> bool:
@@ -263,7 +301,7 @@ def interrupt_cell(page: Any) -> bool:
 
 
 def set_cell_code(page: Any, code: str) -> bool:
-    """Inject Python source code into Cell 0 of the Colab notebook."""
+    """Inject Python source code into Cell 0 of the Colab notebook and purge duplicate cells."""
     try:
         return page.evaluate("""async (newCode) => {
             const nb = globalThis.colab?.global?.notebook;
@@ -277,6 +315,16 @@ def set_cell_code(page: Any, code: str) -> bool:
                 }
             }
             if (!nb.cells || nb.cells.length === 0) return false;
+
+            // Delete any extra duplicate cells from previous runs
+            while (nb.cells && nb.cells.length > 1) {
+                if (typeof nb.deleteCell === 'function') {
+                    nb.deleteCell(nb.cells[1]);
+                } else {
+                    break;
+                }
+            }
+
             const cell = nb.cells[0];
             if (typeof cell.setText === 'function') cell.setText(newCode);
             if (cell.model && typeof cell.model.setText === 'function') cell.model.setText(newCode);
@@ -304,17 +352,17 @@ def click_run_button(page: Any) -> bool:
     """Click the Run button for Cell 0."""
     try:
         return page.evaluate("""() => {
+            const nb = globalThis.colab?.global?.notebook;
+            const cell = nb?.cells ? nb.cells[0] : null;
+            if (cell && typeof cell.manualExecute === 'function') {
+                cell.manualExecute();
+                return true;
+            }
             const btn = document.querySelector('colab-run-button');
             const sr = btn ? btn.shadowRoot : null;
             const inner = sr ? sr.querySelector('#run-button') : null;
             if (inner) {
                 inner.click();
-                return true;
-            }
-            const nb = globalThis.colab?.global?.notebook;
-            const cell = nb?.cells ? nb.cells[0] : null;
-            if (cell && typeof cell.manualExecute === 'function') {
-                cell.manualExecute();
                 return true;
             }
             return false;
@@ -370,12 +418,12 @@ def deploy_worker(p: Any, wid: int, force_relaunch: bool = True) -> Dict[str, An
     }""")
 
     st = get_cell_execution_state(page)
-    is_active = st["running"] or st["pending"]
+    is_active = (st["running"] or st["pending"]) and not st.get("hasError", False)
 
     if is_active and has_v401_code and not force_relaunch:
         print(f"  Worker {wid} is already running version 4.01! Preserving current execution.", flush=True)
     else:
-        if is_active:
+        if st["running"] or st["pending"]:
             print(f"  Worker {wid}: Stopping current execution to ensure latest git commits...", flush=True)
             interrupt_cell(page)
             for _ in range(6):
@@ -386,14 +434,14 @@ def deploy_worker(p: Any, wid: int, force_relaunch: bool = True) -> Dict[str, An
                     break
 
         code = BOOTLOADER_TEMPLATE.format(job_label=spec["job_label"], cli_command=spec["cli_command"])
-        print("  Injecting code into Cell 0...", flush=True)
+        print("  Injecting code into Cell 0 and purging duplicate cells...", flush=True)
         set_cell_code(page, code)
         time.sleep(2)
 
         print("  Triggering run execution...", flush=True)
         click_run_button(page)
 
-    for _ in range(3):
+    for _ in range(4):
         time.sleep(2)
         handle_oauth(ctx)
         handle_recaptcha(page)
@@ -401,7 +449,7 @@ def deploy_worker(p: Any, wid: int, force_relaunch: bool = True) -> Dict[str, An
         connect_runtime_if_needed(page)
 
     st = get_cell_execution_state(page)
-    print(f"  Worker {wid} deployed: running={st['running']}, pending={st['pending']}", flush=True)
+    print(f"  Worker {wid} deployed: running={st['running']}, pending={st['pending']}, hasError={st.get('hasError')}", flush=True)
 
     return {
         "wid": wid,
@@ -467,28 +515,25 @@ def main():
                         handle_recaptcha(page)
                         handle_dialogs(page)
                         st = get_cell_execution_state(page)
-                        is_active = st["running"] or st["pending"]
+                        is_active = (st["running"] or st["pending"]) and not st.get("hasError", False)
 
                         if not is_active:
+                            print(f"  Worker {wid} not active (running={st['running']}, hasError={st.get('hasError')}). Re-running...", flush=True)
                             connect_runtime_if_needed(page)
                             handle_dialogs(page)
                             spec = JOB_SPECS[wid]
-                            has_code = page.evaluate("""(kw) => {
-                                const c = globalThis.colab?.global?.notebook?.cells?.[0];
-                                const t = c && c.getText ? c.getText() : '';
-                                return t.includes(kw);
-                            }""", "v401")
-                            if not has_code:
-                                code = BOOTLOADER_TEMPLATE.format(job_label=spec["job_label"], cli_command=spec["cli_command"])
-                                set_cell_code(page, code)
-                                time.sleep(2)
-                            click_run_button(page)
+                            code = BOOTLOADER_TEMPLATE.format(job_label=spec["job_label"], cli_command=spec["cli_command"])
+                            set_cell_code(page, code)
                             time.sleep(2)
+                            click_run_button(page)
+                            time.sleep(3)
+                            handle_oauth(ctx)
+                            handle_dialogs(page)
                             st = get_cell_execution_state(page)
-                            is_active = st["running"] or st["pending"]
+                            is_active = (st["running"] or st["pending"]) and not st.get("hasError", False)
 
                         raw_out = st["out"].replace("\n", " ").strip()
-                        out_snip = raw_out[-80:] if raw_out else "(compiling / initializing environment...)"
+                        out_snip = raw_out[-100:] if raw_out else "(compiling / initializing environment...)"
                         tag = "RUNNING" if is_active else "STOPPED"
                         print(f"  Worker {wid} [{st_info['job_label']}] [{tag}] -> {out_snip}", flush=True)
 
