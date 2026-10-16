@@ -152,6 +152,7 @@ def query_engine_root(
             text=True,
             check=True,
             timeout=30.0,
+            cwd=str(ROOT),
         )
     except (subprocess.SubprocessError, FileNotFoundError):
         return None
