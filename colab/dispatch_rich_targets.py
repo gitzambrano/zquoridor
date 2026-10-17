@@ -63,23 +63,23 @@ print('Launching: {job_label}', flush=True)
 
 JOB_SPECS = {
     1: {
-        "job_label": "Wall Drops v4.01 (Medium Mazes: 3-8 walls) [Batch 1]",
-        "cli_command": "python -u tools/generate_wall_drops.py --count 10000 --min-walls 3 --max-walls 8 --pawn-walk-plies 4 --move-time-ms 20 --teacher zquoridor-4.01 --zq-executable /content/zquoridor_runtime/zquoridor_uci --output /content/drive/MyDrive/zquoridor_data/wall_drops_v401/worker_1 --seed 1000001",
+        "job_label": "Wall Drops v4.01 (Medium Mazes: 3-8 walls) [Target: 20,000]",
+        "cli_command": "python -u tools/generate_wall_drops.py --count 20000 --min-walls 3 --max-walls 8 --pawn-walk-plies 4 --move-time-ms 20 --teacher zquoridor-4.01 --zq-executable /content/zquoridor_runtime/zquoridor_uci --output /content/drive/MyDrive/zquoridor_data/wall_drops_v401/worker_1 --seed 1000001",
     },
     2: {
-        "job_label": "Wall Drops v4.01 (Extreme Mazes: 8-14 walls) [Batch 1]",
-        "cli_command": "python -u tools/generate_wall_drops.py --count 10000 --min-walls 8 --max-walls 14 --pawn-walk-plies 4 --move-time-ms 20 --teacher zquoridor-4.01 --zq-executable /content/zquoridor_runtime/zquoridor_uci --output /content/drive/MyDrive/zquoridor_data/wall_drops_v401/worker_2 --seed 2000002",
+        "job_label": "Wall Drops v4.01 (Extreme Mazes: 8-14 walls) [Target: 20,000]",
+        "cli_command": "python -u tools/generate_wall_drops.py --count 20000 --min-walls 8 --max-walls 14 --pawn-walk-plies 4 --move-time-ms 20 --teacher zquoridor-4.01 --zq-executable /content/zquoridor_runtime/zquoridor_uci --output /content/drive/MyDrive/zquoridor_data/wall_drops_v401/worker_2 --seed 2000002",
     },
     3: {
-        "job_label": "Gumbel AlphaZero Sequential Halving v4.01 (Top-K=8, 15ms) [Batch 1]",
+        "job_label": "Gumbel AlphaZero Sequential Halving v4.01 (Top-K=8, 15ms) [Target: 10,000]",
         "cli_command": "python -u tools/generate_gumbel_sims.py --count 10000 --top-k 8 --c-scale 2.0 --move-time-ms 15 --teacher zquoridor-4.01-gumbel --zq-executable /content/zquoridor_runtime/zquoridor_uci --output /content/drive/MyDrive/zquoridor_data/gumbel_sims_v401/worker_3 --seed 3000003",
     },
     4: {
-        "job_label": "Gumbel AlphaZero Sequential Halving v4.01 (Top-K=8, 15ms) [Batch 1]",
+        "job_label": "Gumbel AlphaZero Sequential Halving v4.01 (Top-K=8, 15ms) [Target: 10,000]",
         "cli_command": "python -u tools/generate_gumbel_sims.py --count 10000 --top-k 8 --c-scale 2.0 --move-time-ms 15 --teacher zquoridor-4.01-gumbel --zq-executable /content/zquoridor_runtime/zquoridor_uci --output /content/drive/MyDrive/zquoridor_data/gumbel_sims_v401/worker_4 --seed 4000004",
     },
     5: {
-        "job_label": "Gumbel Deep Planning v4.01 (Top-K=16, 20ms) [Batch 1]",
+        "job_label": "Gumbel Deep Planning v4.01 (Top-K=16, 20ms) [Target: 10,000]",
         "cli_command": "python -u tools/generate_gumbel_sims.py --count 10000 --top-k 16 --c-scale 2.5 --move-time-ms 20 --teacher zquoridor-4.01-gumbel --zq-executable /content/zquoridor_runtime/zquoridor_uci --output /content/drive/MyDrive/zquoridor_data/gumbel_sims_v401/worker_5 --seed 5000005",
     },
 }
