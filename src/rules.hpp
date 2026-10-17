@@ -9,6 +9,9 @@
 #include <vector>
 #include <random>
 #include <cassert>
+#ifndef ZQ_EXP_TOPOLOGY_REACH_CACHE
+#define ZQ_EXP_TOPOLOGY_REACH_CACHE 0
+#endif
 
 namespace qr {
 
@@ -767,6 +770,48 @@ inline void computeDistCached(uint64_t wallsH, uint64_t wallsV, int startCell, i
     if (xtable) xtable->put(wallsH, wallsV, startCell, player, out);
 }
 
+#if ZQ_EXP_TOPOLOGY_REACH_CACHE
+// Exact reachability bitmap shared across pawn positions of an identical
+// hypothetical wall topology. Misses use a reverse flood from the goal row.
+struct GoalReachabilityCacheEntry {
+    uint64_t h = 0, v = 0;
+    uint64_t reached[2] = {};
+    uint8_t side = 0;
+    bool valid = false;
+};
+inline bool topologyCanReachGoal(uint64_t wallsH, uint64_t wallsV, int pawnCell, int side) {
+    static thread_local std::array<GoalReachabilityCacheEntry, 2048> table{};
+    uint64_t key = wallsH * 0x9E3779B97F4A7C15ull;
+    key ^= (wallsV + 0xD1B54A32D192ED03ull) * 0xBF58476D1CE4E5B9ull;
+    key ^= (uint64_t)side * 0x94D049BB133111EBull;
+    key ^= key >> 30;
+    auto& e = table[(size_t)key & (table.size() - 1)];
+    if (!e.valid || e.h != wallsH || e.v != wallsV || e.side != side) {
+        e.h = wallsH; e.v = wallsV; e.side = (uint8_t)side; e.valid = true;
+        e.reached[0] = e.reached[1] = 0;
+        std::array<uint8_t, N*N> queue{};
+        int head = 0, tail = 0;
+        int goal = GOAL_ROW[side] * N;
+        for (int col = 0; col < N; ++col) {
+            int cell = goal + col;
+            e.reached[cell >> 6] |= 1ull << (cell & 63);
+            queue[(size_t)tail++] = (uint8_t)cell;
+        }
+        while (head < tail) {
+            const int cell = queue[(size_t)head++];
+            for (int dir = 0; dir < 4; ++dir) {
+                const int next = ORTH_NEIGHBOR[(size_t)cell][(size_t)dir];
+                if (next < 0 || ((e.reached[next >> 6] >> (next & 63)) & 1ull) ||
+                    edgeBlockedDir(wallsH, wallsV, cell, dir)) continue;
+                e.reached[next >> 6] |= 1ull << (next & 63);
+                queue[(size_t)tail++] = (uint8_t)next;
+            }
+        }
+    }
+    return ((e.reached[pawnCell >> 6] >> (pawnCell & 63)) & 1ull) != 0;
+}
+#endif
+
 // lances de peão (ortogonais + saltos retos/diagonais) -- grava direto
 // como Move::pawn(destCell) em out (Fase 4.2.2: sem std::vector<int>
 // intermediário, out é o MoveList final de legalMoves).
@@ -882,8 +927,13 @@ inline void legalWallMoves(const State& s, int player, MoveList& out,
             uint64_t nh = s.wallsH, nv = s.wallsV;
             if (orientation == 0) nh |= (1ull << slot);
             else nv |= (1ull << slot);
+#if ZQ_EXP_TOPOLOGY_REACH_CACHE
+            if (touches0 && !topologyCanReachGoal(nh, nv, s.pawn[0], 0)) continue;
+            if (touches1 && !topologyCanReachGoal(nh, nv, s.pawn[1], 1)) continue;
+#else
             if (touches0 && !hasPathToGoal(nh, nv, s.pawn[0], 0)) continue;
             if (touches1 && !hasPathToGoal(nh, nv, s.pawn[1], 1)) continue;
+#endif
             out.push_back(Move::wall(orientation, r, cc));
         }
     }
