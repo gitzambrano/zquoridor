@@ -59,6 +59,9 @@
 #ifndef ZQ_EXP_EDGE_ACC_CACHE
 #define ZQ_EXP_EDGE_ACC_CACHE 0
 #endif
+#ifndef ZQ_EXP_SPARSE_POLICY
+#define ZQ_EXP_SPARSE_POLICY 0
+#endif
 #ifndef ZQ_EXP_EDGE_ACC_FULL_CANONICAL
 #define ZQ_EXP_EDGE_ACC_FULL_CANONICAL 0
 #endif
@@ -1760,8 +1763,20 @@ private:
         activateWidening(node, desired);
     }
 
+    template <class AccT>
+    static auto forwardSparseDispatch(const AccT& acc, const MoveListT& legal, int side,
+                                      std::array<float, PolicyDim>& out, int)
+        -> decltype(forwardPolicyQuantSparse(acc, legal, side, out), void()) {
+        forwardPolicyQuantSparse(acc, legal, side, out);
+    }
+    template <class AccT>
+    static void forwardSparseDispatch(const AccT& acc, const MoveListT&, int,
+                                      std::array<float, PolicyDim>& out, long) {
+        forwardPolicyQuant(acc, out);  // generic toy-engine fallback
+    }
     void policyOutputForNode(const NodeT& node, int depthInTree,
-                             std::array<float, PolicyDim>& out, McabStats& mstats) {
+                             std::array<float, PolicyDim>& out, McabStats& mstats,
+                             const MoveListT* legal = nullptr) {
         uint64_t key = params.evalCache ? mcabEvalStateKey(node.state, 0) : 0;
         if (key != 0) {
             if (auto* entry = findPolicyEvalCache(key)) {
@@ -1770,7 +1785,14 @@ private:
                 return;
             }
         }
+#if ZQ_EXP_SPARSE_POLICY
+        if (legal) forwardSparseDispatch(mcabAccStack[depthInTree].acc[node.side], *legal,
+                                         node.side, out, 0);
+        else forwardPolicyQuant(mcabAccStack[depthInTree].acc[node.side], out);
+#else
+        (void)legal;
         forwardPolicyQuant(mcabAccStack[depthInTree].acc[node.side], out);
+#endif
         if (key != 0) {
             auto& entry = storePolicyEvalCache(key, mstats);
             entry.policy = out;
@@ -1791,7 +1813,7 @@ private:
 
             if (nm > 0) {
                 std::array<float, PolicyDim> policyOut{};
-                policyOutputForNode(node, depthInTree, policyOut, mstats);
+                policyOutputForNode(node, depthInTree, policyOut, mstats, &node.moves);
                 // perf/speed-elo-100: era std::vector<float> alocado por
                 // expansao; nm <= 131 < PolicyDim(=209), entao um buffer de
                 // pilha elimina o malloc do caminho quente.
