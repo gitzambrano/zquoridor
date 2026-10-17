@@ -1,0 +1,51 @@
+name: "MCGS Sparse Policy strict preflight before extended games"
+on:
+  push:
+    branches: [exp/mcgs-sparse-deep-20261017]
+    paths: [.github/workflows/mcgs-sparse-strict-gate.yml, tests/test_mcgs_opt_correctness.cpp]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  sparse-policy-gate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compile full policy reference and sparse policy with the same C++ implementation
+        run: |
+          set -euo pipefail
+          mkdir -p bin
+          g++ -std=c++17 -O2 -march=native -mavx2 -mfma -DZQ_EXP_SPARSE_POLICY=1 -I src tests/test_mcgs_opt_correctness.cpp -o bin/test_sparse_exact
+          g++ -std=c++17 -O2 -march=native -mavx2 -mfma -DZQ_EXP_SPARSE_POLICY=1 -I src tests/test_mcab_core.cpp -o bin/test_mcab_sparse
+          g++ -std=c++17 -O3 -march=native -mavx2 -mfma -DZQ_EXP_SPARSE_POLICY=0 -I src tools/external/zquoridor_uci.cpp -o bin/zq_full
+          g++ -std=c++17 -O3 -march=native -mavx2 -mfma -DZQ_EXP_SPARSE_POLICY=1 -I src tools/external/zquoridor_uci.cpp -o bin/zq_sparse
+      - name: Check exact legal-action policy values, normalized priors, MCAB invariants
+        run: |
+          set -euo pipefail
+          bin/test_sparse_exact
+          bin/test_mcab_sparse
+      - name: Validate actual MCGS root action priors versus full policy on both opening families
+        run: |
+          python - <<'PY'
+          import json,random,subprocess
+          from pathlib import Path
+          cases=[]
+          for n,book in enumerate(["tools/external/openings_normal_confirm_400.jsonl","tools/external/openings_center_rush_sound_5k.jsonl"]):
+              lines=[json.loads(line)["moves"] for line in Path(book).read_text().splitlines() if line.strip()]
+              idx=list(range(len(lines)))
+              random.Random(20261029+n).shuffle(idx)
+              cases.extend(lines[j] for j in idx[:24])
+          def root(exe,moves):
+              cmd="position startpos"+(" moves "+" ".join(moves) if moves else "")+"\ngo movetime 75\nquit\n"
+              output=subprocess.run([exe,"--nnue","data/nnue/nnue_weights_int8.bin","--dump-root"],input=cmd,text=True,capture_output=True,timeout=15,check=True).stdout
+              rows=[json.loads(s.split("root_json ",1)[1]) for s in output.splitlines() if "root_json " in s]
+              assert len(rows)==1,output[-1000:]
+              return rows[0]
+          for index,moves in enumerate(cases):
+              a=root("bin/zq_full",moves)
+              b=root("bin/zq_sparse",moves)
+              assert a["priors"]==b["priors"],f"root priors mismatch in opening {index} ({len(moves)} plies)"
+              assert a["side_to_move"]==b["side_to_move"]
+          print(f"PASS: 48 identical 209-dimensional root priors from production UCI engines.")
+          PY
