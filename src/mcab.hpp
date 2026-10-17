@@ -1904,6 +1904,12 @@ private:
         if (params.backupMode == BackupMode::AvgBlend) {
             if (node.totalN <= 0) return 0.5;
 #if ZQ_EXP_PUCT_EDGE_SUM
+#ifdef ZQ_EXP_PUCT_EDGE_SUM_VERIFY
+            double referenceW = 0.0;
+            for (float w : node.W) referenceW += (double)w;
+            assert(std::abs(referenceW - node.cachedEdgeW) <=
+                   1e-6 * std::max(1.0, std::abs(referenceW)));
+#endif
             return node.cachedEdgeW / (double)node.totalN;
 #else
             double sumW = 0.0;
