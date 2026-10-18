@@ -50,6 +50,8 @@ Internal modules have separate roles:
 - `architecture_models.py` defines models, state-only encoders, and portable exports.
 - `architecture_data.py` inventories canonical corpora and prepares rich labels.
 - `architecture_campaign.py` resolves recipes and invokes shared preparation and training.
+- `architecture_recipes.py` caches reference surprise and preserves independent head mass.
+- `batch_capacity.py` measures CUDA training memory and selects a shared batch per architecture.
 - `mix_experimental_datasets.py` deduplicates states and preserves separate evidence per head.
 - `run_experiment.py` owns optimization, QAT, checkpoint recovery, and reports.
 
@@ -334,6 +336,12 @@ Collection status and next actions belong to `plan.md`.
 - **Inputs**: Dataset directory containing `positions.jsonl` and `targets.jsonl`.
 - **Outputs**: Validated, non-zero `targets.npz`, updated `manifest.json`, and timestamped backup `targets.npz.bak_<timestamp>`.
 - **Key CLI flags**: `--dir`, `--no-backup`, `--verify-only`.
+
+### `tools/clean_repository.py`
+- **Purpose**: Safely removes ephemeral Python bytecode caches, temporary dataset memmaps (`.input_cache`), aborted self-play staging files, and transient recovery dumps without touching tracked files, canonical datasets, model weights, or private credentials.
+- **Inputs**: Repository directory tree (`--root`).
+- **Outputs**: Reclaimed disk space summary reported to stdout.
+- **Key CLI flags**: `--dry-run`, `--verbose`, `--skip-pycache`, `--skip-input-cache`, `--skip-staging`, `--skip-recovery`, `--show-config`.
 
 ---
 
