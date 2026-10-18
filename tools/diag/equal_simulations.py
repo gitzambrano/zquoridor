@@ -31,7 +31,7 @@ def run(exe,root,nnue,n,items):
     p=subprocess.run(cmd,input=query,text=True,capture_output=True,timeout=210, cwd=root)
     if p.returncode:raise RuntimeError(f"{exe} exit {p.returncode}: {p.stderr[-2000:]}")
     ls=p.stdout.splitlines()
-    infos=[dict(re.findall(r"(?<!\\S)(diag_[a-z]+)=([^\\s]+)",l)) for l in ls
+    infos=[dict(re.findall(r"(?<!\S)(diag_[a-z]+)=([^\s]+)",l)) for l in ls
            if l.startswith("info depth ") and "diag_sims=" in l]
     roots=[json.loads(l.split("root_json ",1)[1]) for l in ls if "root_json " in l]
     moves=[l.split()[1] for l in ls if l.startswith("bestmove ")]
