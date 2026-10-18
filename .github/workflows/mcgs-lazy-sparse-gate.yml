@@ -1,0 +1,62 @@
+name: "MCGS lazy-sparse strict correctness gate"
+on:
+  push:
+    branches: [exp/mcgs-lazy-sparse-20261018]
+    paths: [.github/workflows/mcgs-lazy-sparse-gate.yml, src/**, tests/test_mcgs_hybrid_policy_exact.cpp]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  proof:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: candidate
+      - uses: actions/checkout@v4
+        with:
+          path: lazy
+          ref: exp/mcgs-lazy-deep-20261017
+      - name: Build hybrid oracle and production UCI engines
+        run: |
+          set -euo pipefail
+          mkdir -p candidate/bin lazy/bin
+          g++ -O2 -std=c++17 -march=native -mavx2 -mfma -DZQ_EXP_SPARSE_POLICY=1  -I candidate/src candidate/tests/test_mcgs_opt_correctness.cpp -o candidate/bin/test_lazy
+          g++ -O2 -std=c++17 -march=native -mavx2 -mfma -DZQ_EXP_SPARSE_POLICY=1  -I candidate/src candidate/tests/test_mcgs_hybrid_policy_exact.cpp -o candidate/bin/test_sparse
+          g++ -O2 -std=c++17 -march=native -mavx2 -mfma -DZQ_EXP_SPARSE_POLICY=1  -I candidate/src candidate/tests/test_mcab_core.cpp -o candidate/bin/test_core
+          g++ -O3 -std=c++17 -march=native -mavx2 -mfma -DZQ_EXP_SPARSE_POLICY=1  -I candidate/src candidate/tools/external/zquoridor_uci.cpp -o candidate/bin/zq_hybrid
+          g++ -O3 -std=c++17 -march=native -mavx2 -mfma -I lazy/src lazy/tools/external/zquoridor_uci.cpp -o lazy/bin/zq_lazy
+      - name: Hard gate exact NNUE logits, lazy semantics and PUCT sum invariants
+        run: |
+          set -euo pipefail
+          (cd candidate && bin/test_lazy)
+          (cd candidate && bin/test_sparse)
+          (cd candidate && bin/test_core)
+      - name: Compare all 209 root priors in real MCGS across 48 positions, both players
+        run: |
+          cd candidate
+          python - <<'PY'
+          import json,random,subprocess
+          from pathlib import Path
+          books=["tools/external/openings_normal_confirm_400.jsonl",
+                 "tools/external/openings_center_rush_sound_5k.jsonl"]
+          samples=[]
+          for j,b in enumerate(books):
+              x=[json.loads(l)["moves"] for l in Path(b).read_text().splitlines() if l.strip()]
+              ind=list(range(len(x))); random.Random(20261031+j).shuffle(ind)
+              samples.extend(x[i] for i in ind[:24])
+          def probe(exe,moves):
+              msg="position startpos"+(" moves "+" ".join(moves) if moves else "")+"\ngo movetime 75\nquit\n"
+              x=subprocess.run([exe,"--nnue","data/nnue/nnue_weights_int8.bin","--dump-root"],
+                               input=msg,text=True,capture_output=True,timeout=18,check=True).stdout
+              data=[json.loads(l.split("root_json ",1)[1]) for l in x.splitlines() if "root_json " in l]
+              assert len(data)==1,x[-1000:]
+              return data[0]
+          for i,moves in enumerate(samples):
+              lazy=probe("../lazy/bin/zq_lazy",moves)
+              hybrid=probe("bin/zq_hybrid",moves)
+              assert lazy["side_to_move"]==hybrid["side_to_move"]
+              assert lazy["priors"]==hybrid["priors"],f"root prior drift at sample {i}"
+          print(f"PASS {len(samples)} exact UCI root NNUE prior vectors over 209 actions")
+          PY
