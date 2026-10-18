@@ -13,6 +13,11 @@ def one(old, before, after, label):
     if n!=1: raise RuntimeError(f"{label}: expected one anchor, got {n}")
     return old.replace(before,after,1)
 
+def last(old, before, after, label):
+    index=old.rfind(before)
+    if index < 0: raise RuntimeError(f'{label}: last occurrence missing')
+    return old[:index]+after+old[index+len(before):]
+
 def patch(root):
     r=Path(root)
     path=r/"src/mcab.hpp"
@@ -29,7 +34,7 @@ def patch(root):
     u=one(u,'        else if (a == "--dump-root") o.dumpRoot = true;', '        else if (a == "--dump-root") o.dumpRoot = true;\n        else if (a == "--diag-no-adaptive-time") o.diagNoAdaptiveTime = true;\n        else if (a == "--diag-fixed-sims") o.diagFixedSims = std::max(0, std::atoi(need("--diag-fixed-sims")));', "CLI args")
     u=one(u,"    params.enabled = opt.useMcab;","    params.enabled = opt.useMcab;\n    params.diagnosticSimLimit = opt.diagFixedSims;", "UCI params")
     u=one(u,"            const bool adaptiveClock = movetime <= 0 &&\n                (state.turn == 0 ? wtime : btime) >= 0;", "            const bool adaptiveClock = movetime <= 0 &&\n                (state.turn == 0 ? wtime : btime) >= 0 && !opt.diagNoAdaptiveTime;", "clock adaptive")
-    u=one(u,'                      << " treeHit=" << (mstats.treeReused ? 1 : 0)', '''                      << " diag_sims=" << mstats.simulations
+    u=last(u,'                      << " treeHit=" << (mstats.treeReused ? 1 : 0)', '''                      << " diag_sims=" << mstats.simulations
                       << " diag_nodes=" << mstats.nodesExpanded
                       << " diag_target=" << mstats.adaptiveTargetMs
                       << " diag_class=" << static_cast<int>(mstats.adaptiveNodeRootClass)
