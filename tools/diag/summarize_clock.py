@@ -8,7 +8,7 @@ from __future__ import annotations
 import argparse,collections,json,re,statistics
 from pathlib import Path
 
-KV=re.compile(r"(?<!\\S)(diag_[a-z]+)=([^\\s]+)")
+KV=re.compile(r"(?<!\S)(diag_[a-z]+)=([^\s]+)")
 def main():
   p=argparse.ArgumentParser()
   p.add_argument("--directory",required=True)
