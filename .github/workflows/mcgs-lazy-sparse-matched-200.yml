@@ -1,0 +1,173 @@
+name: "MCGS lazy-sparse 200ms matched H2H and Claustrophobia CPU"
+on:
+  push:
+    branches: [exp/mcgs-lazy-sparse-20261018]
+    paths: [.github/workflows/mcgs-lazy-sparse-matched-200.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  strict-integration-gate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compile and rerun confirmed semantic invariants for exact commit
+        run: |
+          set -euo pipefail
+          mkdir -p bin
+          g++ -O2 -std=c++17 -march=native -mavx2 -mfma -DZQ_EXP_SPARSE_POLICY=1  -I src tests/test_mcgs_opt_correctness.cpp -o bin/test_lazy
+          g++ -O2 -std=c++17 -march=native -mavx2 -mfma -DZQ_EXP_SPARSE_POLICY=1  -I src tests/test_mcgs_hybrid_policy_exact.cpp -o bin/test_sparse
+          g++ -O2 -std=c++17 -march=native -mavx2 -mfma -DZQ_EXP_SPARSE_POLICY=1  -I src tests/test_mcab_core.cpp -o bin/test_core
+          bin/test_lazy
+          bin/test_sparse
+          bin/test_core
+  games:
+    needs: strict-integration-gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    strategy:
+      fail-fast: false
+      max-parallel: 5
+      matrix:
+        include:
+          - family: normal
+            book: tools/external/openings_normal_confirm_400.jsonl
+            target: h2h-main
+          - family: normal
+            book: tools/external/openings_normal_confirm_400.jsonl
+            target: h2h-lazy
+          - family: normal
+            book: tools/external/openings_normal_confirm_400.jsonl
+            target: claustrophobia-hybrid
+          - family: normal
+            book: tools/external/openings_normal_confirm_400.jsonl
+            target: claustrophobia-lazy
+          - family: normal
+            book: tools/external/openings_normal_confirm_400.jsonl
+            target: claustrophobia-main
+          - family: center
+            book: tools/external/openings_center_rush_sound_5k.jsonl
+            target: h2h-main
+          - family: center
+            book: tools/external/openings_center_rush_sound_5k.jsonl
+            target: h2h-lazy
+          - family: center
+            book: tools/external/openings_center_rush_sound_5k.jsonl
+            target: claustrophobia-hybrid
+          - family: center
+            book: tools/external/openings_center_rush_sound_5k.jsonl
+            target: claustrophobia-lazy
+          - family: center
+            book: tools/external/openings_center_rush_sound_5k.jsonl
+            target: claustrophobia-main
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: candidate
+          ref: ${{ github.sha }}
+      - uses: actions/checkout@v4
+        with:
+          path: baseline
+          ref: 50a3237ea249c30077ee1e21d7902aa48d125f6d
+      - uses: actions/checkout@v4
+        with:
+          path: lazy
+          ref: 082abc4df338a3c46340aa7c77707c1259f7db16
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - uses: dtolnay/rust-toolchain@stable
+        if: startsWith(matrix.target, 'claustrophobia-')
+      - name: Cache CPU Claustrophobia model
+        if: startsWith(matrix.target, 'claustrophobia-')
+        uses: actions/cache@v4
+        with:
+          path: |
+            candidate/external_bots/claustrophobia/champion.pt
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: mcgs-hybrid-clau-${{ runner.os }}-${{ hashFiles('candidate/tools/external/bot_setup.py') }}
+          restore-keys: mcgs-hybrid-clau-${{ runner.os }}-
+      - name: Install CPU-only PyTorch
+        if: startsWith(matrix.target, 'claustrophobia-')
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install numpy
+          python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
+      - name: Compile isolated hybrid, Lazy and frozen main at identical optimization
+        run: |
+          set -euo pipefail
+          mkdir -p candidate/bin baseline/bin lazy/bin
+          g++ -O3 -std=c++17 -march=native -mavx2 -mfma -DZQ_EXP_SPARSE_POLICY=1 -I candidate/src candidate/tools/external/zquoridor_uci.cpp -o candidate/bin/zq_hybrid
+          g++ -O3 -std=c++17 -march=native -mavx2 -mfma -I baseline/src baseline/tools/external/zquoridor_uci.cpp -o baseline/bin/zq_main
+          g++ -O3 -std=c++17 -march=native -mavx2 -mfma -I lazy/src lazy/tools/external/zquoridor_uci.cpp -o lazy/bin/zq_lazy
+      - name: Select independent openings excluding both prior MCGS screening waves
+        run: |
+          set -euo pipefail
+          cd candidate
+          python -u tools/make_mcgs_fresh_book.py --source ${{ matrix.book }} --count 120 --seed 20261030 --out results/benchmarks/mcgs_hybrid/book_${{ matrix.family }}.jsonl
+      - name: Direct H2H against pinned main and Lazy - 200 games each cohort
+        if: startsWith(matrix.target, 'h2h-')
+        run: |
+          set -euo pipefail
+          cd candidate
+          if [ "${{ matrix.target }}" = "h2h-lazy" ]; then baseline=../lazy/bin/zq_lazy; opponent=lazy; else baseline=../baseline/bin/zq_main; opponent=main; fi
+          python -u tools/match_finalists.py \
+            --engine1-name lazy-sparse --engine1-executable bin/zq_hybrid \
+            --engine1-nnue data/nnue/nnue_weights_int8.bin \
+            --engine2-name "$opponent" --engine2-executable "$baseline" \
+            --engine2-nnue data/nnue/nnue_weights_int8.bin \
+            --openings results/benchmarks/mcgs_hybrid/book_${{ matrix.family }}.jsonl \
+            --pairs 100 --workers 1 --move-time-ms 200 --base-ms 0 \
+            --seed 20261102 --bootstrap 10000 \
+            --output results/benchmarks/mcgs_hybrid/lazy-sparse/${{ matrix.target }}/${{ matrix.family }}
+      - name: Hybrid, Lazy, main vs Claustrophobia with identical paired 200ms clocks
+        if: startsWith(matrix.target, 'claustrophobia-')
+        run: |
+          set -euo pipefail
+          cd candidate
+          case "${{ matrix.target }}" in
+            claustrophobia-hybrid) exe=bin/zq_hybrid ;;
+            claustrophobia-lazy) exe=../lazy/bin/zq_lazy ;;
+            claustrophobia-main) exe=../baseline/bin/zq_main ;;
+            *) exit 2 ;;
+          esac
+          python -u tools/run_benchmark.py \
+            --opponents claustrophobia --pairs 50 --workers 1 \
+            --openings results/benchmarks/mcgs_hybrid/book_${{ matrix.family }}.jsonl \
+            --zq-executable "$exe" --nnue data/nnue/nnue_weights_int8.bin \
+            --zq-move-time-ms 200 --claustrophobia-move-time-ms 200 \
+            --claustrophobia-device cpu --clock-initial-ms 0 \
+            --max-plies 240 --bootstrap 10000 --seed 20261102 \
+            --output results/benchmarks/mcgs_hybrid/lazy-sparse/${{ matrix.target }}/${{ matrix.family }}
+      - name: Check score validity, all games, clocks and zero engine errors
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          target="${{ matrix.target }}"
+          p=Path("candidate/results/benchmarks/mcgs_hybrid/lazy-sparse")/target/"${{ matrix.family }}"/"summary.json"
+          data=json.loads(p.read_text())
+          if target.startswith("h2h-"):
+              assert data["engine1"]=="lazy-sparse" and data["engine2"]==target[4:]
+              assert data["move_time_ms"]==200 and data["base_ms"]==0
+              summ=data["summary"];ng=200
+          else:
+              assert data["clock"]["protocol"]=="fixed-movetime-v2"
+              assert data["clock"]["initial_ms"]==0
+              assert data["budgets"]["zquoridor"]["value"]==200
+              assert data["budgets"]["claustrophobia"]["value"]==200
+              assert data["budgets"]["claustrophobia"]["device"]=="cpu"
+              summ=data["summaries"]["claustrophobia"];ng=100
+          assert summ["recorded_games"]==ng and summ["complete_pairs"]==ng//2
+          assert summ["failed_games"]==0 and summ.get("excluded_ok_games",0)==0,summ
+          print("PASS lazy-sparse",target,"${{ matrix.family }}",summ["score_pct"],"%",ng,"valid games")
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: mcgs-lazy-sparse-${{ matrix.target }}-${{ matrix.family }}
+          path: candidate/results/benchmarks/mcgs_hybrid/
+          if-no-files-found: warn
+          retention-days: 21
