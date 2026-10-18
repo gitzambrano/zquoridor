@@ -42,7 +42,7 @@ jobs:
           g++ -O3 -std=c++17 -march=native -mavx2 -mfma -I baseline/src baseline/tools/external/zquoridor_uci.cpp -o diagnostic/bin/zq_main
           g++ -O3 -std=c++17 -march=native -mavx2 -mfma -I lazy/src lazy/tools/external/zquoridor_uci.cpp -o diagnostic/bin/zq_lazy
           g++ -O3 -std=c++17 -march=native -mavx2 -mfma -DZQ_EXP_SPARSE_POLICY=1 -I diagnostic/src diagnostic/tools/external/zquoridor_uci.cpp -o diagnostic/bin/zq_combo
-      - name: Exact MCGS budget: same openings, identical sim count, repeat same root for reuse
+      - name: "Exact MCGS budget: same openings, identical sim count, repeat same root for reuse"
         run: |
           set -euo pipefail
           cd diagnostic
