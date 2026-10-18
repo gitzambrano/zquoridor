@@ -199,6 +199,7 @@ def main():
     parser.add_argument('--downloads',default=CONFIG['downloads']);parser.add_argument('--output',default=CONFIG['output'])
     parser.add_argument('--reference',default=CONFIG['reference']);parser.add_argument('--hidden',type=int,default=CONFIG['hidden'])
     parser.add_argument('--architecture',default=CONFIG['architecture'])
+    parser.add_argument('--seed',type=int,default=CONFIG['seed'])
     parser.add_argument('--target-mode',choices=('current','temporal'),default=CONFIG['target_mode'])
     parser.add_argument('--horizons',type=json.loads,default=None)
     parser.add_argument('--horizon-weights',type=json.loads,default=None)

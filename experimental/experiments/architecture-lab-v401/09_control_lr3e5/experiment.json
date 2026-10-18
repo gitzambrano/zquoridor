@@ -1,0 +1,8 @@
+{
+  "id": "09_control_lr3e5",
+  "architecture": "multipath_phase_contact_bucketed",
+  "comparison_to": "00_control",
+  "changed_factor": "lr",
+  "hypothesis": "Compare a conservative initial rate to the common 1e-4 annealing schedule.",
+  "training": {"lr": 0.00003}
+}

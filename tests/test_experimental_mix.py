@@ -86,6 +86,23 @@ def test_deduplicates_neutrally_and_preserves_split_mass(tmp_path):
     assert manifest["source_names"] == ["old", "new"]
 
 
+def test_empty_contaminated_pool_is_reported_and_other_pools_renormalize(tmp_path):
+    safe, unsafe = tmp_path / "safe.npz", tmp_path / "unsafe.npz"
+    write_npz(safe, [(state(20), .2, 1, 1., False, "train"),
+                     (state(21), -.1, 2, 1., True, "val")])
+    write_npz(unsafe, [(state(22), .2, 1, 1., False, "leaked"),
+                       (state(23), -.1, 2, 1., True, "leaked")])
+    result = mix_datasets([
+        dict(name="safe", path=str(safe), pool="safe", pool_fraction=.5),
+        dict(name="unsafe", path=str(unsafe), pool="unsafe", pool_fraction=.5),
+    ], tmp_path / "mixed", chunk_size=1)
+    assert result["samples"] == 2
+    assert result["sources"][1]["status"] == "excluded_no_safe_mass"
+    assert result["sources"][1]["train_effective_mass"] == 0
+    assert result["sources"][0]["effective_fraction_train"] == pytest.approx(1.)
+    assert result["sources"][0]["effective_fraction_val"] == pytest.approx(1.)
+
+
 def test_cache_resume_identity_and_source_change_rejection(tmp_path):
     a, b = tmp_path / "a.npz", tmp_path / "b.npz"
     board = state(20)

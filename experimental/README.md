@@ -8,7 +8,8 @@ The release decision and complete evidence history are in `docs/plan.md`.
 | --- | --- |
 | `releases/v3_01_504/` | Previous production headers, build scripts, adapter, and 504 weights |
 | `experiments/` | Existing training experiments, component networks, and model soups |
-| `experiments/architecture-lab-v401/` | Eight model recipes, one control, and their shared training contract |
+| `experiments/architecture-lab-v401/` | Eight new architectures, one control, seven recipe comparisons, and their shared training contract |
+| `training_runs/` | Export registry, evaluation reports, and retirement certificates |
 | `edge_acc/` | Archived Edge source, runners, and verification tools |
 | `benchmarks/` | Original Edge campaigns, frozen references, manifests, logs, and games |
 | `artifacts/` | New binaries from an explicit archived profile build |

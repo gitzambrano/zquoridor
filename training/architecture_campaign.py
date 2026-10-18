@@ -11,7 +11,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 if str(ROOT/"training") not in sys.path:
     sys.path.insert(0, str(ROOT/"training"))
-from architecture_data import inventory, prepare_ledgers
+from architecture_data import inventory, prepare_ledgers, local_temporal_ledger
 from architecture_models import SPECS, BASE
 from mix_experimental_datasets import mix_datasets, _atomic_json
 
@@ -21,6 +21,8 @@ DEFAULTS = {
     "experiments": [],
     "data_roots": ["data/teaching", "experimental/experiments/production-central-finetune-20261002/new_replay"],
     "downloads": ["artifacts/architecture_campaign/cloud/downloads.jsonl"],
+    "raw_sources": ["data/selfplay/central-weakness-rollouts-16m/frozen_partial_manifest.json",
+                    "data/selfplay/v300_campaign_shards/manifest.json"],
     "sources_file": "",
     "output": "experimental/experiments/architecture-lab-v401/artifacts",
     "cloud": "none",
@@ -30,8 +32,12 @@ DEFAULTS = {
     "pool_fractions": {"historical": .25, "replay": .15, "teacher": .15,
                        "wall": .10, "gumbel": .15, "temporal": .20},
     "chunk_size": 8192,
-    "epochs": 40,
-    "batch_size": 2048,
+    "epochs": 0,
+    "batch_size": 8192,
+    "auto_batch_size": True,
+    "batch_size_min": 256,
+    "batch_size_max": 65536,
+    "gpu_memory_fraction": .85,
     "device": "auto",
     "cpu_threads": 4,
     "seed": 20261018,
@@ -62,13 +68,19 @@ def training_config(cfg, experiment, dataset):
     result = dict(CONFIG, data=str(dataset), out_dir=str(path(cfg["output"])/experiment["id"]),
                   architecture=variant, hidden=512, init_architecture=BASE, init_hidden=512,
                   init_from=str(reference_path(cfg)), from_scratch=spec.get("transfer") == "distillation",
-                  qat=True, epochs=cfg["epochs"], batch_size=cfg["batch_size"], device=cfg["device"],
+                  qat=True, epochs=cfg["epochs"] or 40, batch_size=cfg["batch_size"], device=cfg["device"],
+                  auto_batch_size=cfg['auto_batch_size'], batch_size_min=cfg['batch_size_min'],
+                  batch_size_max=cfg['batch_size_max'], gpu_memory_fraction=cfg['gpu_memory_fraction'],
                   cpu_threads=cfg["cpu_threads"], seed=cfg["seed"], resume=cfg["resume"],
-                  lr=1e-5, min_lr=1e-7, warmup_epochs=0, trunk_lr_scale=.1, patience=0,
+                  lr=1e-4, min_lr=1e-7, warmup_epochs=0, trunk_lr_scale=.1, patience=0,
                   checkpoint_every=5, aux_policy_enabled=True, aux_policy_lr_scale=1.,
                   aux_policy_temperature=2., aux_policy_weight=.15, max_sample_weight=1e9,
+                  reference_surprise_alpha=.5, reference_surprise_cap=4.,
+                  reference_surprise_cache=str(path(cfg["output"])/"reference_surprise"),
                   build=False, benchmark=False)
     result.update(experiment.get("training", {}))
+    if cfg["epochs"] > 0:
+        result["epochs"] = cfg["epochs"]
     overrides = cfg.get("training_overrides", {})
     protected = {"architecture", "data", "out_dir", "init_from", "init_architecture", "init_hidden", "build", "benchmark"}
     if set(overrides) & protected or set(overrides) - result.keys():
@@ -113,6 +125,11 @@ def run(cfg):
     output = path(cfg["output"])
     cloud_snapshot(cfg)
     rows = inventory(cfg["data_roots"])
+    for source in cfg["raw_sources"]:
+        manifest = path(source)
+        rows.append(dict(name=manifest.parent.name+"_raw_temporal", path=str(manifest),
+                         status="pending_preparation" if manifest.is_file() else "missing",
+                         pool="temporal", reason="exact_ply_targets_from_frozen_shards"))
     ledgers = [path(value) for value in cfg["downloads"] if path(value).exists()]
     workers = set()
     for ledger in ledgers:
@@ -134,7 +151,9 @@ def run(cfg):
     plan = dict(schema="zquoridor.architecture_campaign.v1", command=cfg["command"],
                 configuration=cfg, sources=rows, download_ledgers=[str(p) for p in ledgers],
                 latest_workers_materialized=sorted(workers), missing_latest_workers=missing,
-                training_ready=not missing or not cfg["require_five_workers"],
+                latest_snapshot_coverage_complete=not missing,
+                preparation_complete=(dataset/"dataset.manifest.json").is_file(),
+                training_ready=(not missing or not cfg["require_five_workers"]) and (dataset/"dataset.manifest.json").is_file(),
                 dataset=str(dataset), jobs=[dict(experiment=e, config=training_config(cfg,e,dataset)) for e in experiments],
                 production_modified=False, training_started=False)
     _atomic_json(output/"plan.json", plan)
@@ -172,6 +191,8 @@ def run(cfg):
     if missing and cfg["require_five_workers"]:
         raise ValueError("Latest v4.01 snapshots are missing for workers: "+", ".join(map(str,missing))+
                          ". Materialize their download ledgers before preparation or training.")
+    if cfg["raw_sources"]:
+        ledgers.append(local_temporal_ledger([path(s) for s in cfg["raw_sources"]], output/"local_temporal.jsonl"))
     if ledgers:
         rows.extend(prepare_ledgers(ledgers, output/"prepared", reference_path(cfg), cfg["seed"]))
     if cfg["sources_file"]:
@@ -182,6 +203,18 @@ def run(cfg):
     mixture = mix_datasets(sources, dataset, cfg["chunk_size"], cfg["resume"])
     _atomic_json(output/"preparation.json", dict(sources=rows, mixture=mixture))
     if cfg["command"] == "prepare":
+        if any(training_config(cfg, experiment, dataset)["reference_surprise_alpha"] > 0 for experiment in experiments):
+            from run_experiment import load_dataset
+            from architecture_recipes import apply_reference_surprise
+            import torch
+            torch.set_num_threads(cfg["cpu_threads"])
+            device = cfg["device"]
+            if device == "auto":
+                device = "cuda" if torch.cuda.is_available() else "cpu"
+            reference_surprise = apply_reference_surprise(
+                load_dataset(dataset), dataset, reference_path(cfg), output/"reference_surprise",
+                BASE, 512, device=device, batch_size=cfg["batch_size"])
+            _atomic_json(output/"surprise_preparation.json", reference_surprise)
         return dict(status="prepared", dataset=str(dataset), samples=mixture["samples"])
     from run_experiment import train
     reports = []

@@ -1,0 +1,8 @@
+{
+  "id": "15_control_aux_off",
+  "architecture": "multipath_phase_contact_bucketed",
+  "comparison_to": "00_control",
+  "changed_factor": "aux_policy_enabled",
+  "hypothesis": "Measure the training-only auxiliary policy while preserving main policy and value losses.",
+  "training": {"aux_policy_enabled": false}
+}

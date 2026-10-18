@@ -5,6 +5,14 @@ Float and int8 weights reside in `data/nnue/experiments/`. These artifacts
 support local training and native evaluation. They do not replace production.
 The production network remains version 4.01 under `data/nnue/`.
 
+`retired.json` identifies obsolete local training runs removed from the
+operational experiment directory. Each record includes hashes and paths for
+compact local model states and evidence archives. These ignored archives
+preserve exported weights, model tensors, reports, logs, and recipes. They
+do not provide optimizer recovery. The original directories remain in the
+Windows Recycle Bin until the operator empties it. Cleanup decisions and
+historical outcomes belong in `docs/plan.md`.
+
 Widths 512 and 768 have completed matched training. Width 1024 is an available
 architecture option without a completed strength test. The apex replay control
 and mixed candidate have trained weights. The first paired screen is recorded

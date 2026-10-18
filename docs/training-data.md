@@ -81,6 +81,14 @@ divided by base mass as the corresponding sample multiplier. Thus a dense
 policy can dominate policy supervision without changing the value target.
 The auxiliary policy retains its own target and mass.
 
+The shared training recipe can add a frozen-reference surprise multiplier.
+Its raw signal is KL from the current-position search policy to the frozen
+production prior. The cache identity binds the dataset, reference, and code.
+Separate training-only scales preserve policy and auxiliary evidence mass.
+The recipe never scales value weights or the source mass array. Source
+confidence and search effort remain independent of surprise. Recipe ablations
+disable only this additional multiplier.
+
 Entropy does not determine confidence. A forced tactical move can correctly
 have a concentrated policy. An array of 209 entries can still contain a
 truncated top-eight distribution. Policy provenance, search effort, and
@@ -95,6 +103,11 @@ Join labels by position ID. Teacher labels store values and policies inside
 the `target` object. Preserve the full current-position policy. Never build
 a policy target from future moves.
 
+Repeated IDs retain each corresponding annotation in occurrence order. The
+mixer then averages their evidence by canonical state. It does not replace
+all repeated searches with the final annotation. Repeated rows do not count
+as distinct states in the dataset report.
+
 Gumbel prefix chains form trajectory groups. Available values at exactly
 0, 4, 8, and 16 plies use coefficients 0.5, 0.25, 0.125, and 0.0625.
 Convert each value to the original mover perspective before averaging.
@@ -108,6 +121,11 @@ It uses the actual ply index, not the index of a stored record. Current root
 policies remain at the original position. External teacher roots retain
 their existing quality adjustments.
 
+The campaign accepts frozen local manifests through `raw_sources`. The
+adapter verifies accepted binary and metadata hashes and aligned record
+counts. It creates the same ledger used for downloaded trajectories. It
+does not treat an active campaign manifest as a frozen dataset.
+
 ## Splits, identity, and artifacts
 
 Preserve trajectory groups within each source. Remove entire source groups
@@ -115,6 +133,11 @@ that cross existing splits. Remove canonical states that occur in both
 splits across sources. This verifies recorded groups and exact states. It
 does not certify unseen opening families when the original corpus lacks
 that provenance.
+
+A pooled source with no safe mass contributes zero weight. The manifest
+records that exclusion. Other eligible sources absorb its budget. An empty
+pool redistributes its budget among the remaining pools in each split.
+An explicit source fraction still requires positive mass in both splits.
 
 Hash source files and output arrays. The manifest binds source settings,
 input identities, and preparation code. A changed snapshot or preparation
@@ -125,3 +148,8 @@ states. Preserve those identities when resuming.
 Generated fields, SQLite files, checkpoints, inventories, and download ledgers
 remain in ignored artifact directories. A completed manifest is the dataset
 completion marker. It is not a game-strength result.
+
+The mixer sorts mapped state records in place and reduces split conflicts
+in chunks. It does not allocate a full inverse index in RAM. The mapped
+policy accumulators become the final target arrays. This avoids a second
+full copy of each dense policy matrix during preparation.

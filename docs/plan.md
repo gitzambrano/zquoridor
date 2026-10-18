@@ -7,6 +7,123 @@ experimental measurements, and future plans.
 Raw datasets, self-play binary shards, logs, checkpoints, and local benchmark outputs
 are untracked artifacts outside version control.
 
+### Obsolete experiment cleanup (2026-10-18)
+
+Four obsolete local training directories moved to the Windows Recycle Bin
+after a dependency audit. No active runner, test fixture, model registry,
+or current recipe references these directories. The retained history is:
+
+| Retired experiment | Completed epochs | Historical role |
+| --- | ---: | --- |
+| `margin_regime512-weakness-cr60ep` | 60 | The unbucketed margin model did not meet the promotion gate. Its README reports 49% against Claustrophobia in 600 games. |
+| `multipath-phase-contact512-policy160ep` | 160 | Completed single-head contact experiment, superseded by the bucketed contact lineage. |
+| `multipath-phase512-reliable-search-ft-40ep` | 40 | Completed single-head fine-tune, superseded by the bucketed contact lineage. |
+| `multipath-phase512-reliable-search-ft-40ep-accidental-partial` | 2 | Accidental partial duplicate of the completed fine-tune. |
+
+`experimental/training_runs/retired.json` records hashes, source files,
+losses, and the preservation paths. Compact local archives reside under
+`artifacts/retired_experiments/20261018/`. They preserve every current and
+best model tensor from the removed checkpoints. They also preserve exported
+weights, reports, logs, launch recipes, and metadata. Hash comparisons and
+model reloads passed before removal. Optimizer state and compiled executables
+do not form part of the compact archive. The Recycle Bin retains the original
+directories for recovery; this cleanup did not reclaim their disk space.
+
+The 16 new experiments, training datasets, frozen production references,
+model-soup components, and experiments with active dependencies remain in
+place. No cloud files, active jobs, or Git history changed.
+The repository audit found zero active duplicate groups and zero missing
+compatibility targets. The architecture plan still lists all five worker
+snapshots. All 24 archived build profiles remain available.
+
+### Architecture and training recipe suite (2026-10-18)
+
+The prepared suite resides in
+`experimental/experiments/architecture-lab-v401/`. It defines eight new
+networks, the production control, and seven matched recipe experiments.
+All 16 initial checkpoints exist. The reference is a frozen copy of version
+4.01. No full training campaign, tournament, benchmark, or promotion started.
+
+The new networks test joint race distance, corridor geometry, wall pairs,
+auxiliary topology, context gates, shared action scores, an 81-node graph,
+and a token Transformer. The first six retain the production outputs at
+initialization. Graph and Transformer models require a new trunk and five
+epochs of concurrent reference distillation. These are implemented models,
+not measured strength improvements.
+
+Warm starts use 40 cosine-annealing epochs. Head rates decay from `1e-4`
+to `1e-7`; the accumulator starts at `1e-5`. The graph schedule uses 100
+epochs and the Transformer schedule uses 120. The recipe comparisons change
+only one declared factor: lower LR, surprise disabled, auxiliary coefficient,
+80 annealing epochs, or auxiliary policy disabled. Two comparisons combine
+one recipe change with a fixed corridor or wall-pair architecture.
+
+The public runner remains `training/train_nnue.py`. Its default command
+writes a plan. `initialize`, `prepare`, and `train` select separate stages.
+Top-level CONFIG entries and CLI overrides expose the complete recipes.
+CUDA training measures forward, backward, and Adam memory demand. It selects
+a batch from 256 through 65536 within 85% of GPU memory, less external use.
+The fixed fallback is 8192. Matched recipes share the measured batch for
+their architecture. Calibration restores model weights and random state.
+
+Recent paired snapshots from all five workers are materialized locally.
+The repaired NPZ archives contain 122,035 normalized policy rows and zero
+all-zero policies. Workers 1 and 2 each contain 60,000 annotations over
+20,000 history IDs. Workers 3, 4, and 5 contain 230, 96, and 1,709 annotations.
+Repeated IDs retain each search annotation in occurrence order. Canonical
+state deduplication occurs afterward. These counts describe immutable local
+snapshots, not the current progress of an active generator.
+
+The mixture retains the previous master curriculum and production replay,
+eligible teachers, and full recent Wall Drops and Gumbel targets. Composite
+ancestors do not receive duplicate source budgets. Quality weights remain
+independent for policy, value, and auxiliary targets. The reference-surprise
+cache changes policy evidence only and normalizes from training rows.
+Frozen local manifests supply 324 binary and metadata shard pairs for exact
+temporal targets. Isolated Gumbel positions receive no invented future value.
+
+The full common mixture is not complete. Its first materialization stopped
+because `weakness-mining-35k` retained no safe groups after leakage removal.
+The mixer now records zero-mass pooled sources and redistributes their
+budgets without retaining contaminated rows. Tests cover this case. The
+existing extraction caches remain available. Temporal materialization and
+the common surprise cache still require the full `prepare` stage.
+
+Next actions, in order:
+
+1. Review the generated plan and source catalog. Retain all five paired
+   worker snapshots and the verified frozen temporal manifests.
+2. Run `python training/train_nnue.py --cli-command prepare` on the training
+   host. Complete temporal conversion, the shared mixture, and reference KL.
+   Confirm completion manifests, removed groups, source masses, and actual
+   future coverage. The current partial extraction occupies local disk.
+3. Start `00_control` and the six warm-start architectures when training is
+   authorized. Keep the complete cosine schedule. Record the selected CUDA
+   batch, epoch throughput, common validation metrics, and source metrics.
+4. Run the graph and Transformer schedules. Preserve the frozen reference,
+   five distillation epochs, and the same data mixture.
+5. Run recipe comparisons against their named controls. Preserve the seed,
+   initialization, dataset, and shared batch. Compare common metrics rather
+   than the differently weighted combined loss.
+6. Add native evaluators for selected nonstandard architectures. Models 00
+   and 04 already export the production layout. Other variants currently
+   export reloadable PyTorch models with `native_compatible=false`.
+7. Measure tactical suites, native latency, search throughput, and paired
+   matches through the existing evaluation runners. Apply the existing
+   promotion gates only after those measurements.
+
+The focused Python suite passed 81 tests. Validation covers transfer,
+gradients, one-epoch recovery, exports, current
+native parity, dense targets, repeated IDs, quality weights, temporal
+conversion, and recipe isolation. One historical native test requires the
+absent `checkpoints/gen9-teacher-head/nnue_weights.bin` artifact. The focused
+run excludes that test explicitly. CUDA capacity probes also verify weight
+and random-state restoration on the local 6 GiB RTX 4050.
+An end-to-end conversion of one real frozen shard accepted 13,842 search
+records. It produced 13,836 unique positions with 13,291 training rows and
+545 validation rows. Exact future evaluations exist for 12,534 input rows.
+This verification dataset remains separate from the unfinished full mixture.
+
 ### Native Windows Colab CLI trial (2026-10-18)
 
 Google Colab CLI PR #86 at commit `ab72e524cedbfa4798464b8fd8b5279fd4ad85c4`

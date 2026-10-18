@@ -4,5 +4,5 @@
   "hypothesis": "Encode open passages with four residual graph blocks of width 32 and complete goal maps.",
   "initialization": "Initialize a new trunk. Distill production policy and value during the first five epochs.",
   "runtime": "PyTorch. There is no native graph evaluator.",
-  "training": {"lr": 0.001, "min_lr": 0.00001, "trunk_lr_scale": 1.0, "distillation_weight": 0.5, "distillation_epochs": 5}
+  "training": {"epochs": 100, "lr": 0.001, "min_lr": 0.00001, "trunk_lr_scale": 1.0, "distillation_weight": 0.5, "distillation_epochs": 5}
 }

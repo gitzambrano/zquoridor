@@ -1,0 +1,8 @@
+{
+  "id": "14_pairs_aux025",
+  "architecture": "wall_pairs",
+  "comparison_to": "03_wall_pairs",
+  "changed_factor": "aux_policy_weight",
+  "hypothesis": "Test stronger auxiliary policy supervision on the wall-pair architecture.",
+  "training": {"aux_policy_weight": 0.25}
+}

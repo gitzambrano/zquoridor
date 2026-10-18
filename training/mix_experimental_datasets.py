@@ -252,6 +252,62 @@ def head_quality(data, rows, source, head):
     return np.minimum(result, cap)
 
 
+def _state_index(source_data, source_bad, total_rows, out_dir, chunk_size):
+    """Sort mapped state keys in place without a corpus-sized inverse array."""
+    index_path = out_dir / ".state_index.npy"
+    keys_path = out_dir / ".unique_keys.npy"
+    flags_path = out_dir / ".unique_flags.npy"
+    dtype = np.dtype(_key_dtype().descr + [("_split", "u1")])
+    index = np.lib.format.open_memmap(index_path, mode="w+", dtype=dtype, shape=(total_rows,))
+    cursor = 0
+    for arrays, bad in zip(source_data, source_bad):
+        for start in range(0, len(arrays["value"]), chunk_size):
+            stop = min(start + chunk_size, len(arrays["value"]))
+            rows = np.flatnonzero(_row_keep(arrays, start, stop, bad)) + start
+            end = cursor + len(rows)
+            for field in STATE_FIELDS:
+                index[field][cursor:end] = arrays[field][rows]
+            index["_split"][cursor:end] = np.where(arrays["is_val"][rows], 2, 1)
+            cursor = end
+    if cursor != total_rows:
+        raise RuntimeError("Source row counts changed during indexing.")
+    index.sort(order=list(STATE_FIELDS), kind="quicksort")
+    keys_out = np.lib.format.open_memmap(keys_path, mode="w+", dtype=_key_dtype(), shape=(total_rows,))
+    flags_out = np.lib.format.open_memmap(flags_path, mode="w+", dtype="u1", shape=(total_rows,))
+    cursor, pending_key, pending_flag = 0, None, 0
+
+    def emit(keys, flags):
+        nonlocal cursor
+        keep = flags != 3
+        count = int(keep.sum())
+        keys_out[cursor:cursor+count] = keys[keep]
+        flags_out[cursor:cursor+count] = flags[keep]
+        cursor += count
+
+    for start in range(0, total_rows, chunk_size):
+        stop = min(start + chunk_size, total_rows)
+        keys = _make_keys(index, np.arange(start, stop))
+        starts = np.r_[0, np.flatnonzero(keys[1:] != keys[:-1]) + 1]
+        flags = np.bitwise_or.reduceat(index["_split"][start:stop], starts)
+        keys = keys[starts]
+        if pending_key is not None:
+            if keys[0] == pending_key:
+                flags[0] |= pending_flag
+            else:
+                emit(np.asarray([pending_key], dtype=_key_dtype()), np.asarray([pending_flag], dtype="u1"))
+        if len(keys) > 1:
+            emit(keys[:-1], flags[:-1])
+        pending_key, pending_flag = keys[-1].copy(), int(flags[-1])
+    if pending_key is not None:
+        emit(np.asarray([pending_key], dtype=_key_dtype()), np.asarray([pending_flag], dtype="u1"))
+    splits = np.asarray(flags_out[:cursor] == 2)
+    index._mmap.close()
+    flags_out._mmap.close()
+    index_path.unlink()
+    flags_path.unlink()
+    return keys_out[:cursor], splits, int((~splits).sum()), int(splits.sum()), keys_path
+
+
 def mix_datasets(sources, out_dir, chunk_size=8192, resume=True):
     """Mix canonical datasets with neutral weighted deduplication.
 
@@ -339,45 +395,16 @@ def mix_datasets(sources, out_dir, chunk_size=8192, resume=True):
         for start in range(0, n, chunk_size):
             stop = min(n, start + chunk_size)
             kept += int(_row_keep(arrays, start, stop, bad).sum())
-        if kept < 2:
+        if kept < 2 and source["pool"] is None:
             raise ValueError(f"source {source['name']} has fewer than two rows after group leakage removal")
         source_data.append(arrays)
         source_bad.append(bad)
         total_rows += kept
 
-    all_keys = np.empty(total_rows, dtype=_key_dtype())
-    all_split = np.empty(total_rows, dtype=np.uint8)
-    offsets = []
-    cursor = 0
-    for i, arrays in enumerate(source_data):
-        n = len(arrays["value"])
-        begin = cursor
-        for start in range(0, n, chunk_size):
-            stop = min(n, start + chunk_size)
-            keep = _row_keep(arrays, start, stop, source_bad[i])
-            if not keep.any():
-                continue
-            rows = np.flatnonzero(keep) + start
-            count = len(rows)
-            all_keys[cursor:cursor + count] = _make_keys(arrays, rows)
-            all_split[cursor:cursor + count] = np.where(arrays["is_val"][rows], 2, 1)
-            cursor += count
-        offsets.append((begin, cursor))
-    if cursor != total_rows:
-        raise RuntimeError("source row count changed while mixing")
-
-    unique_keys, inverse = np.unique(all_keys, return_inverse=True)
-    split_flags = np.zeros(len(unique_keys), dtype=np.uint8)
-    np.bitwise_or.at(split_flags, inverse, all_split)
-    split_conflict = split_flags == 3
-    keep_key = ~split_conflict
-    train_unique = int(np.count_nonzero(keep_key & (split_flags == 1)))
-    val_unique = int(np.count_nonzero(keep_key & (split_flags == 2)))
+    unique_keys, global_splits, train_unique, val_unique, keys_path = _state_index(
+        source_data, source_bad, total_rows, out_dir, chunk_size)
     if train_unique == 0 or val_unique == 0:
         raise ValueError("both train and validation must retain nonconflicting positions")
-    unique_keys = unique_keys[keep_key]
-    global_splits = split_flags[keep_key] == 2
-    del inverse, split_flags, split_conflict, keep_key, all_keys, all_split
 
     n_unique, n_sources = len(unique_keys), len(normalized)
     fields_dir = out_dir / "fields"
@@ -428,8 +455,9 @@ def mix_datasets(sources, out_dir, chunk_size=8192, resume=True):
                 raw_w = np.minimum(raw_w, cap)
             raw_masses[si, 0] += raw_w[~val_mask].sum()
             raw_masses[si, 1] += raw_w[val_mask].sum()
-    if np.any(raw_masses <= 0):
-        raise ValueError("a source has no train or validation mass after conflict removal")
+    for si, source in enumerate(normalized):
+        if source["pool"] is None and np.any(raw_masses[si] <= 0):
+            raise ValueError("an explicit-fraction source has no train or validation mass after conflict removal")
 
     # Explicit sources keep their specified share; each pool shares its total
     # budget in proportion to its eligible capped raw weight, separately by split.
@@ -441,15 +469,24 @@ def mix_datasets(sources, out_dir, chunk_size=8192, resume=True):
             members = [k for k, candidate in enumerate(normalized) if candidate["pool"] == source["pool"]]
             for split_i in range(2):
                 denominator = raw_masses[members, split_i].sum()
-                if denominator <= 0:
-                    raise ValueError(f"pool {source['pool']!r} has no eligible mass in a split")
-                effective_fractions[si, split_i] = (
-                    source["pool_fraction"] * raw_masses[si, split_i] / denominator)
+                if denominator > 0:
+                    effective_fractions[si, split_i] = (
+                        source["pool_fraction"] * raw_masses[si, split_i] / denominator)
+    # A completely contaminated pooled source contributes no evidence. Redistribute
+    # an empty pool's budget among the remaining pools, preserving explicit shares.
+    pooled = [i for i, s in enumerate(normalized) if s["pool"] is not None]
+    for split_i in range(2):
+        available = effective_fractions[pooled, split_i].sum()
+        remaining = 1. - explicit_fraction_sum
+        if remaining > 0 and available <= 0:
+            raise ValueError("no pooled mass survives leakage removal in a split")
+        if available > 0:
+            effective_fractions[pooled, split_i] *= remaining / available
     if not np.allclose(effective_fractions.sum(axis=0), 1.0, rtol=0, atol=1e-8):
         raise RuntimeError("effective source fractions do not sum to one in each split")
     target_split_mass = np.asarray([train_unique, val_unique], dtype=np.float64)
-    scales = np.asarray([[effective_fractions[i, j] * target_split_mass[j] / raw_masses[i, j]
-                          for j in range(2)] for i in range(n_sources)])
+    scales = np.divide(effective_fractions * target_split_mass, raw_masses,
+                       out=np.zeros_like(raw_masses), where=raw_masses > 0)
 
     # Accumulate weighted targets by global state id; policy rows stay chunk-sized in RAM.
     for si, arrays in enumerate(source_data):
@@ -511,12 +548,21 @@ def mix_datasets(sources, out_dir, chunk_size=8192, resume=True):
         "own_dist": (np.uint8, (n_unique,)), "opp_dist": (np.uint8, (n_unique,)),
         "policy": (np.float32, (n_unique, POLICY_SIZE)), "value": (np.float32, (n_unique,)),
         "weight": (np.float32, (n_unique,)), "is_val": (np.bool_, (n_unique,)),
-        "source_mass": (np.float32, (n_unique, n_sources)),
+        "source_mass": (np.float64, (n_unique, n_sources)),
         "aux_policy_target": (np.float32, (n_unique, POLICY_SIZE)),
         **{head + "_sample_weight": (np.float32, (n_unique,)) for head in ("value", "policy", "aux")},
     }
-    outputs = {name: np.lib.format.open_memmap(fields_dir / f"{name}.npy", mode="w+", dtype=dtype, shape=shape)
+    # Reuse the large mapped accumulators as final arrays. Close mappings
+    # before moving files so that the operation also works on Windows.
+    reused = {"policy": policy_sum, "aux_policy_target": aux_sum, "source_mass": source_mass}
+    for name, array in reused.items():
+        old_path = Path(array.filename)
+        array.flush()
+        array._mmap.close()
+        old_path.replace(fields_dir / f"{name}.npy")
+    outputs = {name: np.lib.format.open_memmap(fields_dir / f"{name}.npy", mode="r+" if name in reused else "w+", dtype=dtype, shape=shape)
                for name, (dtype, shape) in output_specs.items()}
+    policy_sum, aux_sum, source_mass = (outputs[name] for name in ("policy", "aux_policy_target", "source_mass"))
     for field in STATE_FIELDS:
         outputs[field][:] = unique_keys[field]
     outputs["own_dist"][:] = own_dist_out
@@ -552,6 +598,7 @@ def mix_datasets(sources, out_dir, chunk_size=8192, resume=True):
     source_summary = []
     for si, source in enumerate(normalized):
         row = {"name": source["name"], "fraction": source["fraction"],
+               "status": "excluded_no_safe_mass" if not raw_masses[si].any() else "included",
                "pool": source["pool"], "pool_fraction": source["pool_fraction"],
                "effective_fraction_train": float(effective_fractions[si, 0]),
                "effective_fraction_val": float(effective_fractions[si, 1]),
@@ -590,6 +637,8 @@ def mix_datasets(sources, out_dir, chunk_size=8192, resume=True):
         if not math.isclose(source_summary[si]["val_effective_mass"], expected_val, rel_tol=2e-6, abs_tol=2e-4):
             raise RuntimeError(f"validation effective mass mismatch for {source['name']}")
     _atomic_json(out_dir / "dataset.manifest.json", manifest)
+    unique_keys._mmap.close()
+    keys_path.unlink()
     for arr in (weight_sum, value_sum, policy_sum, aux_sum, *head_masses.values(), source_mass, own_dist_out, opp_dist_out):
         arr.flush()
         arr._mmap.close()

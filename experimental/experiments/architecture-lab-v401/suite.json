@@ -1,5 +1,5 @@
 {
   "schema": "zquoridor.architecture_suite.v1",
   "baseline_release": "4.01",
-  "experiments": ["00_control", "01_race_joint", "02_corridor", "03_wall_pairs", "04_tactical_aux", "05_context_gate", "06_action_scorer", "07_graph", "08_transformer"]
+  "experiments": ["00_control", "01_race_joint", "02_corridor", "03_wall_pairs", "04_tactical_aux", "05_context_gate", "06_action_scorer", "07_graph", "08_transformer", "09_control_lr3e5", "10_control_surprise_off", "11_control_aux025", "12_control_anneal80", "13_corridor_lr3e5", "14_pairs_aux025", "15_control_aux_off"]
 }

@@ -45,6 +45,10 @@ CONFIG = {
     "mirror_h": True,
     "epochs": 60,
     "batch_size": 1024,
+    "auto_batch_size": False,
+    "batch_size_min": 256,
+    "batch_size_max": 65536,
+    "gpu_memory_fraction": 0.85,
     "lr": 0.0001,
     "schedule": "cosine",
     "warmup_epochs": 4,
@@ -81,6 +85,9 @@ CONFIG = {
     "topology_aux_weight": 0.15,
     "distillation_weight": 0.0,
     "distillation_epochs": 0,
+    "reference_surprise_alpha": 0.0,
+    "reference_surprise_cap": 4.0,
+    "reference_surprise_cache": "",
 }
 
 
@@ -620,7 +627,7 @@ def train(config):
             raise ValueError(f"{key} must be finite and positive")
     for key in ("policy_weight", "value_weight", "weight_decay", "min_weight_decay",
                 "aux_policy_temperature", "aux_policy_weight", "aux_policy_lr_scale",
-                "topology_aux_weight", "distillation_weight"):
+                "topology_aux_weight", "distillation_weight", "reference_surprise_alpha"):
         if not math.isfinite(config[key]) or config[key] < 0:
             raise ValueError(f"{key} must be finite and nonnegative")
     if config["validation_mode"] not in ("existing", "resplit", "none"):
@@ -657,12 +664,26 @@ def train(config):
     device = config["device"]
     if device == "auto":
         device = "cuda" if torch.cuda.is_available() else "cpu"
+    surprise_report = {"enabled": False}
+    if config.get("reference_surprise_alpha", 0) > 0:
+        try:
+            from .architecture_recipes import apply_reference_surprise
+        except ImportError:
+            from architecture_recipes import apply_reference_surprise
+        cache = _path(config["reference_surprise_cache"]) if config["reference_surprise_cache"] else folder.parent/"reference_surprise"
+        surprise_report = apply_reference_surprise(
+            data, path, _path(config["init_from"]), cache, config["init_architecture"], config["init_hidden"],
+            config["reference_surprise_alpha"], config["reference_surprise_cap"], device, config["batch_size"])
+    # Cache construction must not change adapter or cold-trunk initialization.
+    torch.manual_seed(config["seed"])
     model = make_model(config["architecture"], config["hidden"], qat=config["qat"])
     if not config["from_scratch"]:
         old = Student(config["init_architecture"], config["init_hidden"])
         old.load_float(_path(config["init_from"]))
         model.warm_start(old)
-    if config.get("aux_policy_enabled", False):
+    # Probe the same auxiliary-head memory envelope for matched recipe ablations.
+    capacity_aux = config.get('auto_batch_size', False) and str(device).startswith('cuda')
+    if config.get("aux_policy_enabled", False) or capacity_aux:
         model.enable_aux_policy()
     model.to(device)
     if config.get("distillation_weight", 0) > 0:
@@ -685,6 +706,19 @@ def train(config):
                 scale = 1.0
             groups.append({"params": [param], "lr": config["lr"] * scale, "lr_scale": scale})
     optimizer = torch.optim.AdamW(groups, weight_decay=config["weight_decay"])
+    try:
+        from .batch_capacity import calibrate
+    except ImportError:
+        from batch_capacity import calibrate
+
+    def probe_batch(batch):
+        probe_optimizer = torch.optim.AdamW(groups, weight_decay=config['weight_decay'])
+        _epoch(model, data, train_idx[:batch], dict(config,batch_size=batch,
+               aux_policy_enabled=True,aux_policy_weight=max(.25,config['aux_policy_weight'])), device,
+               probe_optimizer, np.random.default_rng(config['seed']))
+
+    batch_report = calibrate(model, config, device, folder, len(train_idx), probe_batch)
+    runtime_config = dict(config, batch_size=batch_report['batch_size'])
     identity_config = {k: v for k, v in config.items() if k not in
                        ("resume", "build", "benchmark", "benchmark_args", "dry_run", "teaching", "teaching_args")}
     identity = dict(config=identity_config, data_sha256=_dataset_hash(path),
@@ -694,6 +728,9 @@ def train(config):
         identity["experimental_model_sha256"] = _hash(Path(__file__).with_name("architecture_models.py"))
     if config.get("distillation_weight", 0) > 0:
         identity["teacher_sha256"] = _hash(_path(config["init_from"]))
+    if surprise_report["enabled"]:
+        identity["reference_surprise"] = surprise_report
+    identity['batch_capacity'] = batch_report
     fingerprint = hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()
     initial_checkpoint = folder / "initial.pt"
     best_checkpoint = folder / "best.pt"
@@ -724,7 +761,7 @@ def train(config):
             best_epoch = 0
             best = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
         else:
-            initial = _epoch(model, data, val_idx, config, device)
+            initial = _epoch(model, data, val_idx, runtime_config, device)
             best_loss = initial["loss"]
             best_epoch = 0
             best = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
@@ -749,7 +786,7 @@ def train(config):
         for group in optimizer.param_groups:
             group["lr"] = base_lr * group["lr_scale"]
             group["weight_decay"] = epoch_weight_decay
-        training = _epoch(model, data, train_idx, config, device, optimizer, rng)
+        training = _epoch(model, data, train_idx, runtime_config, device, optimizer, rng)
         if val_mode == "none":
             validation = None
             best_epoch = epoch + 1
@@ -757,7 +794,7 @@ def train(config):
             row = dict(epoch=epoch + 1, lr=base_lr, weight_decay=epoch_weight_decay,
                        train=training)
         else:
-            validation = _epoch(model, data, val_idx, config, device)
+            validation = _epoch(model, data, val_idx, runtime_config, device)
             row = dict(epoch=epoch + 1, lr=base_lr, weight_decay=epoch_weight_decay,
                        train=training, val=validation)
             if validation["loss"] < best_loss:
@@ -784,6 +821,7 @@ def train(config):
     model.load_state_dict(best)
     architecture = export_model(model, folder / "student.bin")
     report = dict(fingerprint=fingerprint, architecture=architecture,
+                  batch_capacity=batch_report,
                   validation_mode=val_mode,
                   validation_split=dict(
                       mode=val_mode,

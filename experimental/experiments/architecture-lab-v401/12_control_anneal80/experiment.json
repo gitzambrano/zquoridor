@@ -1,0 +1,8 @@
+{
+  "id": "12_control_anneal80",
+  "architecture": "multipath_phase_contact_bucketed",
+  "comparison_to": "00_control",
+  "changed_factor": "epochs",
+  "hypothesis": "Compare 80 and 40 epochs at the same initial and final learning rates.",
+  "training": {"epochs": 80}
+}

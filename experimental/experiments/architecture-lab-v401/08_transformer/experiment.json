@@ -4,5 +4,5 @@
   "hypothesis": "Relate up to 20 walls, two pawns, and two goal tokens with two attention layers of width 32 and two heads.",
   "initialization": "Initialize a new trunk. Distill production policy and value during the first five epochs.",
   "runtime": "PyTorch. There is no native attention evaluator.",
-  "training": {"lr": 0.0003, "min_lr": 0.000003, "trunk_lr_scale": 1.0, "distillation_weight": 0.5, "distillation_epochs": 5}
+  "training": {"epochs": 120, "lr": 0.0003, "min_lr": 0.000003, "trunk_lr_scale": 1.0, "distillation_weight": 0.5, "distillation_epochs": 5}
 }

@@ -1,0 +1,8 @@
+{
+  "id": "11_control_aux025",
+  "architecture": "multipath_phase_contact_bucketed",
+  "comparison_to": "00_control",
+  "changed_factor": "aux_policy_weight",
+  "hypothesis": "Compare auxiliary policy loss coefficients 0.25 and 0.15 at the same temperature.",
+  "training": {"aux_policy_weight": 0.25}
+}

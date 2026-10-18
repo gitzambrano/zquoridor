@@ -1,26 +1,9 @@
 #!/usr/bin/env python3
-"""Execute tri-network training tactics and convex model soup unification.
+"""Inspect, initialize, prepare, and train the shared architecture suite.
 
-This is the primary production training coordinator for Zquoridor NNUE.
-It trains three specialized networks across diverse optimization basins
-and unifies them via a convex model soup:
-
-1. Arm 1 (Sprint & Tactical Sharpness):
-   Softened auxiliary policy (T=2.0, beta=0.15), low LR with cosine decay.
-   Excels at direct pawn sprints and sharp head-to-head tactical play.
-
-2. Arm 2 (Surprise Weighting & Wall Defense):
-   Policy surprise weighting (KL divergence prioritizing unexpected search discoveries)
-   combined with auxiliary policy (T=2.0, beta=0.15). Excels at defensive wall placement.
-
-3. Arm 3 (Deep Positional Regularization):
-   High auxiliary policy weight (beta=0.25, lr-scale 5.0) with surprise weighting
-   on the full dataset mixture. Yields minimal global loss and deep positional stability.
-
-4. Unification (Convex Model Soup):
-   Convex linear combination blending all three arms (33.3% Arm 1 + 33.3% Arm 2 + 33.4% Arm 3).
-   Performs parameter clipping, quantizes to int8 matching C++ NNUE layout (731,172 bytes),
-   and compiles native evaluation binaries.
+CONFIG supplies normal defaults. CLI flags override one invocation. The
+default command writes a plan without training. Select --workflow legacy
+or an explicit --mode to use the retained three-arm model-soup workflow.
 """
 from __future__ import annotations
 
@@ -54,8 +37,12 @@ CONFIG: Dict[str, Any] = {
         **copy.deepcopy(CAMPAIGN_DEFAULTS),
         "command": "plan",
         "experiments": [],
-        "epochs": 40,
-        "batch_size": 2048,
+        "epochs": 0,  # Use each recipe duration. A positive value overrides every selected recipe.
+        "batch_size": 8192,
+        "auto_batch_size": True,
+        "batch_size_min": 256,
+        "batch_size_max": 65536,
+        "gpu_memory_fraction": .85,
         "device": "auto",
         "cpu_threads": 4,
         "cloud": "none",

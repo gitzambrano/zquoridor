@@ -1,0 +1,252 @@
+{
+  "schema": "zquoridor.retired_experiments.v1",
+  "retired_on": "2026-10-18",
+  "scope": "Obsolete local training runs only. Preserve model and best-model tensors, exported weights, reports, logs, and recipes.",
+  "experiments": [
+    {
+      "id": "margin_regime512-weakness-cr60ep",
+      "former_directory": "experimental/experiments/margin_regime512-weakness-cr60ep",
+      "reason": "Superseded margin-regime model; historical README reports 49 percent against Claustrophobia in 600 games.",
+      "architecture": "margin_regime",
+      "hidden": 512,
+      "completed_epochs": 60,
+      "best_val_loss": 0.7308126387710423,
+      "configured_epochs": 60,
+      "status": "retired",
+      "preserved_weights": "artifacts/retired_experiments/20261018/margin_regime512-weakness-cr60ep/model_states.pt",
+      "weights_sha256": "a2113c42d39dbb11602437703f080a4b8b97fcf99578cd0416c4edf72acc614c",
+      "preserved_evidence": "artifacts/retired_experiments/20261018/margin_regime512-weakness-cr60ep/evidence.zip",
+      "evidence_sha256": "de1699a01da5c743e4ba20aa58f8823dae4cca10ba0205ddfa60b7e21967a033",
+      "original_bytes": 9749691,
+      "retained_bytes": 3420100,
+      "optimizer_resume_preserved": false,
+      "source_files": [
+        {
+          "path": "build_manifest.json",
+          "bytes": 1501,
+          "sha256": "61421ca74bb7bd8a3b053b7607e4bad38b4dc438561b7d3047478097a2f3a81b"
+        },
+        {
+          "path": "config.json",
+          "bytes": 1146,
+          "sha256": "f86f611ae5060e3ba99d6e05ec5e1091f6a8145e2f717dc8b48f5c1d1543b1d1"
+        },
+        {
+          "path": "incremental_check.exe",
+          "bytes": 1344981,
+          "sha256": "0aae6be38e2db2ce38e3418cbc17dd94f874e8c3f177400e33a79a613a152f41"
+        },
+        {
+          "path": "README.md",
+          "bytes": 603,
+          "sha256": "64e7488ac34f937b42bd5fb7da4565224666ceb58e2e4438cc565f1f54da9e78"
+        },
+        {
+          "path": "resume.pt",
+          "bytes": 6829482,
+          "sha256": "51356175a8cbb6a1723fd43fb68a2e490396214e16f213b4f3570b5d0a1cfa42"
+        },
+        {
+          "path": "student.architecture.json",
+          "bytes": 580,
+          "sha256": "fdb03b3aad6041c0b5152d2bcb2135d5428dd445777621511b533ecbedf0a1f7"
+        },
+        {
+          "path": "train_report.json",
+          "bytes": 23138,
+          "sha256": "5bed109803dffddd6833dc149bf196fd496310a1a8fa88ffa8aead015ce330a6"
+        },
+        {
+          "path": "zquoridor.exe",
+          "bytes": 1548260,
+          "sha256": "ba6c93363ef1c2762512e9f2355c0c4272f96da7b86a4e2c2f6c5849c2c26e86"
+        }
+      ],
+      "operational_directory_removed": true
+    },
+    {
+      "id": "multipath-phase-contact512-policy160ep",
+      "former_directory": "experimental/experiments/multipath-phase-contact512-policy160ep",
+      "reason": "Completed single-head contact policy experiment; production now uses the bucketed contact model.",
+      "architecture": "multipath_phase_contact",
+      "hidden": 512,
+      "completed_epochs": 160,
+      "best_val_loss": 0.9519150772034688,
+      "configured_epochs": 160,
+      "status": "retired",
+      "preserved_weights": "artifacts/retired_experiments/20261018/multipath-phase-contact512-policy160ep/model_states.pt",
+      "weights_sha256": "a2871506ef7a278c158708bd3ecfa92b215b9fe7f45f99f009ef1d26d9ee8d53",
+      "preserved_evidence": "artifacts/retired_experiments/20261018/multipath-phase-contact512-policy160ep/evidence.zip",
+      "evidence_sha256": "e95870a53c0246e226d3317019b984e62851f4350a30ca7ac5452b9da291e5ab",
+      "original_bytes": 12919621,
+      "retained_bytes": 6539259,
+      "optimizer_resume_preserved": false,
+      "source_files": [
+        {
+          "path": "build_manifest.json",
+          "bytes": 1640,
+          "sha256": "87e9a28cc4a5adcff291283f02fbb4d2df1b5f5ed49f1407367d7bf50140a83b"
+        },
+        {
+          "path": "campaign.stderr.log",
+          "bytes": 777,
+          "sha256": "55b9cf4cc3bfe7769af75ec81a5ac2613b93c648f9119c322ee8bb7953ef98ac"
+        },
+        {
+          "path": "campaign.stdout.log",
+          "bytes": 752,
+          "sha256": "bc4231fa3ab2ef82aa0dc54c4e114ccd739fa04b1cc3e4454e4e67606e61f22d"
+        },
+        {
+          "path": "config.json",
+          "bytes": 1681,
+          "sha256": "c40ec084f242d61db55f3c2335a71931cb9b80dc799a3d6f79a42d67f38d99e2"
+        },
+        {
+          "path": "incremental_check.exe",
+          "bytes": 667894,
+          "sha256": "94bf6c92e78a6ae00be7f07097aba300c29de40052977ce11d0108ea305b5f5c"
+        },
+        {
+          "path": "queue.status.log",
+          "bytes": 99,
+          "sha256": "7eb3b68c31af589cc88de286de3464e62a44e4c618a3710eb450dace02fc63b1"
+        },
+        {
+          "path": "resume.pt",
+          "bytes": 9057450,
+          "sha256": "b35fc24ac84bdb9b4ac24d320a15fcbf52fd443185f23428a41eec928ff7f4b5"
+        },
+        {
+          "path": "run_after_stage_b.bat",
+          "bytes": 650,
+          "sha256": "3099005e13052cfea8dac9712a28477ab81d3e53d9ea55974297649a966aa410"
+        },
+        {
+          "path": "run_campaign.bat",
+          "bytes": 3891,
+          "sha256": "7e6a38a9ca6938299ae66e243455e6a810906b1638294926fedeebb7a9629c16"
+        },
+        {
+          "path": "student.architecture.json",
+          "bytes": 627,
+          "sha256": "7773eea02c1563d3633ab29bda5f3b2cb9bb9f52e34f95f78621b4061e9dd788"
+        },
+        {
+          "path": "student.bin",
+          "bytes": 2253896,
+          "sha256": "07472155bd4ae7f443613592401d31c9fa00fa4453dfb0c9a77d21ad5c8761ac"
+        },
+        {
+          "path": "train_report.json",
+          "bytes": 67150,
+          "sha256": "f85c4b688d62eebe637af086493f7e8349c3ca9ce58d4c28576ccbbff7e618ef"
+        },
+        {
+          "path": "zquoridor.exe",
+          "bytes": 863114,
+          "sha256": "56fb3b246701280852a27ced2a54fa99cd58a4da88903181235e4242c2004c97"
+        }
+      ],
+      "operational_directory_removed": true
+    },
+    {
+      "id": "multipath-phase512-reliable-search-ft-40ep",
+      "former_directory": "experimental/experiments/multipath-phase512-reliable-search-ft-40ep",
+      "reason": "Completed single-head reliable-search fine-tune; production now uses the bucketed contact model.",
+      "architecture": "multipath_phase",
+      "hidden": 512,
+      "completed_epochs": 40,
+      "best_val_loss": 1.1619769183431647,
+      "configured_epochs": 40,
+      "status": "retired",
+      "preserved_weights": "artifacts/retired_experiments/20261018/multipath-phase512-reliable-search-ft-40ep/model_states.pt",
+      "weights_sha256": "fbd04701ef30992dab4257c002b95a836b15eb1b239d83ee73c0c5e99f1bbe7c",
+      "preserved_evidence": "artifacts/retired_experiments/20261018/multipath-phase512-reliable-search-ft-40ep/evidence.zip",
+      "evidence_sha256": "0a722f51c25c408653468953da12ffa880ae5731fd3995af9ced1609863e402d",
+      "original_bytes": 9854785,
+      "retained_bytes": 4833737,
+      "optimizer_resume_preserved": false,
+      "source_files": [
+        {
+          "path": "build_manifest.json",
+          "bytes": 1601,
+          "sha256": "00eeb41222eaa0c3fbcfe0aa60c4898bebc6596de0f60f21b500f5b325fbe7e8"
+        },
+        {
+          "path": "config.json",
+          "bytes": 1321,
+          "sha256": "57eb1da63ff5f4a3210a35c253896423bf9d8a9d58da4d68e49d324b087ff8f3"
+        },
+        {
+          "path": "incremental_check.exe",
+          "bytes": 665006,
+          "sha256": "ae093f346c46cd82aed4d2fa3bcc1254a3404940420ab1fa59bcf8483f062b56"
+        },
+        {
+          "path": "resume.pt",
+          "bytes": 6139114,
+          "sha256": "3e9eab7a14b5436ec94229be76bbab1b48cdeba0cc32bd69b0903eadd38fe174"
+        },
+        {
+          "path": "student.architecture.json",
+          "bytes": 582,
+          "sha256": "e987a0f37c78a0c7d40f49ea39392a118f13b12affbf3f4c71338961647e6fe1"
+        },
+        {
+          "path": "student.bin",
+          "bytes": 1528904,
+          "sha256": "3568acbd509431d2e73fee8f5146fe8e0a7e24c1a23f3b48341703f713e8cbf4"
+        },
+        {
+          "path": "student_int8.bin",
+          "bytes": 641520,
+          "sha256": "b45a2cbe3cdf702cfb91691594ef4108c7e5224b9692817a09c290f53f07f8f8"
+        },
+        {
+          "path": "train_report.json",
+          "bytes": 17535,
+          "sha256": "ccc32c82998ffa53d5c19a469d26eb789060dba040fee3a6903e6c2b06753f7d"
+        },
+        {
+          "path": "zquoridor.exe",
+          "bytes": 859202,
+          "sha256": "f8579d68aa6a46ee8a1262d2dc1c7d1e5a307f6817eb3b0eab8526ed8970260d"
+        }
+      ],
+      "operational_directory_removed": true
+    },
+    {
+      "id": "multipath-phase512-reliable-search-ft-40ep-accidental-partial",
+      "former_directory": "experimental/experiments/multipath-phase512-reliable-search-ft-40ep-accidental-partial",
+      "reason": "Accidental partial duplicate of the completed reliable-search fine-tune; stopped after two epochs.",
+      "architecture": "multipath_phase",
+      "hidden": 512,
+      "completed_epochs": 2,
+      "best_val_loss": 1.1720472367567325,
+      "configured_epochs": 40,
+      "status": "retired",
+      "preserved_weights": "artifacts/retired_experiments/20261018/multipath-phase512-reliable-search-ft-40ep-accidental-partial/model_states.pt",
+      "weights_sha256": "a0b08437d0305580978ba7eb0c886a8a0c1cc72928d7619434c6b52b59396f5d",
+      "preserved_evidence": "artifacts/retired_experiments/20261018/multipath-phase512-reliable-search-ft-40ep-accidental-partial/evidence.zip",
+      "evidence_sha256": "2bc5d83fbafbe9d7b30d49975777930294a73da89e09cdd5e6351af0ac810822",
+      "original_bytes": 6134611,
+      "retained_bytes": 3064666,
+      "optimizer_resume_preserved": false,
+      "source_files": [
+        {
+          "path": "config.json",
+          "bytes": 1321,
+          "sha256": "57eb1da63ff5f4a3210a35c253896423bf9d8a9d58da4d68e49d324b087ff8f3"
+        },
+        {
+          "path": "resume.pt",
+          "bytes": 6133290,
+          "sha256": "7be5acdd5f5efc669e7a64986699b777c7ad2d970cd4235d8018d91d56a3f21c"
+        }
+      ],
+      "operational_directory_removed": true
+    }
+  ],
+  "removal_method": "Windows Recycle Bin; permanent deletion did not occur."
+}

@@ -1,0 +1,8 @@
+{
+  "id": "10_control_surprise_off",
+  "architecture": "multipath_phase_contact_bucketed",
+  "comparison_to": "00_control",
+  "changed_factor": "reference_surprise_alpha",
+  "hypothesis": "Measure the additional frozen-reference policy surprise weighting. Preserve input quality weights.",
+  "training": {"reference_surprise_alpha": 0.0}
+}

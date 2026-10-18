@@ -1,5 +1,5 @@
 """Inventory local corpora and prepare complete rich labels for shared training."""
-from collections import defaultdict
+from collections import defaultdict, deque
 import hashlib
 import json
 import math
@@ -154,7 +154,16 @@ def prepare_rich(positions_file, labels_file, output, seed=20261018, val_fractio
             raise ValueError("Rich inputs changed. Select a new preparation directory.")
         return old
     positions = list(jsonl(positions_file))
-    labels = {row["id"]: row for row in jsonl(labels_file)}
+    labels = defaultdict(deque)
+    for row in jsonl(labels_file):
+        labels[row["id"]].append(row)
+    labels_by_occurrence = {}
+    for occurrence, position in enumerate(positions):
+        position = dict(position, occurrence=occurrence)
+        positions[occurrence] = position
+        queue = labels.get(position["id"])
+        if queue:
+            labels_by_occurrence[occurrence] = queue.popleft()
     # A Gumbel reset breaks the exact history prefix. One complete prefix chain
     # is one trajectory group. Repeated trajectories share the same group hash.
     chains, chain = [], []
@@ -174,11 +183,11 @@ def prepare_rich(positions_file, labels_file, output, seed=20261018, val_fractio
         group = hashlib.sha256(json.dumps(signature).encode()).hexdigest()
         by_ply = {}
         for position in chain:
-            label = labels.get(position["id"])
+            label = labels_by_occurrence.get(position["occurrence"])
             if label and "value" in label.get("target", {}):
                 by_ply[len(position["history"])] = (int(position["side_to_move"]), float(label["target"]["value"]))
         for position in chain:
-            label = labels.get(position["id"])
+            label = labels_by_occurrence.get(position["occurrence"])
             target = label.get("target", {}) if label else {}
             if "policy" not in target or "value" not in target:
                 missing += 1
@@ -218,12 +227,35 @@ def prepare_rich(positions_file, labels_file, output, seed=20261018, val_fractio
         np.savez(stream, **arrays)
     output.with_suffix(".tmp").replace(output)
     report = dict(schema="zquoridor.rich_training.v1", complete=True, identity=identity, samples=len(rows),
+                  unique_history_ids=len({position["id"] for position in rows}),
                   rows_with_exact_future=int(sum(temporal)), missing_labels=missing,
                   value_semantics="signed_current_mover; available exact plies 0,4,8,16; no invented terminal value",
                   policy_semantics="original current-position distribution; no top-k truncation",
                   sha256=_sha256(output))
     _atomic_json(manifest_file, report)
     return report
+
+
+def local_temporal_ledger(manifests, destination):
+    """Reuse frozen, hash-verified local shard manifests as trajectory inputs."""
+    from prepare_stored_replay_all import _resolve_source
+    records, seen = [], set()
+    for manifest in manifests:
+        source = _resolve_source(manifest)
+        for shard in source["shards"]:
+            binary, metadata = shard["path"], shard["meta_path"]
+            if binary in seen:
+                continue
+            seen.add(binary)
+            key = source["root"].name + "/" + binary.relative_to(source["root"]).as_posix()
+            for file, name, digest in ((binary, key, shard["bin_sha256"]),
+                                       (metadata, key[:-4]+".meta", shard["meta_sha256"])):
+                records.append(dict(path=name, title=Path(name).name, local=str(file),
+                                    sha256=digest, kind="selfplay_858_v1"))
+    destination = Path(destination)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.write_text("".join(json.dumps(r)+"\n" for r in records), encoding="utf-8")
+    return destination
 
 
 def prepare_ledgers(ledgers, output, reference, seed=20261018):
@@ -262,8 +294,12 @@ def prepare_ledgers(ledgers, output, reference, seed=20261018):
     for family, records in temporal_files.items():
         ledger = output/(family+".jsonl")
         ledger.write_text("".join(json.dumps(r)+"\n" for r in records), encoding="utf-8")
-        dataset = output/family/"dataset"
+        signature = hashlib.sha256((ledger.read_text(encoding="utf-8") +
+                                   _sha256(ROOT/"training/prepare_temporal_search.py") +
+                                   _sha256(reference) + str(seed)).encode()).hexdigest()[:10]
+        dataset = output/(family+"_"+signature)/"dataset"
         subprocess.run([sys.executable, str(ROOT/"training/prepare_temporal_search.py"),
-                        "--downloads", str(ledger), "--output", str(dataset), "--reference", str(reference)], check=True, cwd=ROOT)
+                        "--downloads", str(ledger), "--output", str(dataset), "--reference", str(reference),
+                        "--seed", str(seed)], check=True, cwd=ROOT)
         sources.append(dict(name=family+"_temporal", path=str(dataset), status="available", **source_settings(family, "temporal")))
     return sources

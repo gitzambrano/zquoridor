@@ -1,0 +1,8 @@
+{
+  "id": "13_corridor_lr3e5",
+  "architecture": "corridor",
+  "comparison_to": "02_corridor",
+  "changed_factor": "lr",
+  "hypothesis": "Test the conservative rate on the corridor architecture without another recipe change.",
+  "training": {"lr": 0.00003}
+}
