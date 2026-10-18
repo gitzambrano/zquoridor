@@ -164,3 +164,4 @@ jobs:
           path: diagnostic/results/benchmarks/diag_3p2/adaptive/
           retention-days: 28
           if-no-files-found: warn
+# Validated UCI instrumentation: use last go-search metrics anchor; never mutate ponder output.
