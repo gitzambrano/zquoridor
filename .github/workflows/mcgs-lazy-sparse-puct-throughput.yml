@@ -1,0 +1,53 @@
+name: "MCGS lazy-sparse-puct matched throughput versus main and isolated Lazy"
+on:
+  push:
+    branches: [exp/mcgs-lazy-sparse-puct-20261018]
+    paths: [.github/workflows/mcgs-lazy-sparse-puct-throughput.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  speed:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: candidate
+          ref: ${{ github.sha }}
+      - uses: actions/checkout@v4
+        with:
+          path: baseline
+          ref: 50a3237ea249c30077ee1e21d7902aa48d125f6d
+      - uses: actions/checkout@v4
+        with:
+          path: lazy
+          ref: 082abc4df338a3c46340aa7c77707c1259f7db16
+      - name: Compile exact pinned pair controls and candidate
+        run: |
+          set -euo pipefail
+          mkdir -p candidate/bin baseline/bin lazy/bin
+          g++ -O3 -std=c++17 -march=native -mavx2 -mfma -DZQ_EXP_SPARSE_POLICY=1 -DZQ_EXP_PUCT_EDGE_SUM=1 -I candidate/src candidate/tools/external/zquoridor_uci.cpp -o candidate/bin/zq_hybrid
+          g++ -O3 -std=c++17 -march=native -mavx2 -mfma -I baseline/src baseline/tools/external/zquoridor_uci.cpp -o baseline/bin/zq_main
+          g++ -O3 -std=c++17 -march=native -mavx2 -mfma -I lazy/src lazy/tools/external/zquoridor_uci.cpp -o lazy/bin/zq_lazy
+      - name: Match simulation throughput in 32 paired states against main
+        run: |
+          python -u candidate/tools/measure_mcgs_speed.py \
+            --main baseline/bin/zq_main --candidate candidate/bin/zq_hybrid \
+            --nnue candidate/data/nnue/nnue_weights_int8.bin \
+            --samples-per-book 16 --movetime 250 \
+            --output candidate/results/benchmarks/mcgs_hybrid/lazy-sparse-puct/speed_main.json
+      - name: Match simulation throughput in 32 paired states against Lazy
+        run: |
+          python -u candidate/tools/measure_mcgs_speed.py \
+            --main lazy/bin/zq_lazy --candidate candidate/bin/zq_hybrid \
+            --nnue candidate/data/nnue/nnue_weights_int8.bin \
+            --samples-per-book 16 --movetime 250 \
+            --output candidate/results/benchmarks/mcgs_hybrid/lazy-sparse-puct/speed_lazy.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: mcgs-lazy-sparse-puct-matched-throughput
+          path: candidate/results/benchmarks/mcgs_hybrid/lazy-sparse-puct/speed_*.json
+          retention-days: 21
+          if-no-files-found: warn
