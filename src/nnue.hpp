@@ -1654,6 +1654,27 @@ inline void forwardPolicyQuant(const AccumulatorQuant& acc, std::array<float, PO
     }
 }
 
+// Same quantized dot products and output scaling as forwardPolicyQuant, but
+// materialize only logits actually consumed at this node. All 209 indices
+// remain addressable so policyLogitForMove stays unchanged. In particular,
+// player 1's moves MUST be mirrored into NNUE canonical coordinates.
+inline void forwardPolicyQuantSparse(const AccumulatorQuant& acc, const MoveList& legal,
+                                    int side, std::array<float, POLICY_OUT>& out) {
+    out.fill(0.f);
+    auto& W = weightsQuant();
+    alignas(32) std::array<uint8_t, HIDDEN> a;
+    for (int i = 0; i < HIDDEN; ++i) a[i] = screluQuant(acc.v[i], W.QA);
+    const double qaqb = (double)((int64_t)W.QA * (int64_t)W.QB);
+    for (const Move& m : legal) {
+        const auto index = moveToPolicyIndex(mirrorMoveForPerspective(m, side));
+        const int8_t* row = W.wp[index].data();
+        int32_t sum = W.bp[index];
+        for (int i = 0; i < HIDDEN; ++i)
+            sum += (int32_t)a[i] * (int32_t)row[i];
+        out[index] = (float)((double)sum / qaqb);
+    }
+}
+
 // =========================================================================
 // AccPair + nnueEvalInt: helpers usados por search.hpp para manter dois
 // acumuladores quantizados (um por perspectiva) na pilha de busca e avaliar
