@@ -14,9 +14,9 @@ WORKERS: Dict[int, Dict[str, Any]] = {
     1: {
         "name": "Colab 1",
         "worker_id": 1,
-        "account": "worker-1@example.invalid",
-        "profile_dir": str(PROFILES_DIR / "worker-1"),
-        "notebook_url": "https://colab.research.google.com/drive/NOTEBOOK_ID_1",
+        "account": 'worker-1@example.invalid',
+        "profile_dir": str(PROFILES_DIR / 'worker-1'),
+        "notebook_url": 'https://colab.research.google.com/drive/NOTEBOOK_ID_1',
         "cdp_port": 9001,
         "target_keywords": ["run_colab_worker.py", "selfplay_contact_soup_858", "contact_soup", "zquoridor"],
         "target_shard_prefix": "c1_",
@@ -28,9 +28,9 @@ WORKERS: Dict[int, Dict[str, Any]] = {
     2: {
         "name": "Colab 2",
         "worker_id": 2,
-        "account": "worker-2@example.invalid",
-        "profile_dir": str(PROFILES_DIR / "worker-2"),
-        "notebook_url": "https://colab.research.google.com/drive/NOTEBOOK_ID_2",
+        "account": 'worker-2@example.invalid',
+        "profile_dir": str(PROFILES_DIR / 'worker-2'),
+        "notebook_url": 'https://colab.research.google.com/drive/NOTEBOOK_ID_2',
         "cdp_port": 9002,
         "target_keywords": ["run_colab_worker.py", "selfplay_contact_soup_858", "contact_soup", "zquoridor"],
         "target_shard_prefix": "c2_",
@@ -42,9 +42,9 @@ WORKERS: Dict[int, Dict[str, Any]] = {
     3: {
         "name": "Colab 3",
         "worker_id": 3,
-        "account": "worker-3@example.invalid",
-        "profile_dir": str(PROFILES_DIR / "worker-3"),
-        "notebook_url": "https://colab.research.google.com/drive/NOTEBOOK_ID_3",
+        "account": 'worker-3@example.invalid',
+        "profile_dir": str(PROFILES_DIR / 'worker-3'),
+        "notebook_url": 'https://colab.research.google.com/drive/NOTEBOOK_ID_3',
         "cdp_port": 9003,
         "target_keywords": ["run_colab_worker.py", "selfplay_contact_soup_858", "contact_soup", "zquoridor"],
         "target_shard_prefix": "c3_",
@@ -56,9 +56,9 @@ WORKERS: Dict[int, Dict[str, Any]] = {
     4: {
         "name": "Colab 4",
         "worker_id": 4,
-        "account": "worker-4@example.invalid",
-        "profile_dir": str(PROFILES_DIR / "worker-1"),
-        "notebook_url": "https://colab.research.google.com/drive/NOTEBOOK_ID_4",
+        "account": 'worker-4@example.invalid',
+        "profile_dir": str(PROFILES_DIR / 'worker-4'),
+        "notebook_url": 'https://colab.research.google.com/drive/NOTEBOOK_ID_4',
         "cdp_port": 9004,
         "target_keywords": ["run_colab_worker.py", "selfplay_contact_soup_858", "contact_soup", "zquoridor"],
         "target_shard_prefix": "c4_",
@@ -70,9 +70,9 @@ WORKERS: Dict[int, Dict[str, Any]] = {
     5: {
         "name": "Colab 5",
         "worker_id": 5,
-        "account": "worker-5@example.invalid",
-        "profile_dir": str(PROFILES_DIR / "worker-5"),
-        "notebook_url": "https://colab.research.google.com/drive/NOTEBOOK_ID_5",
+        "account": 'worker-5@example.invalid',
+        "profile_dir": str(PROFILES_DIR / 'worker-5'),
+        "notebook_url": 'https://colab.research.google.com/drive/NOTEBOOK_ID_5',
         "cdp_port": 9005,
         "target_keywords": ["run_colab_worker.py", "selfplay_contact_soup_858", "contact_soup", "zquoridor"],
         "target_shard_prefix": "c5_",
@@ -81,6 +81,25 @@ WORKERS: Dict[int, Dict[str, Any]] = {
         "extra_args": "--weights results/experiments/contact_soup_tri_512/soup_tri_champion/student_int8.bin --seed 5000005 --mc-obvious-plies 10 --mc-temp-obvious 2.5 --mc-temp-opening 1.2 --mc-temp-decay-plies 30 --mc-temp-end 0.12 --playout-cap --time-ms 400 --cheap-time-ms 200 --cheap-time-end-ms 50 --cheap-time-decay-plies 30 --full-search-opening-plies 14 --full-search-prob 0.35",
     },
 }
+
+WORKERS.update({
+    6: {
+        **WORKERS[1], "name": "Colab 6", "worker_id": 6,
+        "account": 'worker-6@example.invalid',
+        "profile_dir": str(Path.home() / ".config/colab-cli/browser-profiles/worker-6"),
+        "notebook_url": 'https://colab.research.google.com/drive/NOTEBOOK_ID_6',
+        "cdp_port": 9331, "target_shard_prefix": "c6_",
+        "extra_args": WORKERS[1]["extra_args"].replace("1000001", "6000006"),
+    },
+    7: {
+        **WORKERS[1], "name": "Colab 7", "worker_id": 7,
+        "account": 'worker-7@example.invalid',
+        "profile_dir": str(Path.home() / ".config/colab-cli/browser-profiles/worker-7"),
+        "notebook_url": 'https://colab.research.google.com/drive/NOTEBOOK_ID_7',
+        "cdp_port": 9507, "target_shard_prefix": "c7_",
+        "extra_args": WORKERS[1]["extra_args"].replace("1000001", "7000007"),
+    },
+})
 
 # Aliases mapping worker strings/names to canonical integer IDs
 WORKER_ALIASES: Dict[Any, int] = {
@@ -105,6 +124,10 @@ WORKER_ALIASES: Dict[Any, int] = {
     "c5": 5,
     "colab5": 5,
 }
+
+for _worker_id in (6, 7):
+    for _alias in (_worker_id, str(_worker_id), f"c{_worker_id}", f"colab{_worker_id}"):
+        WORKER_ALIASES[_alias] = _worker_id
 
 
 def resolve_worker_key(key: Any) -> int:
@@ -144,3 +167,7 @@ if not os.path.exists('/content/zquoridor'):
 !git reset --hard origin/main
 !bash build/build_selfplay.sh -DZQ_NNUE_CONTACT_FEATURES=1 -DZQ_NNUE_VALUE_BUCKETS=6 -DZQ_NNUE_VALUE_DEPTH=2 -DZQ_NNUE_HIDDEN=512
 !python tools/selfplay/run_colab_worker.py --worker-id {worker_id} --drive-dir {drive_dir} {cmd_args}"""
+
+
+from colab.private import apply_accounts
+apply_accounts(WORKERS, 'zquoridor')

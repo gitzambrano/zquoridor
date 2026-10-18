@@ -1,0 +1,8 @@
+{
+  "id": "05_context_gate",
+  "architecture": "context_gate",
+  "hypothesis": "Modulate 16 channel groups from race and stock context.",
+  "initialization": "Copy production weights and initialize channel modulation to identity.",
+  "runtime": "PyTorch with inherited QAT and floating-point gate. Native runtime remains pending.",
+  "training": {}
+}

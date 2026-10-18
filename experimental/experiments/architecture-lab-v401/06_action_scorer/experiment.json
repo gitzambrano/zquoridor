@@ -1,0 +1,8 @@
+{
+  "id": "06_action_scorer",
+  "architecture": "action_scorer",
+  "hypothesis": "Add a shared nonlinear action decoder to the linear policy.",
+  "initialization": "Copy production weights and initialize the residual policy correction to zero.",
+  "runtime": "PyTorch. The decoder scores every action before legal filtering. Native runtime remains pending.",
+  "training": {}
+}

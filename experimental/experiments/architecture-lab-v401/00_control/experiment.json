@@ -1,0 +1,8 @@
+{
+  "id": "00_control",
+  "architecture": "multipath_phase_contact_bucketed",
+  "hypothesis": "Measure the effect of the shared new corpus without an architecture change.",
+  "initialization": "Copy production 4.01 weights.",
+  "runtime": "Existing native NNUE after export and parity verification.",
+  "training": {}
+}

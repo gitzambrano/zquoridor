@@ -1,4 +1,4 @@
-# Compilados / Executáveis
+# Compilados / ExecutÃ¡veis
 bin/
 teste/bin/
 *.exe
@@ -10,7 +10,7 @@ spsa*.csv
 ga*.txt
 ga*.csv
 
-# Artefatos gerados pelo emcc (intermediários -- zquoridor.html é o bundle final, sí commitado)
+# Artefatos gerados pelo emcc (intermediÃ¡rios -- zquoridor.html Ã© o bundle final, sÃ­ commitado)
 gui_web/zquoridor.js
 gui_web/zquoridor.wasm
 
@@ -24,7 +24,7 @@ data/selfplay_*.bin
 data/arena/
 data/arena_*.bin
 
-# Checkpoints / Plots / Saídas de Treino (Fase 5)
+# Checkpoints / Plots / SaÃ­das de Treino (Fase 5)
 data/checkpoints/
 data/plots/
 # Qualquer pasta de plots de treino, nao so a default: um run com
@@ -34,7 +34,7 @@ data/plots*/
 training/plots/
 training/checkpoints/
 
-# Pesos da NNUE (opcional, mas bom ignorar arquivos pesados de pesos se não forem a versão final de release)
+# Pesos da NNUE (opcional, mas bom ignorar arquivos pesados de pesos se nÃ£o forem a versÃ£o final de release)
 # data/nnue/nnue_weights.bin
 # data/nnue/nnue_weights_int8.bin
 data/nnue/smoke-*.bin
@@ -150,6 +150,8 @@ experimental/benchmarks/
 experimental/experiments/**
 !experimental/experiments/**/
 !experimental/experiments/**/*.architecture.json
+!experimental/experiments/architecture-lab-v401/**/experiment.json
+!experimental/experiments/architecture-lab-v401/suite.json
 !experimental/experiments/**/*.md
 experimental/experiments/**/mixed_dataset*/
 experimental/experiments/**/*.bin
@@ -171,3 +173,42 @@ experimental/edge_acc/tools/external/*
 !experimental/edge_acc/tools/external/zquoridor_uci.cpp
 # Compatibility alias for the consolidated experimental artifacts.
 results/experiments/
+
+# Private Google account data and authentication artifacts
+.env
+.env.*
+.venv-*/
+.config/colab-cli/
+colab/private/
+colab/**/*.local.json
+colab/**/*.local.py
+colab/**/profiles/
+colab/**/cookies/
+colab/**/artifacts/
+colab/**/screenshots/
+colab/**/logs/
+colab/**/*.har
+colab/**/*.trace.zip
+colab/**/*.log
+colab/**/credentials*.json
+colab/**/*_credentials.json
+colab/**/token*.json
+colab/**/sessions*.json
+colab/**/pending.json
+colab/**/code.txt
+colab/**/authorization-code*
+colab/playwright/launch_colab_*.bat
+**/cookies*.json
+**/*_cookies.json
+**/application_default_credentials.json
+
+# Private Google authentication files outside the Colab directory
+**/credentials.json
+**/credentials.*.json
+**/token.json
+**/token.*.json
+**/client_secret*.json
+**/client_secrets*.json
+
+# Personal Colab launchers can contain notebook IDs and profile paths.
+colab/**/launch_colab_*.bat

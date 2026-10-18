@@ -57,6 +57,13 @@ wall-stock buckets, race margin, game phase, contact features, and inexpensive m
 geometry. It is trained with quantization-aware training and evaluated as int8
 in the native and WebAssembly engines.
 
+The [architecture lab](experimental/experiments/architecture-lab-v401/README.md)
+defines eight experimental networks and one control. Run
+`python training/train_nnue.py` to inspect the default plan. The same entry
+point prepares the shared mixture and trains selected models through
+`--cli-command prepare` and `--cli-command train`. Read the
+[data contract](docs/training-data.md) for source quality and target semantics.
+
 ## Run and validate
 
 ```bash
@@ -142,3 +149,11 @@ authorized this promotion after the paired strength screen. See `docs/plan.md`
 for the measured results and validation limits. `data/nnue/release.json` records the release
 identity. Archived networks and search profiles reside in `experimental/`.
 The 768-unit width experiment remains separate from production.
+
+## Repository organization and Colab operations
+
+See [repository layout](docs/repository-layout.md) for source roles and
+[Colab operations](colab/README.md) for the CLI and browser transports.
+All seven accounts use private local identity configuration. Source organization
+and privacy checks are available through `tools/audit_repository.py` and
+`python -m colab.privacy_check`.

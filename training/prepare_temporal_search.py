@@ -74,7 +74,12 @@ def canonical_policy(root, side):
 
 
 def encode(commands):
-    result = subprocess.run([str(ROOT/'bin/teacher_encode_state')],input='\n'.join(commands)+'\n',
+    executable = ROOT/'bin/teacher_encode_state'
+    if not executable.exists():
+        executable = executable.with_suffix('.exe')
+    if len(commands) > 2048:
+        return [state for start in range(0, len(commands), 2048) for state in encode(commands[start:start+2048])]
+    result = subprocess.run([str(executable)],input='\n'.join(commands)+'\n',
                             text=True,capture_output=True,check=True)
     lines = result.stdout.splitlines()
     if len(lines) != len(commands):

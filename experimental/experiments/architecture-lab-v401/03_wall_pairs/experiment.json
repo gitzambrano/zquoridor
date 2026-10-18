@@ -1,0 +1,8 @@
+{
+  "id": "03_wall_pairs",
+  "architecture": "wall_pairs",
+  "hypothesis": "Represent local wall combinations and boundary motifs relative to each pawn.",
+  "initialization": "Copy production weights and zero 512 hash feature columns.",
+  "runtime": "PyTorch. Stable hash collisions are intentional. Native runtime remains pending.",
+  "training": {}
+}

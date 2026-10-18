@@ -8,6 +8,7 @@ The release decision and complete evidence history are in `docs/plan.md`.
 | --- | --- |
 | `releases/v3_01_504/` | Previous production headers, build scripts, adapter, and 504 weights |
 | `experiments/` | Existing training experiments, component networks, and model soups |
+| `experiments/architecture-lab-v401/` | Eight model recipes, one control, and their shared training contract |
 | `edge_acc/` | Archived Edge source, runners, and verification tools |
 | `benchmarks/` | Original Edge campaigns, frozen references, manifests, logs, and games |
 | `artifacts/` | New binaries from an explicit archived profile build |
@@ -38,7 +39,7 @@ The previous production commit is `fe5d5fec9451c0258d0a8cfee7cc07eafad5b9a2`. Gi
 files at `data/nnue/`. Local archives contain the same files outside Git.
 A fresh clone can recover these weights from that commit without a branch or
 worktree. Historical evidence statements in the archive describe version 3.01.
-The current production state is version 4.0 in `docs/plan.md`.
+The current production state is version 4.01 in `docs/plan.md`.
 
 The archived Edge headers and adapter preserve the evaluated implementation.
 Generic tools and training pipelines remain canonical at the repository root.

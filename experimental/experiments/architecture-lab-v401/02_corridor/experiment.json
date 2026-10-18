@@ -1,0 +1,8 @@
+{
+  "id": "02_corridor",
+  "architecture": "corridor",
+  "hypothesis": "Identify forced shortest-path prefixes and goal-directed branching for both players.",
+  "initialization": "Copy production weights and zero 64 new feature columns.",
+  "runtime": "PyTorch. Goal maps cache by wall topology. Native runtime remains pending.",
+  "training": {}
+}

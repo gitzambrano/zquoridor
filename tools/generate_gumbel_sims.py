@@ -7,6 +7,7 @@ import json
 import math
 import os
 import random
+import shutil
 import subprocess
 import sys
 import time
@@ -254,10 +255,15 @@ def run_gumbel_generation(config: dict) -> dict:
                     try:
                         p_rec = json.loads(lp)
                         l_rec = json.loads(lt)
+                        target = l_rec.get("target", l_rec)
+                        policy = normalize_policy(target["policy"])
+                        value = float(target["value"])
+                        if p_rec["id"] != l_rec["id"] or not math.isfinite(value) or abs(value) > 1:
+                            raise ValueError("Invalid resumed label.")
                         positions.append(p_rec)
                         labels.append(l_rec)
-                        policy_matrix.append(l_rec.get("policy", [0.0] * POLICY_DIM))
-                        value_list.append(float(l_rec.get("value", 0.0)))
+                        policy_matrix.append(policy)
+                        value_list.append(value)
                         aux_meta = l_rec.get("metadata", {}).get("aux")
                         if not aux_meta or len(aux_meta) != 6:
                             ref = Referee()
@@ -279,7 +285,29 @@ def run_gumbel_generation(config: dict) -> dict:
         print(f"Resuming Gumbel simulations from existing {len(positions)}/{config['count']} records in {output_dir}...", flush=True)
 
     if len(positions) >= config["count"]:
-        print(f"Target count already satisfied ({len(positions)}/{config['count']}) in {output_dir}. Skipping generation.", flush=True)
+        print(f"Target count already satisfied ({len(positions)}/{config['count']}) in {output_dir}.", flush=True)
+        if config["export_npz"] and positions:
+            need_sync = True
+            if npz_file.exists():
+                try:
+                    with np.load(npz_file) as existing_npz:
+                        if len(existing_npz.get("policy", [])) == len(positions):
+                            if np.all(existing_npz["policy"].sum(axis=1) > 0.99):
+                                need_sync = False
+                except Exception:
+                    need_sync = True
+            if need_sync:
+                print(f"Synchronizing and verifying targets.npz with all {len(positions)} records...", flush=True)
+                if npz_file.exists():
+                    shutil.copy2(npz_file, npz_file.with_name(f"targets.npz.bak_{int(time.time())}"))
+                np.savez_compressed(
+                    npz_file,
+                    policy=np.asarray(policy_matrix, dtype=np.float32),
+                    value=np.asarray(value_list, dtype=np.float32),
+                    aux=np.asarray(aux_features, dtype=np.int32),
+                    sample_ids=np.asarray(sample_ids),
+                )
+                print(f"Exported verified NumPy targets to: {npz_file}", flush=True)
         return {"generated": len(positions), "requested": config["count"], "positions_file": str(positions_file), "targets_file": str(targets_file), "seed": config["seed"]}
 
     print(f"Executing Gumbel Sequential Halving across {len(input_histories)} positions (already processed: {len(positions)})...", flush=True)

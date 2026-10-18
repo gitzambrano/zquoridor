@@ -46,8 +46,21 @@ import run_experiment as r
 from student_model import Student, export
 from model_soup import create_soup
 from compute_surprise_weights import compute_surprise_weights
+from architecture_campaign import DEFAULTS as CAMPAIGN_DEFAULTS
 
 CONFIG: Dict[str, Any] = {
+    "workflow": "architectures",
+    "campaign": {
+        **copy.deepcopy(CAMPAIGN_DEFAULTS),
+        "command": "plan",
+        "experiments": [],
+        "epochs": 40,
+        "batch_size": 2048,
+        "device": "auto",
+        "cpu_threads": 4,
+        "cloud": "none",
+        "training_overrides": {},
+    },
     "mode": "all",  # Options: 'arm1', 'arm2', 'arm3', 'soup', 'all'
     "data": str(ROOT / "experimental" / "experiments" / "production-central-finetune-20261002" / "mixed_dataset"),
     "surprise_data": str(ROOT / "experimental" / "experiments" / "production-central-finetune-20261002" / "mixed_dataset_surprise_v2"),
@@ -310,7 +323,7 @@ def run_pipeline(cfg: Dict[str, Any]) -> Tuple[Path, Path]:
     return unify_soup(cfg)
 
 
-def main(argv: Optional[List[str]] = None) -> int:
+def legacy_main(argv: Optional[List[str]] = None) -> int:
     parser = argparse.ArgumentParser(description="Zquoridor NNUE Multi-Arm Training & Soup Orchestrator")
     parser.add_argument(
         "--mode",
@@ -453,6 +466,38 @@ def _load_into_model(model: QuoridorNNUE, raw: dict):
         model.value2_wl.bias.copy_(torch.from_numpy(raw["bv2_wl"]))
         model.policy.weight.copy_(torch.from_numpy(raw["wp"]))
         model.policy.bias.copy_(torch.from_numpy(raw["bp"]))
+
+
+def main(argv: Optional[List[str]] = None) -> int:
+    """Select the shared campaign or the retained legacy soup workflow."""
+    arguments = list(sys.argv[1:] if argv is None else argv)
+    workflow = CONFIG["workflow"]
+    if "--workflow" in arguments:
+        index = arguments.index("--workflow")
+        workflow = arguments[index + 1]
+        del arguments[index:index + 2]
+    elif "--mode" in arguments:
+        workflow = "legacy"
+    if workflow == "legacy":
+        return legacy_main(arguments)
+    if workflow != "architectures":
+        raise ValueError("workflow must be architectures or legacy")
+    from architecture_campaign import run
+    parser = argparse.ArgumentParser(description="Inventory, prepare, or train the shared architecture suite.")
+    cfg = copy.deepcopy(CONFIG["campaign"])
+    for key, value in cfg.items():
+        flags = ["--" + key.replace("_", "-")]
+        if key == "command":
+            flags.append("--cli-command")
+        if isinstance(value, bool):
+            parser.add_argument(*flags, action=argparse.BooleanOptionalAction, default=argparse.SUPPRESS)
+        else:
+            parser.add_argument(*flags, type=json.loads if isinstance(value, (dict, list)) else type(value),
+                                default=argparse.SUPPRESS)
+    cfg.update(vars(parser.parse_args(arguments)))
+    result = run(cfg)
+    print(json.dumps({k: v for k, v in result.items() if k not in ("sources", "jobs", "configuration")}, indent=2))
+    return 0
 
 
 if __name__ == "__main__":

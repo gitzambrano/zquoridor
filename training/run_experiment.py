@@ -78,6 +78,9 @@ CONFIG = {
     "benchmark": False,
     "benchmark_args": [],
     "dry_run": False,
+    "topology_aux_weight": 0.15,
+    "distillation_weight": 0.0,
+    "distillation_epochs": 0,
 }
 
 
@@ -265,7 +268,7 @@ def load_dataset(path):
             if not np.isfinite(block).all() or (block < 0).any() or not np.allclose(block.sum(1), 1, atol=0.005):
                 raise ValueError("auxiliary policy rows must be finite and normalized")
     for key in ("value_sample_weight", "policy_sample_weight", "aux_sample_weight"):
-        if key in data and (data[key].shape != (n,) or not np.isfinite(data[key]).all() or (data[key] <= 0).any()):
+        if key in data and (data[key].shape != (n,) or not np.isfinite(data[key]).all() or (data[key] < 0).any()):
             raise ValueError(f"invalid per-head sample weight: {key}")
     chunk_size = 65_536
     for start_idx in range(0, n, chunk_size):
@@ -419,7 +422,11 @@ def _prepare_epoch_block(data, row_indices, config, use_cuda, training, row_orde
         feature_rows = np.arange(len(row_order))
     else:
         feature_rows = np.arange(len(row_indices))
-    features = encode_features(block, feature_rows, config["architecture"])
+    try:
+        from .architecture_models import encode
+    except ImportError:
+        from architecture_models import encode
+    features = encode(block, feature_rows, config["architecture"])
     prepared = {
         "x": _pinned_tensor(features, use_cuda),
         "p": _pinned_tensor(block["policy"].astype(np.float32, copy=False), use_cuda),
@@ -444,7 +451,7 @@ def _epoch(model, data, indices, config, device, optimizer=None, rng=None):
     aux_enabled = bool(config.get("aux_policy_enabled", False)) and getattr(model, "aux_policy", None) is not None
     aux_temp = float(config.get("aux_policy_temperature", 2.0))
     aux_weight = float(config.get("aux_policy_weight", 0.15))
-    totals = torch.zeros(7, dtype=torch.float64, device=device)
+    totals = torch.zeros(9, dtype=torch.float64, device=device)
     source_names = data.get("source_names", [])
     source_totals = (torch.zeros((len(source_names), 5), dtype=torch.float64, device=device)
                      if not training and "source_mass" in data else None)
@@ -510,6 +517,20 @@ def _epoch(model, data, indices, config, device, optimizer=None, rng=None):
                                        + config["value_weight"] * vloss * head_weights["value_sample_weight"])
                     if aux_enabled:
                         per_sample_loss = per_sample_loss + aux_weight * aux_kl * head_weights["aux_sample_weight"]
+                    topology_loss = (model.additional_loss(x) if hasattr(model, "additional_loss")
+                                     else torch.zeros_like(w))
+                    per_sample_loss = per_sample_loss + config.get("topology_aux_weight", .15) * topology_loss
+                    distillation_loss = torch.zeros_like(w)
+                    teacher = getattr(model, "distillation_teacher", None)
+                    if training and teacher is not None and getattr(model, "distillation_active", False):
+                        with torch.no_grad():
+                            teacher_value, teacher_policy = teacher(x[:, :858])
+                            teacher_p = F.softmax(teacher_policy / 2, dim=1)
+                        distillation_loss = 4 * (teacher_p * (teacher_p.clamp_min(1e-12).log()
+                                                - F.log_softmax(policy / 2, dim=1))).sum(1)
+                        distillation_loss += F.binary_cross_entropy_with_logits(
+                            logits, teacher_value.sigmoid(), reduction="none")
+                        per_sample_loss = per_sample_loss + config.get("distillation_weight", 0) * distillation_loss
                     mass = w.sum()
                     loss = (per_sample_loss * w).sum() / mass
                     if training:
@@ -524,7 +545,8 @@ def _epoch(model, data, indices, config, device, optimizer=None, rng=None):
                 totals += torch.stack((loss.detach() * mass, (kl * w).sum(),
                                        (val_diff * w).sum(), mass,
                                        (vloss * w).sum(), (brier * w).sum(),
-                                       aux_kl_term)).detach().to(torch.float64)
+                                       aux_kl_term, (topology_loss * w).sum(),
+                                       (distillation_loss * w).sum())).detach().to(torch.float64)
 
                 if source_totals is not None:
                     source_weight = prepared["source_mass"][start:end].to(device, non_blocking=use_cuda)
@@ -552,6 +574,10 @@ def _epoch(model, data, indices, config, device, optimizer=None, rng=None):
                value_brier=float(totals[5] / totals[3]))
     if aux_enabled:
         res["aux_policy_kl"] = float(totals[6] / totals[3])
+    if hasattr(model, "additional_loss"):
+        res["topology_aux_loss"] = float(totals[7] / totals[3])
+    if getattr(model, "distillation_teacher", None) is not None:
+        res["distillation_loss"] = float(totals[8] / totals[3])
     if source_totals is not None:
         source_totals = source_totals.cpu().numpy()
         res["by_source"] = {
@@ -575,19 +601,26 @@ def _epoch(model, data, indices, config, device, optimizer=None, rng=None):
 
 
 def train(config):
+    try:
+        from .architecture_models import make_model, export as export_model, SPECS
+    except ImportError:
+        from architecture_models import make_model, export as export_model, SPECS
+    if config.get("build") and config["architecture"] in SPECS and config["architecture"] != "tactical_aux":
+        raise ValueError("This experimental architecture has no native runtime. Set build=False.")
     for key in ("epochs", "batch_size", "cpu_threads"):
         if config[key] <= 0:
             raise ValueError(f"{key} must be positive")
     if config["checkpoint_every"] < 0:
         raise ValueError("checkpoint_every must be nonnegative")
-    for key in ("patience", "warmup_epochs"):
+    for key in ("patience", "warmup_epochs", "distillation_epochs"):
         if config[key] < 0:
             raise ValueError(f"{key} must be nonnegative")
     for key in ("lr", "min_lr", "trunk_lr_scale", "grad_clip"):
         if not math.isfinite(config[key]) or config[key] <= 0:
             raise ValueError(f"{key} must be finite and positive")
     for key in ("policy_weight", "value_weight", "weight_decay", "min_weight_decay",
-                "aux_policy_temperature", "aux_policy_weight", "aux_policy_lr_scale"):
+                "aux_policy_temperature", "aux_policy_weight", "aux_policy_lr_scale",
+                "topology_aux_weight", "distillation_weight"):
         if not math.isfinite(config[key]) or config[key] < 0:
             raise ValueError(f"{key} must be finite and nonnegative")
     if config["validation_mode"] not in ("existing", "resplit", "none"):
@@ -624,7 +657,7 @@ def train(config):
     device = config["device"]
     if device == "auto":
         device = "cuda" if torch.cuda.is_available() else "cpu"
-    model = Student(config["architecture"], config["hidden"], qat=config["qat"])
+    model = make_model(config["architecture"], config["hidden"], qat=config["qat"])
     if not config["from_scratch"]:
         old = Student(config["init_architecture"], config["init_hidden"])
         old.load_float(_path(config["init_from"]))
@@ -632,6 +665,11 @@ def train(config):
     if config.get("aux_policy_enabled", False):
         model.enable_aux_policy()
     model.to(device)
+    if config.get("distillation_weight", 0) > 0:
+        teacher = Student(config["init_architecture"], config["init_hidden"], qat=True)
+        teacher.load_float(_path(config["init_from"]))
+        teacher.to(device).eval().requires_grad_(False)
+        object.__setattr__(model, "distillation_teacher", teacher)
     for name, param in model.named_parameters():
         enabled = config["train_scope"] == "full" or name.startswith("policy.") or name.startswith("aux_policy.")
         enabled |= config["train_scope"] == "heads" and name.startswith("value")
@@ -652,6 +690,10 @@ def train(config):
     identity = dict(config=identity_config, data_sha256=_dataset_hash(path),
                     init_sha256=None if config["from_scratch"] else _hash(_path(config["init_from"])),
                     trainer_sha256=_hash(__file__), model_sha256=_hash(Path(__file__).with_name("student_model.py")))
+    if config["architecture"] in SPECS:
+        identity["experimental_model_sha256"] = _hash(Path(__file__).with_name("architecture_models.py"))
+    if config.get("distillation_weight", 0) > 0:
+        identity["teacher_sha256"] = _hash(_path(config["init_from"]))
     fingerprint = hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()
     initial_checkpoint = folder / "initial.pt"
     best_checkpoint = folder / "best.pt"
@@ -697,6 +739,7 @@ def train(config):
         _atomic_torch_save(initial_state, best_checkpoint)
     stopped_early = False
     for epoch in range(start, config["epochs"]):
+        model.distillation_active = epoch < config.get("distillation_epochs", 0)
         epoch_started = time.monotonic()
         if val_mode != "none" and config["patience"] > 0 and bad >= config["patience"]:
             stopped_early = True
@@ -739,7 +782,7 @@ def train(config):
     if val_mode != "none" and config["patience"] > 0 and bad >= config["patience"] and len(history) < config["epochs"]:
         stopped_early = True
     model.load_state_dict(best)
-    architecture = export(model, folder / "student.bin")
+    architecture = export_model(model, folder / "student.bin")
     report = dict(fingerprint=fingerprint, architecture=architecture,
                   validation_mode=val_mode,
                   validation_split=dict(

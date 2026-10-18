@@ -13,6 +13,53 @@ Every public runner adheres to the following contract:
 3. Command-line flags override specific `CONFIG` keys for a single execution.
 4. Utility libraries, internal stages, and test suites are not public runners.
 
+## Public training entry point
+
+`training/train_nnue.py` owns architecture training and retains the legacy
+model-soup workflow. The default architecture command writes an inventory and
+a resolved plan. It does not start training.
+
+| Command | Effect |
+| --- | --- |
+| `--cli-command plan` | Inspect canonical corpora, recent worker coverage, and all resolved model configurations. |
+| `--cli-command initialize` | Freeze reference weights and instantiate all selected models without training. |
+| `--cli-command prepare` | Validate recent worker coverage, prepare JSONL targets and trajectories, then mix the common dataset. |
+| `--cli-command train` | Prepare or verify the mixture, then train selected models sequentially. |
+| `--workflow legacy` | Execute the retained three-arm and soup coordinator. An explicit `--mode` also selects this workflow. |
+
+Defaults reside in the top-level `CONFIG["campaign"]` dictionary. CLI flags
+override individual settings. Lists and dictionaries accept JSON. Useful
+flags include `--suite`, `--experiments`, `--downloads`, `--data-roots`,
+`--sources-file`, `--pool-fractions`, `--output`, `--epochs`, `--batch-size`,
+`--device`, `--cpu-threads`, and `--resume` or `--no-resume`.
+`--training-overrides` accepts a JSON dictionary of other optimizer and loss
+settings from `run_experiment.CONFIG`. These overrides apply after each model
+recipe. They cannot change dataset paths, model identity, or runtime builds.
+
+`--cloud inventory` lists training artifacts through existing Colab runtime
+connections. `--cloud download` also copies stable file versions. Both use
+the configured CLI interpreter. They do not execute notebook cells, allocate
+VMs, or recover jobs. The snapshot helper resides in `colab/cli/data_snapshot.py`.
+`--worker-ids` defaults to `[1,2,3,4,5]`. `--require-five-workers` requires paired
+recent position and label files from each selected worker. The explicit
+`--no-require-five-workers` override permits a diagnostic partial preparation.
+It does not certify complete fleet coverage.
+
+Internal modules have separate roles:
+
+- `architecture_models.py` defines models, state-only encoders, and portable exports.
+- `architecture_data.py` inventories canonical corpora and prepares rich labels.
+- `architecture_campaign.py` resolves recipes and invokes shared preparation and training.
+- `mix_experimental_datasets.py` deduplicates states and preserves separate evidence per head.
+- `run_experiment.py` owns optimization, QAT, checkpoint recovery, and reports.
+
+Outputs include the resolved plan, source inventory, common dataset manifest,
+frozen reference, initial models, best and resume checkpoints, model manifests,
+and training reports. Unsupported native architectures export PyTorch only.
+The command never starts benchmarks, tournaments, or promotion. Model details
+belong to the experiment README. Data semantics belong to `training-data.md`.
+Collection status and next actions belong to `plan.md`.
+
 ---
 
 ## 1. Evaluation and Benchmark Runners
@@ -147,7 +194,30 @@ Every public runner adheres to the following contract:
 
 ## 2. Remote and Cloud Self-Play (Google Colab)
 
-### `colab/switch_search_games.py`
+### `colab/cli/`
+- **Purpose**: Provides the official CLI transport for all seven registered Google accounts.
+- **Setup**: Run `colab/cli/setup.ps1` to install the pinned Windows PR and Jupyter client in `artifacts/colab/cli/venv`.
+- **Entry points**: Run `python -m colab.cli.accounts --attach`, `python -m colab.cli.run --worker-id N -- COMMAND`, or `colab/cli/colab.ps1 N COMMAND` with the installed interpreter.
+- **Inputs**: The account registry, isolated ADC credentials outside Git, and explicit command arguments.
+- **Outputs**: CLI command output and separate session metadata for each account and project.
+- **Inspection**: `accounts`, `run`, `login`, `monitor`, and `recover` support `--show-config` without remote actions.
+
+### `colab/cli/monitor.py`
+- **Purpose**: Reads existing runtime state and persisted artifact metadata without browser control or kernel execution.
+- **Defaults**: Seven accounts, a 60-second interval, a 900-second stall threshold, and continuous observation.
+- **Outputs**: `artifacts/colab/cli/monitor.json` and account status lines.
+- **Key flags**: `--worker-ids`, `--once`, `--max-cycles`, `--interval`, `--stall-seconds`, `--output`, `--recover`, and `--recovery-spec`.
+- **Recovery**: An explicit policy can resume a job after process and persistent checkpoint checks. Recovery permits three attempts and a 900-second cooldown. It never terminates an active process or allocates a VM.
+- **Limits**: Checkpoint metadata does not prove file integrity. Authentication and runtime loss require operator attention or a switch of transport.
+
+### `colab/playwright/monitor.py`
+- **Purpose**: Reads connection state and progress from notebook pages without reconnect or execution actions.
+- **Inputs**: Seven account profiles and fixed or dynamic browser debugging ports.
+- **Outputs**: `artifacts/colab/playwright/monitor.json` and account status lines.
+- **Key flags**: `--worker-ids`, `--once`, `--max-cycles`, `--interval`, `--stall-seconds`, `--open-profiles`, and `--output`.
+- **Notes**: Both read-only transports can observe the same accounts. Managed execution controllers use account locks shared across projects. See `colab/README.md` for transport selection.
+
+### `colab/playwright/switch_search_games.py`
 - **Purpose**: Completes the current self-play shard on each account, then launches paired search collection through its notebook. One locked controller monitors all selected accounts.
 - **Inputs**: Authenticated account profiles in `colab/config.py`, a pinned Main revision, and the collection settings in `colab/search_games_profile.py`.
 - **Outputs**: Controller status in `artifacts/colab/search_games_handover/status.json` and search game ledgers in each account's Drive directory under `zquoridor_data/claustro_search_games_v1/worker_X`.
@@ -155,63 +225,63 @@ Every public runner adheres to the following contract:
 - **Key CLI flags**: `--worker-ids`, `--revision`, `--check-interval-seconds`, `--headless`, and `--output`.
 - **Notes**: Stop the old Zquoridor watcher before this controller. The controller requires the Colab runtime terminal. It preserves browser profile locks and does not bypass authentication or runtime limits. It attempts browser recovery three times per account and reuses an active handover helper. A persistent failure blocks collection on that account.
 
-### `colab/watch_search_games.py`
+### `colab/playwright/watch_search_games.py`
 - **Purpose**: Provides the automatic Python watcher entry point for paired search collection. It completes the initial shard handover and reconnects or resumes the frozen workflow after a notebook disconnect.
 - **Inputs and defaults**: Uses `switch_search_games.CONFIG` and the collection profile. The native runner manages every batch and writes it to Drive.
 - **Outputs**: The shared controller status file and remote Drive batch artifacts.
 - **Driver recovery**: A closed browser driver permits three retries with a 60-second delay. A separate watcher lock prevents duplicate controllers during recovery.
 - **Key CLI flags**: The switch flags, plus `--auto-resume`, `--retry-cooldown-seconds`, and `--max-resume-attempts`. Automatic resume permits three attempts with a 900-second cooldown. Identity mismatches and authentication requirements block automatic re-execution.
 
-### `colab/finish_current_shard.py`
+### `colab/remote/finish_current_shard.py`
 - **Purpose**: Completes one native self-play shard before a workflow change. The Linux helper pauses only its Python launcher. It leaves the native child active, verifies aligned binary and metadata files after exit, then terminates the launcher.
 - **Inputs**: Linux process identities and the worker ID.
 - **Outputs**: An atomic JSON status, artifact hashes, and terminal status markers. Errors resume the launcher.
 - **Default settings**: Worker 1, a two-second check interval, and `/content/zquoridor_search_games/handover_worker_1.json`.
 - **Key CLI flags**: `--worker-id`, `--status-path`, and `--poll-seconds`.
 
-### `colab/launch_workers.py`
+### `colab/playwright/launch_workers.py`
 - **Purpose**: Bootstraps Google Colab self-play workers headlessly via Playwright. Injects the resilient bootloader cell, connects runtimes, and triggers execution.
 - **Inputs**: Authenticated user profiles under `C:\Projetos\TikTok\profiles\` with stored cookies.
 - **Outputs**: Active self-play sessions writing to Google Drive and confirmation screenshots in `artifacts/colab/`.
 - **Key CLI flags**: `--worker-ids` (e.g. `1 2 3 4 5`), `--headless`, `--force-restart`.
 
-### `colab/watchdog_workers.py`
+### `colab/playwright/watchdog_workers.py`
 - **Purpose**: Continuous keep-alive monitor for active Google Colab workers. Simulates human idle interactions to prevent disconnects and auto-reconnects dropped runtimes.
 - **Inputs**: Worker registry in `colab/config.py`.
 - **Outputs**: Health checks, periodic status screenshots, and automatic cell re-execution.
 - **Key CLI flags**: `--worker-ids`, `--check-interval-seconds`, `--headless`, `--target-delta-positions`.
 
-### `colab/report_workers.py`
+### `colab/playwright/report_workers.py`
 - **Purpose**: Audits live Colab notebook DOM state, current shard indices, and games completed across all workers.
 - **Inputs**: Active browser contexts or profile sessions.
 - **Outputs**: Markdown summary table and per-worker status screenshots.
 
-### `colab/login_worker.py`
+### `colab/playwright/login_worker.py`
 - **Purpose**: Interactive login helper to authenticate Google accounts and export permanent session cookies to `cookies.json`.
 - **Inputs**: `--worker-id` (single worker) or `--worker-ids` (sequential list).
 - **Outputs**: Updated `cookies.json` in worker profile directory.
 
-### `colab/dispatch_rich_targets.py`
+### `colab/playwright/dispatch_rich_targets.py`
 - **Purpose**: Autonomous orchestrator that deploys Wall-Drop generation and Gumbel AlphaZero Sequential Halving across all 5 remote Google Colab workers. Handles Google Drive mounts, injects native C++ compile steps, and monitors execution health.
 - **Inputs**: Registered worker definitions in `colab/config.py`.
 - **Outputs**: Remote execution jobs producing `positions.jsonl`, `targets.jsonl`, and `targets.npz` in Google Drive.
 
-### `colab/orchestrate_v4.py`
+### `colab/playwright/orchestrate_v4.py`
 - **Purpose**: Fleet controller for continuous self-play and Claustrophobia search collection. Detects GPU quota limits, switches to CPU self-play, and keeps browser connections alive.
 - **Inputs**: Worker configuration dictionary and runtime profiles.
 - **Outputs**: Execution monitor log and active game generation on Google Drive.
 
-### `colab/solve_audio.py`
+### `colab/playwright/diagnostics/solve_audio.py`
 - **Purpose**: Solves Google reCAPTCHA v2 audio challenges using the OpenAI Whisper tiny model. Downloads challenge MP3 payloads, resamples to 16 kHz, transcribes spoken text, and submits verification.
 - **Inputs**: CDP port of the target browser instance (defaults to 9005).
 - **Outputs**: Verified reCAPTCHA session.
 
-### `colab/fix_fleet_popups.py`
+### `colab/playwright/diagnostics/fix_fleet_popups.py`
 - **Purpose**: Scans all 5 Colab workers for pending Google Drive OAuth consent tabs and reCAPTCHA challenge dialogs, approves permissions, and ensures Cell 0 execution.
 - **Inputs**: Running CDP worker endpoints on ports 9001 to 9005.
 - **Outputs**: Approved permissions and triggered notebook cells.
 
-### `tools/selfplay/run_colab_worker.py`
+### `colab/remote/run_colab_worker.py`
 - **Purpose**: Standalone chunked self-play generator designed to execute on Linux/Colab virtual machines.
 - **Inputs**: Opening bank JSONL, self-play binary (`bin/selfplay`), int8 weights.
 - **Outputs**: Aligned V3 shards (`c{id}_shard_XXXX.bin`) and metadata sidecars in Google Drive.
@@ -258,6 +328,12 @@ Every public runner adheres to the following contract:
 - **Inputs**: Optional source position corpus (`--source-positions`), Zquoridor UCI executable (`--zq-executable`), candidate pool size (`--top-k`), value scaling factor (`--c-scale`), search time (`--move-time-ms`), random seed (`--seed`), and split name (`--split`).
 - **Outputs**: Refined JSONL positions (`positions.jsonl`), Gumbel teacher targets (`targets.jsonl`), compressed NumPy arrays (`targets.npz`), and execution manifest (`manifest.json`) under the output directory.
 - **Key CLI flags**: `--count`, `--top-k`, `--c-scale`, `--move-time-ms`, `--zq-executable`, `--source-positions`, `--output`, `--teacher`, `--seed`, `--split`, `--no-export-npz`.
+
+### `tools/rebuild_npz_from_jsonl.py`
+- **Purpose**: Synchronizes, validates, and rebuilds dense NumPy target archives (`targets.npz`) directly from canonical `positions.jsonl` and `targets.jsonl` files. Preserves existing archives with timestamped backups.
+- **Inputs**: Dataset directory containing `positions.jsonl` and `targets.jsonl`.
+- **Outputs**: Validated, non-zero `targets.npz`, updated `manifest.json`, and timestamped backup `targets.npz.bak_<timestamp>`.
+- **Key CLI flags**: `--dir`, `--no-backup`, `--verify-only`.
 
 ---
 

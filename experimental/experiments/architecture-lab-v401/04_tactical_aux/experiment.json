@@ -1,0 +1,9 @@
+{
+  "id": "04_tactical_aux",
+  "architecture": "tactical_aux",
+  "hypothesis": "Use auxiliary topology supervision to improve the shared representation without runtime overhead.",
+  "initialization": "Copy production weights and initialize an eight-target auxiliary MLP.",
+  "runtime": "The native export omits the topology head. Native parity verification remains required.",
+  "limitations": "Topology targets measure geometry. They do not certify alternating-turn wall combinations.",
+  "training": {"topology_aux_weight": 0.15}
+}

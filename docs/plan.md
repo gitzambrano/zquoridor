@@ -1,11 +1,55 @@
 # Zquoridor: Project State, Results, and Roadmap
 
-Last reviewed: 2026-10-13. This document is the single canonical reference for
+Last reviewed: 2026-10-18. This document is the single canonical reference for
 project status, training history, available datasets, self-play configurations,
 experimental measurements, and future plans.
 
 Raw datasets, self-play binary shards, logs, checkpoints, and local benchmark outputs
 are untracked artifacts outside version control.
+
+### Native Windows Colab CLI trial (2026-10-18)
+
+Google Colab CLI PR #86 at commit `ab72e524cedbfa4798464b8fd8b5279fd4ad85c4`
+was installed in an isolated Python 3.11 environment. The Jupyter client uses
+commit `f18e982c3265df5e923aa9def101ab3fd737e139` from the PR lock file.
+Workers 1 and 2 passed account authentication, session listing, remote Python
+execution, and result download on their existing CPU runtimes. Worker 2 also
+passed file upload and download with equal SHA-256 hashes. Credentials and
+session metadata are separate for each account outside this repository.
+
+The trial suspended each Wall Drops generator in memory for 120 seconds.
+The pause helper resumes the process automatically. The trial removed only
+the separate test kernels. It preserved the original notebook kernels and
+did not allocate or terminate a VM. Workers 3, 4, and 5 were inspected without
+changes. GPU allocation, long jobs, interactive console use, and Drive mounting
+remain untested through the CLI. The existing browser controller remains active.
+
+The operational installation now resides in `artifacts/colab/cli/venv`.
+The account wrapper is `colab/cli/colab.ps1`. Its first argument selects one
+of the seven registered accounts. The initial trial remains in its original
+local workspace as historical evidence.
+
+### CLI and browser transport organization (2026-10-18)
+
+Both Zquoridor and Zchezz now contain separate `colab/cli` and
+`colab/playwright` directories. Each registry contains seven Google accounts.
+All seven accounts passed CLI authentication and account queries. Accounts 1
+through 5 had runtime assignments at verification. Accounts 6 and 7 had no
+runtime assignments. Authentication did not allocate new VMs.
+
+The CLI monitor reads existing runtimes and persisted artifact metadata.
+The browser monitor reads notebook output. Both default to observation only
+and write separate JSON reports. The CLI monitor supports an explicit recovery
+policy, a 900-second cooldown, and at most three execution attempts. A live
+guard test detected an existing Wall Drops process and returned `active`
+without a duplicate launch. It removed its temporary control kernel afterward.
+Recovery does not allocate a VM or bypass a missing checkpoint.
+
+Managed controllers use account locks shared across both repositories.
+Existing controllers retain their previous worker defaults. This change does
+not migrate active generation jobs or alter engine weights. CLI and browser
+observations can disagree when a notebook disconnects but its VM remains active.
+Transport selection and operational commands are documented in `colab/README.md`.
 
 ---
 
@@ -1158,4 +1202,35 @@ Current generation status across all five active workers:
 - **Worker 4** (`zquoridor`): Gumbel AlphaZero Sequential Halving (Top-K=8, 15 ms) active at 720 / 10,000 positions (27/250 games).
 - **Worker 5** (`worker-5`): Gumbel Deep Planning (Top-K=16, 20 ms) active at 2,565 / 10,000 positions (117/250 games).
 
+### Dense target synchronization and JSONL restoration (2026-10-18)
 
+An inspection revealed that resuming from an existing dataset in `generate_wall_drops.py` and `generate_gumbel_sims.py` accessed `l_rec.get("policy")` instead of `l_rec["target"]["policy"]`. As a result, the in-memory array for resumed records defaulted to zeros, and subsequent NPZ exports contained all-zero policy vectors for the resumed segment. The canonical `targets.jsonl` file was unaffected and retained 100% of the true, uncorrupted teacher policies and values for all positions.
+
+The generators were corrected to parse `l_rec.get("target", l_rec)` and validate policy normalization. A standalone utility `tools/rebuild_npz_from_jsonl.py` was introduced to reconstruct and verify `targets.npz` directly from canonical JSONL lines while preserving existing files via timestamped `.bak` copies. Both generator scripts now verify that existing NPZ archives match the full JSONL record count and contain non-zero policy mass before skipping generation when quotas are satisfied.
+
+
+### Colab account privacy (2026-10-18)
+
+Account emails, notebook identifiers, browser profile paths, and private Drive
+resource identifiers now load from an external local configuration. Tracked
+defaults contain placeholders. Both repositories include ignore rules for
+authentication artifacts and a privacy check for candidate files. The check
+does not inspect Git history. Existing account information in earlier commits
+requires separate history cleanup if that cleanup is authorized.
+
+### Colab source consolidation (2026-10-18)
+
+Both repositories now separate CLI, browser, historical diagnostics, remote
+implementations, and notebooks under `colab/`. Layout manifests identify
+intentional compatibility entry points. The former Zquoridor cloud runners
+in `tools` and `training` forward to their canonical remote implementations.
+The shell entry points in Zchezz also forward to their canonical implementations.
+The standalone handover downloader supports revisions before and after this move.
+
+Focused checks passed 58 tests in Zquoridor and 30 tests in Zchezz. Four Python
+compatibility entry points produced the same help as their canonical runners.
+Eight shell inspection checks passed across the canonical and compatibility
+entry points for the default and secondary supported profiles. Source audits
+found no active exact duplicate groups or missing compatibility targets.
+Frozen experimental and engine snapshots remain intact. Private account
+configuration remains outside Git. Git history was not rewritten.

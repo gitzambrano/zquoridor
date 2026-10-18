@@ -1,0 +1,8 @@
+{
+  "id": "01_race_joint",
+  "architecture": "race_joint",
+  "hypothesis": "Represent absolute goal proximity jointly instead of relying on the distance margin.",
+  "initialization": "Copy production weights and zero 121 new feature columns.",
+  "runtime": "PyTorch. Native feature layout and parity remain pending.",
+  "training": {}
+}

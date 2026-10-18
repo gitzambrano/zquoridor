@@ -1,0 +1,5 @@
+{
+  "schema": "zquoridor.architecture_suite.v1",
+  "baseline_release": "4.01",
+  "experiments": ["00_control", "01_race_joint", "02_corridor", "03_wall_pairs", "04_tactical_aux", "05_context_gate", "06_action_scorer", "07_graph", "08_transformer"]
+}

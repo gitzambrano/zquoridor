@@ -24,7 +24,7 @@ STATE_FIELDS = ("own_pawn", "opp_pawn", "walls_h", "walls_v",
 GROUP_FIELDS = ("group_id", "opening_index")
 REQUIRED = (*STATE_FIELDS, "own_dist", "opp_dist", "policy", "value", "weight", "is_val")
 POLICY_SIZE = 209
-SCHEMA = "zquoridor.experimental_mixture.v1"
+SCHEMA = "zquoridor.experimental_mixture.v2"
 CONFIG = {
     "sources": [],
     "out_dir": "results/experiments/experimental-mix/dataset",
@@ -34,6 +34,7 @@ CONFIG = {
 
 
 def _sha256(path: Path) -> str:
+    path = Path(path)
     digest = hashlib.sha256()
     with path.open("rb") as stream:
         for block in iter(lambda: stream.read(1 << 20), b""):
@@ -117,6 +118,7 @@ def load_arrays(path, cache_dir=None) -> dict[str, np.ndarray]:
         del identity  # validates every recorded array before exposing it
         arrays = {name: np.load(path / info["filename"], mmap_mode="r", allow_pickle=False)
                   for name, info in manifest["arrays"].items()}
+        arrays["_group_separation_verified"] = manifest.get("group_separation_verified") is True
     _validate_arrays(arrays, str(path))
     return arrays
 
@@ -132,6 +134,17 @@ def _validate_arrays(data: dict, label: str) -> int:
         raise ValueError(f"{label} policy must have shape (N, 209)")
     if not np.issubdtype(data["is_val"].dtype, np.bool_):
         raise ValueError(f"{label} is_val must be boolean")
+    for key in ("value_sample_weight", "policy_sample_weight", "aux_sample_weight"):
+        if key in data and (data[key].shape != (n,) or not np.isfinite(data[key]).all() or (data[key] < 0).any()):
+            raise ValueError(f"{label} has invalid {key}")
+    if "aux_policy_target" in data:
+        auxiliary = data["aux_policy_target"]
+        if auxiliary.shape != (n, POLICY_SIZE):
+            raise ValueError(f"{label} has invalid auxiliary policy shape")
+        for start in range(0, n, 65536):
+            block = np.asarray(auxiliary[start:start+65536])
+            if not np.isfinite(block).all() or (block < 0).any() or not np.allclose(block.sum(1), 1, atol=.005):
+                raise ValueError(f"{label} has invalid auxiliary policy targets")
     for start in range(0, n, 500_000):
         stop = min(n, start + 500_000)
         values = np.asarray(data["value"][start:stop])
@@ -191,6 +204,7 @@ def _row_keep(data, start, stop, bad_groups):
 
 
 def _atomic_json(path: Path, value: dict):
+    path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(path.name + ".tmp")
     tmp.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     tmp.replace(path)
@@ -210,6 +224,32 @@ def _load_existing(out_dir: Path, identity_hash: str):
         if not file_path.is_file() or _sha256(file_path) != info["sha256"]:
             raise ValueError(f"completed output array failed SHA-256 validation: {name}")
     return manifest
+
+
+def head_quality(data, rows, source, head):
+    """Weight provenance and recorded effort without treating entropy as quality."""
+    result = np.full(len(rows), float(source.get(head + "_quality", 1)), dtype=np.float64)
+    if not np.isfinite(result).all() or (result < 0).any():
+        raise ValueError("Head quality must be finite and nonnegative.")
+    field = {"policy": "policy_sample_weight", "value": "value_sample_weight", "aux": "aux_sample_weight"}[head]
+    if field in data:
+        result *= np.asarray(data[field][rows], dtype=np.float64)
+    # Depth is meaningful only relative to the same search family. References
+    # belong to the source record and must not mix alpha-beta and MCTS units.
+    for field in ("search_depth", "search_nodes", "search_budget_ms"):
+        reference = source.get(field + "_reference")
+        if reference is not None and field in data:
+            if not math.isfinite(float(reference)) or float(reference) <= 0:
+                raise ValueError("Search effort references must be finite and positive.")
+            effort = np.asarray(data[field][rows], dtype=np.float64)
+            if not np.isfinite(effort).all() or (effort < 0).any():
+                raise ValueError("Search effort must be finite and nonnegative.")
+            result *= np.clip(np.sqrt(effort / float(reference)), .5, 2)
+            break
+    cap = float(source.get("head_quality_cap", 12))
+    if not math.isfinite(cap) or cap <= 0:
+        raise ValueError("The head quality cap must be finite and positive.")
+    return np.minimum(result, cap)
 
 
 def mix_datasets(sources, out_dir, chunk_size=8192, resume=True):
@@ -261,16 +301,17 @@ def mix_datasets(sources, out_dir, chunk_size=8192, resume=True):
         if not path.is_absolute():
             path = ROOT / path
         ident = _source_identity(path)
-        normalized.append({"name": name, "path": path, "fraction": fraction,
+        normalized.append({**source, "name": name, "path": path, "fraction": fraction,
                            "pool": pool, "pool_fraction": pool_fraction,
                            "weight_cap": cap, "identity": ident})
     fraction_sum = explicit_fraction_sum + sum(pool_budgets.values())
     if not math.isclose(fraction_sum, 1.0, rel_tol=0, abs_tol=1e-8):
         raise ValueError(f"source fractions must sum to 1 (got {fraction_sum})")
 
-    identity = {"sources": [{"name": s["name"], "fraction": s["fraction"],
+    identity = {"mixer_sha256": _sha256(Path(__file__)), "sources": [{"name": s["name"], "fraction": s["fraction"],
                              "pool": s["pool"], "pool_fraction": s["pool_fraction"],
-                             "weight_cap": s["weight_cap"], "identity": s["identity"]}
+                             "weight_cap": s["weight_cap"], "identity": s["identity"],
+                             "quality": {k: v for k, v in s.items() if k.endswith(("_quality", "_reference", "_cap"))}}
                             for s in normalized]}
     identity_hash = _json_sha(identity)
     out_dir = Path(out_dir)
@@ -291,7 +332,7 @@ def mix_datasets(sources, out_dir, chunk_size=8192, resume=True):
     for source in normalized:
         arrays = load_arrays(source["path"], cache_dir)
         n = len(arrays["value"])
-        if not any(field in arrays for field in GROUP_FIELDS):
+        if not any(field in arrays for field in GROUP_FIELDS) and not arrays.get("_group_separation_verified", False):
             raise ValueError(f"source {source['name']} must carry group_id or opening_index for split verification")
         bad = _bad_groups(arrays, n, chunk_size)
         kept = 0
@@ -352,6 +393,8 @@ def mix_datasets(sources, out_dir, chunk_size=8192, resume=True):
     weight_sum = mmap("weight_sum", np.float64, (n_unique,))
     value_sum = mmap("value_sum", np.float64, (n_unique,))
     policy_sum = mmap("policy_sum", np.float32, (n_unique, POLICY_SIZE))
+    aux_sum = mmap("aux_sum", np.float32, (n_unique, POLICY_SIZE))
+    head_masses = {head: mmap(head + "_mass", np.float64, (n_unique,)) for head in ("policy", "value", "aux")}
     source_mass = mmap("source_mass", np.float64, (n_unique, n_sources))
     own_dist_out = mmap("own_dist", np.uint8, (n_unique,))
     opp_dist_out = mmap("opp_dist", np.uint8, (n_unique,))
@@ -437,8 +480,14 @@ def mix_datasets(sources, out_dir, chunk_size=8192, resume=True):
             if not np.isfinite(pol).all() or (pol < 0).any() or not np.allclose(pol.sum(axis=1), 1, atol=0.005):
                 raise ValueError(f"invalid policy target in {normalized[si]['name']}")
             np.add.at(weight_sum, ids, normalized_w)
-            np.add.at(value_sum, ids, vals * normalized_w)
-            np.add.at(policy_sum, ids, pol.astype(np.float32) * normalized_w.astype(np.float32)[:, None])
+            masses = {head: normalized_w * head_quality(arrays, rows, normalized[si], head)
+                      for head in head_masses}
+            for head, head_mass in masses.items():
+                np.add.at(head_masses[head], ids, head_mass)
+            np.add.at(value_sum, ids, vals * masses["value"])
+            np.add.at(policy_sum, ids, pol.astype(np.float32) * masses["policy"].astype(np.float32)[:, None])
+            aux = np.asarray(arrays.get("aux_policy_target", arrays["policy"])[rows], dtype=np.float32)
+            np.add.at(aux_sum, ids, aux * masses["aux"].astype(np.float32)[:, None])
             np.add.at(source_mass[:, si], ids, normalized_w)
 
             # Derived distances must agree for identical canonical states.
@@ -463,6 +512,8 @@ def mix_datasets(sources, out_dir, chunk_size=8192, resume=True):
         "policy": (np.float32, (n_unique, POLICY_SIZE)), "value": (np.float32, (n_unique,)),
         "weight": (np.float32, (n_unique,)), "is_val": (np.bool_, (n_unique,)),
         "source_mass": (np.float32, (n_unique, n_sources)),
+        "aux_policy_target": (np.float32, (n_unique, POLICY_SIZE)),
+        **{head + "_sample_weight": (np.float32, (n_unique,)) for head in ("value", "policy", "aux")},
     }
     outputs = {name: np.lib.format.open_memmap(fields_dir / f"{name}.npy", mode="w+", dtype=dtype, shape=shape)
                for name, (dtype, shape) in output_specs.items()}
@@ -477,12 +528,17 @@ def mix_datasets(sources, out_dir, chunk_size=8192, resume=True):
         if not np.isfinite(w).all() or (w <= 0).any():
             raise RuntimeError("a merged state has no positive target mass")
         outputs["weight"][start:stop] = w
-        outputs["value"][start:stop] = value_sum[start:stop] / w
-        p = policy_sum[start:stop] / w[:, None]
-        psum = p.sum(axis=1)
-        if (psum <= 0).any():
-            raise RuntimeError("merged policy has zero total probability")
-        outputs["policy"][start:stop] = (p / psum[:, None]).astype(np.float32)
+        vm = np.asarray(head_masses["value"][start:stop])
+        outputs["value"][start:stop] = value_sum[start:stop] / np.maximum(vm, 1e-20)
+        for head, field, accumulated in (("policy", "policy", policy_sum), ("aux", "aux_policy_target", aux_sum)):
+            p = np.asarray(accumulated[start:stop]).copy()
+            psum = p.sum(axis=1)
+            missing = psum <= 0
+            p[missing] = 1 / POLICY_SIZE
+            psum[missing] = 1
+            outputs[field][start:stop] = p / psum[:, None]
+        for head in head_masses:
+            outputs[head + "_sample_weight"][start:stop] = head_masses[head][start:stop] / w
         outputs["source_mass"][start:stop] = source_mass[start:stop]
     for arr in outputs.values():
         arr.flush()
@@ -500,6 +556,7 @@ def mix_datasets(sources, out_dir, chunk_size=8192, resume=True):
                "effective_fraction_train": float(effective_fractions[si, 0]),
                "effective_fraction_val": float(effective_fractions[si, 1]),
                "weight_cap": source["weight_cap"], "identity": source["identity"],
+               "quality": {k: v for k, v in source.items() if k.endswith(("_quality", "_reference", "_cap"))},
                "removed_group_count": group_removed[si],
                "group_fields_checked": [field for field, _ in source_bad[si]],
                "removed_split_conflict_rows": conflict_removed_rows[si],
@@ -516,7 +573,9 @@ def mix_datasets(sources, out_dir, chunk_size=8192, resume=True):
                 "source_mass": {"array": "source_mass", "source_names": [s["name"] for s in normalized],
                                 "row_sum_matches_weight": True},
                 "deduplication": {"key_fields": list(STATE_FIELDS), "target_merge": "weighted_mean_by_capped_source_weight",
-                                  "cross_split_conflicts_removed": True, "group_leakage_policy": "remove_entire_group"},
+                                  "cross_split_conflicts_removed": True, "group_leakage_policy": "remove_entire_group",
+                                  "per_head_targets": "independent_quality_weighted_means",
+                                  "zero_head_mass": "zero_loss_weight_with_normalized_placeholder"},
                 "samples": n_unique, "train_samples": train_unique, "val_samples": val_unique,
                 "train_weight_sum": float(weight_sum[~global_splits].sum()),
                 "val_weight_sum": float(weight_sum[global_splits].sum()),
@@ -531,7 +590,7 @@ def mix_datasets(sources, out_dir, chunk_size=8192, resume=True):
         if not math.isclose(source_summary[si]["val_effective_mass"], expected_val, rel_tol=2e-6, abs_tol=2e-4):
             raise RuntimeError(f"validation effective mass mismatch for {source['name']}")
     _atomic_json(out_dir / "dataset.manifest.json", manifest)
-    for arr in (weight_sum, value_sum, policy_sum, source_mass, own_dist_out, opp_dist_out):
+    for arr in (weight_sum, value_sum, policy_sum, aux_sum, *head_masses.values(), source_mass, own_dist_out, opp_dist_out):
         arr.flush()
         arr._mmap.close()
     for file_path in temp_dir.iterdir():

@@ -9,3 +9,6 @@
   tools.
 
 Component-specific README files remain next to the component they document.
+
+[training-data.md](training-data.md) defines canonical fields, source names,
+target confidence, mixture weights, and validation contracts.

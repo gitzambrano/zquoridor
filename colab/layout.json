@@ -1,0 +1,29 @@
+{
+  "schema_version": 1,
+  "source_root": "colab",
+  "directories": {
+    "cli": "Official terminal transport and artifact monitor",
+    "playwright": "Browser transport and reusable controllers",
+    "playwright/diagnostics": "Historical diagnostics and targeted repair utilities",
+    "remote": "Code that executes inside a runtime",
+    "notebooks": "Notebook entry points"
+  },
+  "compatibility_entry_points": {
+    "tools/selfplay/run_colab_worker.py": "colab/remote/run_colab_worker.py",
+    "tools/arena/run_colab_arena.py": "colab/remote/run_colab_arena.py",
+    "training/run_colab_anneal_and_arena.py": "colab/remote/run_colab_anneal_and_arena.py",
+    "colab/finish_current_shard.py": "colab/remote/finish_current_shard.py",
+    "colab/dispatch_rich_targets.py": "colab/playwright/dispatch_rich_targets.py"
+  },
+  "legacy_import_roots": [
+    "colab",
+    "colab.playwright"
+  ],
+  "private_configuration": "COLAB_ACCOUNTS_FILE",
+  "generated_outputs": "artifacts/colab",
+  "preserved_history": [
+    "experimental",
+    "engine/old",
+    "engine/c/zchezz_v3xx"
+  ]
+}

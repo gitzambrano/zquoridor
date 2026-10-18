@@ -332,10 +332,8 @@ class Student(nn.Module):
         opp_w = x[:, 343:354].argmax(dim=-1)
         return get_phase_bucket(own_w + opp_w, self.value_buckets)
 
-    def forward(self, x, buckets=None, return_aux=False, return_aux_value=False):
-        if self.value_buckets > 1 and buckets is None:
-            buckets = self._extract_buckets(x)
-
+    def activation(self, x):
+        """Return the shared activation and its optional integer representation."""
         if self.qat:
             # Match the deployed integer scales, including the SCReLU truncation.
             # Accumulate exact integer-valued floats before division. Summing
@@ -345,12 +343,18 @@ class Student(nn.Module):
             a_int = a_int.clamp(0, 255).square() / 255
             a_int = a_int + (torch.floor(a_int) - a_int).detach()
             a = a_int / 255
+            return a, a_int
+        return self.fc1(x).clamp(0, 1).square(), None
+
+    def forward(self, x, buckets=None, return_aux=False, return_aux_value=False):
+        if self.value_buckets > 1 and buckets is None:
+            buckets = self._extract_buckets(x)
+        a, a_int = self.activation(x)
+        if self.qat:
             p = F.linear(a, _round_ste(self.policy.weight, 64), _round_ste(self.policy.bias, 255 * 64))
             p_aux = (F.linear(a, _round_ste(self.aux_policy.weight, 64), _round_ste(self.aux_policy.bias, 255 * 64))
                      if (return_aux and self.aux_policy is not None) else None)
         else:
-            a = self.fc1(x).clamp(0, 1).square()
-            a_int = None
             p = self.policy(a)
             p_aux = self.aux_policy(a) if (return_aux and self.aux_policy is not None) else None
 
@@ -534,8 +538,9 @@ class Student(nn.Module):
 
     @torch.no_grad()
     def clip_weights(self):
-        self.fc1.weight.clamp_(-32767 / 255, 32767 / 255)
-        self.fc1.bias.clamp_(-32767 / 255, 32767 / 255)
+        if isinstance(self.fc1, nn.Linear):
+            self.fc1.weight.clamp_(-32767 / 255, 32767 / 255)
+            self.fc1.bias.clamp_(-32767 / 255, 32767 / 255)
         self.policy.weight.clamp_(-127 / 64, 127 / 64)
         for h in self.value1_heads:
             h.weight.clamp_(-127 / 64, 127 / 64)

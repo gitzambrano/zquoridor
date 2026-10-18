@@ -1,6 +1,6 @@
 import hashlib
 
-from colab import switch_search_games as switch
+from colab.playwright import switch_search_games as switch
 
 
 def test_terminal_command_verifies_the_committed_helper_bytes(monkeypatch):
@@ -10,7 +10,7 @@ def test_terminal_command_verifies_the_committed_helper_bytes(monkeypatch):
         return revision + "\n" if args[1] == "rev-parse" else source
     monkeypatch.setattr(switch.subprocess, "check_output", output)
     command = switch.handover_command(3)
-    assert revision + "/colab/finish_current_shard.py" in command
+    assert revision + "/colab/remote/finish_current_shard.py" in command
     assert hashlib.sha256(source).hexdigest() in command
     assert "sha256sum -c - && python -u" in command
     assert command.endswith("--worker-id 3")
@@ -19,6 +19,19 @@ def test_terminal_command_verifies_the_committed_helper_bytes(monkeypatch):
 def test_switch_defaults_use_the_frozen_collection_revision():
     assert switch.CONFIG["revision"] == switch.PROFILE_CONFIG["revision"]
     assert switch.CONFIG["worker_ids"] == [1, 2, 3, 4, 5]
+
+
+def test_handover_retains_compatibility_with_a_revision_before_the_move(monkeypatch):
+    revision = "b" * 40
+    def output(args, **kwargs):
+        if args[1] == "rev-parse":
+            return revision + "\n"
+        if ":colab/remote/" in args[2]:
+            raise switch.subprocess.CalledProcessError(128, args)
+        return b"print('standalone helper')\n"
+    monkeypatch.setattr(switch.subprocess, "check_output", output)
+    command = switch.handover_command(2)
+    assert revision + "/colab/finish_current_shard.py" in command
 
 
 def test_existing_handover_does_not_submit_another_helper(monkeypatch):
@@ -46,7 +59,7 @@ def test_existing_handover_does_not_submit_another_helper(monkeypatch):
 
 
 def test_watcher_bounds_driver_recovery(monkeypatch, tmp_path):
-    from colab import watch_search_games as watch
+    from colab.playwright import watch_search_games as watch
     calls = []
     delays = []
 
@@ -63,5 +76,5 @@ def test_watcher_bounds_driver_recovery(monkeypatch, tmp_path):
 
 
 def test_authentication_failure_does_not_restart_driver():
-    from colab.watch_search_games import driver_failed
+    from colab.playwright.watch_search_games import driver_failed
     assert not driver_failed({"1": {"status": "blocked", "error": "Auth Required"}})

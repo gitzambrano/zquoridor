@@ -1,94 +1,143 @@
-# Colab Worker Orchestration Suite
+# Colab transports
 
-This directory contains automated, headless Playwright tooling to inspect,
-bootstrap, monitor, and manage remote Google Colab self-play workers for Zquoridor.
+Use either transport for the same seven Google accounts. Select the transport by
+its entry point. Credentials stay outside Git. Reports stay under `artifacts/colab`.
 
-## Worker Registry
+| Directory | Purpose |
+| --- | --- |
+| `cli/` | Install, authorize, execute commands, monitor artifacts, and resume configured jobs through the official CLI. |
+| `remote/` | Execute self-play, training, and runtime helpers inside a Colab VM. |
+| `notebooks/` | Store notebook entry points. |
+| `playwright/diagnostics/` | Preserve targeted historical diagnostics outside the current command surface. |
+| `playwright/` | Authorize browser profiles, execute notebook cells, inspect notebook output, and run existing browser controllers. |
+| `config.py` | Share the account registry and project bootloaders. |
+| `monitoring.py` | Classify progress and write monitor reports. |
+| `control.py` | Prevent concurrent managed controllers for one account across both projects. |
 
-| Worker ID | Name | Google Account | Notebook URL | Shard Prefix |
-| :---: | :---: | :---: | :---: | :---: |
-| 1 | Colab 1 | `worker-1@example.invalid` | [Notebook Colab 1](https://colab.research.google.com/drive/NOTEBOOK_ID_1) | `c1_shard_*.bin` |
-| 2 | Colab 2 | `worker-2@example.invalid` | [Notebook Colab 2](https://colab.research.google.com/drive/NOTEBOOK_ID_2) | `c2_shard_*.bin` |
-| 3 | Colab 3 | `worker-3@example.invalid` | [Notebook Colab 3](https://colab.research.google.com/drive/NOTEBOOK_ID_3) | `c3_shard_*.bin` |
-| 4 | Colab 4 | `worker-4@example.invalid` | [Notebook Colab 4](https://colab.research.google.com/drive/NOTEBOOK_ID_4) | `c4_shard_*.bin` |
-| 5 | Colab 5 | `worker-5@example.invalid` | [Notebook Colab 5](https://colab.research.google.com/drive/NOTEBOOK_ID_5) | `c5_shard_*.bin` |
-| 6 | Colab 6 | `worker-6@example.invalid` | [Notebook Colab 6](https://colab.research.google.com/drive/NOTEBOOK_ID_6) | `c6_shard_*.bin` |
-| 7 | Colab 7 | `worker-7@example.invalid` | [Notebook Colab 7](https://colab.research.google.com/drive/NOTEBOOK_ID_7) | `c7_shard_*.bin` |
+## Accounts
 
-## The 3 Core Tools
+Personal emails, notebook URLs, and browser profile paths come from
+`~/.config/colab-cli/accounts.local.json`, outside both repositories.
+`COLAB_ACCOUNTS_FILE` can select another private file.
+Tracked defaults contain placeholders only. `accounts.example.json` documents
+the private file schema. Copy the example outside the repository before it
+receives real account data. Preserve this local file when
+reinstalling the tools. Do not copy it into a tracked source file.
 
-### 1. Disparar: `launch_workers.py`
-Bootstraps workers with the resilient self-cloning cell code and starts generation:
-```bash
-python colab/launch_workers.py
-```
-- Skips workers that are already actively running (to prevent interrupting progress).
-- Connects runtime if disconnected.
-- Updates Monaco and notebook cell models with the self-cloning bootloader.
-- Clicks the run button and dismisses confirmation dialogs.
-- Override flags:
-  - `--worker-ids 3 4 5`: Select specific workers.
-  - `--force-restart`: Force re-execution even if the worker is currently running.
 
-### 2. Monitorar: `watchdog_workers.py`
-Continuous active watchdog and keep-alive monitor:
-```bash
-python colab/watchdog_workers.py
-```
-- Keeps persistent browser sessions open with periodic micro-interactions (mouse moves) to prevent Google Colab idle timeout disconnects.
-- Continuous loop reporting real-time game and position counts.
-- Detects VM disconnects and automatically reconnects and re-triggers execution.
-- Captures periodic health screenshots in `artifacts/colab/`.
+| ID | Private account slot |
+| --- | --- |
+| 1 | `worker-1` |
+| 2 | `worker-2` |
+| 3 | `worker-3` |
+| 4 | `worker-4` |
+| 5 | `worker-5` |
+| 6 | `worker-6` |
+| 7 | `worker-7` |
 
-### 3. Reportar: `report_workers.py` (ou `inspect_workers.py`)
-Snapshot inspection and structured audit:
-```bash
-python colab/report_workers.py
-```
-- Audits runtime status (`CONNECTED`, `CONNECTING`, `DISCONNECTED`).
-- Audits execution status (`ACTIVE RUNNING`, `PENDING VM`, `IDLE`).
-- Parses live progress: current shard ID, games completed, positions generated, and speed metrics.
-- Saves clean visual screenshots for all workers to `artifacts/colab/`.
-- Generates a consolidated Markdown audit report at `artifacts/colab/report.md`.
+Both repositories use the same credentials per account at
+`~/.config/colab-cli/zquoridor/worker-N/credentials.json`. The `zquoridor`
+directory name remains for compatibility with the initial installation.
+Session files are separate at `~/.config/colab-cli/projects/PROJECT/worker-N/`.
+The account registry defines browser profiles and notebook URLs.
+Authentication does not allocate a runtime or start a job.
 
-### Auxiliary Tool: `manage_runtime.py`
-Administrative operations on Colab notebook environments:
-```bash
-# Switch accelerator from GPU to standard CPU (resolves quota blocks)
-python colab/manage_runtime.py --action switch-cpu
+## Monitor through the CLI
 
-# Terminate stuck ghost sessions in "Gerenciar sessões"
-python colab/manage_runtime.py --action terminate-active
+Run these commands from the repository root:
 
-# Disconnect and delete VM environment
-python colab/manage_runtime.py --action reset
+```powershell
+.\colab\cli\setup.ps1
+.\artifacts\colab\cli\venv\Scripts\python.exe -m colab.cli.accounts --attach
+.\artifacts\colab\cli\venv\Scripts\python.exe -m colab.cli.monitor --once
+.\artifacts\colab\cli\venv\Scripts\python.exe -m colab.cli.monitor
 ```
 
-## Resilient Bootloader Logic
+The monitor reads runtime and file metadata. It does not execute cells or
+allocate VMs. It checks all seven accounts by default. Use `--worker-ids 1 2`
+for a subset. Use `--interval 60` and `--stall-seconds 900` to set the observation
+interval and stall threshold. Use `--max-cycles 2` for a bounded trial.
+The JSON report is `artifacts/colab/cli/monitor.json`.
+A checkpoint listed as `present_unverified` confirms file presence only.
+It does not prove that the checkpoint is valid or complete.
 
-Google Colab free-tier VMs recycle every 12 hours. Upon recycling, `/content/zquoridor`
-is erased. The resilient bootloader checks for local existence and clones the
-repository automatically:
+## Monitor through Playwright
 
-```python
-from google.colab import drive
-import os
-
-if not os.path.exists('/content/drive/MyDrive'):
-    drive.mount('/content/drive')
-
-if not os.path.exists('/content/zquoridor'):
-    !git clone https://github.com/gitzambrano/zquoridor.git /content/zquoridor
-
-%cd /content/zquoridor
-!git pull origin main
-!bash build/build_selfplay.sh
-!python tools/selfplay/run_colab_worker.py --worker-id {worker_id}
+```powershell
+python -m colab.playwright.monitor --once --open-profiles
+python -m colab.playwright.monitor --open-profiles
 ```
 
-> [!IMPORTANT]
-> **CPU vs GPU Configuration**:
-> Zquoridor self-play runs 100% in multi-threaded C++ using AVX2 SIMD and int8
-> quantized NNUE on the CPU. It does not use the GPU. Always ensure the notebook
-> hardware accelerator is set to **CPU** (Standard). Configuring GPU will exhaust
-> daily free-tier compute units and block VM provisioning.
+The read-only browser monitor observes notebook output and connection state.
+It does not reconnect runtimes or execute cells. By default, it attaches only
+to existing browser debugging sessions. `--open-profiles` permits a temporary
+headless browser for a profile that has no debugging session.
+The JSON report is `artifacts/colab/playwright/monitor.json`.
+This transport does not verify persisted checkpoint files.
+
+Both read-only monitors can run at the same time. Their reports are separate.
+If a transport fails, run the other monitor and compare the observations.
+A disconnected notebook page does not by itself prove that its VM stopped.
+The existing `playwright/watchdog_workers.py` provides browser recovery and
+cell re-execution. Select it explicitly when those actions are required.
+
+## Execute through the CLI
+
+```powershell
+.\colab\cli\colab.ps1 1 sessions
+.\colab\cli\colab.ps1 1 exec -s zq-worker-1 -f C:\path\job.py
+.\colab\cli\colab.ps1 7 new -s zq-worker-7
+```
+
+The wrapper selects credentials and session metadata for the chosen account.
+The CLI does not select an engine profile or change installed engine weights.
+The project bootloader remains responsible for engine prerequisites.
+
+## Authentication and controllers
+
+For terminal authorization, run `python -m colab.cli.login` with the CLI
+interpreter above. For authorization through the existing browser profiles, run
+`python -m colab.playwright.authorize_cli`. Use `--worker-ids` for a subset.
+Complete phone verification in the Google prompt when required.
+The authorization helper checks the email before it saves credentials.
+
+Managed execution and recovery commands use account locks under
+`~/.config/colab-cli/control`. A lock applies across both projects and transports.
+Stop the old controller before a switch of execution transport. Controllers
+that started before this update do not hold the new locks. Direct third-party
+CLI commands also do not participate in these project locks.
+
+Read [CLI operations](cli/README.md) and [browser operations](playwright/README.md)
+for authentication, recovery policies, and existing controller entry points.
+Colab can reclaim a VM. Preserve checkpoints outside the VM and use commands
+that explicitly support resume. Neither monitor guarantees uninterrupted compute.
+
+## Check privacy before a commit
+
+Run `python -m colab.privacy_check` in each repository. The check reports file
+paths and finding categories without private values. It compares configured
+personal identifiers and checks for OAuth token literals and private keys.
+It excludes ignored files, unreadable files, files over 8 MB, and Git history.
+The ignore rules cover local account settings, credentials, tokens, cookies,
+browser profiles, traces, screenshots, and reports. Ignore rules do not remove
+information from existing commits.
+
+## Canonical paths and compatibility
+
+`layout.json` records the directory roles and compatibility entry points.
+A compatibility entry point forwards to the canonical implementation. It does
+not contain a second copy of the runner. Existing notebooks can keep their
+old commands while new automation uses `remote/`.
+
+Historical diagnostics live in `playwright/diagnostics/`. Some diagnostics
+change runtime state. Inspect the selected diagnostic before execution.
+Use the public monitors for routine observation. Use the public launchers
+and recovery commands for controlled execution.
+
+Frozen experiment snapshots remain in their historical directories. They do
+not supply the current Colab command surface. Generated output stays under
+`artifacts/colab`. Private account data stays in the external configuration.
+
+Run `python tools/audit_repository.py` to check source organization. Its report
+is `artifacts/repository_organization/audit.json`. The check identifies active
+duplicate source groups and missing compatibility targets without source deletion.
