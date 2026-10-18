@@ -444,6 +444,7 @@ inline double adaptiveTimeFactor(double visitRatio, double qGap, double stableFr
 struct McabStats {
     long long simulations = 0;
     long long nodesExpanded = 0;
+    long long lazyExpansionsDeferred = 0;
     int effectiveNodeBudget = 0;
     long long leafSearches = 0;      // avaliações de folha (nnueEvalInt ou searchLeaf)
     long long leafDepthSum = 0;      // soma das profundidades usadas (média = /leafSearches)
@@ -684,6 +685,7 @@ struct MCABNode {
     StateT state;
     int side = 0;                 // state.turn, cacheado
     bool expanded = false;
+    bool lazyValueEvaluated = false; // variant: first visit evaluates, second visit expands
     bool terminal = false;
     int terminalScore = 0;        // score (unidades NNUE_EVAL_SCALE); convertido via scoreToQ na hora de usar
     MoveListT moves;               // currently active, already-legal moves
@@ -2010,8 +2012,15 @@ private:
             bool depthCapped = (depth + 1 >= (int)mcabAccStack.size()) ||
                                 (depth >= params.maxTreeDepth);
 
-            if (!node.expanded || depthCapped) {
-                if (!node.expanded) expandNode(curIdx, depth, mstats);
+            // A fresh nonterminal node needs only its value on the first visit.
+            // Policy, legal wall enumeration and edge allocation are deferred
+            // until it is actually revisited for child selection. In a graph,
+            // the bit belongs to the node, not the incoming edge or path.
+            if ((!node.expanded && !node.lazyValueEvaluated) || depthCapped) {
+                if (!node.expanded && !node.lazyValueEvaluated) {
+                    node.lazyValueEvaluated = true;
+                    ++mstats.lazyExpansionsDeferred;
+                }
                 // Visitas do RAMO que levou até aqui (Seção 9,
                 // mcabAdaptiveLeafDepth): totalN do nó PAI, ou o totalN da
                 // própria raiz quando estamos nela.
@@ -2033,6 +2042,8 @@ private:
                 else backup(path, leafQ, mstats);
                 return;
             }
+
+            if (!node.expanded) expandNode(curIdx, depth, mstats);
 
             int e = selectChildPUCT(node);
             if constexpr (kResidualPuct) {
@@ -2170,7 +2181,8 @@ private:
     // perspectiva subindo a árvore.
     double evaluateLeaf(Eng& engine, NodeT& node, int depthInTree, int branchVisits,
                          SearchStatsT& stats, McabStats& mstats) {
-        if (node.moves.empty()) return 0.5;  // sem lances e não-terminal: não deveria ocorrer; neutro defensivo
+        // An unexpanded node has no moves *yet*: that is not a stalemate.
+        if (node.expanded && node.moves.empty()) return 0.5;
         int leafDepth = effectiveLeafDepth(branchVisits);
 
         if (leafDepth <= 0) {
