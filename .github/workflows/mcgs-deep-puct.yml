@@ -1,0 +1,183 @@
+name: "MCGS puct deep 200ms confirmation: H2H Claustrophobia Titanium"
+on:
+  push:
+    branches: [exp/mcgs-puct-deep-20261017]
+    paths: [.github/workflows/mcgs-deep-puct.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  correctness:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compile semantic oracle and MCAB regression
+        run: |
+          set -euo pipefail
+          mkdir -p bin
+          g++ -O2 -std=c++17 -march=native -mavx2 -mfma -DZQ_EXP_PUCT_EDGE_SUM=1 -DZQ_EXP_PUCT_EDGE_SUM_VERIFY=1 -I src tests/test_mcgs_opt_correctness.cpp -o bin/test_mcgs_opt
+          g++ -O2 -std=c++17 -march=native -mavx2 -mfma -DZQ_EXP_PUCT_EDGE_SUM=1 -DZQ_EXP_PUCT_EDGE_SUM_VERIFY=1 -I src tests/test_mcab_core.cpp -o bin/test_mcab_core
+      - name: Execute engine invariants before any games
+        run: |
+          set -euo pipefail
+          bin/test_mcgs_opt
+          bin/test_mcab_core
+  matched-games:
+    needs: correctness
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        include:
+          - family: normal
+            opponent: h2h
+            engine: candidate
+            book: tools/external/openings_normal_confirm_400.jsonl
+            pairs: 100
+          - family: normal
+            opponent: claustrophobia
+            engine: candidate
+            book: tools/external/openings_normal_confirm_400.jsonl
+            pairs: 50
+          - family: normal
+            opponent: claustrophobia
+            engine: main
+            book: tools/external/openings_normal_confirm_400.jsonl
+            pairs: 50
+          - family: normal
+            opponent: titanium
+            engine: candidate
+            book: tools/external/openings_normal_confirm_400.jsonl
+            pairs: 50
+          - family: normal
+            opponent: titanium
+            engine: main
+            book: tools/external/openings_normal_confirm_400.jsonl
+            pairs: 50
+          - family: center
+            opponent: h2h
+            engine: candidate
+            book: tools/external/openings_center_rush_sound_5k.jsonl
+            pairs: 100
+          - family: center
+            opponent: claustrophobia
+            engine: candidate
+            book: tools/external/openings_center_rush_sound_5k.jsonl
+            pairs: 50
+          - family: center
+            opponent: claustrophobia
+            engine: main
+            book: tools/external/openings_center_rush_sound_5k.jsonl
+            pairs: 50
+          - family: center
+            opponent: titanium
+            engine: candidate
+            book: tools/external/openings_center_rush_sound_5k.jsonl
+            pairs: 50
+          - family: center
+            opponent: titanium
+            engine: main
+            book: tools/external/openings_center_rush_sound_5k.jsonl
+            pairs: 50
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: candidate
+          ref: ${{ github.sha }}
+      - uses: actions/checkout@v4
+        with:
+          path: baseline
+          ref: 50a3237ea249c30077ee1e21d7902aa48d125f6d
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - uses: dtolnay/rust-toolchain@stable
+        if: matrix.opponent == 'claustrophobia' || matrix.opponent == 'titanium'
+      - name: Cache pinned Claustrophobia checkpoint and opponent dependencies
+        if: matrix.opponent == 'claustrophobia'
+        uses: actions/cache@v4
+        with:
+          path: |
+            candidate/external_bots/claustrophobia/champion.pt
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: mcgs-puct-claustro-${{ runner.os }}-${{ hashFiles('candidate/tools/external/bot_setup.py') }}
+          restore-keys: mcgs-puct-claustro-${{ runner.os }}-
+      - name: Install CPU Claustrophobia inference dependencies
+        if: matrix.opponent == 'claustrophobia'
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install numpy
+          python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
+      - name: Build candidate and frozen main with matching compiler optimization
+        run: |
+          set -euo pipefail
+          mkdir -p candidate/bin baseline/bin
+          g++ -O3 -std=c++17 -march=native -mavx2 -mfma -DZQ_EXP_PUCT_EDGE_SUM=1 -I candidate/src candidate/tools/external/zquoridor_uci.cpp -o candidate/bin/zq_candidate
+          g++ -O3 -std=c++17 -march=native -mavx2 -mfma -I baseline/src baseline/tools/external/zquoridor_uci.cpp -o baseline/bin/zq_main
+      - name: Draw new opening book (disjoint from initial 100-game screening)
+        run: |
+          set -euo pipefail
+          cd candidate
+          python -u tools/make_mcgs_confirm_book.py --source ${{ matrix.book }} --count 120 --out results/benchmarks/mcgs_deep/books/book_${{ matrix.family }}.jsonl
+      - name: H2H candidate vs same main 200ms (200 games)
+        if: matrix.opponent == 'h2h'
+        run: |
+          set -euo pipefail
+          cd candidate
+          python -u tools/match_finalists.py \
+            --engine1-name puct --engine1-executable bin/zq_candidate \
+            --engine1-nnue data/nnue/nnue_weights_int8.bin \
+            --engine2-name main --engine2-executable ../baseline/bin/zq_main \
+            --engine2-nnue data/nnue/nnue_weights_int8.bin \
+            --openings results/benchmarks/mcgs_deep/books/book_${{ matrix.family }}.jsonl \
+            --pairs 100 --workers 1 --move-time-ms 200 --seed 20261028 \
+            --bootstrap 10000 \
+            --output results/benchmarks/mcgs_deep/puct/h2h/${{ matrix.family }}
+      - name: Candidate/main versus pinned external opponent 200ms (100 games)
+        if: matrix.opponent != 'h2h'
+        run: |
+          set -euo pipefail
+          cd candidate
+          if [ "${{ matrix.engine }}" = "main" ]; then exe=../baseline/bin/zq_main; else exe=bin/zq_candidate; fi
+          python -u tools/run_benchmark.py \
+            --opponents "${{ matrix.opponent }}" --pairs 50 --workers 1 \
+            --openings results/benchmarks/mcgs_deep/books/book_${{ matrix.family }}.jsonl \
+            --zq-executable "$exe" --nnue data/nnue/nnue_weights_int8.bin \
+            --zq-move-time-ms 200 --titanium-move-time-ms 200 \
+            --claustrophobia-move-time-ms 200 --claustrophobia-device cpu \
+            --clock-initial-ms 0 --max-plies 240 --bootstrap 10000 \
+            --seed 20261028 \
+            --output results/benchmarks/mcgs_deep/puct/${{ matrix.opponent }}/${{ matrix.engine }}/${{ matrix.family }}
+      - name: Reject any game loss from test harness or clock mismatch
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          root=Path("candidate/results/benchmarks/mcgs_deep/puct")
+          mode="${{ matrix.opponent }}"
+          family="${{ matrix.family }}"
+          if mode=="h2h":
+              r=json.loads((root/"h2h"/family/"summary.json").read_text())
+              assert r["engine1"]=="puct" and r["engine2"]=="main"
+              assert r["move_time_ms"]==200 and r["base_ms"]==0
+              s=r["summary"]; n=200
+          else:
+              r=json.loads((root/mode/"${{ matrix.engine }}"/family/"summary.json").read_text())
+              assert r["clock"]["protocol"]=="fixed-movetime-v2" and r["clock"]["initial_ms"]==0
+              assert r["budgets"]["zquoridor"]["value"]==200
+              assert r["budgets"][mode]["value"]==200
+              s=r["summaries"][mode]; n=100
+          assert s["recorded_games"]==n and s["complete_pairs"]==n//2 and s["failed_games"]==0, s
+          print("PASS",mode,"${{ matrix.engine }}",family,s["score_pct"],"%",n,"valid")
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: mcgs-deep-puct-${{ matrix.opponent }}-${{ matrix.engine }}-${{ matrix.family }}
+          path: candidate/results/benchmarks/mcgs_deep/
+          retention-days: 21
+          if-no-files-found: warn
