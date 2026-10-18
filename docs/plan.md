@@ -1147,3 +1147,15 @@ The overnight fleet execution ran for 1,222 monitor cycles (~9 hours) until remo
 3. **Seamless Resumption**: Upon starting, both scripts scan existing `positions.jsonl` and `targets.jsonl` in the destination directory, load previous progress, verify the 6-element auxiliary vectors (`[own_d, opp_d, my_walls, opp_walls, ply, side]`), and resume generation without data loss.
 4. **Fleet Auto-Recovery**: `colab/dispatch_rich_targets.py` automatically updates checkout to latest `origin/main`, compiles the native engine, handles OAuth and dialog approvals, and tracks execution across all five workers continuously.
 
+### Version 4.01 Fleet Production Expansion (2026-10-18)
+
+Workers 1 and 2 completed their initial 20,000-position quotas and verified their NPZ archives on Google Drive. The operator expanded the collection target to 40,000 positions per worker. Both workers resumed generation from their existing 20,000 records without data loss. The dispatcher was upgraded with native cell focus and `Control+Enter` keyboard execution triggering, as well as live Colab kernel busy-state detection.
+
+Current generation status across all five active workers:
+- **Worker 1** (`worker-1`): Wall Drops v4.01 medium mazes (3–8 walls) active at 21,270+ / 40,000 positions.
+- **Worker 2** (`worker-2`): Wall Drops v4.01 extreme mazes (8–14 walls) active at 20,490+ / 40,000 positions.
+- **Worker 3** (`worker-3`): Gumbel AlphaZero Sequential Halving (Top-K=8, 15 ms) active at 4,210 / 10,000 positions (163/250 games).
+- **Worker 4** (`zquoridor`): Gumbel AlphaZero Sequential Halving (Top-K=8, 15 ms) active at 720 / 10,000 positions (27/250 games).
+- **Worker 5** (`worker-5`): Gumbel Deep Planning (Top-K=16, 20 ms) active at 2,565 / 10,000 positions (117/250 games).
+
+
