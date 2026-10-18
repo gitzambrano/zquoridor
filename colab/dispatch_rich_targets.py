@@ -152,18 +152,18 @@ def handle_oauth(ctx: Any) -> bool:
         acc_tiles = pg.locator("[data-identifier], [data-email]")
         if acc_tiles.count() > 0:
             print("  [OAuth] Account tile found, clicking...", flush=True)
-            acc_tiles.first.click()
+            acc_tiles.first.click(timeout=5000)
             time.sleep(2)
 
         checkboxes = pg.locator("input[type='checkbox']").all()
         for cb in checkboxes:
             if not cb.is_checked():
-                cb.check()
+                cb.check(timeout=5000)
                 time.sleep(0.5)
         btn = pg.locator("#submit_approve_access, button:has-text('Allow'), button:has-text('Permitir'), button:has-text('Continuar'), button:has-text('Avançar')")
         if btn.count() > 0 and btn.first.is_visible():
             print("  [OAuth] Clicking approval button...", flush=True)
-            btn.first.click()
+            btn.first.click(timeout=5000)
             time.sleep(3)
             return True
     except Exception as exc:
@@ -303,7 +303,7 @@ def interrupt_cell(page: Any) -> bool:
 def set_cell_code(page: Any, code: str) -> bool:
     """Inject Python source code into Cell 0 of the Colab notebook and purge duplicate cells."""
     try:
-        return page.evaluate("""async (newCode) => {
+        return page.evaluate("""(newCode) => {
             const nb = globalThis.colab?.global?.notebook;
             if (!nb) return false;
             if (!nb.cells || nb.cells.length === 0) {
@@ -340,7 +340,7 @@ def set_cell_code(page: Any, code: str) -> bool:
                 cell.model.removeOutputs();
             }
             if (typeof nb.saveNotebook === 'function') {
-                try { await nb.saveNotebook(); } catch (e) {}
+                try { nb.saveNotebook(); } catch (e) {}
             }
             return true;
         }""", code)
