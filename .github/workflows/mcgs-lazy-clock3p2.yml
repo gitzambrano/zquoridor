@@ -1,0 +1,134 @@
+name: "MCGS Lazy Expansion native 3+2 vs Claustrophobia and Titanium"
+on:
+  push:
+    branches: [exp/mcgs-lazy-clock3p2-20261018]
+    paths: [.github/workflows/mcgs-lazy-clock3p2.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify lazy MCGS leaf correctness
+        run: |
+          set -euo pipefail
+          mkdir -p bin
+          g++ -O2 -std=c++17 -march=native -mavx2 -mfma -I src tests/test_mcgs_opt_correctness.cpp -o bin/test_mcgs_lazy
+          g++ -O2 -std=c++17 -march=native -mavx2 -mfma -I src tests/test_mcab_core.cpp -o bin/test_mcab_core
+          bin/test_mcgs_lazy
+          bin/test_mcab_core
+  paired-clock:
+    needs: gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        include:
+          - family: normal
+            opponent: claustrophobia
+            engine: lazy
+            source: tools/external/openings_normal_confirm_400.jsonl
+          - family: normal
+            opponent: claustrophobia
+            engine: main
+            source: tools/external/openings_normal_confirm_400.jsonl
+          - family: normal
+            opponent: titanium
+            engine: lazy
+            source: tools/external/openings_normal_confirm_400.jsonl
+          - family: normal
+            opponent: titanium
+            engine: main
+            source: tools/external/openings_normal_confirm_400.jsonl
+          - family: center
+            opponent: claustrophobia
+            engine: lazy
+            source: tools/external/openings_center_rush_sound_5k.jsonl
+          - family: center
+            opponent: claustrophobia
+            engine: main
+            source: tools/external/openings_center_rush_sound_5k.jsonl
+          - family: center
+            opponent: titanium
+            engine: lazy
+            source: tools/external/openings_center_rush_sound_5k.jsonl
+          - family: center
+            opponent: titanium
+            engine: main
+            source: tools/external/openings_center_rush_sound_5k.jsonl
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: candidate
+          ref: ${{ github.sha }}
+      - uses: actions/checkout@v4
+        with:
+          path: baseline
+          ref: 50a3237ea249c30077ee1e21d7902aa48d125f6d
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install pinned Claustrophobia CPU backend
+        if: matrix.opponent == 'claustrophobia'
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install numpy
+          python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
+      - name: Compile Lazy and pinned main identically
+        run: |
+          set -euo pipefail
+          mkdir -p candidate/bin baseline/bin
+          g++ -O3 -std=c++17 -march=native -mavx2 -mfma -I candidate/src candidate/tools/external/zquoridor_uci.cpp -o candidate/bin/zq_lazy
+          g++ -O3 -std=c++17 -march=native -mavx2 -mfma -I baseline/src baseline/tools/external/zquoridor_uci.cpp -o baseline/bin/zq_main
+      - name: Select unseen openings for native clocks
+        run: |
+          set -euo pipefail
+          cd candidate
+          python -u tools/make_mcgs_followup_book.py \
+            --source ${{ matrix.source }} --pairs 40 --seed 20261031 \
+            --output results/benchmarks/mcgs_clock3p2/book_${{ matrix.family }}.jsonl
+      - name: Native 3+2 game clock for BOTH engines, each color, no fixed-simulation substitute
+        run: |
+          set -euo pipefail
+          cd candidate
+          if [ "${{ matrix.engine }}" = "lazy" ]; then exe=bin/zq_lazy; else exe=../baseline/bin/zq_main; fi
+          python -u tools/run_benchmark.py \
+            --opponents ${{ matrix.opponent }} \
+            --pairs 20 --workers 1 --seed 20261101 \
+            --openings results/benchmarks/mcgs_clock3p2/book_${{ matrix.family }}.jsonl \
+            --zq-executable "$exe" --nnue data/nnue/nnue_weights_int8.bin \
+            --clock-initial-ms 180000 --clock-increment-ms 2000 \
+            --zq-move-time-ms 200 --claustrophobia-move-time-ms 200 --titanium-move-time-ms 200 \
+            --claustrophobia-device cpu --max-plies 240 \
+            --move-timeout-s 240 --bootstrap 10000 \
+            --output results/benchmarks/mcgs_clock3p2/${{ matrix.opponent }}/${{ matrix.engine }}/${{ matrix.family }}
+      - name: Check actual native-clock manifest and complete paired games
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          opp="${{ matrix.opponent }}"
+          p=Path("candidate/results/benchmarks/mcgs_clock3p2")/opp/"${{ matrix.engine }}"/"${{ matrix.family }}"/"summary.json"
+          r=json.loads(p.read_text())
+          assert r["clock"]=={"initial_ms":180000,"increment_ms":2000,"protocol":"native-game-clock-v2"},r["clock"]
+          for name in ["zquoridor",opp]:
+              assert r["budgets"][name]["type"]=="game_clock",r["budgets"]
+              assert r["budgets"][name]["initial_ms"]==180000
+              assert r["budgets"][name]["increment_ms"]==2000
+          s=r["summaries"][opp]
+          assert s["recorded_games"]==40 and s["complete_pairs"]==20 and s["failed_games"]==0,s
+          print(f"PASS native 3+2 ${{ matrix.opponent }} ${{ matrix.engine }} ${{ matrix.family }}: {s['score_pct']}% in 40 valid games")
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: mcgs-lazy-3p2-${{ matrix.opponent }}-${{ matrix.engine }}-${{ matrix.family }}
+          path: candidate/results/benchmarks/mcgs_clock3p2/
+          if-no-files-found: warn
+          retention-days: 21
