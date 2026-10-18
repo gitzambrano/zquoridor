@@ -53,8 +53,7 @@ def run(exe,root,nnue,n,items):
              "priors":rs["priors"],
              "visits":rs["visit_counts"],
              "q_values":rs["q_values"],
-             "tree_reused":int(re.search(r"treeHit=(\\d+)",ls[0] if False else
-                     next(l for l in ls if "diag_sims=" in l))) .group(1)) if False else None})
+             "tree_reused": None})
     return out
 
 def tv(a,b):
