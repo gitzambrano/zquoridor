@@ -1,0 +1,65 @@
+name: "MCGS combo lazy-sparse: matched MCGS throughput vs main and Lazy"
+on:
+  push:
+    branches: [exp/mcgs-lazy-sparse-20261018]
+    paths: [.github/workflows/mcgs-combo-speed-lazy-sparse.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  matched-throughput:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        reference: [main, lazy]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: candidate
+          ref: ${{ github.sha }}
+      - uses: actions/checkout@v4
+        with:
+          path: baseline
+          ref: 50a3237ea249c30077ee1e21d7902aa48d125f6d
+      - uses: actions/checkout@v4
+        with:
+          path: lazy
+          ref: 082abc4df338a3c46340aa7c77707c1259f7db16
+      - name: Compile all engines, keep weights and ISA matched
+        run: |
+          set -euo pipefail
+          mkdir -p candidate/bin baseline/bin lazy/bin
+          g++ -O3 -std=c++17 -march=native -mavx2 -mfma -DZQ_EXP_SPARSE_POLICY=1 -I candidate/src candidate/tools/external/zquoridor_uci.cpp -o candidate/bin/zq_combo
+          g++ -O3 -std=c++17 -march=native -mavx2 -mfma -I baseline/src baseline/tools/external/zquoridor_uci.cpp -o baseline/bin/zq_main
+          g++ -O3 -std=c++17 -march=native -mavx2 -mfma -I lazy/src lazy/tools/external/zquoridor_uci.cpp -o lazy/bin/zq_lazy
+      - name: Run alternating paired MCGS throughput samples against reference
+        run: |
+          set -euo pipefail
+          if [ "${{ matrix.reference }}" = "main" ]; then ref=baseline/bin/zq_main; else ref=lazy/bin/zq_lazy; fi
+          python -u candidate/tools/measure_mcgs_speed.py \
+            --main "$ref" --candidate candidate/bin/zq_combo \
+            --nnue candidate/data/nnue/nnue_weights_int8.bin \
+            --movetime 250 --samples-per-book 16 \
+            --output candidate/results/benchmarks/mcgs_combos/lazy-sparse/speed_${{ matrix.reference }}.json
+      - name: Confirm speed ratio can be inspected for normals and central openings
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          p=Path("candidate/results/benchmarks/mcgs_combos/lazy-sparse/speed_${{ matrix.reference }}.json")
+          o=json.loads(p.read_text())
+          assert o["movetime_ms"]==250
+          for cat in ["normal","center","all"]:
+              m=o["metrics"][cat]
+              assert m["main_simulations_per_second"]>0 and m["candidate_simulations_per_second"]>0 and m["candidate_speed_ratio"]>0
+          print("PASS lazy-sparse versus ${{ matrix.reference }} speed:",o["metrics"]["all"]["candidate_speed_ratio"])
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: mcgs-combo-lazy-sparse-speed-vs-${{ matrix.reference }}
+          path: candidate/results/benchmarks/mcgs_combos/lazy-sparse/speed_${{ matrix.reference }}.json
+          if-no-files-found: warn
+          retention-days: 21
