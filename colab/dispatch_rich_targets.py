@@ -247,14 +247,14 @@ def get_cell_execution_state(page: Any) -> Dict[str, Any]:
             if (isBusy || cls.includes('running') || cls.includes('animating')) {
                 running = true;
                 hasError = false;
+            } else if (cls.includes('pending') || cls.includes('waiting')) {
+                pending = true;
+                hasError = false;
             } else {
                 running = false;
-                if (cls.includes('error') || lastFailed) {
+                if (cls.includes('error')) {
                     hasError = true;
                 }
-            }
-            if (cls.includes('pending') || cls.includes('waiting')) {
-                pending = true;
             }
 
             const streams = Array.from(document.querySelectorAll('.output-stream, colab-output, .output_text'));
@@ -326,6 +326,7 @@ def set_cell_code(page: Any, code: str) -> bool:
             }
 
             const cell = nb.cells[0];
+            if (cell) cell.lastExecutionFailed = false;
             if (typeof cell.setText === 'function') cell.setText(newCode);
             if (cell.model && typeof cell.model.setText === 'function') cell.model.setText(newCode);
             if (cell.model && cell.model.textModel && typeof cell.model.textModel.setValue === 'function') {
@@ -518,7 +519,7 @@ def main():
                         is_active = (st["running"] or st["pending"]) and not st.get("hasError", False)
 
                         if not is_active:
-                            print(f"  Worker {wid} not active (running={st['running']}, hasError={st.get('hasError')}). Re-running...", flush=True)
+                            print(f"  Worker {wid} not active (running={st['running']}, pending={st.get('pending')}, hasError={st.get('hasError')}). Re-running...", flush=True)
                             connect_runtime_if_needed(page)
                             handle_dialogs(page)
                             spec = JOB_SPECS[wid]
@@ -526,8 +527,9 @@ def main():
                             set_cell_code(page, code)
                             time.sleep(2)
                             click_run_button(page)
-                            time.sleep(3)
-                            handle_oauth(ctx)
+                            time.sleep(4)
+                            if ctx:
+                                handle_oauth(ctx)
                             handle_dialogs(page)
                             st = get_cell_execution_state(page)
                             is_active = (st["running"] or st["pending"]) and not st.get("hasError", False)
