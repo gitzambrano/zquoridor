@@ -1,0 +1,44 @@
+name: "MCGS lazy-expand: matched 250ms simulation throughput"
+on:
+  push:
+    branches: [exp/mcgs-lazy-expand-20261017]
+    paths: [.github/workflows/mcgs-speed-lazy-expand.yml, tools/measure_mcgs_speed.py]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  paired-speed:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: candidate
+          ref: ${{ github.sha }}
+      - uses: actions/checkout@v4
+        with:
+          path: baseline
+          ref: 50a3237ea249c30077ee1e21d7902aa48d125f6d
+      - name: Compile identical engines except experiment switch
+        run: |
+          set -euo pipefail
+          mkdir -p candidate/bin baseline/bin
+          g++ -O3 -std=c++17 -march=native -mavx2 -mfma  -I candidate/src \
+            candidate/tools/external/zquoridor_uci.cpp -o candidate/bin/zq_opt
+          g++ -O3 -std=c++17 -march=native -mavx2 -mfma -I baseline/src \
+            baseline/tools/external/zquoridor_uci.cpp -o baseline/bin/zq_main
+      - name: Measure MCGS simulations/sec at identical clocks and positions
+        run: |
+          set -euo pipefail
+          python -u candidate/tools/measure_mcgs_speed.py \
+            --main baseline/bin/zq_main --candidate candidate/bin/zq_opt \
+            --nnue candidate/data/nnue/nnue_weights_int8.bin \
+            --samples-per-book 16 --movetime 250 \
+            --output candidate/results/benchmarks/mcgs_perf/lazy-expand/speed.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: mcgs-lazy-expand-throughput
+          path: candidate/results/benchmarks/mcgs_perf/lazy-expand/speed.json
+          if-no-files-found: warn
+          retention-days: 21
