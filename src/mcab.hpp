@@ -59,8 +59,8 @@
 #ifndef ZQ_EXP_EDGE_ACC_CACHE
 #define ZQ_EXP_EDGE_ACC_CACHE 0
 #endif
-#ifndef ZQ_EXP_PUCT_EDGE_SUM
-#define ZQ_EXP_PUCT_EDGE_SUM 0
+#ifndef ZQ_EXP_SPARSE_POLICY
+#define ZQ_EXP_SPARSE_POLICY 0
 #endif
 #ifndef ZQ_EXP_EDGE_ACC_FULL_CANONICAL
 #define ZQ_EXP_EDGE_ACC_FULL_CANONICAL 0
@@ -705,9 +705,6 @@ struct MCABNode {
     std::vector<size_t> activeCandidateIndices;
     size_t nextCandidate = 0;
     int totalN = 0;
-#if ZQ_EXP_PUCT_EDGE_SUM
-    double cachedEdgeW = 0.0;
-#endif
     int graphDepth = -1;           // root-relative ply for safe DAG sharing
     uint32_t graphN = 0;           // MCGS node visits, own side-to-move frame
     double graphW = 0.0;           // MCGS node value sum, own frame
@@ -1570,10 +1567,6 @@ private:
             r.child.push_back(oldChild.empty() ? -1 : oldChild[e]);
         }
         r.activeMoves = (int)r.moves.size();
-#if ZQ_EXP_PUCT_EDGE_SUM
-        r.cachedEdgeW = 0.0;
-        for (float w : r.W) r.cachedEdgeW += (double)w;
-#endif
 
         float sum = 0.f;
         for (float p : r.P) sum += p;
@@ -1772,8 +1765,20 @@ private:
         activateWidening(node, desired);
     }
 
+    template <class AccT>
+    static auto forwardSparseDispatch(const AccT& acc, const MoveListT& legal, int side,
+                                      std::array<float, PolicyDim>& out, int)
+        -> decltype(forwardPolicyQuantSparse(acc, legal, side, out), void()) {
+        forwardPolicyQuantSparse(acc, legal, side, out);
+    }
+    template <class AccT>
+    static void forwardSparseDispatch(const AccT& acc, const MoveListT&, int,
+                                      std::array<float, PolicyDim>& out, long) {
+        forwardPolicyQuant(acc, out);  // generic toy-engine fallback
+    }
     void policyOutputForNode(const NodeT& node, int depthInTree,
-                             std::array<float, PolicyDim>& out, McabStats& mstats) {
+                             std::array<float, PolicyDim>& out, McabStats& mstats,
+                             const MoveListT* legal = nullptr) {
         uint64_t key = params.evalCache ? mcabEvalStateKey(node.state, 0) : 0;
         if (key != 0) {
             if (auto* entry = findPolicyEvalCache(key)) {
@@ -1782,7 +1787,14 @@ private:
                 return;
             }
         }
+#if ZQ_EXP_SPARSE_POLICY
+        if (legal) forwardSparseDispatch(mcabAccStack[depthInTree].acc[node.side], *legal,
+                                         node.side, out, 0);
+        else forwardPolicyQuant(mcabAccStack[depthInTree].acc[node.side], out);
+#else
+        (void)legal;
         forwardPolicyQuant(mcabAccStack[depthInTree].acc[node.side], out);
+#endif
         if (key != 0) {
             auto& entry = storePolicyEvalCache(key, mstats);
             entry.policy = out;
@@ -1800,13 +1812,10 @@ private:
             node.N.assign(nm, 0.f);
             node.W.assign(nm, 0.f);
             node.child.assign(nm, -1);
-#if ZQ_EXP_PUCT_EDGE_SUM
-            node.cachedEdgeW = 0.0;
-#endif
 
             if (nm > 0) {
                 std::array<float, PolicyDim> policyOut{};
-                policyOutputForNode(node, depthInTree, policyOut, mstats);
+                policyOutputForNode(node, depthInTree, policyOut, mstats, &node.moves);
                 // perf/speed-elo-100: era std::vector<float> alocado por
                 // expansao; nm <= 131 < PolicyDim(=209), entao um buffer de
                 // pilha elimina o malloc do caminho quente.
@@ -1905,19 +1914,9 @@ private:
     double nodeQ(const NodeT& node) const {
         if (params.backupMode == BackupMode::AvgBlend) {
             if (node.totalN <= 0) return 0.5;
-#if ZQ_EXP_PUCT_EDGE_SUM
-#ifdef ZQ_EXP_PUCT_EDGE_SUM_VERIFY
-            double referenceW = 0.0;
-            for (float w : node.W) referenceW += (double)w;
-            assert(std::abs(referenceW - node.cachedEdgeW) <=
-                   1e-6 * std::max(1.0, std::abs(referenceW)));
-#endif
-            return node.cachedEdgeW / (double)node.totalN;
-#else
             double sumW = 0.0;
             for (float w : node.W) sumW += w;
             return sumW / (double)node.totalN;
-#endif
         }
         double best = 0.5;
         bool visited = false;
@@ -2296,13 +2295,7 @@ private:
             const int e = path[(size_t)i].edgeIdx;
             const double parentV = 1.0 - upChild;
             parent.N[(size_t)e] += 1.f;
-#if ZQ_EXP_PUCT_EDGE_SUM
-            const float oldW = parent.W[(size_t)e];
-#endif
             parent.W[(size_t)e] += (float)parentV;
-#if ZQ_EXP_PUCT_EDGE_SUM
-            parent.cachedEdgeW += (double)parent.W[(size_t)e] - (double)oldW;
-#endif
             parent.totalN += 1;
             v = parentV;
             raw = 1.0 - raw;
@@ -2319,13 +2312,7 @@ private:
         const PathEdge last = path.back();
         NodeT& current = pool[(size_t)last.nodeIdx];
         current.N[(size_t)last.edgeIdx] += 1.f;
-#if ZQ_EXP_PUCT_EDGE_SUM
-        const float previousW = current.W[(size_t)last.edgeIdx];
-#endif
         current.W[(size_t)last.edgeIdx] += 0.5f;
-#if ZQ_EXP_PUCT_EDGE_SUM
-        current.cachedEdgeW += (double)current.W[(size_t)last.edgeIdx] - (double)previousW;
-#endif
         current.totalN += 1;
 
         double v = 0.5, raw = 0.5;
@@ -2341,13 +2328,7 @@ private:
             const int e = path[(size_t)i].edgeIdx;
             const double parentV = 1.0 - upChild;
             parent.N[(size_t)e] += 1.f;
-#if ZQ_EXP_PUCT_EDGE_SUM
-            const float oldW = parent.W[(size_t)e];
-#endif
             parent.W[(size_t)e] += (float)parentV;
-#if ZQ_EXP_PUCT_EDGE_SUM
-            parent.cachedEdgeW += (double)parent.W[(size_t)e] - (double)oldW;
-#endif
             parent.totalN += 1;
             v = parentV;
             raw = 1.0 - raw;
@@ -2366,17 +2347,11 @@ private:
             NodeT& node = pool[path[i].nodeIdx];
             int e = path[i].edgeIdx;
             node.N[e] += 1.f;
-#if ZQ_EXP_PUCT_EDGE_SUM
-            const float oldW = node.W[e];
-#endif
             if (params.backupMode == BackupMode::AvgBlend) {
                 node.W[e] += (float)v;
             } else {
                 node.W[e] = (float)v;
             }
-#if ZQ_EXP_PUCT_EDGE_SUM
-            node.cachedEdgeW += (double)node.W[e] - (double)oldW;
-#endif
             node.totalN += 1;
             if (params.backupMode == BackupMode::MinimaxHard)
                 v = nodeQ(node);
