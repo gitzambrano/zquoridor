@@ -63,12 +63,12 @@ print('Launching: {job_label}', flush=True)
 
 JOB_SPECS = {
     1: {
-        "job_label": "Wall Drops v4.01 (Medium Mazes: 3-8 walls) [Target: 20,000]",
-        "cli_command": "python -u tools/generate_wall_drops.py --count 20000 --min-walls 3 --max-walls 8 --pawn-walk-plies 4 --move-time-ms 20 --teacher zquoridor-4.01 --zq-executable /content/zquoridor_runtime/zquoridor_uci --output /content/drive/MyDrive/zquoridor_data/wall_drops_v401/worker_1 --seed 1000001",
+        "job_label": "Wall Drops v4.01 (Medium Mazes: 3-8 walls) [Target: 40,000]",
+        "cli_command": "python -u tools/generate_wall_drops.py --count 40000 --min-walls 3 --max-walls 8 --pawn-walk-plies 4 --move-time-ms 20 --teacher zquoridor-4.01 --zq-executable /content/zquoridor_runtime/zquoridor_uci --output /content/drive/MyDrive/zquoridor_data/wall_drops_v401/worker_1 --seed 1000001",
     },
     2: {
-        "job_label": "Wall Drops v4.01 (Extreme Mazes: 8-14 walls) [Target: 20,000]",
-        "cli_command": "python -u tools/generate_wall_drops.py --count 20000 --min-walls 8 --max-walls 14 --pawn-walk-plies 4 --move-time-ms 20 --teacher zquoridor-4.01 --zq-executable /content/zquoridor_runtime/zquoridor_uci --output /content/drive/MyDrive/zquoridor_data/wall_drops_v401/worker_2 --seed 2000002",
+        "job_label": "Wall Drops v4.01 (Extreme Mazes: 8-14 walls) [Target: 40,000]",
+        "cli_command": "python -u tools/generate_wall_drops.py --count 40000 --min-walls 8 --max-walls 14 --pawn-walk-plies 4 --move-time-ms 20 --teacher zquoridor-4.01 --zq-executable /content/zquoridor_runtime/zquoridor_uci --output /content/drive/MyDrive/zquoridor_data/wall_drops_v401/worker_2 --seed 2000002",
     },
     3: {
         "job_label": "Gumbel AlphaZero Sequential Halving v4.01 (Top-K=8, 15ms) [Target: 10,000]",
@@ -236,6 +236,7 @@ def get_cell_execution_state(page: Any) -> Dict[str, Any]:
             const nb = globalThis.colab?.global?.notebook;
             const cell = nb?.cells?.[0];
             const isBusy = cell ? !!cell.busy : false;
+            const kernelBusy = nb?.kernel?.state === 'busy';
             const lastFailed = cell ? !!cell.lastExecutionFailed : false;
 
             const btn = document.querySelector('colab-run-button');
@@ -244,7 +245,7 @@ def get_cell_execution_state(page: Any) -> Dict[str, Any]:
             const cls = wrap ? wrap.className : '';
 
             // If it is busy, running, or animating, it is actively executing!
-            if (isBusy || cls.includes('running') || cls.includes('animating')) {
+            if (isBusy || kernelBusy || cls.includes('running') || cls.includes('animating')) {
                 running = true;
                 hasError = false;
             } else if (cls.includes('pending') || cls.includes('waiting')) {
@@ -350,24 +351,19 @@ def set_cell_code(page: Any, code: str) -> bool:
 
 
 def click_run_button(page: Any) -> bool:
-    """Click the Run button for Cell 0."""
+    """Trigger execution for Cell 0 via cell focus and Control+Enter keyboard shortcut."""
     try:
-        return page.evaluate("""() => {
+        page.evaluate("""() => {
             const nb = globalThis.colab?.global?.notebook;
-            const cell = nb?.cells ? nb.cells[0] : null;
-            if (cell && typeof cell.manualExecute === 'function') {
-                cell.manualExecute();
-                return true;
+            const cell = nb?.cells?.[0];
+            if (cell) {
+                if (cell.element) cell.element.click();
+                if (typeof cell.focus === 'function') cell.focus();
             }
-            const btn = document.querySelector('colab-run-button');
-            const sr = btn ? btn.shadowRoot : null;
-            const inner = sr ? sr.querySelector('#run-button') : null;
-            if (inner) {
-                inner.click();
-                return true;
-            }
-            return false;
         }""")
+        time.sleep(0.5)
+        page.keyboard.press("Control+Enter")
+        return True
     except Exception:
         return False
 
@@ -439,6 +435,9 @@ def deploy_worker(p: Any, wid: int, force_relaunch: bool = True) -> Dict[str, An
         set_cell_code(page, code)
         time.sleep(2)
 
+        connect_runtime_if_needed(page)
+        time.sleep(1)
+        handle_dialogs(page)
         print("  Triggering run execution...", flush=True)
         click_run_button(page)
 
@@ -519,20 +518,26 @@ def main():
                         is_active = (st["running"] or st["pending"]) and not st.get("hasError", False)
 
                         if not is_active:
-                            print(f"  Worker {wid} not active (running={st['running']}, pending={st.get('pending')}, hasError={st.get('hasError')}). Re-running...", flush=True)
-                            connect_runtime_if_needed(page)
-                            handle_dialogs(page)
-                            spec = JOB_SPECS[wid]
-                            code = BOOTLOADER_TEMPLATE.format(job_label=spec["job_label"], cli_command=spec["cli_command"])
-                            set_cell_code(page, code)
-                            time.sleep(2)
-                            click_run_button(page)
-                            time.sleep(4)
-                            if ctx:
-                                handle_oauth(ctx)
-                            handle_dialogs(page)
-                            st = get_cell_execution_state(page)
-                            is_active = (st["running"] or st["pending"]) and not st.get("hasError", False)
+                            if "already satisfied" in st.get("out", ""):
+                                print(f"  Worker {wid} [{st_info['job_label']}] [COMPLETED] -> All targets satisfied.", flush=True)
+                            else:
+                                print(f"  Worker {wid} not active (running={st['running']}, pending={st.get('pending')}, hasError={st.get('hasError')}). Re-running...", flush=True)
+                                connect_runtime_if_needed(page)
+                                handle_dialogs(page)
+                                spec = JOB_SPECS[wid]
+                                code = BOOTLOADER_TEMPLATE.format(job_label=spec["job_label"], cli_command=spec["cli_command"])
+                                set_cell_code(page, code)
+                                time.sleep(2)
+                                connect_runtime_if_needed(page)
+                                time.sleep(1)
+                                handle_dialogs(page)
+                                click_run_button(page)
+                                time.sleep(4)
+                                if ctx:
+                                    handle_oauth(ctx)
+                                handle_dialogs(page)
+                                st = get_cell_execution_state(page)
+                                is_active = (st["running"] or st["pending"]) and not st.get("hasError", False)
 
                         raw_out = st["out"].replace("\n", " ").strip()
                         out_snip = raw_out[-100:] if raw_out else "(compiling / initializing environment...)"
