@@ -13,6 +13,9 @@
 #ifndef ZQ_EXP_EDGE_BFS_REPLAY
 #define ZQ_EXP_EDGE_BFS_REPLAY 0
 #endif
+#ifndef ZQ_EXP_GOAL_DISTANCE_MAP
+#define ZQ_EXP_GOAL_DISTANCE_MAP 0
+#endif
 #ifndef ZQ_EXP_EDGE_FEATURE_DELTA
 #define ZQ_EXP_EDGE_FEATURE_DELTA 0
 #endif
@@ -681,7 +684,54 @@ struct EdgeDistanceMemoEntry {
     PlayerPathCache data;
 };
 #endif
+#if ZQ_EXP_GOAL_DISTANCE_MAP
+// One reverse multi-source BFS serves ALL pawn cells for the same topology.
+// Exact on Quoridor's undirected orthogonal movement graph. Cache identity
+// includes both wall bitboards and the goal-side player; never hash-only.
+struct GoalDistanceMapEntry {
+    uint64_t h = 0, v = 0;
+    bool valid = false;
+    uint8_t side = 0;
+    std::array<uint8_t, N*N> distances{};
+};
+inline int goalDistanceFromTopology(uint64_t wallsH, uint64_t wallsV, int cell, int player) {
+    static thread_local std::array<GoalDistanceMapEntry, 2048> table{};
+    uint64_t mix = wallsH * 0x9E3779B97F4A7C15ull;
+    mix ^= (wallsV + 0xD1B54A32D192ED03ull) * 0xBF58476D1CE4E5B9ull;
+    mix ^= (uint64_t)player * 0x94D049BB133111EBull;
+    mix ^= mix >> 30;
+    auto& e = table[(size_t)mix & (table.size()-1)];
+    if (!e.valid || e.h != wallsH || e.v != wallsV || e.side != player) {
+        e.h = wallsH; e.v = wallsV; e.side = (uint8_t)player; e.valid = true;
+        e.distances.fill(255);
+        std::array<uint8_t, N*N> queue{};
+        int head = 0, tail = 0;
+        const int base = GOAL_ROW[player] * N;
+        for (int c = 0; c < N; ++c) {
+            e.distances[(size_t)(base+c)] = 0;
+            queue[(size_t)tail++] = (uint8_t)(base+c);
+        }
+        while (head < tail) {
+            int cur = queue[(size_t)head++];
+            int nextDist = (int)e.distances[(size_t)cur] + 1;
+            for (int dir = 0; dir < 4; ++dir) {
+                int neigh = ORTH_NEIGHBOR[(size_t)cur][(size_t)dir];
+                if (neigh < 0 || e.distances[(size_t)neigh] != 255 ||
+                    edgeBlockedDir(wallsH, wallsV, cur, dir)) continue;
+                e.distances[(size_t)neigh] = (uint8_t)nextDist;
+                queue[(size_t)tail++] = (uint8_t)neigh;
+            }
+        }
+    }
+    const int d = (int)e.distances[(size_t)cell];
+    return d == 255 ? -1 : d;
+}
+#endif
 inline int distLenCached(uint64_t wallsH, uint64_t wallsV, int cell, int player, PlayerPathCacheTable* xtable) {
+#if ZQ_EXP_GOAL_DISTANCE_MAP
+    (void)xtable;
+    return goalDistanceFromTopology(wallsH, wallsV, cell, player);
+#else
     if (!xtable) return shortestPathLen(wallsH, wallsV, cell, player);
     PlayerPathCache c;
 #if ZQ_EXP_EDGE_BFS_REPLAY
@@ -715,6 +765,7 @@ inline int distLenCached(uint64_t wallsH, uint64_t wallsV, int cell, int player,
     computeDistCached(wallsH, wallsV, cell, player, xtable, c);
 #endif
     return cachedShortestPathLen(c);
+#endif
 }
 
 inline Accumulator buildAccumulator(const State& s, int perspective, PlayerPathCacheTable* xtable = nullptr) {

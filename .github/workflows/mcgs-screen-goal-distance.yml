@@ -1,0 +1,80 @@
+name: "MCGS Perf Screening - goal-distance (100 paired games, preflight)"
+on:
+  push:
+    branches: ["exp/mcgs-goal-distance-20261017"]
+    paths: [".github/workflows/mcgs-screen-goal-distance.yml", "src/**", "tests/test_mcgs_opt_correctness.cpp"]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  correctness-and-h2h:
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - family: normal
+            book: tools/external/openings_normal_confirm_400.jsonl
+          - family: center
+            book: tools/external/openings_center_rush_sound_5k.jsonl
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: candidate
+          ref: ${{ github.sha }}
+      - uses: actions/checkout@v4
+        with:
+          path: baseline
+          ref: 50a3237ea249c30077ee1e21d7902aa48d125f6d
+      - name: Compile exact semantic oracle, MCAB regression and both engines
+        run: |
+          set -euo pipefail
+          mkdir -p candidate/bin baseline/bin
+          g++ -std=c++17 -O2 -march=native -mavx2 -mfma -DZQ_EXP_GOAL_DISTANCE_MAP=1  -I candidate/src \
+            candidate/tests/test_mcgs_opt_correctness.cpp -o candidate/bin/test_mcgs_opt
+          g++ -std=c++17 -O2 -march=native -mavx2 -mfma -DZQ_EXP_GOAL_DISTANCE_MAP=1  -I candidate/src \
+            candidate/tests/test_mcab_core.cpp -o candidate/bin/test_mcab_core
+          g++ -std=c++17 -O3 -march=native -mavx2 -mfma -DZQ_EXP_GOAL_DISTANCE_MAP=1 -I candidate/src \
+            candidate/tools/external/zquoridor_uci.cpp -o candidate/bin/zq_opt
+          g++ -std=c++17 -O3 -march=native -mavx2 -mfma -I baseline/src \
+            baseline/tools/external/zquoridor_uci.cpp -o baseline/bin/zq_main
+      - name: Correctness gate before spending 100 H2H games
+        run: |
+          set -euo pipefail
+          (cd candidate && bin/test_mcgs_opt)
+          (cd candidate && bin/test_mcab_core)
+      - name: Paired fixed wall-clock 200ms H2H - 50 games per cohort
+        run: |
+          set -euo pipefail
+          cd candidate
+          python -u tools/match_finalists.py \
+            --engine1-name goal-distance --engine1-executable bin/zq_opt \
+            --engine1-nnue data/nnue/nnue_weights_int8.bin \
+            --engine2-name main --engine2-executable ../baseline/bin/zq_main \
+            --engine2-nnue data/nnue/nnue_weights_int8.bin \
+            --openings ${{ matrix.book }} \
+            --pairs 25 --move-time-ms 200 --workers 1 \
+            --seed 20261017 --bootstrap 10000 \
+            --output results/benchmarks/mcgs_perf/goal-distance/${{ matrix.family }}
+      - name: Reject incomplete or failed games (50 valid games)
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          p=Path("candidate/results/benchmarks/mcgs_perf/goal-distance/${{ matrix.family }}/summary.json")
+          report=json.loads(p.read_text())
+          s=report["summary"]
+          assert report["engine1"]=="goal-distance" and report["engine2"]=="main"
+          assert report["move_time_ms"]==200 and report["base_ms"]==0
+          assert s["recorded_games"]==50 and s["complete_pairs"]==25 and s["failed_games"]==0
+          print("VALID:", "goal-distance", "${{ matrix.family }}", "score%", s["score_pct"])
+          PY
+      - name: Save game-level proof and data
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mcgs-goal-distance-${{ matrix.family }}
+          path: candidate/results/benchmarks/mcgs_perf/
+          retention-days: 21
+          if-no-files-found: warn
