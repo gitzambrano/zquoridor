@@ -1,7 +1,7 @@
 name: "zQuoridor 4.02 release gate - default-on Lazy+Sparse"
 on:
   push:
-    branches: [release/zquoridor-4.02-lazy-sparse]
+    branches: [release/zquoridor-4.02-clean-20261018]
     paths:
       - ".github/workflows/zquoridor-402-release-gate.yml"
       - "src/**"
