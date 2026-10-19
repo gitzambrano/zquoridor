@@ -1,0 +1,62 @@
+name: "zQuoridor 4.02 release gate - default-on Lazy+Sparse"
+on:
+  push:
+    branches: [release/zquoridor-4.02-clean-20261018]
+    paths:
+      - ".github/workflows/zquoridor-402-release-gate.yml"
+      - "src/**"
+      - "tests/**"
+      - "tools/external/zquoridor_uci.cpp"
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  release-proof:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compile release with no experiment switches, explicit sparse and disabled sparse
+        run: |
+          set -euo pipefail
+          mkdir -p bin
+          for mode in default explicit disabled; do
+            flags=""
+            if [ "$mode" = explicit ]; then flags="-DZQ_EXP_SPARSE_POLICY=1"; fi
+            if [ "$mode" = disabled ]; then flags="-DZQ_EXP_SPARSE_POLICY=0"; fi
+            g++ -O3 -std=c++17 -march=native -mavx2 -mfma $flags -I src tools/external/zquoridor_uci.cpp -o bin/zq_$mode
+          done
+          g++ -O2 -std=c++17 -march=native -mavx2 -mfma -I src tests/test_mcgs_opt_correctness.cpp -o bin/test_lazy
+          g++ -O2 -std=c++17 -march=native -mavx2 -mfma -I src tests/test_mcgs_sparse_equivalence.cpp -o bin/test_sparse
+          g++ -O2 -std=c++17 -march=native -mavx2 -mfma -I src tests/test_mcab_core.cpp -o bin/test_mcab
+      - name: MCGS correctness with PRODUCTION DEFAULT FLAGS
+        run: |
+          set -euo pipefail
+          bin/test_lazy
+          bin/test_sparse
+          bin/test_mcab
+      - name: Verify release version and default Sparse ON using production root priors
+        run: |
+          python - <<'PY'
+          import json,random,subprocess
+          from pathlib import Path
+          def run(exe,moves):
+              cmd="uci\nposition startpos"+(" moves "+" ".join(moves) if moves else "")+"\ngo movetime 60\nquit\n"
+              r=subprocess.run([exe,"--nnue","data/nnue/nnue_weights_int8.bin","--dump-root"],input=cmd,capture_output=True,text=True,check=True,timeout=30)
+              assert "id name zQuoridor 4.02" in r.stdout
+              roots=[json.loads(x.split("root_json ",1)[1]) for x in r.stdout.splitlines() if "root_json " in x]
+              assert len(roots)==1
+              return roots[0]
+          openings=[]
+          for offset,name in enumerate(("tools/external/openings_normal_confirm_400.jsonl","tools/external/openings_center_rush_sound_5k.jsonl")):
+              rows=[json.loads(x)["moves"] for x in Path(name).read_text().splitlines() if x.strip()]
+              indexes=list(range(len(rows)));random.Random(20261119+offset).shuffle(indexes)
+              openings.extend(rows[i] for i in indexes[:20])
+          for index,moves in enumerate(openings):
+              default=run("bin/zq_default",moves)
+              explicit=run("bin/zq_explicit",moves)
+              disabled=run("bin/zq_disabled",moves)
+              assert default["priors"]==explicit["priors"]==disabled["priors"],f"root priors changed {index}"
+              assert default["side_to_move"]==explicit["side_to_move"]
+          print("PASS: release 4.02 default ON and 40 production-root policy prior matches in both frames")
+          PY
