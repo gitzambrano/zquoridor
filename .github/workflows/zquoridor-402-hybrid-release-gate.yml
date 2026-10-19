@@ -75,3 +75,9 @@ jobs:
           assert proc.stdout.count("bestmove ")==2,proc.stdout
           print("PASS: fixed-time Lazy+Sparse; real-clock Eager+Sparse; safe protocol transition")
           PY
+
+      - name: Verify native-clock first ponder reuse and fixed-time protocol isolation
+        run: |
+          set -euo pipefail
+          python -u tests/test_first_native_ponder.py \
+            --exe bin/zq_default --weights data/nnue/nnue_weights_int8.bin
