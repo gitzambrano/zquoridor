@@ -2,6 +2,8 @@
 
 **Atualizado em 2026-10-19.** Documento de continuidade para outro chat/Codex. Este texto consolida o que **foi implementado e medido**, identifica o que está **pendente** e evita novos confrontos gigantescos sem diagnóstico. **Não promover a 4.02 nem repetir milhares de partidas antes de examinar as evidências existentes.**
 
+> **Investigação forense posterior (19/10):** [auditoria de 320 partidas e 8.682 lances ZQ](MCGS_LAZY_SPARSE_CLOCK_FORENSICS_2026-10-19.md). Zero derrotas por tempo, nenhum teto de nós atingido nas 8.152 buscas MCGS ativas e reuso da árvore de ~95–96%. Houve diferenças observáveis no escalonamento Adaptive/Volatile em posições idênticas, mas não foi identificado bug de produção comprovado. A PR #58 continua bloqueada. Doze casos específicos foram isolados para reprodução dirigida; **nenhum novo teste foi disparado**.
+
 ## 0. Leitura rápida / decisão
 
 - O motor de produção ainda se identifica como **4.01**; a combinação **Lazy + Sparse não foi incorporada ao main**. A candidata mínima para 4.02 está na [PR #58](https://github.com/gitzambrano/zquoridor/pull/58), em **draft**, com release gate de corretude aprovado. PUCT cached sum **não** faz parte dessa candidata.
