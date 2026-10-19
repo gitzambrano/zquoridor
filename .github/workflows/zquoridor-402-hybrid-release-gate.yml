@@ -3,7 +3,7 @@ on:
   push:
     branches: [release/zquoridor-4.02-clock-aware-20261019]
     paths:
-      - ".github/workflows/zquoridor-402-release-gate.yml"
+      - ".github/workflows/zquoridor-402-hybrid-release-gate.yml"
       - "src/**"
       - "tests/**"
       - "tools/external/zquoridor_uci.cpp"
