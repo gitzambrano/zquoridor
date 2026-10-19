@@ -1,0 +1,74 @@
+name: "Diagnose equal MCGS simulation count - root policy visits Q and tree reuse"
+on:
+  push:
+    branches: [exp/diag-equal-sims-20261018]
+    paths: [.github/workflows/diag-equal-sims.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  equal-simulations:
+    runs-on: ubuntu-latest
+    timeout-minutes: 50
+    strategy:
+      fail-fast: false
+      max-parallel: 3
+      matrix:
+        simulations: [1000, 6000, 20000]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: diagnostic
+          ref: ${{ github.sha }}
+      - uses: actions/checkout@v4
+        with:
+          path: baseline
+          ref: 22af954cf7f109465d9d7ddcf6171584c709a5df
+      - uses: actions/checkout@v4
+        with:
+          path: lazy
+          ref: 082abc4df338a3c46340aa7c77707c1259f7db16
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Apply same diagnostics to the original 3 source implementations
+        run: |
+          set -euo pipefail
+          python diagnostic/tools/diag/apply_instrumentation.py diagnostic baseline lazy
+      - name: Compile exact baseline, Lazy, Lazy+Sparse under matched optimization/ISA
+        run: |
+          set -euo pipefail
+          mkdir -p diagnostic/bin
+          g++ -O3 -std=c++17 -march=native -mavx2 -mfma -I baseline/src baseline/tools/external/zquoridor_uci.cpp -o diagnostic/bin/zq_main
+          g++ -O3 -std=c++17 -march=native -mavx2 -mfma -I lazy/src lazy/tools/external/zquoridor_uci.cpp -o diagnostic/bin/zq_lazy
+          g++ -O3 -std=c++17 -march=native -mavx2 -mfma -DZQ_EXP_SPARSE_POLICY=1 -I diagnostic/src diagnostic/tools/external/zquoridor_uci.cpp -o diagnostic/bin/zq_combo
+      - name: "Exact MCGS budget: same openings, identical sim count, repeat same root for reuse"
+        run: |
+          set -euo pipefail
+          cd diagnostic
+          python -u tools/diag/equal_simulations.py \
+            --main bin/zq_main --lazy bin/zq_lazy --combo bin/zq_combo \
+            --repo . --sims ${{ matrix.simulations }} --pairs-per-family 10 \
+            --output results/benchmarks/diag_equal_sims/equal_${{ matrix.simulations }}.json
+      - name: Validate matched priors, counts and all three engine comparisons
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          p=Path("diagnostic/results/benchmarks/diag_equal_sims/equal_${{ matrix.simulations }}.json")
+          o=json.loads(p.read_text())
+          assert o["target_simulations"]==int("${{ matrix.simulations }}")
+          assert o["searches_per_engine"]==40 and o["paired_priors_bit_exact"]
+          for v in o["by_engine"].values():
+              assert len(v)==40 and all(x["simulations"]==o["target_simulations"] for x in v)
+          assert len(o["comparisons"])==3
+          print("PASS exact same 1000/6000/20000 simulation-budget test")
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: diag-equal-sims-${{ matrix.simulations }}
+          path: diagnostic/results/benchmarks/diag_equal_sims/
+          retention-days: 28
+          if-no-files-found: warn
+# Validated UCI instrumentation: use last go-search metrics anchor; never mutate ponder output.
