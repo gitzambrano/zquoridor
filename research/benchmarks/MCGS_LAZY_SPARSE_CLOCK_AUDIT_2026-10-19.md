@@ -64,3 +64,29 @@ Foi criado `tools/diag/targeted_native_clock.py` (commit [198cf582](https://gith
 **Ainda sem causa demonstrada:** a diferença de Elo entre 200 ms e 3+2 e, em particular, eventual perda exclusiva da combo. Há uma forte divergência de throughput entre jobs distintos que precisa ser confrontada com **mesmo hardware** antes de inferir bug. O Adaptive Time domina a interrupção, mas ainda não foi demonstrado que ele prejudique mais a combo.
 
 **Gate:** não promover nem alterar a PR #58 até analisar os dados focais. Não disparar outra matriz massiva. Se o experimento seriado confirmar divergência determinística sob ON e não sob OFF, localizar e corrigir o ponto de classificação/stop; se confirmar equivalência entre Lazy e combo, tratar a regressão observada como sinal estatístico ou confundimento ambiental, não defeito de Sparse comprovado.
+
+
+## 7. Resultado concluído: oito posições reais, mesmo runner, 96 buscas
+
+O run [39236992991](https://github.com/gitzambrano/zquoridor/actions/runs/39236992991) concluiu **success**, artifact `diag-3p2-targeted-8-native-clock`. Oito estados escolhidos *antes* do teste, extraídos de vitórias e derrotas antigas, três motores compilados no mesmo hardware, ON/OFF, e duas buscas na mesma raiz por motor.
+
+| Motor | Primeira busca, ON: simulações médias | Primeira busca, OFF: simulações médias |
+|---|---:|---:|
+| main | 197.789 | 192.147 |
+| Lazy | 235.523 | 229.800 |
+| Lazy+Sparse | **258.465** | **253.365** |
+
+Nas 32 comparações diretas Combo/Lazy (8 estados × 2 modos × 2 repetições), a razão de simulações foi em média **aproximadamente 1,09** em benefício da combinação. Em todos os oito estados, a combo fez mais simulações que Lazy na *primeira busca* em ON e OFF. Não se reproduziu a queda ~39% de simulações da combo contra Lazy vista nos jobs separados do diagnóstico cancelado.
+
+- **96/96 melhores lances coincidiram** entre versões, modos e repetições, por posição.
+- Em ON, todas as 24 primeiras buscas saíram por stop=2 adaptativo; em OFF, as 24 saíram por stop=1 tempo rígido. Nenhum stop=3 por limite de nós.
+- A segunda busca atingiu `treeHit=1` em todos os casos (esse controle é **mesma raiz repetida**, não reroot pelo lance adversário).
+- O `node_cap` inicial ON/OFF foi igual em todas as posições. A classe final Stable vs Normal às vezes diferiu entre motores, **sem alterar o alvo de tempo**, pois ambas usam 1,00× optimum. A única classe Uncertain observada implicou alvo de 1,25× optimum igualmente para os três.
+
+Conclusão dessa etapa: **não há queda sistemática de trabalho computacional ou divergência de decisão da combo sob controle de tempo real nesses oito estados**. A Sparse trouxe inclusive aumento de ~10% em simulações sobre Lazy. Os testes são pequenos, de raiz fria, e não medem Elo nem preservam todo o estado de reuso do histórico da partida.
+
+## 8. Auditoria das primeiras divergências efetivas das partidas
+
+Nos `games.jsonl` originais, os três motores iniciaram do mesmo livro para cada índice de abertura e cor, mas as partidas **não** permaneceram na mesma sequência: dentre 40 pares em Titanium-normal, **29 tiveram primeira divergência em lance do próprio Titanium**, não do ZQ. Em Claustrophobia-normal foram **10 de 40**. Isso é um confundidor adicional para atribuir causalidade à modificação de código, embora não invalide o placar competitivo como observação estatística.
+
+Como as primeiras oito posições escolhidas não eram especificamente aquelas de primeira divergência, foi desenhado um **segundo e último lote focalizado**: oito estados de *primeira decisão divergente do ZQ* documentada nas partidas originais, três motores e ON/OFF, sem oponentes e no mesmo runner. Total da investigação: **16 posições distintas**, não novos torneios. Script `tools/diag/targeted_first_divergences.py` e run [39239163150](https://github.com/gitzambrano/zquoridor/actions/runs/39239163150). O teste usa raiz fria intencionalmente: qualquer diferença entre o lance arquivado e o replay também pode refletir o estado de árvore herdado das jogadas anteriores, não necessariamente erro de código. **Não declarar resultados antes do artifact.**
