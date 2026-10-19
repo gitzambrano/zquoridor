@@ -296,7 +296,7 @@ int main(int argc, char** argv) {
         if (cmd.empty()) continue;
 
         if (cmd == "uci") {
-            std::cout << "id name zQuoridor 4.01\n";
+            std::cout << "id name zQuoridor 4.02\n";
             std::cout << "id author gitzambrano\n";
             std::cout << "uciok\n" << std::flush;
         } else if (cmd == "isready") {
@@ -427,6 +427,13 @@ int main(int argc, char** argv) {
             runner.params().adaptiveOptimumMs =
                 adaptiveClock ? timeBudget.optimumMs : 0;
             if (adaptiveClock) budgetMs = timeBudget.maximumMs;
+            // Fixed movetime keeps the proven Lazy+Sparse search. Native
+            // game clocks use eager expansion + exactly equivalent Sparse
+            // policy, avoiding the unproven Lazy/Adaptive 3+2 interaction.
+            const bool useLazy = movetime > 0 ||
+                (state.turn == 0 ? wtime : btime) < 0;
+            if (runner.params().lazyExpansion != useLazy) runner.resetTree();
+            runner.params().lazyExpansion = useLazy;
 
             qr::SearchStats stats;
             mcab::McabStats mstats;
@@ -440,6 +447,7 @@ int main(int argc, char** argv) {
                       << " time " << elapsed
                       << " string budget=" << budgetMs
                       << " nodecap=" << mstats.effectiveNodeBudget
+                      << " lazy=" << (runner.params().lazyExpansion ? 1 : 0)
                       << " hard=" << timeBudget.maximumMs
                       << " cpuct=" << params.cPuct
                       << " scale=" << params.scoreScale
