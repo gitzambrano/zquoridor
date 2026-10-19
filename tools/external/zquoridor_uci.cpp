@@ -310,7 +310,7 @@ int main(int argc, char** argv) {
                 << "  position startpos [moves <move> ...]\n"
                 << "  go movetime <ms>\n"
                 << "  go wtime <ms> btime <ms> [winc <ms>] [binc <ms>] [movestogo <n>]\n"
-                << "  ponder movetime <ms>\n"
+                << "  ponder [clock] movetime <ms>\n"
                 << "  help\n"
                 << "  quit\n"
                 << "Moves use Quoridor coordinates such as e2, d4h, or d4v.\n"
@@ -341,9 +341,11 @@ int main(int argc, char** argv) {
             }
         } else if (cmd == "ponder") {
             int movetime = -1;
+            bool nativeClockPonder = false;
             std::string token;
             while (iss >> token) {
                 if (token == "movetime") iss >> movetime;
+                else if (token == "clock") nativeClockPonder = true;
             }
             if (movetime <= 0) {
                 std::cout << "info string error ponder requires 'movetime MS'\n" << std::flush;
@@ -361,6 +363,15 @@ int main(int argc, char** argv) {
             // resulting tree; when the real opponent move is later appended to
             // the position history, normal choose() reroots onto that child.
             //
+            // The controller knows whether the next move uses a native clock.
+            // Without this hint, the first ponder in a 3+2 game would use
+            // Lazy, then go wtime would switch to Eager and discard the tree.
+            // Preserve the tree across the FIRST opponent move as well.
+            if (nativeClockPonder && runner.params().lazyExpansion) {
+                runner.resetTree();
+                runner.params().lazyExpansion = false;
+            }
+
             // Adaptive clock allocation is deliberately disabled here: ponder
             // time is free compute on the opponent clock, not our game clock.
             runner.params().adaptiveTime = false;
