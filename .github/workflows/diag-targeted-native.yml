@@ -1,0 +1,58 @@
+name: "Diagnose 3+2: eight same-runner native-clock positions (no games)"
+on:
+  push:
+    branches: [exp/diag-3p2-fixed-20261018]
+    paths: [.github/workflows/diag-targeted-native.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  targeted-clock:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: diagnostic
+          ref: ${{ github.sha }}
+      - uses: actions/checkout@v4
+        with:
+          path: baseline
+          ref: 22af954cf7f109465d9d7ddcf6171584c709a5df
+      - uses: actions/checkout@v4
+        with:
+          path: lazy
+          ref: 082abc4df338a3c46340aa7c77707c1259f7db16
+      - uses: actions/checkout@v4
+        with:
+          path: candidate
+          ref: 271770d976b2b108c664580e325c2d1b77deed7d
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Instrument frozen engine versions and compile all on same CPU/ISA
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m py_compile diagnostic/tools/diag/{apply_instrumentation,targeted_native_clock}.py
+          python diagnostic/tools/diag/apply_instrumentation.py baseline lazy candidate
+          mkdir -p diagnostic/bin
+          g++ -O3 -std=c++17 -march=native -mavx2 -mfma -I baseline/src baseline/tools/external/zquoridor_uci.cpp -o diagnostic/bin/zq_main
+          g++ -O3 -std=c++17 -march=native -mavx2 -mfma -I lazy/src lazy/tools/external/zquoridor_uci.cpp -o diagnostic/bin/zq_lazy
+          g++ -O3 -std=c++17 -march=native -mavx2 -mfma -DZQ_EXP_SPARSE_POLICY=1 -I candidate/src candidate/tools/external/zquoridor_uci.cpp -o diagnostic/bin/zq_combo
+      - name: Interleaved 8 positions, 3 engines, 3+2 clock, Adaptive ON/OFF, repeated roots
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd diagnostic
+          python -u tools/diag/targeted_native_clock.py \
+            --main bin/zq_main --lazy bin/zq_lazy --combo bin/zq_combo \
+            --nnue data/nnue/nnue_weights_int8.bin \
+            --output results/benchmarks/diag_3p2_targeted/eight_positions.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: diag-3p2-targeted-8-native-clock
+          path: diagnostic/results/benchmarks/diag_3p2_targeted/
+          retention-days: 28
+          if-no-files-found: warn
