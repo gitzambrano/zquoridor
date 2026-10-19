@@ -34,11 +34,11 @@ CASES = [
   ("e8v", "c7h", "d8v")),
 ]
 
-DIAG = re.compile(r"(?<!\\S)(diag_[a-z]+|treeHit|reusedNodes)=([^\\s]+)")
+DIAG = re.compile(r"(?<!\S)(diag_[a-z]+|treeHit|reusedNodes)=([^\s]+)")
 def search(exe, nnue, case, mode):
     label, history, clock, archived = case
-    commands = "uci\\nisready\\nposition startpos moves " + history
-    commands += f"\\ngo wtime {clock} btime {clock} winc 2000 binc 2000\\nquit\\n"
+    commands = "uci\nisready\nposition startpos moves " + history
+    commands += f"\ngo wtime {clock} btime {clock} winc 2000 binc 2000\nquit\n"
     cmd = [str(exe), "--nnue", str(nnue), "--dump-root"]
     if mode == "off": cmd.append("--diag-no-adaptive-time")
     p = subprocess.run(cmd, input=commands, text=True, capture_output=True, timeout=75)
@@ -102,6 +102,6 @@ def main():
     a.output.parent.mkdir(parents=True,exist_ok=True)
     a.output.write_text(json.dumps({"schema":"zquoridor.diag.first_divergences.v1",
                   "positions":len(CASES),"mode":"cold-root native 3+2 ON/OFF, same runner",
-                  "results":output},indent=2)+"\\n")
+                  "results":output},indent=2)+"\n")
     print("SUCCESS EIGHT FIRST-DIVERGENCE POSITIONS",flush=True)
 if __name__=="__main__":main()
