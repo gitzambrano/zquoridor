@@ -34,6 +34,22 @@ def patch(root):
     u=one(u,'        else if (a == "--dump-root") o.dumpRoot = true;', '        else if (a == "--dump-root") o.dumpRoot = true;\n        else if (a == "--diag-no-adaptive-time") o.diagNoAdaptiveTime = true;\n        else if (a == "--diag-fixed-sims") o.diagFixedSims = std::max(0, std::atoi(need("--diag-fixed-sims")));', "CLI args")
     u=one(u,"    params.enabled = opt.useMcab;","    params.enabled = opt.useMcab;\n    params.diagnosticSimLimit = opt.diagFixedSims;", "UCI params")
     u=one(u,"            const bool adaptiveClock = movetime <= 0 &&\n                (state.turn == 0 ? wtime : btime) >= 0;", "            const bool adaptiveClock = movetime <= 0 &&\n                (state.turn == 0 ? wtime : btime) >= 0 && !opt.diagNoAdaptiveTime;", "clock adaptive")
+    # Keep the *initial expansion cap* matched to native adaptive ON.
+    # Otherwise OFF uses effectiveNodeBudget(optimumMs) while ON uses
+    # effectiveNodeBudget(maximumMs); that changes TWO independent controls.
+    # The wall-clock limit remains optimumMs in OFF.  Volatile escalation is
+    # itself an adaptive mechanism and remains OFF by design.
+    u=one(u,'            if (adaptiveClock) budgetMs = timeBudget.maximumMs;',
+          '''            if (adaptiveClock) budgetMs = timeBudget.maximumMs;
+            if (opt.diagNoAdaptiveTime && movetime <= 0 &&
+                (state.turn == 0 ? wtime : btime) >= 0) {
+                // Preserve the native-clock initial node cap in the fixed-time
+                // diagnostic. Do not recompute it from optimumMs.
+                runner.params().nodeBudget =
+                    mcab::effectiveNodeBudget(params, timeBudget.maximumMs);
+                runner.params().autoNodeBudget = false;
+            }''', "fixed mode matching initial node cap")
+
     u=last(u,'                      << " treeHit=" << (mstats.treeReused ? 1 : 0)', '''                      << " diag_sims=" << mstats.simulations
                       << " diag_nodes=" << mstats.nodesExpanded
                       << " diag_target=" << mstats.adaptiveTargetMs
