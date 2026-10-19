@@ -1,0 +1,167 @@
+name: "Diagnose 3+2 fixed: per-move MCGS telemetry and opponent controls"
+on:
+  push:
+    branches: [exp/diag-3p2-fixed-20261018]
+    paths: [.github/workflows/diag-3p2-fixed.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  preflight:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - name: Instrument production search and check compiler/C++ invariants
+        run: |
+          set -euo pipefail
+          python tools/diag/apply_instrumentation.py .
+          mkdir -p bin
+          g++ -O2 -std=c++17 -march=native -mavx2 -mfma -DZQ_EXP_SPARSE_POLICY=1 -I src tests/test_mcgs_sparse_equivalence.cpp -o bin/policy_check
+          g++ -O2 -std=c++17 -march=native -mavx2 -mfma -DZQ_EXP_SPARSE_POLICY=1 -I src tests/test_mcab_core.cpp -o bin/mcab_check
+          bin/policy_check
+          bin/mcab_check
+          g++ -O3 -std=c++17 -march=native -mavx2 -mfma -DZQ_EXP_SPARSE_POLICY=1 -I src tools/external/zquoridor_uci.cpp -o bin/zquoridor_diag
+      - name: Smoke test real-clock and per-move instrumentation
+        run: |
+          set -euo pipefail
+          printf 'uci\nposition startpos\ngo wtime 180000 btime 180000 winc 2000 binc 2000\nquit\n' | bin/zquoridor_diag --nnue data/nnue/nnue_weights_int8.bin --diag-no-adaptive-time > /tmp/zq_diag.log
+          grep -q 'diag_sims=' /tmp/zq_diag.log
+          grep -q 'diag_adaptive=0' /tmp/zq_diag.log
+          grep -q 'bestmove ' /tmp/zq_diag.log
+  native-clock-games:
+    needs: preflight
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    strategy:
+      fail-fast: false
+      max-parallel: 6
+      matrix:
+        include:
+          - family: normal
+            opponent: claustrophobia
+            engine: main
+            source: tools/external/openings_normal_confirm_400.jsonl
+          - family: normal
+            opponent: claustrophobia
+            engine: lazy
+            source: tools/external/openings_normal_confirm_400.jsonl
+          - family: normal
+            opponent: claustrophobia
+            engine: combo
+            source: tools/external/openings_normal_confirm_400.jsonl
+          - family: normal
+            opponent: titanium
+            engine: main
+            source: tools/external/openings_normal_confirm_400.jsonl
+          - family: normal
+            opponent: titanium
+            engine: lazy
+            source: tools/external/openings_normal_confirm_400.jsonl
+          - family: normal
+            opponent: titanium
+            engine: combo
+            source: tools/external/openings_normal_confirm_400.jsonl
+          - family: center
+            opponent: claustrophobia
+            engine: main
+            source: tools/external/openings_center_rush_sound_5k.jsonl
+          - family: center
+            opponent: claustrophobia
+            engine: lazy
+            source: tools/external/openings_center_rush_sound_5k.jsonl
+          - family: center
+            opponent: claustrophobia
+            engine: combo
+            source: tools/external/openings_center_rush_sound_5k.jsonl
+          - family: center
+            opponent: titanium
+            engine: main
+            source: tools/external/openings_center_rush_sound_5k.jsonl
+          - family: center
+            opponent: titanium
+            engine: lazy
+            source: tools/external/openings_center_rush_sound_5k.jsonl
+          - family: center
+            opponent: titanium
+            engine: combo
+            source: tools/external/openings_center_rush_sound_5k.jsonl
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: diagnostic
+          ref: ${{ github.sha }}
+      - uses: actions/checkout@v4
+        with:
+          path: baseline
+          ref: 22af954cf7f109465d9d7ddcf6171584c709a5df
+      - uses: actions/checkout@v4
+        with:
+          path: lazy
+          ref: 082abc4df338a3c46340aa7c77707c1259f7db16
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - uses: dtolnay/rust-toolchain@stable
+      - name: CPU Claustrophobia bridge dependencies
+        if: matrix.opponent == 'claustrophobia'
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install numpy
+          python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
+      - name: Instrument chosen engine identically and compile
+        run: |
+          set -euo pipefail
+          case "${{ matrix.engine }}" in
+            main) source=baseline; flags="";;
+            lazy) source=lazy; flags="";;
+            combo) source=diagnostic; flags="-DZQ_EXP_SPARSE_POLICY=1";;
+            *) exit 9;;
+          esac
+          python diagnostic/tools/diag/apply_instrumentation.py "$source"
+          mkdir -p diagnostic/bin
+          g++ -O3 -std=c++17 -march=native -mavx2 -mfma $flags -I "$source/src" "$source/tools/external/zquoridor_uci.cpp" -o diagnostic/bin/zq_test
+      - name: Prepare same disjoint openings for ALL three engines and both clock protocols
+        run: |
+          set -euo pipefail
+          cd diagnostic
+          python -u tools/make_mcgs_followup_book.py \
+            --source ${{ matrix.source }} --pairs 24 --seed 20261123 \
+            --output results/benchmarks/diag_3p2/book_${{ matrix.family }}.jsonl
+      - name: Native 3+2 benchmark (identical 24 paired positions in each arm)
+        run: |
+          set -euo pipefail
+          cd diagnostic
+          args=()
+          args+=(--zq-arg=--diag-no-adaptive-time)
+          python -u tools/run_benchmark.py \
+            --opponents ${{ matrix.opponent }} --pairs 24 --workers 1 \
+            --openings results/benchmarks/diag_3p2/book_${{ matrix.family }}.jsonl \
+            --zq-executable bin/zq_test --nnue data/nnue/nnue_weights_int8.bin \
+            --clock-initial-ms 180000 --clock-increment-ms 2000 \
+            --zq-move-time-ms 200 --claustrophobia-move-time-ms 200 --titanium-move-time-ms 200 \
+            --claustrophobia-device cpu --max-plies 240 --move-timeout-s 240 \
+            --seed 20261124 --bootstrap 10000 "${args[@]}" \
+            --output results/benchmarks/diag_3p2/fixed/${{ matrix.opponent }}/${{ matrix.engine }}/${{ matrix.family }}
+      - name: Verify native 3+2, all games, and capture per-move diagnostics
+        run: |
+          set -euo pipefail
+          cd diagnostic
+          path=results/benchmarks/diag_3p2/fixed/${{ matrix.opponent }}/${{ matrix.engine }}/${{ matrix.family }}
+          python -u tools/diag/summarize_clock.py --directory "$path" --mode fixed
+          python - "$path" "${{ matrix.opponent }}" <<'PY'
+          import json,sys
+          from pathlib import Path
+          r=json.loads((Path(sys.argv[1])/"summary.json").read_text())
+          s=r["summaries"][sys.argv[2]]
+          assert s["recorded_games"]==48 and s["complete_pairs"]==24 and s["failed_games"]==0,s
+          print("VALID 48 native 3+2 games",s["score_pct"],"%")
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: diag-3p2-fixed-${{ matrix.opponent }}-${{ matrix.engine }}-${{ matrix.family }}
+          path: diagnostic/results/benchmarks/diag_3p2/fixed/
+          retention-days: 28
+          if-no-files-found: warn
+# Validated UCI instrumentation: use last go-search metrics anchor; never mutate ponder output.
