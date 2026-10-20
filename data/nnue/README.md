@@ -19,3 +19,26 @@ Current networks employ the `multipath_phase_contact_bucketed` architecture:
 * Feature count: 858 input features capturing pawn positions, wall placements, and local contact adjacencies.
 * Value head: Bucketed outputs indexed by total walls remaining on the board.
 * Inference: Quantized accumulator evaluation with squared clipped linear activation.
+
+
+## 4.02 Apex Policy25 rollout
+
+The operator-selected next baseline changes **only the 209-logit INT8 policy head**. The
+feature accumulator and all six value heads remain exactly the same as in 4.01.
+The original float32 checkpoint is not an Apex checkpoint, so use the supplied
+Apex INT8 weights directly; re-quantizing the original float32 file would revert
+the policy.
+
+Expected Apex SHA-256: `fe8473255fd219fab247b1a7d44be25384a6cfc5daa5c301def49109badb7f2b`.
+Previous baseline: `45fa3ea7db3127a0b907a23d268b0c55c2020e1018513d54bb920cdbe134abe0`.
+
+For a production promotion, native weights and browser package
+(`gui_web/zquoridor.data`) must have the same hash. The standalone builds
+(`gui_web/zquoridor.html`, `docs/index.html`) must be regenerated with
+`python gui_web/build_standalone.py`. Never update a release manifest alone.
+
+**Policy compatibility**: Sparse inference is generic to weights with the same
+858-input, 512-hidden, 209-logit quantized policy schema, output action
+indexing and side canonicalization. A different hidden width, feature set or
+output action vocabulary is a different model architecture and requires a
+matching engine build and new exact-policy parity tests.
