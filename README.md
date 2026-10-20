@@ -1,4 +1,4 @@
-# zQuoridor 4.03
+# zQuoridor 4.10
 
 **[Play Zquoridor in your browser](https://gitzambrano.github.io/zquoridor/)**
 
@@ -11,7 +11,7 @@ or directly in the browser.
 ## Engine features
 
 - Hybrid PUCT-guided MCTS/MCGS graph search with alpha-beta support for tactical
-  and endgame positions. Version 4.03 uses uniform Lazy Expansion + Sparse Policy for both fixed move times
+  and endgame positions. Version 4.10 retains uniform Lazy Expansion + Sparse Policy for both fixed move times
   and all native clocks (1+1, 3+2, 5+3, etc.), with corrected accounting for
   tree preparation and reuse.
 - Multi-bucketed value and policy guidance from a compact quantized NNUE
@@ -95,26 +95,13 @@ and NNUE parity. Browser tests live in `gui_web/` and use Playwright.
 | `docs/` | Technical status, roadmap, and operational guides |
 | `data/` | Production weights and local data assets |
 
-## Apex Policy25 checkpoint — promotion package
+## Release 4.10 — Search-guided policy update
 
-The next user-selected NNUE baseline is **Apex Policy25**, trained on deep
-Apex move targets. Its value evaluator is unchanged from 4.01; only the
-209-logit quantized policy head changes. It is directly compatible with
-the 4.02 Lazy/Sparse and Eager/Sparse searches, because the input features,
-hidden size, quantization, and canonical policy action mapping are unchanged.
+Production preserves the 4.03 unified Lazy+Sparse search, tree reuse, adaptive clocks and pondering. The quantized 858-input/512-hidden NNUE has a newly distilled 209-action policy head; the accumulator and six bucketed value heads are unchanged. Production INT8 SHA-256: `fe8473255fd219fab247b1a7d44be25384a6cfc5daa5c301def49109badb7f2b`.
 
-**Release integrity requirement:** The separate Apex checkpoint is considered
-active only when `data/nnue/nnue_weights_int8.bin` and
-`gui_web/zquoridor.data` both have SHA-256
-`fe8473255fd219fab247b1a7d44be25384a6cfc5daa5c301def49109badb7f2b`,
-and both standalone HTML bundles embed that checkpoint. Use
-`python tools/promote_apex_policy25.py /path/to/zQuoridor401_apex_ordering.zip`
-for an offline integrity-checked switch, then commit **all** resulting assets.
-See the [Apex policy evidence and deployment notes](research/benchmarks/APEX_POLICY25_BASELINE_2026-10-20.md).
+The retained float32 file still has the previous policy, so do not re-quantize it over production INT8 weights. Browser and native assets must embed the exact same checkpoint. See [4.10 release notes](docs/releases/4.10.md).
 
-The independent 4.01 search H2H screen scored 57.5% in 40 paired
-200 ms games (95% interval 47.5–67.5%). It was not a test of the new 4.02
-search or native 3+2, so this is **not a claim of universal Elo improvement**.
+On the earlier 4.02 search, 400 paired games scored 54.13% against the prior policy and 65.38% against Claustrophobia CPU, versus 61.13% for the prior policy. This does not prove superiority at 3+2 or 5+3.
 
 ## Release 4.03 — Unified search and clock correctness
 
@@ -130,7 +117,7 @@ outside the move budget. This is independent of named time controls.
 `--eager-search` exists solely as a diagnostic comparison flag.
 
 **NNUE policy/value checkpoint:** unchanged from the 4.01 858-input,
-512-hidden temporal network. No Apex weights are promoted in 4.03.
+512-hidden temporal network. No Policy weights are promoted in 4.03.
 Browser/WASM must ship that identical original checkpoint. Exact long-clock
 performance and timing were checked locally, but **no competitive 3+2/5+3
 Elo improvement is claimed**.
@@ -142,7 +129,7 @@ Elo improvement is claimed**.
 - Sparse Policy computes the same quantized logits as dense policy for the **legal actions**, using the model's existing canonical 209-action map. It is **not tied to any particular set of policy-head weights**.
 - The release gate verified legal-policy logits/priors and the two time-control modes. Clock forfeits and invalid-game records were absent in the completed short external checks.
 - The shipped weight file is still the **4.01 temporal, 858-input / 512-hidden NNUE** until a new policy-head checkpoint is installed and all native and web assets are synchronized. The search release did **not** replace the value network.
-- Apex Policy25 is a separate **policy-only candidate**; promote it with the integrity-checked checkpoint and rebuild of the standalone bundle. The original float32 weights do **not** automatically represent its policy head.
+- Policy Policy25 is a separate **policy-only candidate**; promote it with the integrity-checked checkpoint and rebuild of the standalone bundle. The original float32 weights do **not** automatically represent its policy head.
 
 See [NNUE release notes](data/nnue/README.md) for weight identity and compatibility.
 
@@ -194,7 +181,7 @@ and [the project measurements](docs/plan.md).
 Both projects are valuable public reference engines and external benchmark
 opponents for Zquoridor.
 
-## Version 4.03 configuration
+## Version 4.10 configuration
 
 Production uses dense edge feature deltas and BFS replay with the 858-input,
 512-hidden temporal network. The 4.03 **search baseline** is uniform Lazy+Sparse at both fixed time

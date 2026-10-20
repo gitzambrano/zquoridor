@@ -1,6 +1,6 @@
 {
-  "data": "data/teaching/apex-mix-after-width-20261013",
-  "out_dir": "experimental/experiments/apex-mix-after-width-20261013/candidate",
+  "data": "data/teaching/drive-temporal-100ep/dataset",
+  "out_dir": "experimental/experiments/policy-mix-after-width-20261013/control",
   "architecture": "multipath_phase_contact_bucketed",
   "hidden": 512,
   "init_from": "experimental/experiments/width-100ep-20261013/control/student.bin",
@@ -44,5 +44,5 @@
   "benchmark": false,
   "benchmark_args": [],
   "dry_run": false,
-  "apex_mask_runner_sha256": "805226a8dd7aa077e868c444f2093ee1c07664f21369395b0b587a263b2a1623"
+  "policy_mask_runner_sha256": "805226a8dd7aa077e868c444f2093ee1c07664f21369395b0b587a263b2a1623"
 }

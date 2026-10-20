@@ -8,7 +8,7 @@ import torch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0,str(ROOT))
-from training.run_apex_mix_campaign import assemble, reconcile_groups, masked_loader, sha
+from training.run_policy_mix_campaign import assemble, reconcile_groups, masked_loader, sha
 from training import run_experiment as trainer
 from training.student_model import Student
 
@@ -39,13 +39,13 @@ def test_overlap_assigns_all_game_rows_to_the_existing_validation_side():
     assert keep.all() and val.all()
 
 
-def test_aggregation_preserves_policy_and_limits_apex_value_mass(tmp_path):
+def test_aggregation_preserves_policy_and_limits_policy_value_mass(tmp_path):
     base=dataset([4,5],[.2,-.2],[False,True])
-    apex=dataset([4,6,6],[.8,.4,.6],[False]*3)
-    apex['group_id']=np.array(['a','b','b'])
-    arrays,info=assemble(base,apex,np.ones(3),.1,tmp_path)
+    policy=dataset([4,6,6],[.8,.4,.6],[False]*3)
+    policy['group_id']=np.array(['a','b','b'])
+    arrays,info=assemble(base,policy,np.ones(3),.1,tmp_path)
     assert info['samples']==3
-    # Two unique apex states receive 0.05 each before denominator scaling.
+    # Two unique policy states receive 0.05 each before denominator scaling.
     assert arrays['value'][0]==pytest.approx((.2*.9+.8*.05)/.95)
     assert arrays['value'][2]==pytest.approx(.5)
     np.testing.assert_array_equal(arrays['policy'][:2],base['policy'])
@@ -57,7 +57,7 @@ def test_aggregation_preserves_policy_and_limits_apex_value_mass(tmp_path):
 
 def test_value_only_sample_has_no_main_or_auxiliary_policy_update(monkeypatch):
     data=dataset([4],[.8],[False]);data['policy_available']=np.array([False])
-    monkeypatch.setattr('training.run_apex_mix_campaign._original_loader',lambda path:data)
+    monkeypatch.setattr('training.run_policy_mix_campaign._original_loader',lambda path:data)
     data=masked_loader(Path('unused'))
     assert data['policy_sample_weight'][0]==0 and data['aux_sample_weight'][0]==0
     torch.set_num_threads(1)
@@ -74,8 +74,8 @@ def test_value_only_sample_has_no_main_or_auxiliary_policy_update(monkeypatch):
 def test_real_manifest_loader_accepts_placeholders_and_applies_exact_masks(tmp_path):
     import json
     base=dataset([4,5],[.2,-.2],[False,True])
-    apex=dataset([6],[.6],[False]);apex['group_id']=np.array(['g'])
-    assemble(base,apex,np.ones(1),.1,tmp_path)
+    policy=dataset([6],[.6],[False]);policy['group_id']=np.array(['g'])
+    assemble(base,policy,np.ones(1),.1,tmp_path)
     entries={path.stem:{'filename':str(path.relative_to(tmp_path)),'sha256':sha(path)}
              for path in (tmp_path/'fields').glob('*.npy')}
     (tmp_path/'dataset.manifest.json').write_text(json.dumps(dict(complete=True,

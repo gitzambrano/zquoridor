@@ -1,4 +1,6 @@
-> **Current release (4.03, 20 October 2026):** unified Lazy Expansion + Sparse Policy for all UCI time protocols, with the complete reused-tree preparation charged against the search clock. The quantized NNUE remains the original 4.01 858/512 model: **no Apex Policy25 checkpoint is promoted here**. See [4.03 release notes](releases/4.03.md) for exact behavior, evidence and validation limits. Historical plans and versioned claims below have not been retroactively rewritten.
+> **Current release (4.10, 20 October 2026):** 4.03 uniform Lazy+Sparse search and clock handling, with an updated 209-logit INT8 policy. Value heads are unchanged. The prior 4.02 200ms screen scored 54.13% H2H and +4.25pp against Claustrophobia CPU over the original policy; the improvement interval includes zero. The 4.10 3+2/5+3 Elo is unmeasured. See [release 4.10](releases/4.10.md).
+
+> **Current release (4.03, 20 October 2026):** unified Lazy Expansion + Sparse Policy for all UCI time protocols, with the complete reused-tree preparation charged against the search clock. The quantized NNUE remains the original 4.01 858/512 model: **no Policy Policy25 checkpoint is promoted here**. See [4.03 release notes](releases/4.03.md) for exact behavior, evidence and validation limits. Historical plans and versioned claims below have not been retroactively rewritten.
 
 # Zquoridor: Project State, Results, and Roadmap
 
@@ -193,8 +195,8 @@ The previous Git commit retains version 4.0 for rollback.
 
 The 4.01 campaign does not include `titanium_mix_v2.zip`. It starts from
 version 4.0, not from the separate external-value candidate. The ZIP README
-identifies its author as the ace apex team. It describes 271,410 positions
-from Titanium arena games with raw apex values, 113,087 apex self-play
+identifies its author as the ace policy team. It describes 271,410 positions
+from Titanium arena games with raw policy values, 113,087 policy self-play
 positions, and 24,453 deep-search corrections. It contains value targets
 only. The earlier value-only QAT test uses this pack and scores 43.5% against
 4.0 in 100 games. Therefore, its checkpoint does not supply the starting
@@ -209,30 +211,30 @@ exceeded its 180-second limit; its frozen NNUE references describe historical
 weights and search settings. The policy alpha-beta ablation suite was not run.
 No passing claim applies to these two suites.
 
-### Queued apex replay fine-tune (2026-10-13)
+### Queued policy replay fine-tune (2026-10-13)
 
 The operator requested a mixed-data fine-tune after the width screen.
-`training/run_apex_mix_campaign.py` waits for its complete training, native
+`training/run_policy_mix_campaign.py` waits for its complete training, native
 verification, and paired H2H report. It then selects the participant with
 the higher aggregate point score. Equality selects the smaller control.
 This experimental selection does not authorize production promotion.
 
 Both follow-up arms start from the same selected weights. The control uses
-the original replay dataset. The candidate combines replay with the apex
-value pack. Apex receives 10% of training value mass after confidence and
+the original replay dataset. The candidate combines replay with the policy
+value pack. Policy receives 10% of training value mass after confidence and
 bounded disagreement weights. Replay retains 90% of value mass and all
 main and auxiliary policy supervision. The original Claustrophobia confidence
-weights remain intact within replay. The apex archive retains its natural
+weights remain intact within replay. The policy archive retains its natural
 source distribution, without a separate deep-row boost.
 
 Canonical duplicates receive weighted mean values, without frequency boosts.
-Replay policies remain unchanged. Apex-only states have exact zero main and
+Replay policies remain unchanged. Policy-only states have exact zero main and
 auxiliary policy loss. Their normalized policy arrays are loader placeholders,
 not teacher labels. The runner reports original replay validation separately;
 mixed-dataset raw policy diagnostics include placeholders and must not serve
-as policy quality measurements. Connected apex games and canonical aliases
+as policy quality measurements. Connected policy games and canonical aliases
 inherit the replay validation side on overlap. Groups that overlap both
-replay partitions are excluded from the apex contribution.
+replay partitions are excluded from the policy contribution.
 
 Each arm receives 10 epochs with cosine learning rates from 5e-6 to 1e-6,
 QAT, full-network scope, the existing trunk multiplier, and auxiliary policy.
@@ -240,12 +242,12 @@ Native parity and accumulator checks precede two screens: 100 pairs against
 the equally trained replay control and 100 pairs against the selected initial
 network. Both use 200 ms per move and balanced Normal and Center Rush books.
 The planned sample contains 400 games. The first 200 games against the matched
-replay control completed without failures. The apex candidate scored 51.5%,
+replay control completed without failures. The policy candidate scored 51.5%,
 or +10.4 Elo. Its paired bootstrap 95% score interval is 46.5% to 56.5%,
 so this screen does not establish a gain. The second 200-game screen against
 the selected initial network remains in progress. Artifacts reside
-in `experimental/experiments/apex-mix-after-width-20261013/` and
-`data/teaching/apex-mix-after-width-20261013/`. The runner does not modify
+in `experimental/experiments/policy-mix-after-width-20261013/` and
+`data/teaching/policy-mix-after-width-20261013/`. The runner does not modify
 production weights.
 
 ### Matched width campaign (2026-10-13)
@@ -254,7 +256,7 @@ Both arms completed 100 epochs and passed native verification. The 768-unit
 candidate scored 46.0% against the matched 512-unit control across 100 pairs
 and 200 games, with no failures. The point estimate is -27.9 Elo. The paired
 bootstrap 95% score interval is 41.0% to 51.0%. The wider network does not
-demonstrate a strength gain in this screen. Therefore, the queued apex
+demonstrate a strength gain in this screen. Therefore, the queued policy
 campaign selected the 512-unit control as its experimental starting network.
 It completed replay-control training and started mixed candidate training.
 The 4.01 production weights remain unchanged.
@@ -262,12 +264,12 @@ The 4.01 production weights remain unchanged.
 `training/run_local_training.py` provides portable 512-, 768-, and 1024-unit
 options. Value targets independently select current or temporal search values,
 with configurable future horizons, horizon coefficients, and outcome mass.
-The operator specified that apex belongs in the data parameters. Therefore,
-`--apex-value-fraction` controls its share without an apex training mode.
+The operator specified that policy belongs in the data parameters. Therefore,
+`--policy-value-fraction` controls its share without an policy training mode.
 The operator requested a
 local export with source, weights, reports, prepared datasets, and raw teaching
 inputs. The export preserves an active-training snapshot rather than declaring
-the pending apex strength screen complete. Optimizer resume identities contain
+the pending policy strength screen complete. Optimizer resume identities contain
 original absolute paths; destination runs must use a new output directory.
 
 The operator requested a network with more capacity than the current model.

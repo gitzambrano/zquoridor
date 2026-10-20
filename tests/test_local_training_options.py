@@ -16,14 +16,14 @@ def test_temporal_width_options_keep_qat_and_auxiliary_policy(width):
     assert config['qat'] and config['aux_policy_enabled']
 
 
-def test_apex_is_independent_of_the_target_method():
-    _,config=resolve(['--apex-value-fraction','0.1','--target-mode','current'])
-    assert config['epochs']==100 and config['apex_value_fraction']==.1
+def test_policy_is_independent_of_the_target_method():
+    _,config=resolve(['--policy-value-fraction','0.1','--target-mode','current'])
+    assert config['epochs']==100 and config['policy_value_fraction']==.1
     assert config['value_target_settings']['horizons']==[0]
 
 
 def test_explicit_training_parameters_override_mode_defaults():
-    _,config=resolve(['--apex-value-fraction','0.1','--epochs','30','--lr','0.00001','--min-lr','0.0000001'])
+    _,config=resolve(['--policy-value-fraction','0.1','--epochs','30','--lr','0.00001','--min-lr','0.0000001'])
     assert config['epochs']==30 and config['lr']==1e-5 and config['min_lr']==1e-7
 
 
@@ -68,7 +68,7 @@ def test_changed_targets_rebuild_from_raw_and_then_reuse_the_matching_cache(tmp_
     (base/'dataset.manifest.json').write_text(json.dumps({'complete':True,'config':target_settings('current')}))
     ledger=tmp_path/'downloads.jsonl';ledger.write_text('')
     initial=tmp_path/'initial.bin';initial.write_bytes(b'weights')
-    local=dict(data=str(base),downloads=str(ledger),data_cache=str(tmp_path/'cache'),apex_value_fraction=0)
+    local=dict(data=str(base),downloads=str(ledger),data_cache=str(tmp_path/'cache'),policy_value_fraction=0)
     settings=target_settings('temporal',[0,2,6],[.5,.25,.125],.2)
     config=dict(value_target_settings=settings,init_from=str(initial),init_hidden=512,init_architecture='multipath_phase_contact_bucketed')
     calls=[]

@@ -14,11 +14,11 @@ Windows Recycle Bin until the operator empties it. Cleanup decisions and
 historical outcomes belong in `docs/plan.md`.
 
 Widths 512 and 768 have completed matched training. Width 1024 is an available
-architecture option without a completed strength test. The apex replay control
+architecture option without a completed strength test. The policy replay control
 and mixed candidate have trained weights. The first paired screen is recorded
-in `apex_vs_replay_h2h_200ms.json`; the initial-network screen remains pending.
+in `policy_vs_replay_h2h_200ms.json`; the initial-network screen remains pending.
 See [the project measurements](../../docs/plan.md) for interpretation.
-The two older apex value-only experiments retain their exported weights as
+The two older policy value-only experiments retain their exported weights as
 reproducible comparison artifacts. Their checkpoints did not initialize 4.01.
 
 Training reports identify source fingerprints. Published report paths are
@@ -30,11 +30,11 @@ Prepared data and raw trajectory metadata must exist on the destination machine.
 
 ```sh
 python training/run_local_training.py --hidden 768 --target-mode temporal --dry-run
-python training/run_local_training.py --hidden 512 --target-mode temporal --apex-value-fraction 0.1 --epochs 10 --lr 0.000005 --min-lr 0.000001 --init-from data/nnue/experiments/width_512_100ep/student.bin
-python training/run_local_training.py --hidden 1024 --target-mode current --apex-value-fraction 0
+python training/run_local_training.py --hidden 512 --target-mode temporal --policy-value-fraction 0.1 --epochs 10 --lr 0.000005 --min-lr 0.000001 --init-from data/nnue/experiments/width_512_100ep/student.bin
+python training/run_local_training.py --hidden 1024 --target-mode current --policy-value-fraction 0
 ```
 
-`--hidden` selects network capacity. `--apex-value-fraction` selects an
+`--hidden` selects network capacity. `--policy-value-fraction` selects an
 additional value-teaching source. `--target-mode` selects current or temporal
 search values. These options do not select or imply each other.
 
@@ -43,7 +43,7 @@ Temporal targets default to offsets 0, 4, 8, and 16 plies with coefficients
 weight. The game outcome receives 0.1 of the final target. `--future-horizons`,
 `--future-weights`, and `--result-weight` override these settings.
 Future values use the original mover perspective. Current-position policy
-targets remain separate. Apex-only samples have no main or auxiliary policy
+targets remain separate. Policy-only samples have no main or auxiliary policy
 loss and retain their provided values without fabricated future trajectories.
 
 ```sh

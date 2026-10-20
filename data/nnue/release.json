@@ -1,8 +1,8 @@
 {
   "schema": "zquoridor.release.v1",
-  "version": "4.03",
+  "version": "4.10",
   "date": "2026-10-20",
-  "network": "858",
+  "network": "858-search-distilled-policy",
   "architecture": "multipath_phase_contact_bucketed",
   "hidden": 512,
   "search": "unified_lazy_sparse_with_tree_preparation_clock",
@@ -10,8 +10,8 @@
     "epochs": 100,
     "selected_epoch": 97,
     "unique_states": 1598963,
-    "learning_rate_start": 0.00001,
-    "learning_rate_end": 1e-7,
+    "learning_rate_start": 1e-05,
+    "learning_rate_end": 1e-07,
     "method": "Temporal search-value distillation, weighted target aggregation, surprise weights, and training-only auxiliary policy",
     "external_value_pack_used": false,
     "initial_release": "4.0",
@@ -23,20 +23,19 @@
       "wall_drops_v1"
     ]
   },
-  "promotion_basis": "Operator-authorized 4.03: uniform Lazy+Sparse irrespective of UCI time protocol; account for root-tree preparation within time budget. Local deterministic 1+1/3+2/5+3 probes validate clock behavior and matching moves in most positions. Competitive 3+2/5+3 Elo improvement not yet established.",
+  "promotion_basis": "Operator-authorized 4.10: keep 4.03 unified Lazy+Sparse search, change only the INT8 policy head. Earlier 4.02 search 200ms paired results: 54.125% head-to-head, 65.375% versus Claustrophobia CPU versus 61.125% for the original policy. Confidence intervals for improvements include zero. 4.10 long-clock Elo unverified.",
   "weights": {
     "nnue_weights.bin": "8f2b775c7297f7cc0ea68e3bc0ddeb1fbe752f61fd89a3dd4d3789cbbae33d5a",
-    "nnue_weights_int8.bin": "45fa3ea7db3127a0b907a23d268b0c55c2020e1018513d54bb920cdbe134abe0"
+    "nnue_weights_int8.bin": "fe8473255fd219fab247b1a7d44be25384a6cfc5daa5c301def49109badb7f2b"
   },
-  "previous_release": "4.02",
-  "previous_git_commit": "0c43b6917be533ef963f180074dcab4d369e8d80",
-  "evidence": "data/nnue/release_evidence.json",
+  "previous_release": "4.03",
+  "previous_git_commit": "16cf6a54924522ad08f3cb98b31e14d89c3c1556",
+  "evidence": "docs/releases/4.10.md",
   "known_limitations": [
-    "External opponent inference runs on CPU. These results do not measure GPU Claustrophobia.",
-    "All move requests use 200 ms. Claustrophobia completes a synchronous MCTS wave after the deadline and exceeds that budget. The external scores do not certify a strict 200 ms wall-clock comparison.",
-    "External matched score-change intervals include zero. This screen does not establish superiority in every promotion dimension.",
-    "4.03 uses the exact 4.01 NNUE checkpoint. Apex Policy25 testing and promotion are separate and not part of this release.",
-    "Long-clock Lazy vs Eager has not been established as a competitive Elo improvement in paired native-clock games."
+    "The retained float32 weights retain the prior policy and MUST NOT be re-quantized over production INT8.",
+    "Previous-search 200ms results do not establish 4.10 competitive gains at 3+2 or 5+3.",
+    "Claustrophobia may overrun a 200ms request by finishing a synchronous MCTS wave.",
+    "Paired strength-change confidence intervals include zero."
   ],
   "validation": {
     "nnue_parity": "passed, 192 perspectives",
@@ -46,8 +45,14 @@
     "python_tests": "37 passed",
     "legacy_suite_limits": "test_wall_qextension exceeded 180 seconds; test_policy_ab was not run. No passing claim for these two suites.",
     "403_local_clock_probe": "passed timing and re-root scenarios on reconstructed 4.02 experimental search; complete native+WASM release gate is tracked separately",
-    "403_competitive_elo": "not yet established for 3+2 or 5+3"
+    "403_competitive_elo": "not yet established for 3+2 or 5+3",
+    "410_policy_identity": "fe8473255fd219fab247b1a7d44be25384a6cfc5daa5c301def49109badb7f2b",
+    "410_403_native_clock_elo": "not established"
   },
-  "nnue_checkpoint_release": "4.01",
-  "nnue_checkpoint_preserved": true
+  "nnue_checkpoint_release": "4.10",
+  "nnue_checkpoint_preserved": false,
+  "int8_policy_only": true,
+  "policy_change_start_offset": 985824,
+  "policy_provenance": "search-guided policy distillation",
+  "float_checkpoint_is_previous_policy_reference": true
 }

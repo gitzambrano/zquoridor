@@ -1,0 +1,98 @@
+name: "zQuoridor 4.10 — verified complete distribution"
+on:
+  push:
+    branches: [release/zquoridor-4.10-policy-20261020]
+    paths: [".github/workflows/zquoridor-410-release.yml"]
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  build-and-publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 55
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: true
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - uses: mymindstorm/setup-emsdk@v14
+        with:
+          version: "3.1.65"
+          actions-cache-folder: "emsdk-cache"
+      - name: Install and verify the 4.10 INT8 checkpoint
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          python tools/release_410.py
+          python -m py_compile tools/release_410.py
+          echo "fe8473255fd219fab247b1a7d44be25384a6cfc5daa5c301def49109badb7f2b  data/nnue/nnue_weights_int8.bin" | sha256sum -c -
+      - name: Build and validate native engine, search and clocks
+        run: |
+          set -euo pipefail
+          bash build/build_uci.sh
+          for pair in "test_mcgs_opt_correctness test_lazy" "test_mcgs_sparse_equivalence test_sparse" "test_mcab_core test_mcab" "test_time_manager test_time"; do
+            set -- $pair
+            g++ -O2 -std=c++17 -pthread -march=native -mavx2 -mfma -I src "tests/$1.cpp" -o "bin/$2"
+            "bin/$2"
+          done
+          python -u tests/test_release_403_uci.py --exe bin/zquoridor --weights data/nnue/nnue_weights_int8.bin
+          python -u tests/test_first_native_ponder.py --exe bin/zquoridor --weights data/nnue/nnue_weights_int8.bin
+      - name: Build WASM and two standalone HTML bundles
+        run: |
+          set -euo pipefail
+          bash build/build_wasm.sh
+          node --check gui_web/app.js
+          node --check gui_web/worker.js
+          node --check gui_web/zquoridor.js
+      - name: Verify native and web assets have the same active checkpoint
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import base64,hashlib,json,re
+          from pathlib import Path
+          H=lambda b:hashlib.sha256(b).hexdigest()
+          chk="fe8473255fd219fab247b1a7d44be25384a6cfc5daa5c301def49109badb7f2b"
+          assert H(Path("data/nnue/nnue_weights_int8.bin").read_bytes())==chk
+          assert H(Path("gui_web/zquoridor.data").read_bytes())==chk
+          wasm=Path("gui_web/zquoridor.wasm").read_bytes()
+          assert wasm.startswith(b"\0asm") and len(wasm)>50000
+          for name in ("gui_web/zquoridor.html","docs/index.html"):
+              s=Path(name).read_text()
+              assert "zQuoridor 4.10" in s,name
+              m=re.search(r'__QR_DATA_BYTES__\s*=\s*__qr_b64ToBytes\("([A-Za-z0-9+/=]+)"\)',s)
+              assert m and H(base64.b64decode(m.group(1)))==chk,name
+              w=re.search(r'__QR_WASM_BYTES__\s*=\s*__qr_b64ToBytes\("([A-Za-z0-9+/=]+)"\)',s)
+              assert w and base64.b64decode(w.group(1))==wasm,name
+              print("PASS",name)
+          assert Path("gui_web/zquoridor.html").read_bytes()==Path("docs/index.html").read_bytes()
+          meta=json.loads(Path("data/nnue/release.json").read_text())
+          assert meta["version"]=="4.10" and meta["weights"]["nnue_weights_int8.bin"]==chk
+          PY
+      - name: Commit complete release build onto staging branch
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -u
+          git add docs/releases/4.10.md
+          git diff --cached --stat | tail -40
+          git diff --cached --quiet && { echo "Missing release changes"; exit 1; }
+          git commit -m "Release 4.10: trained policy checkpoint, native and browser distribution"
+          git push origin HEAD:release/zquoridor-4.10-policy-20261020
+      - uses: actions/upload-artifact@v4
+        if: success()
+        with:
+          name: zquoridor-410-verified-native-web
+          path: |
+            bin/zquoridor
+            gui_web/zquoridor.wasm
+            gui_web/zquoridor.js
+            gui_web/zquoridor.data
+            gui_web/zquoridor.html
+            docs/index.html
+            docs/releases/4.10.md
+            data/nnue/release.json
+          retention-days: 14

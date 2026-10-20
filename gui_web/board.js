@@ -568,7 +568,7 @@ class QBoard {
     let y = from.y + (to.y - from.y) * e;
     let scale = 1;
     if (a.jump) {
-      const arc = Math.sin(Math.PI * e);   // 0 at both ends, 1 at the apex
+      const arc = Math.sin(Math.PI * e);   // 0 at both ends, 1 at the policy
       y -= 0.22 * this.C * arc;
       scale = 1 + 0.08 * arc;
     }

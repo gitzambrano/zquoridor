@@ -1,6 +1,6 @@
 #pragma once
 
-// Zquoridor 4.03 uses the 858-input temporal network and dense edge deltas.
+// Zquoridor 4.10 uses the 858-input temporal network and dense edge deltas.
 // Explicit build flags select archived architectures and search profiles.
 #ifndef ZQ_NNUE_CONTACT_FEATURES
 #define ZQ_NNUE_CONTACT_FEATURES 1
@@ -15,7 +15,7 @@
 #define ZQ_EXP_EDGE_BFS_REPLAY 1
 #endif
 
-// Release 4.03: enable legal-action sparse policy by default in ALL
+// Release 4.10: enable legal-action sparse policy by default in ALL
 // production targets, not only explicit benchmark -D compile invocations.
 // Setting -DZQ_EXP_SPARSE_POLICY=0 allows forensic baseline comparisons.
 #ifndef ZQ_EXP_SPARSE_POLICY
