@@ -28,12 +28,12 @@ Reproduced local **child reroot after playing `e2`** in native 3+2, with `treeHi
 
 Additional fixed 200ms two-search UCI smoke checks for Eager and Lazy passed with identical selected moves before/after and correct reuse. These are deterministic illustrative local timings, not a full stress test or a guarantee that realized time equals a later-changing adaptive target on every root.
 
-## Cross-check on operator-selected Apex Policy25 INT8 checkpoint
-In a separate local test, with exactly the same patched executable and only weights replaced (Apex SHA-256 `fe8473255fd219fab247b1a7d44be25384a6cfc5daa5c301def49109badb7f2b`):
+## Cross-check on operator-selected Policy Policy25 INT8 checkpoint
+In a separate local test, with exactly the same patched executable and only weights replaced (Policy SHA-256 `fe8473255fd219fab247b1a7d44be25384a6cfc5daa5c301def49109badb7f2b`):
 - 3+2 center `center_1153`: both played `f4v`; Eager 286721 sims, Lazy 345738 (+20.6%).
 - 3+2 normal `normal_33`: both played `d1`; Eager 273841 sims, Lazy 282835 (+3.3%).
 - 5+3 center `center_1153`: both played `f4v`; Eager 477549 sims, Lazy 540858 (+13.3%).
-- The time fix behaved correctly in the child-reroot examples. One Apex fresh-search result still ended after its *reported final adaptive target*: a changing target/classification can explain this without violating the hard search limit. A distinct hysteresis experiment would require a strength gate.
+- The time fix behaved correctly in the child-reroot examples. One Policy fresh-search result still ended after its *reported final adaptive target*: a changing target/classification can explain this without violating the hard search limit. A distinct hysteresis experiment would require a strength gate.
 
 ## Experimental implementation and status
 

@@ -1,6 +1,6 @@
 {
   "schema": "zquoridor.finalists_h2h.v1",
-  "engine1": "apex_mix",
+  "engine1": "policy_mix",
   "engine2": "replay_only_control",
   "move_time_ms": 200,
   "base_ms": 0,

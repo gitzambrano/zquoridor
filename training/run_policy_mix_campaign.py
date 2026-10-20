@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Wait for a width screen, then compare mixed apex teaching with replay alone."""
+"""Wait for a width screen, then compare mixed policy teaching with replay alone."""
 import argparse
 import collections
 import hashlib
@@ -25,9 +25,9 @@ CONFIG = {
     'dependency': str(ROOT/'experimental/experiments/width-100ep-20261013'),
     'dataset': str(ROOT/'data/teaching/drive-temporal-100ep/dataset'),
     'archive': str(ROOT/'data/teaching/external-value/titanium_mix_v2.zip'),
-    'output': str(ROOT/'experimental/experiments/apex-mix-after-width-20261013'),
-    'mixed_dataset': str(ROOT/'data/teaching/apex-mix-after-width-20261013'),
-    'apex_value_fraction': 0.1, 'epochs': 10, 'lr': 5e-6, 'min_lr': 1e-6,
+    'output': str(ROOT/'experimental/experiments/policy-mix-after-width-20261013'),
+    'mixed_dataset': str(ROOT/'data/teaching/policy-mix-after-width-20261013'),
+    'policy_value_fraction': 0.1, 'epochs': 10, 'lr': 5e-6, 'min_lr': 1e-6,
     'pairs': 100, 'movetime_ms': 200, 'workers': 3, 'seed': 20261019,
 }
 STATE_FIELDS = ('own_pawn', 'opp_pawn', 'walls_h', 'walls_v',
@@ -47,8 +47,8 @@ def state_keys(data):
             for i in range(len(data['value']))]
 
 
-def reconcile_groups(base_keys, base_val, apex_keys, apex_groups, apex_val):
-    """Keep canonical states and connected apex games on one validation side."""
+def reconcile_groups(base_keys, base_val, policy_keys, policy_groups, policy_val):
+    """Keep canonical states and connected policy games on one validation side."""
     parents = {}
     def find(group):
         parents.setdefault(group, group)
@@ -57,7 +57,7 @@ def reconcile_groups(base_keys, base_val, apex_keys, apex_groups, apex_val):
             group = parents[group]
         return group
     seen = {}
-    for key, group in zip(apex_keys, apex_groups):
+    for key, group in zip(policy_keys, policy_groups):
         group = str(group)
         if key in seen:
             a, b = find(group), find(seen[key])
@@ -66,41 +66,41 @@ def reconcile_groups(base_keys, base_val, apex_keys, apex_groups, apex_val):
         seen[key] = group
     base = dict(zip(base_keys, np.asarray(base_val, dtype=bool)))
     overlaps, defaults = {}, {}
-    for key, group, val in zip(apex_keys, apex_groups, apex_val):
+    for key, group, val in zip(policy_keys, policy_groups, policy_val):
         group = find(str(group))
         defaults.setdefault(group, bool(val))
         if key in base:
             overlaps.setdefault(group, set()).add(bool(base[key]))
     keep, validation = [], []
-    for group in apex_groups:
+    for group in policy_groups:
         group = find(str(group)); sides = overlaps.get(group, set())
         keep.append(len(sides) < 2)
         validation.append(next(iter(sides)) if len(sides) == 1 else defaults[group])
     return np.array(keep), np.array(validation)
 
 
-def assemble(base, apex, apex_weights, fraction, out):
+def assemble(base, policy, policy_weights, fraction, out):
     """Merge value evidence and retain policy supervision only from replay."""
     if not 0 < fraction < 1:
-        raise ValueError('The apex value fraction must be between zero and one.')
-    base_keys, apex_keys = state_keys(base), state_keys(apex)
+        raise ValueError('The policy value fraction must be between zero and one.')
+    base_keys, policy_keys = state_keys(base), state_keys(policy)
     if len(set(base_keys)) != len(base_keys):
         raise ValueError('The replay dataset contains duplicate canonical states.')
-    keep, apex_val = reconcile_groups(base_keys, base['is_val'], apex_keys,
-                                      apex['group_id'], apex['is_val'])
+    keep, policy_val = reconcile_groups(base_keys, base['is_val'], policy_keys,
+                                      policy['group_id'], policy['is_val'])
     base_mass = (1-fraction)*np.asarray(base['weight'])*np.asarray(base['value_sample_weight'])
-    apex_weights = np.asarray(apex_weights, dtype=np.float64)
-    counts = collections.Counter(apex_keys[i] for i in np.flatnonzero(keep))
-    apex_weights = np.array([weight/counts[key] if counts[key] else 0
-                            for key,weight in zip(apex_keys,apex_weights)])
-    eligible = keep & ~apex_val
+    policy_weights = np.asarray(policy_weights, dtype=np.float64)
+    counts = collections.Counter(policy_keys[i] for i in np.flatnonzero(keep))
+    policy_weights = np.array([weight/counts[key] if counts[key] else 0
+                            for key,weight in zip(policy_keys,policy_weights)])
+    eligible = keep & ~policy_val
     if not eligible.any():
-        raise ValueError('No apex training groups remain after split reconciliation.')
-    scale = fraction/(1-fraction)*base_mass[~base['is_val']].sum()/apex_weights[eligible].sum()
-    apex_mass = apex_weights*scale
+        raise ValueError('No policy training groups remain after split reconciliation.')
+    scale = fraction/(1-fraction)*base_mass[~base['is_val']].sum()/policy_weights[eligible].sum()
+    policy_mass = policy_weights*scale
     locations = {key:i for i,key in enumerate(base_keys)}
     new_keys = []
-    for key in (key for key, allowed in zip(apex_keys,keep) if allowed):
+    for key in (key for key, allowed in zip(policy_keys,keep) if allowed):
         if key not in locations:
             locations[key] = len(base_keys)+len(new_keys); new_keys.append(key)
     n, old_n = len(locations), len(base_keys)
@@ -133,16 +133,16 @@ def assemble(base, apex, apex_weights, fraction, out):
         arrays[key][old_n:] = 1
     merged = 0
     for i in np.flatnonzero(keep):
-        destination = locations[apex_keys[i]]
+        destination = locations[policy_keys[i]]
         previous = float(arrays['value_sample_weight'][destination])
         if previous:
             merged += 1
         else:
             for key in STATE_FIELDS:
-                arrays[key][destination] = apex[key][i]
-            arrays['is_val'][destination] = apex_val[i]
-        mass = apex_mass[i]
-        arrays['value'][destination] = (float(arrays['value'][destination])*previous+float(apex['value'][i])*mass)/(previous+mass) if previous else apex['value'][i]
+                arrays[key][destination] = policy[key][i]
+            arrays['is_val'][destination] = policy_val[i]
+        mass = policy_mass[i]
+        arrays['value'][destination] = (float(arrays['value'][destination])*previous+float(policy['value'][i])*mass)/(previous+mass) if previous else policy['value'][i]
         arrays['value_sample_weight'][destination] = previous+mass
     # Equalize the global denominator so policy and replay-value losses keep
     # their original mean scale despite the additional value-only examples.
@@ -152,9 +152,9 @@ def assemble(base, apex, apex_weights, fraction, out):
     for array in arrays.values():
         array.flush()
     info = dict(samples=n,train_samples=int((~arrays['is_val']).sum()),
-                validation_samples=int(arrays['is_val'].sum()),apex_rows_accepted=int(keep.sum()),
-                apex_rows_excluded_for_group_leakage=int((~keep).sum()),merged_value_rows=merged,
-                added_canonical_states=len(new_keys),apex_training_value_fraction=fraction,
+                validation_samples=int(arrays['is_val'].sum()),policy_rows_accepted=int(keep.sum()),
+                policy_rows_excluded_for_group_leakage=int((~keep).sum()),merged_value_rows=merged,
+                added_canonical_states=len(new_keys),policy_training_value_fraction=fraction,
                 policy_supervision='Replay only; value-only rows have exactly zero main and auxiliary policy loss.')
     return arrays, info
 
@@ -172,20 +172,20 @@ def prepare_mix(cfg, reference):
             raise ValueError('The mixed dataset identity changed; use a new output directory.')
         return manifest
     external = out/'external';external.mkdir(exist_ok=True)
-    apex, external_info = prepare(dict(EXTERNAL_CONFIG,archive=cfg['archive'],seed=cfg['seed']),external)
+    policy, external_info = prepare(dict(EXTERNAL_CONFIG,archive=cfg['archive'],seed=cfg['seed']),external)
     base = trainer.load_dataset(Path(cfg['dataset']))
     architecture = json.loads((reference/'student.architecture.json').read_text())
     torch.set_num_threads(cfg['workers'])
     model = Student(architecture['architecture'],architecture['hidden'],qat=True)
     model.load_float(reference/'student.bin')
-    weights = np.empty(len(apex['value']),dtype=np.float32)
+    weights = np.empty(len(policy['value']),dtype=np.float32)
     with torch.inference_mode():
         for start in range(0,len(weights),4096):
             indices = np.arange(start,min(start+4096,len(weights)))
-            value,_ = model(torch.from_numpy(encode_features(apex,indices,model.architecture)))
-            weights[indices] = 1+np.minimum(np.abs(value.sigmoid().numpy()-(apex['value'][indices]+1)/2),.5)
-    _, info = assemble(base,apex,weights,cfg['apex_value_fraction'],out)
-    manifest = dict(schema='zquoridor.apex_mix_dataset.v1',complete=True,
+            value,_ = model(torch.from_numpy(encode_features(policy,indices,model.architecture)))
+            weights[indices] = 1+np.minimum(np.abs(value.sigmoid().numpy()-(policy['value'][indices]+1)/2),.5)
+    _, info = assemble(base,policy,weights,cfg['policy_value_fraction'],out)
+    manifest = dict(schema='zquoridor.policy_mix_dataset.v1',complete=True,
                     group_separation_verified=True,identity=identity,external_info=external_info,**info,arrays={})
     for path in sorted((out/'fields').glob('*.npy')):
         manifest['arrays'][path.stem] = dict(filename=str(path.relative_to(out)),sha256=sha(path))
@@ -258,7 +258,7 @@ def main():
                 init_from=str(reference/'student.bin'),init_hidden=reference_config['hidden'],
                 epochs=cfg['epochs'],lr=cfg['lr'],min_lr=cfg['min_lr'],seed=cfg['seed'],
                 checkpoint_every=5,resume=True,patience=0,
-                apex_mask_runner_sha256=sha(__file__))
+                policy_mask_runner_sha256=sha(__file__))
             (folder/'requested_config.json').write_text(json.dumps(training,indent=2)+'\n')
             status('training',participant=label,hidden=training['hidden'],epochs=cfg['epochs'])
             reports[label]=trainer.train(training)
@@ -267,7 +267,7 @@ def main():
             trainer.build_candidate(training);parity(folder)
             reports[label]['original_replay_validation'] = replay_validation(folder,training,replay)
         status('h2h',pairs=cfg['pairs'],movetime_ms=cfg['movetime_ms'])
-        match_cfg=dict(match_finalists.CONFIG,engine1_name='apex_mix',engine2_name='replay_only_control',
+        match_cfg=dict(match_finalists.CONFIG,engine1_name='policy_mix',engine2_name='replay_only_control',
             engine1_executable=str(out/'candidate/zquoridor'),engine1_nnue=str(out/'candidate/student_int8.bin'),
             engine2_executable=str(out/'control/zquoridor'),engine2_nnue=str(out/'control/student_int8.bin'),
             pairs=cfg['pairs'],move_time_ms=cfg['movetime_ms'],workers=cfg['workers'],seed=cfg['seed'],

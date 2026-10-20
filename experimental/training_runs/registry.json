@@ -37,60 +37,60 @@
       "best_epoch": 99,
       "promoted": false
     },
-    "apex_replay_control_10ep": {
+    "policy_replay_control_10ep": {
       "architecture": "multipath_phase_contact_bucketed",
       "inputs": 858,
       "hidden": 512,
-      "float_weights": "data/nnue/experiments/apex_replay_control_10ep/student.bin",
-      "int8_weights": "data/nnue/experiments/apex_replay_control_10ep/student_int8.bin",
+      "float_weights": "data/nnue/experiments/policy_replay_control_10ep/student.bin",
+      "int8_weights": "data/nnue/experiments/policy_replay_control_10ep/student_int8.bin",
       "float_sha256": "78a83fc620790f481ea7cf50d990d5ac78956186187292f28ae0587bf50cc97a",
       "int8_sha256": "40a25d42eec8cacb0590058d35951b4271368fd243ade0b57548417c2e29664a",
-      "reports": "experimental/training_runs/apex_replay_control_10ep",
+      "reports": "experimental/training_runs/policy_replay_control_10ep",
       "epochs": 10,
       "best_epoch": 10,
       "promoted": false,
-      "strength_status": "First screen complete: apex score 51.5%, paired 95% interval 46.5% to 56.5%. Initial-network screen pending."
+      "strength_status": "First screen complete: policy score 51.5%, paired 95% interval 46.5% to 56.5%. Initial-network screen pending."
     },
-    "apex_value_mix_10ep": {
+    "policy_value_mix_10ep": {
       "architecture": "multipath_phase_contact_bucketed",
       "inputs": 858,
       "hidden": 512,
-      "float_weights": "data/nnue/experiments/apex_value_mix_10ep/student.bin",
-      "int8_weights": "data/nnue/experiments/apex_value_mix_10ep/student_int8.bin",
+      "float_weights": "data/nnue/experiments/policy_value_mix_10ep/student.bin",
+      "int8_weights": "data/nnue/experiments/policy_value_mix_10ep/student_int8.bin",
       "float_sha256": "7e2a7261e12664c604dce2f4e070ad5e0dd1da7300df52fbbd1f4f66d3c0e1be",
       "int8_sha256": "dabc89f4bda589245f6c5dc80f013c4b1b7fe456432636b666228f9c8583c3f4",
-      "reports": "experimental/training_runs/apex_value_mix_10ep",
+      "reports": "experimental/training_runs/policy_value_mix_10ep",
       "epochs": 10,
       "best_epoch": 10,
       "promoted": false,
-      "strength_status": "First screen complete: apex score 51.5%, paired 95% interval 46.5% to 56.5%. Initial-network screen pending."
+      "strength_status": "First screen complete: policy score 51.5%, paired 95% interval 46.5% to 56.5%. Initial-network screen pending."
     },
-    "apex_value_only_3ep": {
+    "policy_value_only_3ep": {
       "architecture": "multipath_phase_contact_bucketed",
       "inputs": 858,
       "hidden": 512,
-      "float_weights": "data/nnue/experiments/apex_value_only_3ep/student.bin",
-      "int8_weights": "data/nnue/experiments/apex_value_only_3ep/student_int8.bin",
+      "float_weights": "data/nnue/experiments/policy_value_only_3ep/student.bin",
+      "int8_weights": "data/nnue/experiments/policy_value_only_3ep/student_int8.bin",
       "float_sha256": "32400628a661f42d3fce84d0f7e7e56da34422f3c6c0e2adb1ac633c8657f253",
       "int8_sha256": "37a89b2426fa7854176bc68bd82ed61caee7c3a27e378e6286e6049daa9ce878",
-      "reports": "experimental/training_runs/apex_value_only_3ep",
+      "reports": "experimental/training_runs/policy_value_only_3ep",
       "epochs": 3,
       "best_epoch": 3,
       "promoted": false
     },
-    "apex_value_only_3plus10ep": {
+    "policy_value_only_3plus10ep": {
       "architecture": "multipath_phase_contact_bucketed",
       "inputs": 858,
       "hidden": 512,
-      "float_weights": "data/nnue/experiments/apex_value_only_3plus10ep/student.bin",
-      "int8_weights": "data/nnue/experiments/apex_value_only_3plus10ep/student_int8.bin",
+      "float_weights": "data/nnue/experiments/policy_value_only_3plus10ep/student.bin",
+      "int8_weights": "data/nnue/experiments/policy_value_only_3plus10ep/student_int8.bin",
       "float_sha256": "8327a6803bba4a1c56d915b979912b6819bc5e0c3a665d6a4de0543af57dd52a",
       "int8_sha256": "3ff6bb491c3c663945b12a03aaa5c411c8dfc1462d8da05e70d7f2eee2b64a66",
-      "reports": "experimental/training_runs/apex_value_only_3plus10ep",
+      "reports": "experimental/training_runs/policy_value_only_3plus10ep",
       "epochs": 10,
       "best_epoch": 10,
       "promoted": false,
-      "initial_network": "apex_value_only_3ep"
+      "initial_network": "policy_value_only_3ep"
     }
   },
   "datasets_included": false,
@@ -100,9 +100,9 @@
     "temporal"
   ],
   "data_source_parameters": [
-    "apex_value_fraction",
+    "policy_value_fraction",
     "data",
     "downloads",
-    "apex_archive"
+    "policy_archive"
   ]
 }

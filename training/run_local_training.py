@@ -17,7 +17,7 @@ from training.target_options import target_settings, matches_targets
 
 CONFIG = {
     'target_mode':'temporal', 'future_horizons':None, 'future_weights':None, 'result_weight':.1,
-    'apex_value_fraction':0., 'apex_archive':str(ROOT/'data/teaching/external-value/titanium_mix_v2.zip'),
+    'policy_value_fraction':0., 'policy_archive':str(ROOT/'data/teaching/external-value/titanium_mix_v2.zip'),
     'downloads':str(ROOT/'data/teaching/drive-temporal-100ep/downloads.jsonl'),
     'data_cache':str(ROOT/'data/teaching/local-target-options'),
     'hidden':512, 'data':None, 'out_dir':None,
@@ -35,7 +35,7 @@ def resolve(argv=None):
             options['action']=argparse.BooleanOptionalAction
         elif key in ('hidden','init_hidden','epochs','batch_size','cpu_threads'):
             options['type']=int
-        elif key in ('lr','min_lr','result_weight','apex_value_fraction'):
+        elif key in ('lr','min_lr','result_weight','policy_value_fraction'):
             options['type']=float
         if key=='hidden':options['choices']=(512,768,1024)
         if key=='target_mode':options['choices']=('current','temporal')
@@ -44,13 +44,13 @@ def resolve(argv=None):
         parser.add_argument('--'+key.replace('_','-'),**options)
     local=vars(parser.parse_args(argv))
     settings=target_settings(local['target_mode'],local['future_horizons'],local['future_weights'],local['result_weight'])
-    if not 0<=local['apex_value_fraction']<1:raise ValueError('The apex value fraction must be between zero and one, excluding one.')
+    if not 0<=local['policy_value_fraction']<1:raise ValueError('The policy value fraction must be between zero and one, excluding one.')
     defaults=(100,1e-5,1e-7)
     for key,value in zip(('epochs','lr','min_lr'),defaults):
         if local[key] is None:local[key]=value
     default_data='drive-temporal-100ep/dataset'
     local['data']=str(Path(local['data']).resolve()) if local['data'] else str(ROOT/'data/teaching'/default_data)
-    local['out_dir']=str(Path(local['out_dir']).resolve()) if local['out_dir'] else str(ROOT/'experimental/experiments'/f"local-{local['target_mode']}-{local['hidden']}-apex{local['apex_value_fraction']:g}")
+    local['out_dir']=str(Path(local['out_dir']).resolve()) if local['out_dir'] else str(ROOT/'experimental/experiments'/f"local-{local['target_mode']}-{local['hidden']}-policy{local['policy_value_fraction']:g}")
     initial=Path(local['init_from']).resolve()
     architecture_path=initial.with_suffix('.architecture.json')
     architecture=json.loads(architecture_path.read_text()) if architecture_path.exists() else {}
@@ -67,7 +67,7 @@ def resolve(argv=None):
         qat=True,mirror_h=True,from_scratch=False,train_scope='full',trunk_lr_scale=.1,
         aux_policy_enabled=True,aux_policy_temperature=2.,aux_policy_weight=.15,aux_policy_lr_scale=1.,
         checkpoint_every=5,resume=True,build=local['build'],benchmark=False,
-        value_target_settings=settings,apex_value_fraction=local['apex_value_fraction'],local_launcher_sha256=hashlib.sha256(Path(__file__).read_bytes()).hexdigest())
+        value_target_settings=settings,policy_value_fraction=local['policy_value_fraction'],local_launcher_sha256=hashlib.sha256(Path(__file__).read_bytes()).hexdigest())
     return local,config
 
 
@@ -101,20 +101,20 @@ def prepare_data(local,config):
         if not cached.get('complete') or not matches_targets(cached,settings):
             ensure_encoder()
             subprocess.run([sys.executable,str(ROOT/'training/prepare_temporal_search.py'),'--downloads',str(ledger),'--output',str(base),'--reference',config['init_from'],'--hidden',str(config['init_hidden']),'--architecture',config['init_architecture'],'--target-mode',settings['target_mode'],'--horizons',json.dumps(settings['horizons']),'--horizon-weights',json.dumps(settings['horizon_weights']),'--outcome-weight',str(settings['outcome_weight'])],check=True,cwd=ROOT)
-    fraction=local['apex_value_fraction']
+    fraction=local['policy_value_fraction']
     if fraction==0:return base
-    ready=ROOT/'data/teaching/apex-mix-after-width-20261013';ready_manifest=ready/'dataset.manifest.json'
+    ready=ROOT/'data/teaching/policy-mix-after-width-20261013';ready_manifest=ready/'dataset.manifest.json'
     if ready_manifest.exists():
         mixed=json.loads(ready_manifest.read_text())
-        if mixed.get('apex_training_value_fraction')==fraction and mixed.get('identity',{}).get('base_manifest_sha256')==file_sha(base/'dataset.manifest.json') and mixed.get('identity',{}).get('archive_sha256')==file_sha(local['apex_archive']):return ready
-    from training.run_apex_mix_campaign import prepare_mix
-    signature=hashlib.sha256(json.dumps(dict(base=file_sha(base/'dataset.manifest.json'),archive=file_sha(local['apex_archive']),fraction=fraction,reference=file_sha(config['init_from'])),sort_keys=True).encode()).hexdigest()[:16]
+        if mixed.get('policy_training_value_fraction')==fraction and mixed.get('identity',{}).get('base_manifest_sha256')==file_sha(base/'dataset.manifest.json') and mixed.get('identity',{}).get('archive_sha256')==file_sha(local['policy_archive']):return ready
+    from training.run_policy_mix_campaign import prepare_mix
+    signature=hashlib.sha256(json.dumps(dict(base=file_sha(base/'dataset.manifest.json'),archive=file_sha(local['policy_archive']),fraction=fraction,reference=file_sha(config['init_from'])),sort_keys=True).encode()).hexdigest()[:16]
     output=Path(local['data_cache'])/('mixed-'+signature)
     reference=output/'reference';reference.mkdir(parents=True,exist_ok=True)
     shutil.copy2(config['init_from'],reference/'student.bin')
     (reference/'student.architecture.json').write_text(json.dumps(dict(architecture=config['init_architecture'],hidden=config['init_hidden'])))
     ensure_encoder()
-    prepare_mix(dict(dataset=str(base),archive=local['apex_archive'],mixed_dataset=str(output),apex_value_fraction=fraction,workers=local['cpu_threads'],seed=20261019),reference)
+    prepare_mix(dict(dataset=str(base),archive=local['policy_archive'],mixed_dataset=str(output),policy_value_fraction=fraction,workers=local['cpu_threads'],seed=20261019),reference)
     return output
 
 
@@ -123,10 +123,10 @@ def main():
     if local['dry_run']:
         print(json.dumps(config,indent=2));return
     from training import run_experiment as trainer
-    from training.run_apex_mix_campaign import masked_loader
+    from training.run_policy_mix_campaign import masked_loader
     from training.run_temporal_campaign import parity
     config['data']=str(prepare_data(local,config))
-    if local['apex_value_fraction']>0:trainer.load_dataset=masked_loader
+    if local['policy_value_fraction']>0:trainer.load_dataset=masked_loader
     out=Path(config['out_dir']);out.mkdir(parents=True,exist_ok=True)
     (out/'requested_config.json').write_text(json.dumps(config,indent=2)+'\n')
     report=trainer.train(config)
