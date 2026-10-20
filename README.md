@@ -94,6 +94,27 @@ and NNUE parity. Browser tests live in `gui_web/` and use Playwright.
 | `docs/` | Technical status, roadmap, and operational guides |
 | `data/` | Production weights and local data assets |
 
+## Apex Policy25 checkpoint — promotion package
+
+The next user-selected NNUE baseline is **Apex Policy25**, trained on deep
+Apex move targets. Its value evaluator is unchanged from 4.01; only the
+209-logit quantized policy head changes. It is directly compatible with
+the 4.02 Lazy/Sparse and Eager/Sparse searches, because the input features,
+hidden size, quantization, and canonical policy action mapping are unchanged.
+
+**Release integrity requirement:** The separate Apex checkpoint is considered
+active only when `data/nnue/nnue_weights_int8.bin` and
+`gui_web/zquoridor.data` both have SHA-256
+`fe8473255fd219fab247b1a7d44be25384a6cfc5daa5c301def49109badb7f2b`,
+and both standalone HTML bundles embed that checkpoint. Use
+`python tools/promote_apex_policy25.py /path/to/zQuoridor401_apex_ordering.zip`
+for an offline integrity-checked switch, then commit **all** resulting assets.
+See the [Apex policy evidence and deployment notes](research/benchmarks/APEX_POLICY25_BASELINE_2026-10-20.md).
+
+The independent 4.01 search H2H screen scored 57.5% in 40 paired
+200 ms games (95% interval 47.5–67.5%). It was not a test of the new 4.02
+search or native 3+2, so this is **not a claim of universal Elo improvement**.
+
 ## Release 4.02 — Search
 
 - `go movetime` (including 200 ms) enables **Lazy Expansion + Sparse Policy**.
