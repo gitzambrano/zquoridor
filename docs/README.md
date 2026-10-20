@@ -1,5 +1,8 @@
 # Documentation
 
+Current production: [Release 4.03 — Unified Lazy+Sparse and clock correctness](releases/4.03.md).
+The original quantized NNUE checkpoint remains unchanged; Apex Policy25 is being evaluated independently.
+
 - [plan.md](plan.md) — the canonical production state, measured results,
   historical network matrix, active work, and roadmap.
 - [scripts.md](scripts.md) — canonical runners, internal stages, and
