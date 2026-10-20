@@ -1,0 +1,54 @@
+name: "zQuoridor 4.10 — clean retired branches"
+on:
+  push:
+    branches: [main]
+    paths: ["data/nnue/release.json"]
+permissions:
+  contents: write
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Delete non-default branches after verifying the 4.10 main checkpoint
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json,os,urllib.request,urllib.parse
+          from pathlib import Path
+          release=json.loads(Path("data/nnue/release.json").read_text())
+          assert release["version"]=="4.10"
+          assert release["weights"]["nnue_weights_int8.bin"]=="fe8473255fd219fab247b1a7d44be25384a6cfc5daa5c301def49109badb7f2b"
+          base="https://api.github.com/repos/"+os.environ["GITHUB_REPOSITORY"]
+          token=os.environ["GH_TOKEN"]
+          def api(url,method="GET"):
+              req=urllib.request.Request(url,method=method,headers={
+                  "Authorization":"Bearer "+token,
+                  "Accept":"application/vnd.github+json","User-Agent":"zquoridor-branch-cleanup"})
+              with urllib.request.urlopen(req,timeout=30) as resp:
+                  b=resp.read()
+              return json.loads(b) if b else None
+          default=api(base)["default_branch"]
+          assert default=="main"
+          names=[]
+          page=1
+          while True:
+              batch=api(base+"/branches?per_page=100&page="+str(page))
+              if not batch:break
+              names.extend(b["name"] for b in batch if b["name"]!=default)
+              page+=1
+          print("Branches to remove",len(names),flush=True)
+          failed=[]
+          for name in names:
+              try:
+                  api(base+"/git/refs/heads/"+urllib.parse.quote(name,safe="/"),"DELETE")
+                  print("Deleted",name,flush=True)
+              except Exception as exc:
+                  failed.append(name)
+                  print("Failed",name,type(exc).__name__,str(exc),flush=True)
+          print("Deleted",len(names)-len(failed),"out of",len(names))
+          if failed:raise RuntimeError("Branch cleanup incomplete: "+", ".join(failed))
+          PY
