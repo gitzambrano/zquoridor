@@ -1,4 +1,4 @@
-name: "zQuoridor 4.10 — policy release and distribution"
+name: "zQuoridor 4.10 — validated policy release"
 on:
   push:
     branches: [release/zquoridor-4.10-policy-20261020]
