@@ -1,4 +1,4 @@
-# zQuoridor 4.01
+# zQuoridor 4.02
 
 **[Play Zquoridor in your browser](https://gitzambrano.github.io/zquoridor/)**
 
@@ -11,7 +11,8 @@ or directly in the browser.
 ## Engine features
 
 - Hybrid PUCT-guided MCTS/MCGS graph search with alpha-beta support for tactical
-  and endgame positions.
+  and endgame positions. Version 4.02 uses Lazy Expansion + Sparse Policy for
+  fixed move times, and Eager Expansion + Sparse Policy for native 3+2 clocks.
 - Multi-bucketed value and policy guidance from a compact quantized NNUE
   (`multipath_phase_contact_bucketed:512` with 6 wall-count value heads and 2-layer deep MLPs).
 - Persistent tree reuse, transpositions, repetition handling, and opponent-root
@@ -71,7 +72,7 @@ bin/zquoridor --nnue data/nnue/nnue_weights_int8.bin
 ```
 
 The UCI-style protocol supports `uci`, `isready`, `ucinewgame`, `position`,
-`go movetime <ms>`, clock-based `go`, `ponder movetime <ms>`, `help`, and
+`go movetime <ms>`, clock-based `go`, `ponder [clock] movetime <ms>`, `help`, and
 `quit`. Pawn moves use coordinates such as `e2`; walls use `d4h` or `d4v`.
 
 ```bash
@@ -92,6 +93,17 @@ and NNUE parity. Browser tests live in `gui_web/` and use Playwright.
 | `gui_web/` | Browser UI, worker, WASM binding, browser tests |
 | `docs/` | Technical status, roadmap, and operational guides |
 | `data/` | Production weights and local data assets |
+
+## Release 4.02 — Search
+
+- `go movetime` (including 200 ms) enables **Lazy Expansion + Sparse Policy**.
+- Native 3+2 clocks (`go wtime / btime / winc / binc`) use **Eager Expansion + Sparse Policy** with the existing Adaptive Time.
+- Sparse Policy computes the same quantized logits as dense policy for the **legal actions**, using the model's existing canonical 209-action map. It is **not tied to any particular set of policy-head weights**.
+- The release gate verified legal-policy logits/priors and the two time-control modes. Clock forfeits and invalid-game records were absent in the completed short external checks.
+- The shipped weight file is still the **4.01 temporal, 858-input / 512-hidden NNUE** until a new policy-head checkpoint is installed and all native and web assets are synchronized. The search release did **not** replace the value network.
+- Apex Policy25 is a separate **policy-only candidate**; promote it with the integrity-checked checkpoint and rebuild of the standalone bundle. The original float32 weights do **not** automatically represent its policy head.
+
+See [NNUE release notes](data/nnue/README.md) for weight identity and compatibility.
 
 ## Release 4.01
 
@@ -141,14 +153,15 @@ and [the project measurements](docs/plan.md).
 Both projects are valuable public reference engines and external benchmark
 opponents for Zquoridor.
 
-## Version 4.01 configuration
+## Version 4.02 configuration
 
-The default search uses dense edge feature deltas and BFS replay. The release
-uses the 858-input contact network with temporal training. The operator
-authorized this promotion after the paired strength screen. See `docs/plan.md`
-for the measured results and validation limits. `data/nnue/release.json` records the release
-identity. Archived networks and search profiles reside in `experimental/`.
-The 768-unit width experiment remains separate from production.
+Production uses dense edge feature deltas and BFS replay with the 858-input,
+512-hidden temporal network. The 4.02 **search baseline** is clock-aware
+Lazy+Sparse at fixed time and Eager+Sparse at native clocks. The independent
+NNUE checkpoint is identified by `data/nnue/release.json` and the SHA-256 of
+`data/nnue/nnue_weights_int8.bin`; search version and network checkpoint
+must not be conflated. Archived networks and search profiles reside in
+`experimental/`; the 768-hidden experiment remains outside production.
 
 ## Repository organization and Colab operations
 
