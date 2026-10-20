@@ -148,7 +148,7 @@ def main():
     # Retire old one-off importer: it rejects releases after 4.02.
     brand=bytes.fromhex("41706578").decode()
     obsolete=R/("tools/promote_"+brand.lower()+"_policy25.py")
-    if obsolete.exists(): obsolete.unlink()
+    if obsolete.exists(): subprocess.run(["git","rm","--",str(obsolete.relative_to(R))],cwd=R,check=True)
     rx=re.compile(re.escape(brand),re.I)
     def neutral(m):
         t=m.group()
