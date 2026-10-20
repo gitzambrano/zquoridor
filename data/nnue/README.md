@@ -1,5 +1,13 @@
 # NNUE Weights and Model Releases
 
+**Active search release: zQuoridor 4.03.** Active NNUE checkpoint:
+**4.01 temporal model**, 858 features / 512 hidden / 209 policy outputs.
+The native and web production INT8 SHA-256 is
+`45fa3ea7db3127a0b907a23d268b0c55c2020e1018513d54bb920cdbe134abe0`.
+The production 4.03 Lazy+Sparse search does not depend on Apex Policy25.
+Apex Policy25 is a separate future NNUE candidate, not shipped with 4.03.
+
+
 This directory stores production weights and evaluated experimental networks for Zquoridor.
 
 ## File Types
@@ -21,9 +29,9 @@ Current networks employ the `multipath_phase_contact_bucketed` architecture:
 * Inference: Quantized accumulator evaluation with squared clipped linear activation.
 
 
-## 4.02 Apex Policy25 rollout
+## Separate Apex Policy25 candidate (NOT in 4.03)
 
-The operator-selected next baseline changes **only the 209-logit INT8 policy head**. The
+The separately tested candidate changes **only the 209-logit INT8 policy head**. The
 feature accumulator and all six value heads remain exactly the same as in 4.01.
 The original float32 checkpoint is not an Apex checkpoint, so use the supplied
 Apex INT8 weights directly; re-quantizing the original float32 file would revert
