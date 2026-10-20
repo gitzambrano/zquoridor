@@ -1,3 +1,5 @@
+> **Current release (4.03, 20 October 2026):** unified Lazy Expansion + Sparse Policy for all UCI time protocols, with the complete reused-tree preparation charged against the search clock. The quantized NNUE remains the original 4.01 858/512 model: **no Apex Policy25 checkpoint is promoted here**. See [4.03 release notes](releases/4.03.md) for exact behavior, evidence and validation limits. Historical plans and versioned claims below have not been retroactively rewritten.
+
 # Zquoridor: Project State, Results, and Roadmap
 
 Last reviewed: 2026-10-18. This document is the single canonical reference for

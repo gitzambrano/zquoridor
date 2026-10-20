@@ -1,4 +1,4 @@
-# zQuoridor 4.02
+# zQuoridor 4.03
 
 **[Play Zquoridor in your browser](https://gitzambrano.github.io/zquoridor/)**
 
@@ -11,8 +11,9 @@ or directly in the browser.
 ## Engine features
 
 - Hybrid PUCT-guided MCTS/MCGS graph search with alpha-beta support for tactical
-  and endgame positions. Version 4.02 uses Lazy Expansion + Sparse Policy for
-  fixed move times, and Eager Expansion + Sparse Policy for native 3+2 clocks.
+  and endgame positions. Version 4.03 uses uniform Lazy Expansion + Sparse Policy for both fixed move times
+  and all native clocks (1+1, 3+2, 5+3, etc.), with corrected accounting for
+  tree preparation and reuse.
 - Multi-bucketed value and policy guidance from a compact quantized NNUE
   (`multipath_phase_contact_bucketed:512` with 6 wall-count value heads and 2-layer deep MLPs).
 - Persistent tree reuse, transpositions, repetition handling, and opponent-root
@@ -115,10 +116,29 @@ The independent 4.01 search H2H screen scored 57.5% in 40 paired
 200 ms games (95% interval 47.5–67.5%). It was not a test of the new 4.02
 search or native 3+2, so this is **not a claim of universal Elo improvement**.
 
-## Release 4.02 — Search
+## Release 4.03 — Unified search and clock correctness
 
-- `go movetime` (including 200 ms) enables **Lazy Expansion + Sparse Policy**.
-- Native 3+2 clocks (`go wtime / btime / winc / binc`) use **Eager Expansion + Sparse Policy** with the existing Adaptive Time.
+**Production search:** Lazy Expansion + exact legal-action Sparse Policy at
+all time controls. The UCI front end supports both `go movetime 200` and
+`go wtime ... btime ... winc ... binc ...`; only the allocated time and
+Adaptive Time differ. Unlike 4.02, changing the protocol does **not**
+switch search algorithms or clear the existing MCGS tree.
+
+The native clock now starts *before* preparing, compacting or rerooting the
+graph, preventing reused-tree preprocessing from silently consuming time
+outside the move budget. This is independent of named time controls.
+`--eager-search` exists solely as a diagnostic comparison flag.
+
+**NNUE policy/value checkpoint:** unchanged from the 4.01 858-input,
+512-hidden temporal network. No Apex weights are promoted in 4.03.
+Browser/WASM must ship that identical original checkpoint. Exact long-clock
+performance and timing were checked locally, but **no competitive 3+2/5+3
+Elo improvement is claimed**.
+
+## Release 4.02 — Search (historical)
+
+- In version 4.02, `go movetime` enabled **Lazy Expansion + Sparse Policy**.
+- In version 4.02, native clocks used **Eager Expansion + Sparse Policy**. Both paths are superseded by unified Lazy in 4.03.
 - Sparse Policy computes the same quantized logits as dense policy for the **legal actions**, using the model's existing canonical 209-action map. It is **not tied to any particular set of policy-head weights**.
 - The release gate verified legal-policy logits/priors and the two time-control modes. Clock forfeits and invalid-game records were absent in the completed short external checks.
 - The shipped weight file is still the **4.01 temporal, 858-input / 512-hidden NNUE** until a new policy-head checkpoint is installed and all native and web assets are synchronized. The search release did **not** replace the value network.
@@ -174,11 +194,11 @@ and [the project measurements](docs/plan.md).
 Both projects are valuable public reference engines and external benchmark
 opponents for Zquoridor.
 
-## Version 4.02 configuration
+## Version 4.03 configuration
 
 Production uses dense edge feature deltas and BFS replay with the 858-input,
-512-hidden temporal network. The 4.02 **search baseline** is clock-aware
-Lazy+Sparse at fixed time and Eager+Sparse at native clocks. The independent
+512-hidden temporal network. The 4.03 **search baseline** is uniform Lazy+Sparse at both fixed time
+and native clocks, with corrected accounting for reroot preparation. The independent
 NNUE checkpoint is identified by `data/nnue/release.json` and the SHA-256 of
 `data/nnue/nnue_weights_int8.bin`; search version and network checkpoint
 must not be conflated. Archived networks and search profiles reside in

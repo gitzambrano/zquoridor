@@ -145,6 +145,9 @@ struct Options {
     int endgameMoverWallThreshold = -999;
     int endgameLeafDepth = -1;
     int moveOverheadMs = 20;
+    // Release 4.03 uses one Lazy search for all time protocols by default.
+    // --eager-search is a diagnostic override for controlled A/B only.
+    bool eagerSearch = false;
     tuning::SearchTuning searchTuning;
 };
 
@@ -189,6 +192,7 @@ static Options parseArgs(int argc, char** argv) {
         else if (a == "--endgame-mover-walls") o.endgameMoverWallThreshold = std::atoi(need("--endgame-mover-walls"));
         else if (a == "--endgame-leaf-depth") o.endgameLeafDepth = std::atoi(need("--endgame-leaf-depth"));
         else if (a == "--move-overhead") o.moveOverheadMs = std::max(0, std::atoi(need("--move-overhead")));
+        else if (a == "--eager-search") o.eagerSearch = true;
         else if (tuning::parseSearchTuningArg(a.c_str(), argc, argv, i, "", o.searchTuning)) {}
         else {
             std::cerr << "unknown argument: " << a << "\n";
@@ -296,7 +300,7 @@ int main(int argc, char** argv) {
         if (cmd.empty()) continue;
 
         if (cmd == "uci") {
-            std::cout << "id name zQuoridor 4.02\n";
+            std::cout << "id name zQuoridor 4.03\n";
             std::cout << "id author gitzambrano\n";
             std::cout << "uciok\n" << std::flush;
         } else if (cmd == "isready") {
@@ -367,7 +371,8 @@ int main(int argc, char** argv) {
             // Without this hint, the first ponder in a 3+2 game would use
             // Lazy, then go wtime would switch to Eager and discard the tree.
             // Preserve the tree across the FIRST opponent move as well.
-            if (nativeClockPonder && runner.params().lazyExpansion) {
+            if (nativeClockPonder && opt.eagerSearch &&
+                runner.params().lazyExpansion) {
                 runner.resetTree();
                 runner.params().lazyExpansion = false;
             }
@@ -438,11 +443,11 @@ int main(int argc, char** argv) {
             runner.params().adaptiveOptimumMs =
                 adaptiveClock ? timeBudget.optimumMs : 0;
             if (adaptiveClock) budgetMs = timeBudget.maximumMs;
-            // Fixed movetime keeps the proven Lazy+Sparse search. Native
-            // game clocks use eager expansion + exactly equivalent Sparse
-            // policy, avoiding the unproven Lazy/Adaptive 3+2 interaction.
-            const bool useLazy = movetime > 0 ||
-                (state.turn == 0 ? wtime : btime) < 0;
+            // Uniform 4.03 search: time protocol influences only budget and
+            // Adaptive Time, never tree expansion semantics. Sparse policy is
+            // unchanged. This also preserves ponder and rerooted trees across
+            // a GUI transition from movetime to clock-based go.
+            const bool useLazy = !opt.eagerSearch;
             if (runner.params().lazyExpansion != useLazy) runner.resetTree();
             runner.params().lazyExpansion = useLazy;
 

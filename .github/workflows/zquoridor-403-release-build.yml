@@ -1,0 +1,122 @@
+name: "zQuoridor 4.03 — one-shot native and WASM release build"
+on:
+  push:
+    branches: [release/zquoridor-4.03-unified-lazy-20261020]
+    paths: [".github/workflows/zquoridor-403-release-build.yml"]
+  workflow_dispatch:
+permissions:
+  contents: write
+concurrency:
+  group: zquoridor-403-release-build
+  cancel-in-progress: false
+jobs:
+  build-and-publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: true
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - uses: mymindstorm/setup-emsdk@v14
+        with:
+          version: "3.1.65"
+          actions-cache-folder: "emsdk-cache"
+      - name: Verify original pre-Apex NNUE and 4.03 metadata
+        run: |
+          set -euo pipefail
+          echo "45fa3ea7db3127a0b907a23d268b0c55c2020e1018513d54bb920cdbe134abe0  data/nnue/nnue_weights_int8.bin" | sha256sum -c -
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          m=json.loads(Path("data/nnue/release.json").read_text())
+          assert m["version"]=="4.03"
+          assert m["nnue_checkpoint_release"]=="4.01" and m["nnue_checkpoint_preserved"]
+          assert m["weights"]["nnue_weights_int8.bin"]=="45fa3ea7db3127a0b907a23d268b0c55c2020e1018513d54bb920cdbe134abe0"
+          assert "# zQuoridor 4.03" in Path("README.md").read_text()
+          assert "<b>zQuoridor 4.03</b>" in Path("gui_web/app.js").read_text()
+          print("PASS: no Apex; 4.03 release metadata, About, README",flush=True)
+          PY
+      - name: Build native 4.03 UCI and search correctness
+        run: |
+          set -euo pipefail
+          bash build/build_uci.sh
+          mkdir -p bin
+          for pair in "test_mcgs_opt_correctness test_lazy" \
+                      "test_mcgs_sparse_equivalence test_sparse" \
+                      "test_mcab_core test_mcab" \
+                      "test_time_manager test_time"; do
+            set -- $pair
+            g++ -O2 -std=c++17 -pthread -march=native -mavx2 -mfma -I src "tests/$1.cpp" -o "bin/$2"
+            "bin/$2"
+          done
+      - name: Verify 4.03 uniform clock dispatch, reroot and first ponder reuse
+        run: |
+          set -euo pipefail
+          python -m py_compile tests/test_release_403_uci.py tests/test_first_native_ponder.py
+          python -u tests/test_release_403_uci.py \
+            --exe bin/zquoridor --weights data/nnue/nnue_weights_int8.bin
+          python -u tests/test_first_native_ponder.py \
+            --exe bin/zquoridor --weights data/nnue/nnue_weights_int8.bin
+      - name: Compile 4.03 WASM with production Sparse Policy
+        run: |
+          set -euo pipefail
+          em++ --version | head -2
+          bash build/build_wasm.sh
+      - name: Verify generated JS, WASM, native weights, browser weights, and both standalone bundles
+        run: |
+          set -euo pipefail
+          node --check gui_web/app.js
+          node --check gui_web/worker.js
+          node --check gui_web/zquoridor.js
+          python - <<'PY'
+          import base64,hashlib,re
+          from pathlib import Path
+          def hash_(b): return hashlib.sha256(b).hexdigest()
+          expected="45fa3ea7db3127a0b907a23d268b0c55c2020e1018513d54bb920cdbe134abe0"
+          original=Path("data/nnue/nnue_weights_int8.bin").read_bytes()
+          browser=Path("gui_web/zquoridor.data").read_bytes()
+          assert hash_(original)==hash_(browser)==expected
+          assert Path("gui_web/zquoridor.wasm").stat().st_size>50000
+          assert Path("gui_web/zquoridor.js").stat().st_size>10000
+          wasm=Path("gui_web/zquoridor.wasm").read_bytes()
+          assert wasm[:4]==b"\x00asm"
+          for path in ("gui_web/zquoridor.html","docs/index.html"):
+              s=Path(path).read_text()
+              assert "zQuoridor 4.03" in s, path
+              m=re.search(r'__QR_DATA_BYTES__\s*=\s*__qr_b64ToBytes\("([A-Za-z0-9+/=]+)"\)',s)
+              assert m and hash_(base64.b64decode(m.group(1)))==expected,path
+              w=re.search(r'__QR_WASM_BYTES__\s*=\s*__qr_b64ToBytes\("([A-Za-z0-9+/=]+)"\)',s)
+              assert w and base64.b64decode(w.group(1))==wasm,path
+              print("PASS",path,"WASM and non-Apex NNUE embedded as built",flush=True)
+          assert Path("gui_web/zquoridor.html").read_bytes()==Path("docs/index.html").read_bytes()
+          PY
+      - name: Commit compiled web release artifacts to 4.03 branch only
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REF_NAME" = "release/zquoridor-4.03-unified-lazy-20261020"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add gui_web/zquoridor.js gui_web/zquoridor.wasm gui_web/zquoridor.data \
+                  gui_web/zquoridor.html docs/index.html
+          if git diff --cached --quiet; then
+            echo "ERROR: no regenerated web assets; refusing incomplete 4.03 release"
+            exit 1
+          fi
+          git commit -m "build(web): compile 4.03 unified Lazy WASM, standalone and Pages"
+          git push origin HEAD:release/zquoridor-4.03-unified-lazy-20261020
+      - uses: actions/upload-artifact@v4
+        if: success()
+        with:
+          name: zquoridor-403-native-wasm-validated
+          path: |
+            bin/zquoridor
+            gui_web/zquoridor.js
+            gui_web/zquoridor.wasm
+            gui_web/zquoridor.data
+            gui_web/zquoridor.html
+            docs/index.html
+            data/nnue/release.json
+          retention-days: 14

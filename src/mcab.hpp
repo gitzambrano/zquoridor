@@ -266,9 +266,10 @@ struct McabParams {
     // curtos a troca deve inverter. Ver a nota "Hybrid MCTS + alpha-beta" em
     // docs/plan.md before changing time-control behavior.
     bool enabled = true;
-    // Hybrid release guard: fixed-movetime uses Lazy; native-clock 3+2
-    // deliberately keeps eager evaluation until Lazy's long-clock strength is proven.
-    // Sparse policy stays independent and on in both modes.
+    // Release 4.03: Lazy first-visit evaluation at all time controls.
+    // CLI diagnostic --eager-search may explicitly disable it; the clock
+    // protocol never selects a different expansion algorithm.
+    // Legal-action Sparse Policy is independent of the expansion schedule.
     bool lazyExpansion = true;
     int nodeBudget = 20000;              // 0/1 = modo equivalência, Seção 6
     // A fixed node budget is useful for deterministic benchmarks and
@@ -926,6 +927,13 @@ public:
             }
         }
 
+        // Start timing BEFORE tree preparation (policy history, reroot,
+        // compaction, graph-depth normalization, cache rebuilding, root
+        // accumulator, and expansion). These can take seconds with a large
+        // reused tree. The preceding AB pre-ranking is already deducted
+        // from treeBudgetMs separately, so it must not be counted twice.
+        const auto treePhaseStart = std::chrono::steady_clock::now();
+
         // inv/ab-policy, direction B: seed the AB history table from the
         // game root (one policy pass per move) so searchLeaf-style leaves
         // inherit policy guidance. After the ranking pass on purpose: both
@@ -1060,7 +1068,9 @@ public:
         // um orçamento de 60ms virava ~110ms medidos (quase 2x) -- inaceitável
         // sob controle de tempo real no arena. `leafDeadline` propaga o teto
         // até engine.searchLeaf (ver evaluateLeaf).
-        auto t0 = std::chrono::steady_clock::now();
+        // Deadline is now based on the whole tree phase, not only
+        // simulation time: root reuse may otherwise exceed the clock.
+        const auto t0 = treePhaseStart;
         haveLeafDeadline = (treeBudgetMs > 0);
         if (haveLeafDeadline) leafDeadline = t0 + std::chrono::milliseconds(treeBudgetMs);
 
