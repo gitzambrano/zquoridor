@@ -266,9 +266,10 @@ struct McabParams {
     // curtos a troca deve inverter. Ver a nota "Hybrid MCTS + alpha-beta" em
     // docs/plan.md before changing time-control behavior.
     bool enabled = true;
-    // Hybrid release guard: fixed-movetime uses Lazy; native-clock 3+2
-    // deliberately keeps eager evaluation until Lazy's long-clock strength is proven.
-    // Sparse policy stays independent and on in both modes.
+    // Release 4.03: Lazy first-visit evaluation at all time controls.
+    // CLI diagnostic --eager-search may explicitly disable it; the clock
+    // protocol never selects a different expansion algorithm.
+    // Legal-action Sparse Policy is independent of the expansion schedule.
     bool lazyExpansion = true;
     int nodeBudget = 20000;              // 0/1 = modo equivalência, Seção 6
     // A fixed node budget is useful for deterministic benchmarks and
