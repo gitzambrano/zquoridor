@@ -59,6 +59,9 @@
 #ifndef ZQ_EXP_EDGE_ACC_CACHE
 #define ZQ_EXP_EDGE_ACC_CACHE 0
 #endif
+#ifndef ZQ_EXP_SPARSE_POLICY
+#define ZQ_EXP_SPARSE_POLICY 0
+#endif
 #ifndef ZQ_EXP_EDGE_ACC_FULL_CANONICAL
 #define ZQ_EXP_EDGE_ACC_FULL_CANONICAL 0
 #endif
@@ -263,6 +266,10 @@ struct McabParams {
     // curtos a troca deve inverter. Ver a nota "Hybrid MCTS + alpha-beta" em
     // docs/plan.md before changing time-control behavior.
     bool enabled = true;
+    // Hybrid release guard: fixed-movetime uses Lazy; native-clock 3+2
+    // deliberately keeps eager evaluation until Lazy's long-clock strength is proven.
+    // Sparse policy stays independent and on in both modes.
+    bool lazyExpansion = true;
     int nodeBudget = 20000;              // 0/1 = modo equivalência, Seção 6
     // A fixed node budget is useful for deterministic benchmarks and
     // self-play. Real game front-ends enable autoNodeBudget so wall-clock
@@ -444,6 +451,7 @@ inline double adaptiveTimeFactor(double visitRatio, double qGap, double stableFr
 struct McabStats {
     long long simulations = 0;
     long long nodesExpanded = 0;
+    long long lazyExpansionsDeferred = 0;
     int effectiveNodeBudget = 0;
     long long leafSearches = 0;      // avaliações de folha (nnueEvalInt ou searchLeaf)
     long long leafDepthSum = 0;      // soma das profundidades usadas (média = /leafSearches)
@@ -684,6 +692,7 @@ struct MCABNode {
     StateT state;
     int side = 0;                 // state.turn, cacheado
     bool expanded = false;
+    bool lazyValueEvaluated = false; // variant: first visit evaluates, second visit expands
     bool terminal = false;
     int terminalScore = 0;        // score (unidades NNUE_EVAL_SCALE); convertido via scoreToQ na hora de usar
     MoveListT moves;               // currently active, already-legal moves
@@ -1760,8 +1769,20 @@ private:
         activateWidening(node, desired);
     }
 
+    template <class AccT>
+    static auto forwardSparseDispatch(const AccT& acc, const MoveListT& legal, int side,
+                                      std::array<float, PolicyDim>& out, int)
+        -> decltype(forwardPolicyQuantSparse(acc, legal, side, out), void()) {
+        forwardPolicyQuantSparse(acc, legal, side, out);
+    }
+    template <class AccT>
+    static void forwardSparseDispatch(const AccT& acc, const MoveListT&, int,
+                                      std::array<float, PolicyDim>& out, long) {
+        forwardPolicyQuant(acc, out);  // generic toy-engine fallback
+    }
     void policyOutputForNode(const NodeT& node, int depthInTree,
-                             std::array<float, PolicyDim>& out, McabStats& mstats) {
+                             std::array<float, PolicyDim>& out, McabStats& mstats,
+                             const MoveListT* legal = nullptr) {
         uint64_t key = params.evalCache ? mcabEvalStateKey(node.state, 0) : 0;
         if (key != 0) {
             if (auto* entry = findPolicyEvalCache(key)) {
@@ -1770,7 +1791,14 @@ private:
                 return;
             }
         }
+#if ZQ_EXP_SPARSE_POLICY
+        if (legal) forwardSparseDispatch(mcabAccStack[depthInTree].acc[node.side], *legal,
+                                         node.side, out, 0);
+        else forwardPolicyQuant(mcabAccStack[depthInTree].acc[node.side], out);
+#else
+        (void)legal;
         forwardPolicyQuant(mcabAccStack[depthInTree].acc[node.side], out);
+#endif
         if (key != 0) {
             auto& entry = storePolicyEvalCache(key, mstats);
             entry.policy = out;
@@ -1791,7 +1819,7 @@ private:
 
             if (nm > 0) {
                 std::array<float, PolicyDim> policyOut{};
-                policyOutputForNode(node, depthInTree, policyOut, mstats);
+                policyOutputForNode(node, depthInTree, policyOut, mstats, &node.moves);
                 // perf/speed-elo-100: era std::vector<float> alocado por
                 // expansao; nm <= 131 < PolicyDim(=209), entao um buffer de
                 // pilha elimina o malloc do caminho quente.
@@ -2010,8 +2038,21 @@ private:
             bool depthCapped = (depth + 1 >= (int)mcabAccStack.size()) ||
                                 (depth >= params.maxTreeDepth);
 
-            if (!node.expanded || depthCapped) {
-                if (!node.expanded) expandNode(curIdx, depth, mstats);
+            // A fresh nonterminal node needs only its value on the first visit.
+            // Policy, legal wall enumeration and edge allocation are deferred
+            // until it is actually revisited for child selection. In a graph,
+            // the bit belongs to the node, not the incoming edge or path.
+            if ((!node.expanded && (!params.lazyExpansion || !node.lazyValueEvaluated)) || depthCapped) {
+                if (!node.expanded) {
+                    if (!params.lazyExpansion) {
+                        // Exact old eager path: at the first leaf visit, expand
+                        // before evaluation, including depth-capped leaves.
+                        expandNode(curIdx, depth, mstats);
+                    } else if (!node.lazyValueEvaluated) {
+                        node.lazyValueEvaluated = true;
+                        ++mstats.lazyExpansionsDeferred;
+                    }
+                }
                 // Visitas do RAMO que levou até aqui (Seção 9,
                 // mcabAdaptiveLeafDepth): totalN do nó PAI, ou o totalN da
                 // própria raiz quando estamos nela.
@@ -2033,6 +2074,8 @@ private:
                 else backup(path, leafQ, mstats);
                 return;
             }
+
+            if (!node.expanded) expandNode(curIdx, depth, mstats);
 
             int e = selectChildPUCT(node);
             if constexpr (kResidualPuct) {
@@ -2170,7 +2213,8 @@ private:
     // perspectiva subindo a árvore.
     double evaluateLeaf(Eng& engine, NodeT& node, int depthInTree, int branchVisits,
                          SearchStatsT& stats, McabStats& mstats) {
-        if (node.moves.empty()) return 0.5;  // sem lances e não-terminal: não deveria ocorrer; neutro defensivo
+        // An unexpanded node has no moves *yet*: that is not a stalemate.
+        if (node.expanded && node.moves.empty()) return 0.5;
         int leafDepth = effectiveLeafDepth(branchVisits);
 
         if (leafDepth <= 0) {

@@ -296,7 +296,7 @@ int main(int argc, char** argv) {
         if (cmd.empty()) continue;
 
         if (cmd == "uci") {
-            std::cout << "id name zQuoridor 4.01\n";
+            std::cout << "id name zQuoridor 4.02\n";
             std::cout << "id author gitzambrano\n";
             std::cout << "uciok\n" << std::flush;
         } else if (cmd == "isready") {
@@ -310,7 +310,7 @@ int main(int argc, char** argv) {
                 << "  position startpos [moves <move> ...]\n"
                 << "  go movetime <ms>\n"
                 << "  go wtime <ms> btime <ms> [winc <ms>] [binc <ms>] [movestogo <n>]\n"
-                << "  ponder movetime <ms>\n"
+                << "  ponder [clock] movetime <ms>\n"
                 << "  help\n"
                 << "  quit\n"
                 << "Moves use Quoridor coordinates such as e2, d4h, or d4v.\n"
@@ -341,9 +341,11 @@ int main(int argc, char** argv) {
             }
         } else if (cmd == "ponder") {
             int movetime = -1;
+            bool nativeClockPonder = false;
             std::string token;
             while (iss >> token) {
                 if (token == "movetime") iss >> movetime;
+                else if (token == "clock") nativeClockPonder = true;
             }
             if (movetime <= 0) {
                 std::cout << "info string error ponder requires 'movetime MS'\n" << std::flush;
@@ -361,6 +363,15 @@ int main(int argc, char** argv) {
             // resulting tree; when the real opponent move is later appended to
             // the position history, normal choose() reroots onto that child.
             //
+            // The controller knows whether the next move uses a native clock.
+            // Without this hint, the first ponder in a 3+2 game would use
+            // Lazy, then go wtime would switch to Eager and discard the tree.
+            // Preserve the tree across the FIRST opponent move as well.
+            if (nativeClockPonder && runner.params().lazyExpansion) {
+                runner.resetTree();
+                runner.params().lazyExpansion = false;
+            }
+
             // Adaptive clock allocation is deliberately disabled here: ponder
             // time is free compute on the opponent clock, not our game clock.
             runner.params().adaptiveTime = false;
@@ -427,6 +438,13 @@ int main(int argc, char** argv) {
             runner.params().adaptiveOptimumMs =
                 adaptiveClock ? timeBudget.optimumMs : 0;
             if (adaptiveClock) budgetMs = timeBudget.maximumMs;
+            // Fixed movetime keeps the proven Lazy+Sparse search. Native
+            // game clocks use eager expansion + exactly equivalent Sparse
+            // policy, avoiding the unproven Lazy/Adaptive 3+2 interaction.
+            const bool useLazy = movetime > 0 ||
+                (state.turn == 0 ? wtime : btime) < 0;
+            if (runner.params().lazyExpansion != useLazy) runner.resetTree();
+            runner.params().lazyExpansion = useLazy;
 
             qr::SearchStats stats;
             mcab::McabStats mstats;
@@ -440,6 +458,7 @@ int main(int argc, char** argv) {
                       << " time " << elapsed
                       << " string budget=" << budgetMs
                       << " nodecap=" << mstats.effectiveNodeBudget
+                      << " lazy=" << (runner.params().lazyExpansion ? 1 : 0)
                       << " hard=" << timeBudget.maximumMs
                       << " cpuct=" << params.cPuct
                       << " scale=" << params.scoreScale
