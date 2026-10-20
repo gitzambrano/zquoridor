@@ -145,6 +145,8 @@ struct Options {
     int endgameMoverWallThreshold = -999;
     int endgameLeafDepth = -1;
     int moveOverheadMs = 20;
+    // Opt-in research mode: keep Lazy regardless of protocol or clock.
+    bool unifiedLazySearch = false;
     tuning::SearchTuning searchTuning;
 };
 
@@ -189,6 +191,7 @@ static Options parseArgs(int argc, char** argv) {
         else if (a == "--endgame-mover-walls") o.endgameMoverWallThreshold = std::atoi(need("--endgame-mover-walls"));
         else if (a == "--endgame-leaf-depth") o.endgameLeafDepth = std::atoi(need("--endgame-leaf-depth"));
         else if (a == "--move-overhead") o.moveOverheadMs = std::max(0, std::atoi(need("--move-overhead")));
+        else if (a == "--unified-lazy-search") o.unifiedLazySearch = true;
         else if (tuning::parseSearchTuningArg(a.c_str(), argc, argv, i, "", o.searchTuning)) {}
         else {
             std::cerr << "unknown argument: " << a << "\n";
@@ -367,7 +370,8 @@ int main(int argc, char** argv) {
             // Without this hint, the first ponder in a 3+2 game would use
             // Lazy, then go wtime would switch to Eager and discard the tree.
             // Preserve the tree across the FIRST opponent move as well.
-            if (nativeClockPonder && runner.params().lazyExpansion) {
+            if (nativeClockPonder && !opt.unifiedLazySearch &&
+                runner.params().lazyExpansion) {
                 runner.resetTree();
                 runner.params().lazyExpansion = false;
             }
@@ -441,7 +445,7 @@ int main(int argc, char** argv) {
             // Fixed movetime keeps the proven Lazy+Sparse search. Native
             // game clocks use eager expansion + exactly equivalent Sparse
             // policy, avoiding the unproven Lazy/Adaptive 3+2 interaction.
-            const bool useLazy = movetime > 0 ||
+            const bool useLazy = opt.unifiedLazySearch || movetime > 0 ||
                 (state.turn == 0 ? wtime : btime) < 0;
             if (runner.params().lazyExpansion != useLazy) runner.resetTree();
             runner.params().lazyExpansion = useLazy;
