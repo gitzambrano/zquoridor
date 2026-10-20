@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Smoke test first opponent ponder / first go real-clock tree reuse.
+"""Smoke test first opponent ponder / first go real-clock tree reuse under uniform Lazy.
 
 No games or opponent dependencies; derive the played move from the
 engine's own ponder suggestion so it necessarily has a searched child.
@@ -66,7 +66,9 @@ def main():
     a2=run(a.exe,a.weights,True,True)
     a3=run(a.exe,a.weights,False,True)
     assert (a1["treeHit"],a1["lazy"])==(1,1),a1
-    assert (a2["treeHit"],a2["lazy"])==(1,0),a2
-    assert (a3["treeHit"],a3["lazy"])==(0,0),a3
+    # 4.03 uses Lazy on all game-clock protocols. Ponder roots remain
+    # compatible whether the optional native-clock hint is supplied or not.
+    assert (a2["treeHit"],a2["lazy"])==(1,1),a2
+    assert (a3["treeHit"],a3["lazy"])==(1,1),a3
     for case in (a1,a2,a3):print("VALID PONDER ROOT",case,flush=True)
 if __name__=="__main__":main()
