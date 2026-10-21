@@ -39,7 +39,7 @@ CONFIG = {
     "move_time_ms": 20,
     "zq_executable": str(ROOT / "bin" / "zquoridor.exe"),
     "output": str(ROOT / "data/teaching/wall_drops"),
-    "teacher": "zquoridor-4.01",
+    "teacher": "zquoridor-4.10",
     "seed": 20261009,
     "export_npz": True,
     "split": "train",
@@ -323,7 +323,7 @@ def run_generation(config: dict) -> dict:
 
             label_record = make_label(
                 position=pos_record,
-                teacher=config.get("teacher", "zquoridor-4.01"),
+                teacher=config.get("teacher", "zquoridor-4.10"),
                 mode="search-root",
                 policy=policy,
                 value=root_value,

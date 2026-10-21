@@ -89,14 +89,14 @@ print('Launching: {job_label}', flush=True)
 
 JOB_SPECS = {
     1: {
-        "job_label": "Wall Drops v4.10 (Medium Mazes: 3-8 walls) [Target: 100,000]",
+        "job_label": "Wall Drops v4.10 (Medium Mazes: 3-8 walls) [Target: 500,000]",
         "output_dir": "/content/drive/MyDrive/zquoridor_data/wall_drops_v410/worker_1",
-        "cli_command": "python -u tools/generate_wall_drops.py --count 100000 --min-walls 3 --max-walls 8 --pawn-walk-plies 4 --move-time-ms 20 --teacher zquoridor-4.10 --zq-executable /content/zquoridor_runtime/zquoridor_uci --output /content/drive/MyDrive/zquoridor_data/wall_drops_v410/worker_1 --seed 1000001",
+        "cli_command": "python -u tools/generate_wall_drops.py --count 500000 --min-walls 3 --max-walls 8 --pawn-walk-plies 4 --move-time-ms 20 --teacher zquoridor-4.10 --zq-executable /content/zquoridor_runtime/zquoridor_uci --output /content/drive/MyDrive/zquoridor_data/wall_drops_v410/worker_1 --seed 1000001",
     },
     2: {
-        "job_label": "Wall Drops v4.10 (Extreme Mazes: 8-14 walls) [Target: 100,000]",
+        "job_label": "Wall Drops v4.10 (Extreme Mazes: 8-14 walls) [Target: 500,000]",
         "output_dir": "/content/drive/MyDrive/zquoridor_data/wall_drops_v410/worker_2",
-        "cli_command": "python -u tools/generate_wall_drops.py --count 100000 --min-walls 8 --max-walls 14 --pawn-walk-plies 4 --move-time-ms 20 --teacher zquoridor-4.10 --zq-executable /content/zquoridor_runtime/zquoridor_uci --output /content/drive/MyDrive/zquoridor_data/wall_drops_v410/worker_2 --seed 2000002",
+        "cli_command": "python -u tools/generate_wall_drops.py --count 500000 --min-walls 8 --max-walls 14 --pawn-walk-plies 4 --move-time-ms 20 --teacher zquoridor-4.10 --zq-executable /content/zquoridor_runtime/zquoridor_uci --output /content/drive/MyDrive/zquoridor_data/wall_drops_v410/worker_2 --seed 2000002",
     },
     3: {
         "job_label": "Gumbel AlphaZero Sequential Halving v4.10 (Top-K=8, 15ms) [Target: 20,000]",
@@ -289,8 +289,11 @@ def get_cell_execution_state(page: Any) -> Dict[str, Any]:
                 }
             }
 
+            let out = '';
             const streams = Array.from(document.querySelectorAll('.output-stream, colab-output, .output_text'));
-            out = streams.map(s => s.innerText || '').join('\\n');
+            if (streams.length > 0) {
+                out = (streams[0].innerText || '').trim();
+            }
 
             return {
                 running: running,
@@ -439,17 +442,17 @@ def deploy_worker(p: Any, wid: int, force_relaunch: bool = True) -> Dict[str, An
     handle_oauth(ctx)
     handle_dialogs(page)
 
-    has_v410_code = page.evaluate("""() => {
+    has_target_code = page.evaluate("""(cmd) => {
         const c = globalThis.colab?.global?.notebook?.cells?.[0];
         const t = c && c.getText ? c.getText() : '';
-        return t.includes('v410') && t.includes('zquoridor-4.10');
-    }""")
+        return t.includes(cmd);
+    }""", spec["cli_command"])
 
     st = get_cell_execution_state(page)
     is_active = (st["running"] or st["pending"]) and not st.get("hasError", False)
 
-    if is_active and has_v410_code and not force_relaunch:
-        print(f"  Worker {wid} is already running version 4.10! Preserving current execution.", flush=True)
+    if is_active and has_target_code and not force_relaunch:
+        print(f"  Worker {wid} is already running the target job! Preserving current execution.", flush=True)
     else:
         if st["running"] or st["pending"]:
             print(f"  Worker {wid}: Stopping current execution to ensure latest git commits...", flush=True)
@@ -497,7 +500,7 @@ def deploy_worker(p: Any, wid: int, force_relaunch: bool = True) -> Dict[str, An
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--no-force-relaunch", dest="force_relaunch", action="store_false", default=True,
+    parser.add_argument("--force-relaunch", dest="force_relaunch", action="store_true", default=False,
                         help="Preserve active worker execution instead of relaunching with version 4.10.")
     parser.add_argument("--workers", type=int, nargs="+", default=[1, 2, 3, 4, 5],
                         help="List of worker IDs to deploy and monitor.")

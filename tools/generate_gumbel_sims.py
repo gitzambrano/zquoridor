@@ -40,7 +40,7 @@ CONFIG = {
     "zq_executable": str(ROOT / "bin" / "zquoridor.exe"),
     "source_positions": None,
     "output": str(ROOT / "data/teaching/gumbel_sims"),
-    "teacher": "zquoridor-4.01-gumbel",
+    "teacher": "zquoridor-4.10-gumbel",
     "seed": 20261009,
     "export_npz": True,
     "split": "train",
@@ -431,7 +431,7 @@ def run_gumbel_generation(config: dict) -> dict:
 
         label_record = make_label(
             position=pos_record,
-            teacher=config.get("teacher", "zquoridor-4.01-gumbel"),
+            teacher=config.get("teacher", "zquoridor-4.10-gumbel"),
             mode="gumbel-sequential-halving",
             policy=policy_target,
             value=expected_value,
