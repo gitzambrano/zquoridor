@@ -26,4 +26,4 @@ if %ERRORLEVEL% equ 0 (
     echo ERROR: Compilacao falhou. Verifique se MinGW-w64 esta em C:\mingw64\bin
     echo.
 )
-pause
+

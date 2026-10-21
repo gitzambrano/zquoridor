@@ -96,7 +96,10 @@ _ORTH_NEIGHBORS, _EDGE_H_MASKS, _EDGE_V_MASKS = _make_edge_tables()
 def encode_features(data, indices, architecture="base"):
     if architecture in ARCH_CONFIGS:
         architecture = ARCH_CONFIGS[architecture]["base_feature"]
-    from train_teacher_policy import dense_features
+    try:
+        from training.train_teacher_policy import dense_features
+    except ImportError:
+        from train_teacher_policy import dense_features
     x = dense_features(data, indices)
     if architecture == "base":
         return x

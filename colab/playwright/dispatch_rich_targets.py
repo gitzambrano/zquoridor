@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Dispatch Wall-Drop and Gumbel simulation jobs across all 5 Google Colab workers using version 4.01."""
+"""Dispatch Wall-Drop and Gumbel simulation jobs across all 5 Google Colab workers using version 4.10."""
 from __future__ import annotations
 
 import sys as _sys
@@ -52,14 +52,14 @@ os.chdir(checkout)
 runtime_dir = Path('/content/zquoridor_runtime')
 runtime_dir.mkdir(parents=True, exist_ok=True)
 zq_bin = runtime_dir / 'zquoridor_uci'
-print('Compiling native C++ engine (version 4.01) with AVX2 and FMA...', flush=True)
+print('Compiling native C++ engine (version 4.10) with AVX2 and FMA...', flush=True)
 subprocess.run(['g++', '-O3', '-std=c++17', '-mavx2', '-mfma',
                 '-I', str(checkout / 'src'),
                 str(checkout / 'tools/external/zquoridor_uci.cpp'),
                 '-o', str(zq_bin)], check=True)
 zq_bin.chmod(0o755)
 
-# Verify version 4.01 in UCI identity
+# Verify version 4.10 in UCI identity
 chk = subprocess.run([str(zq_bin)], input='uci\\nquit\\n', capture_output=True, text=True, check=True, cwd=str(checkout))
 ver_lines = [l.strip() for l in chk.stdout.splitlines() if 'id name' in l]
 print('Engine verification:', ver_lines, flush=True)
@@ -89,29 +89,29 @@ print('Launching: {job_label}', flush=True)
 
 JOB_SPECS = {
     1: {
-        "job_label": "Wall Drops v4.01 (Medium Mazes: 3-8 walls) [Target: 100,000]",
-        "output_dir": "/content/drive/MyDrive/zquoridor_data/wall_drops_v401/worker_1",
-        "cli_command": "python -u tools/generate_wall_drops.py --count 100000 --min-walls 3 --max-walls 8 --pawn-walk-plies 4 --move-time-ms 20 --teacher zquoridor-4.01 --zq-executable /content/zquoridor_runtime/zquoridor_uci --output /content/drive/MyDrive/zquoridor_data/wall_drops_v401/worker_1 --seed 1000001",
+        "job_label": "Wall Drops v4.10 (Medium Mazes: 3-8 walls) [Target: 100,000]",
+        "output_dir": "/content/drive/MyDrive/zquoridor_data/wall_drops_v410/worker_1",
+        "cli_command": "python -u tools/generate_wall_drops.py --count 100000 --min-walls 3 --max-walls 8 --pawn-walk-plies 4 --move-time-ms 20 --teacher zquoridor-4.10 --zq-executable /content/zquoridor_runtime/zquoridor_uci --output /content/drive/MyDrive/zquoridor_data/wall_drops_v410/worker_1 --seed 1000001",
     },
     2: {
-        "job_label": "Wall Drops v4.01 (Extreme Mazes: 8-14 walls) [Target: 100,000]",
-        "output_dir": "/content/drive/MyDrive/zquoridor_data/wall_drops_v401/worker_2",
-        "cli_command": "python -u tools/generate_wall_drops.py --count 100000 --min-walls 8 --max-walls 14 --pawn-walk-plies 4 --move-time-ms 20 --teacher zquoridor-4.01 --zq-executable /content/zquoridor_runtime/zquoridor_uci --output /content/drive/MyDrive/zquoridor_data/wall_drops_v401/worker_2 --seed 2000002",
+        "job_label": "Wall Drops v4.10 (Extreme Mazes: 8-14 walls) [Target: 100,000]",
+        "output_dir": "/content/drive/MyDrive/zquoridor_data/wall_drops_v410/worker_2",
+        "cli_command": "python -u tools/generate_wall_drops.py --count 100000 --min-walls 8 --max-walls 14 --pawn-walk-plies 4 --move-time-ms 20 --teacher zquoridor-4.10 --zq-executable /content/zquoridor_runtime/zquoridor_uci --output /content/drive/MyDrive/zquoridor_data/wall_drops_v410/worker_2 --seed 2000002",
     },
     3: {
-        "job_label": "Gumbel AlphaZero Sequential Halving v4.01 (Top-K=8, 15ms) [Target: 20,000]",
-        "output_dir": "/content/drive/MyDrive/zquoridor_data/gumbel_sims_v401/worker_3",
-        "cli_command": "python -u tools/generate_gumbel_sims.py --count 20000 --top-k 8 --c-scale 2.0 --move-time-ms 15 --teacher zquoridor-4.01-gumbel --zq-executable /content/zquoridor_runtime/zquoridor_uci --output /content/drive/MyDrive/zquoridor_data/gumbel_sims_v401/worker_3 --seed 3000003",
+        "job_label": "Gumbel AlphaZero Sequential Halving v4.10 (Top-K=8, 15ms) [Target: 20,000]",
+        "output_dir": "/content/drive/MyDrive/zquoridor_data/gumbel_sims_v410/worker_3",
+        "cli_command": "python -u tools/generate_gumbel_sims.py --count 20000 --top-k 8 --c-scale 2.0 --move-time-ms 15 --teacher zquoridor-4.10-gumbel --zq-executable /content/zquoridor_runtime/zquoridor_uci --output /content/drive/MyDrive/zquoridor_data/gumbel_sims_v410/worker_3 --seed 3000003",
     },
     4: {
-        "job_label": "Gumbel AlphaZero Sequential Halving v4.01 (Top-K=8, 15ms) [Target: 20,000]",
-        "output_dir": "/content/drive/MyDrive/zquoridor_data/gumbel_sims_v401/worker_4",
-        "cli_command": "python -u tools/generate_gumbel_sims.py --count 20000 --top-k 8 --c-scale 2.0 --move-time-ms 15 --teacher zquoridor-4.01-gumbel --zq-executable /content/zquoridor_runtime/zquoridor_uci --output /content/drive/MyDrive/zquoridor_data/gumbel_sims_v401/worker_4 --seed 4000004",
+        "job_label": "Gumbel AlphaZero Sequential Halving v4.10 (Top-K=8, 15ms) [Target: 20,000]",
+        "output_dir": "/content/drive/MyDrive/zquoridor_data/gumbel_sims_v410/worker_4",
+        "cli_command": "python -u tools/generate_gumbel_sims.py --count 20000 --top-k 8 --c-scale 2.0 --move-time-ms 15 --teacher zquoridor-4.10-gumbel --zq-executable /content/zquoridor_runtime/zquoridor_uci --output /content/drive/MyDrive/zquoridor_data/gumbel_sims_v410/worker_4 --seed 4000004",
     },
     5: {
-        "job_label": "Gumbel Deep Planning v4.01 (Top-K=16, 20ms) [Target: 20,000]",
-        "output_dir": "/content/drive/MyDrive/zquoridor_data/gumbel_sims_v401/worker_5",
-        "cli_command": "python -u tools/generate_gumbel_sims.py --count 20000 --top-k 16 --c-scale 2.5 --move-time-ms 20 --teacher zquoridor-4.01-gumbel --zq-executable /content/zquoridor_runtime/zquoridor_uci --output /content/drive/MyDrive/zquoridor_data/gumbel_sims_v401/worker_5 --seed 5000005",
+        "job_label": "Gumbel Deep Planning v4.10 (Top-K=16, 20ms) [Target: 20,000]",
+        "output_dir": "/content/drive/MyDrive/zquoridor_data/gumbel_sims_v410/worker_5",
+        "cli_command": "python -u tools/generate_gumbel_sims.py --count 20000 --top-k 16 --c-scale 2.5 --move-time-ms 20 --teacher zquoridor-4.10-gumbel --zq-executable /content/zquoridor_runtime/zquoridor_uci --output /content/drive/MyDrive/zquoridor_data/gumbel_sims_v410/worker_5 --seed 5000005",
     },
 }
 
@@ -439,17 +439,17 @@ def deploy_worker(p: Any, wid: int, force_relaunch: bool = True) -> Dict[str, An
     handle_oauth(ctx)
     handle_dialogs(page)
 
-    has_v401_code = page.evaluate("""() => {
+    has_v410_code = page.evaluate("""() => {
         const c = globalThis.colab?.global?.notebook?.cells?.[0];
         const t = c && c.getText ? c.getText() : '';
-        return t.includes('v401') && t.includes('zquoridor-4.01');
+        return t.includes('v410') && t.includes('zquoridor-4.10');
     }""")
 
     st = get_cell_execution_state(page)
     is_active = (st["running"] or st["pending"]) and not st.get("hasError", False)
 
-    if is_active and has_v401_code and not force_relaunch:
-        print(f"  Worker {wid} is already running version 4.01! Preserving current execution.", flush=True)
+    if is_active and has_v410_code and not force_relaunch:
+        print(f"  Worker {wid} is already running version 4.10! Preserving current execution.", flush=True)
     else:
         if st["running"] or st["pending"]:
             print(f"  Worker {wid}: Stopping current execution to ensure latest git commits...", flush=True)
@@ -498,13 +498,13 @@ def deploy_worker(p: Any, wid: int, force_relaunch: bool = True) -> Dict[str, An
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--no-force-relaunch", dest="force_relaunch", action="store_false", default=True,
-                        help="Preserve active worker execution instead of relaunching with version 4.01.")
+                        help="Preserve active worker execution instead of relaunching with version 4.10.")
     parser.add_argument("--workers", type=int, nargs="+", default=[1, 2, 3, 4, 5],
                         help="List of worker IDs to deploy and monitor.")
     args = parser.parse_args()
 
     print("=================================================================", flush=True)
-    print("DISPATCHING RICH TARGETS (WALL DROPS + GUMBEL) - VERSION 4.01", flush=True)
+    print("DISPATCHING RICH TARGETS (WALL DROPS + GUMBEL) - VERSION 4.10", flush=True)
     print("=================================================================", flush=True)
 
     workers_state: Dict[int, Dict[str, Any]] = {}

@@ -18,8 +18,12 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
-import train_nnue as base
-from quantize_nnue import quantize_file
+try:
+    from training import train_nnue as base
+    from training.quantize_nnue import quantize_file
+except ImportError:
+    import train_nnue as base
+    from quantize_nnue import quantize_file
 
 
 def dense_features(data, indices: np.ndarray) -> np.ndarray:
