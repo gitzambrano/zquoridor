@@ -289,7 +289,6 @@ def get_cell_execution_state(page: Any) -> Dict[str, Any]:
                 }
             }
 
-            let out = '';
             const streams = Array.from(document.querySelectorAll('.output-stream, colab-output, .output_text'));
             if (streams.length > 0) {
                 out = (streams[0].innerText || '').trim();
