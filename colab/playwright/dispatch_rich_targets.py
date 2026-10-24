@@ -133,7 +133,7 @@ def handle_dialogs(page: Any) -> str:
                     }
                 }
                 if (txt.includes('Google Drive') || txt.includes('drive')) {
-                    for (const b of d.querySelectorAll('button, md-text-button, mwc-button, paper-button, #ok')) {
+                    for (const b of d.querySelectorAll('button, md-filled-button, md-text-button, mwc-button, paper-button, #ok')) {
                         const btxt = (b.innerText || '').toLowerCase();
                         if (btxt.includes('conectar') || btxt.includes('connect') || btxt.includes('permitir') || btxt.includes('allow') || b.id === 'ok') {
                             b.click();
