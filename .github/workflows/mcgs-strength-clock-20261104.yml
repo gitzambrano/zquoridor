@@ -1,0 +1,49 @@
+name: "MCGS real 3+2 root budget screen"
+on:
+  push:
+    branches: [exp/mcgs-strength-20261104]
+    paths: [".github/workflows/mcgs-strength-clock-20261104.yml"]
+  workflow_dispatch:
+permissions:
+  contents: read
+
+jobs:
+  clock:
+    name: clock-${{ matrix.variant }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    strategy:
+      max-parallel: 2
+      fail-fast: false
+      matrix:
+        include:
+          - variant: compact
+            compact: 1
+            puct: 0
+          - variant: combined
+            compact: 1
+            puct: 1
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compile paired clock probes on one CPU
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p bin "results/clock/${{ matrix.variant }}"
+          CXX="-O3 -DNDEBUG -std=c++17 -pthread -march=native -mavx2 -mfma -Isrc"
+          g++ $CXX benchmarks/bench_mcgs_strength_20261104.cpp -o bin/zq_clock_base
+          g++ $CXX -DZQ_EXP_COMPACT_MCGS_NODE=${{ matrix.compact }} -DZQ_EXP_PUCT_SUM_CACHE=${{ matrix.puct }} benchmarks/bench_mcgs_strength_20261104.cpp -o bin/zq_clock_cand
+      - name: Measure complete adaptive 3+2 root budgets and memory
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "fe8473255fd219fab247b1a7d44be25384a6cfc5daa5c301def49109badb7f2b  data/nnue/nnue_weights_int8.bin" | sha256sum -c -
+          bin/zq_clock_base --label main_3p2 --count 4 --adaptive 1 --cache 1 > results/clock/${{ matrix.variant }}/main.log
+          bin/zq_clock_cand --label candidate_3p2 --count 4 --adaptive 1 --cache 1 > results/clock/${{ matrix.variant }}/candidate.log
+          grep '^SUMMARY' results/clock/${{ matrix.variant }}/*.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: mcgs-strength-clock-${{ matrix.variant }}
+          path: results/clock/${{ matrix.variant }}/
+          retention-days: 14
