@@ -1,3 +1,9 @@
+## CPU-targeted UCI build (experimental)
+
+- `build/build_uci_native.sh`: Compile the UCI adapter for the host CPU with `-O3 -march=native`. Run with `bash build/build_uci_native.sh`. Output: `bin/zquoridor-native`. Default configuration uses the production 4.10 engine and NNUE.
+- `build/build_uci_native.bat`: Compile the same UCI adapter with MinGW GCC on Windows. Run with `build\\build_uci_native.bat`. Output: `bin/zquoridor-native.exe`.
+- These binaries require a compatible CPU. The standard portable `build_uci` entry points remain unchanged. Do not distribute a native binary as a portable release.
+
 # Script Catalog and Execution Contracts
 
 This document is the reference catalog for operational scripts in Zquoridor.
