@@ -170,3 +170,43 @@ Neither hypothesis is proved by this performance study. A network
 promotion requires paired external measurements against frozen main,
 Claustrophobia, and Titanium in both books and native 3+2. Keep all
 training and evaluation datasets separate.
+
+## Tactical disagreement diagnostic: targeted search budget
+
+Source: https://github.com/gitzambrano/zquoridor/actions/runs/41958037309
+
+Three jobs completed successfully. The unchanged 4.10 engine searched
+12 fixed-seed legal openings per book at 200 ms and 1,200 ms per move.
+The protocol emitted full root visit and prior arrays. This diagnostic
+does not establish the correct move or measure Elo.
+
+| Sample group | Positions | Different best moves | Deeper search moved from pawn to wall |
+| --- | ---: | ---: | ---: |
+| Frozen Normal confirmation | 12 | 1 (8.3%) | 0 |
+| Frozen Center Rush | 12 | 1 (8.3%) | 0 |
+| Targeted weakness seeds | 12 | 5 (41.7%) | 1 |
+
+The targeted cases are more sensitive to search time than these small
+general-purpose samples. The sample is not a representative random
+distribution of all Quoridor positions.
+
+In targeted weakness seed 1677, the 200 ms search chose pawn move
+`e3`, while the 1,200 ms search chose wall `d6h`. The longer
+search ranked that wall fourth by its own policy prior.
+In seed 1266, the selected wall changed from `f6h` to `e4v`;
+the longer search ranked the selected wall eleventh by prior.
+In seed 605, the selected wall changed from `f7h` to `e6h`.
+These differences identify concrete positions for later deeper evaluation.
+
+The short search and longer search are the same model. Therefore, move
+disagreement is not independent ground truth. Obtain stronger labels from
+multiple independently configured evaluators or deeper search, and check
+reliability before using them for training.
+
+Keep the frozen Normal and Center Rush benchmark openings outside training
+data. Use only appropriate non-benchmark weakness seeds, with exact
+opening-overlap checks, to construct a training campaign. Reserve independent
+held-out tactical positions to test any new policy or value head.
+
+Decision: prioritize tactical wall evaluation and training-target quality.
+Do not promote any search calibration variant.
