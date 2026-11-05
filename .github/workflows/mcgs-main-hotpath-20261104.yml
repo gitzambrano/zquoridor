@@ -1,0 +1,131 @@
+name: "MCGS main hot-path studies (bounded)"
+
+on:
+  push:
+    branches: [exp/perf-main-hotpath-20261104]
+    paths:
+      - ".github/workflows/mcgs-main-hotpath-20261104.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  study:
+    name: hotpath-${{ matrix.study }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        study: [compiler, cache, edge_delta, graph, adaptive, lazy]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check the exact 4.10 production weights
+        run: |
+          set -euo pipefail
+          echo "fe8473255fd219fab247b1a7d44be25384a6cfc5daa5c301def49109badb7f2b  data/nnue/nnue_weights_int8.bin" | sha256sum -c -
+      - name: Build and run the selected bounded study
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p bin "results/hotpath/${{ matrix.study }}"
+          BASE="-O3 -DNDEBUG -std=c++17 -pthread -Isrc"
+          SRC="benchmarks/bench_main_hotpath_20261104.cpp"
+          OUT="results/hotpath/${{ matrix.study }}"
+          compile() {
+            local label="$1"; shift
+            g++ $BASE "$@" "$SRC" -o "bin/hotpath_$label"
+          }
+          bench() {
+            local exe="$1"; shift
+            local label="$1"; shift
+            "bin/hotpath_$exe" --label "$label" "$@" > "$OUT/$label.log"
+            grep '^SUMMARY ' "$OUT/$label.log"
+          }
+          case "${{ matrix.study }}" in
+            compiler)
+              compile portable
+              compile native -march=native -mavx2 -mfma
+              bench portable portable_a --nodes 256 --count 7
+              bench native native_a --nodes 256 --count 7
+              bench native native_b --nodes 256 --count 7
+              bench portable portable_b --nodes 256 --count 7
+              ;;
+            cache)
+              compile native -march=native -mavx2 -mfma
+              bench native cache_on_a --nodes 256 --count 7 --cache 1
+              bench native cache_off_a --nodes 256 --count 7 --cache 0
+              bench native cache_off_b --nodes 256 --count 7 --cache 0
+              bench native cache_on_b --nodes 256 --count 7 --cache 1
+              ;;
+            edge_delta)
+              compile native -march=native -mavx2 -mfma
+              compile no_dense -march=native -mavx2 -mfma -DZQ_EXP_EDGE_DENSE_DELTA=0
+              compile no_delta -march=native -mavx2 -mfma -DZQ_EXP_EDGE_FEATURE_DELTA=0 -DZQ_EXP_EDGE_DENSE_DELTA=0 -DZQ_EXP_EDGE_BFS_REPLAY=0
+              bench native dense_on --nodes 256 --count 7
+              bench no_dense dense_off --nodes 256 --count 7
+              bench no_delta feature_delta_off --nodes 256 --count 7
+              ;;
+            graph)
+              compile native -march=native -mavx2 -mfma
+              bench native graph_on_a --nodes 256 --count 7 --graph 1
+              bench native graph_off_a --nodes 256 --count 7 --graph 0
+              bench native graph_off_b --nodes 256 --count 7 --graph 0
+              bench native graph_on_b --nodes 256 --count 7 --graph 1
+              ;;
+            adaptive)
+              compile native -march=native -mavx2 -mfma
+              bench native clock_cache_on --nodes 256 --count 2 --cache 1 --adaptive 1
+              bench native clock_cache_off --nodes 256 --count 2 --cache 0 --adaptive 1
+              ;;
+            lazy)
+              compile native -march=native -mavx2 -mfma
+              bench native lazy_on --nodes 256 --count 7 --lazy 1
+              bench native lazy_off --nodes 256 --count 7 --lazy 0
+              bench native lazy_clock_on --count 4 --ms 200 --lazy 1
+              bench native lazy_clock_off --count 4 --ms 200 --lazy 0
+              ;;
+          esac
+      - name: Summarize the results
+        if: always()
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json, pathlib, re
+          folder=pathlib.Path("results/hotpath/${{ matrix.study }}")
+          output={}
+          for path in sorted(folder.glob("*.log")):
+              text=path.read_text()
+              records=[]
+              for line in text.splitlines():
+                  if line.startswith(("ROW ", "SUMMARY ", "HEADER ")):
+                      k,v=line.split(" ",1)
+                      record={}
+                      for part in v.split():
+                          if "=" not in part:
+                              continue
+                          name,value=part.split("=",1)
+                          try:
+                              record[name]=float(value) if "." in value else int(value)
+                          except ValueError:
+                              record[name]=value
+                      records.append({"kind":k, **record})
+              output[path.stem]=records
+          folder.mkdir(parents=True,exist_ok=True)
+          (folder/"results.json").write_text(json.dumps(output,indent=2)+"\n")
+          summaries=[(k,next((x for x in v if x["kind"]=="SUMMARY"),{})) for k,v in output.items()]
+          report=["# MCGS hot-path study: ${{ matrix.study }}", "", "The main source was not modified.", "", "| Variant | Simulations/s | Expansions/s | Max tree MiB | Policy cache hits | Value cache hits |", "|---|---:|---:|---:|---:|---:|"]
+          for k,v in summaries:
+              report.append(f"| {k} | {v.get('sim_s','-')} | {v.get('expanded_s','-')} | {v.get('max_tree_mib','-')} | {v.get('policy_hit','-')} | {v.get('value_hit','-')} |")
+          (folder/"report.md").write_text("\n".join(report)+"\n")
+          print("\n".join(report))
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: mcgs-hotpath-${{ matrix.study }}
+          path: results/hotpath/${{ matrix.study }}/
+          if-no-files-found: warn
+          retention-days: 14
