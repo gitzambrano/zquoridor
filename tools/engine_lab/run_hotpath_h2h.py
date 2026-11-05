@@ -29,6 +29,7 @@ CONFIG = {
     "seed": 20261104,
     "candidate_cpuct": None,
     "candidate_graph_leaf_mix": None,
+    "book_selection": "both",
     "output": "results/hotpath-strength/h2h",
 }
 
@@ -53,7 +54,12 @@ def run(cfg: dict) -> dict:
     output.mkdir(parents=True, exist_ok=True)
     games = []
     run_id = "hotpath-strength-20261104-" + str(cfg["seed"])
+    books = ("normal_book", "center_book")
+    if cfg["book_selection"] != "both":
+        books = (cfg["book_selection"] + "_book",)
     for book_idx, key in enumerate(("normal_book", "center_book")):
+        if key not in books:
+            continue
         book = ROOT / cfg[key]
         positions = [json.loads(row)["moves"] for row in book.read_text().splitlines() if row.strip()]
         order = list(range(len(positions)))
@@ -97,6 +103,8 @@ def run(cfg: dict) -> dict:
             bootstrap=2000, seed=cfg["seed"] + index,
         )
         for index, book in enumerate(("normal", "center_rush"))
+        if book == "normal" and "normal_book" in books
+        or book == "center_rush" and "center_book" in books
     }
     report["configuration"] = cfg
     report["book_games"] = {book: sum(row["book"] == book for row in games)
@@ -111,7 +119,7 @@ def run(cfg: dict) -> dict:
         k: report.get(k) for k in ("complete_pairs", "failed_games", "score_pct",
                                   "elo", "paired_bootstrap_95", "strength_claim_ready")
     }), flush=True)
-    if report["failed_games"] or report["complete_pairs"] != 2 * cfg["pairs_per_book"]:
+    if report["failed_games"] or report["complete_pairs"] != len(books) * cfg["pairs_per_book"]:
         raise RuntimeError("Paired match had failed or missing games")
     return report
 
@@ -128,6 +136,7 @@ def main() -> None:
     parser.add_argument("--seed", type=int, default=CONFIG["seed"])
     parser.add_argument("--candidate-cpuct", type=float, default=None)
     parser.add_argument("--candidate-graph-leaf-mix", type=float, default=None)
+    parser.add_argument("--book-selection", choices=("both","normal","center"), default="both")
     args = parser.parse_args()
     cfg = {**CONFIG, **vars(args)}
     if cfg["pairs_per_book"] <= 0 or cfg["move_time_ms"] <= 0:
