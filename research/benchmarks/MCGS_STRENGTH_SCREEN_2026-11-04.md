@@ -96,3 +96,30 @@ game screen does not establish a strength gain. The next stage must address
 move choice and tactical evaluation, including difficult wall placements.
 Confirm any new candidate across normal and center openings and against both
 Claustrophobia and Titanium before promotion.
+
+## PUCT and graph-Q calibration pilot
+
+Source: https://github.com/gitzambrano/zquoridor/actions/runs/41956357701
+
+All three jobs completed successfully. Each calibration played four paired
+Normal openings and four paired Center Rush openings at exactly 200 ms per move
+against the frozen production binary. The test used seed 20261105, a different
+seed from the first throughput-candidate screen. Candidates used both hot-path
+optimization flags. Both engines used the same CPU target and original weights.
+
+| Candidate | Normal score | Center Rush score | Overall score | Overall Elo estimate |
+| --- | ---: | ---: | ---: | ---: |
+| cPuct = 0.70 | 68.75% | 50.00% | 59.375% | +65.9 |
+| cPuct = 1.05 | 75.00% | 50.00% | 62.50% | +88.7 |
+| graphLeafMix = 0.55 | 62.50% | 50.00% | 56.25% | +43.7 |
+
+These samples are directional. The bootstrap interval for cPuct 1.05
+includes 50% and therefore does not establish a real advantage.
+
+The highest pilot score, cPuct 1.05, was selected for an independent
+confirmation. The confirmation separates 20 Normal pairs from the disjoint
+400-opening confirmation book and 20 Center Rush pairs from new positions.
+It uses seed 20261106 and the same true 200 ms move clock.
+Confirmation: https://github.com/gitzambrano/zquoridor/actions/runs/41956913995
+
+No search parameter is promoted from the pilot alone.
