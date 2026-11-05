@@ -103,8 +103,8 @@ def run(cfg: dict) -> dict:
             bootstrap=2000, seed=cfg["seed"] + index,
         )
         for index, book in enumerate(("normal", "center_rush"))
-        if (book == "normal" and "normal_book" in books)
-        or (book == "center_rush" and "center_book" in books)
+        if ((book == "normal" and "normal_book" in books)
+            or (book == "center_rush" and "center_book" in books))
     }
     report["configuration"] = cfg
     report["book_games"] = {book: sum(row["book"] == book for row in games)
