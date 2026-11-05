@@ -103,8 +103,8 @@ def run(cfg: dict) -> dict:
             bootstrap=2000, seed=cfg["seed"] + index,
         )
         for index, book in enumerate(("normal", "center_rush"))
-        if book == "normal" and "normal_book" in books
-        or book == "center_rush" and "center_book" in books
+        if (book == "normal" and "normal_book" in books)
+        or (book == "center_rush" and "center_book" in books)
     }
     report["configuration"] = cfg
     report["book_games"] = {book: sum(row["book"] == book for row in games)
@@ -136,7 +136,9 @@ def main() -> None:
     parser.add_argument("--seed", type=int, default=CONFIG["seed"])
     parser.add_argument("--candidate-cpuct", type=float, default=None)
     parser.add_argument("--candidate-graph-leaf-mix", type=float, default=None)
-    parser.add_argument("--book-selection", choices=("both","normal","center"), default="both")
+    parser.add_argument("--book-selection", choices=("both", "normal", "center"), default="both")
+    parser.add_argument("--normal-book", default=CONFIG["normal_book"])
+    parser.add_argument("--center-book", default=CONFIG["center_book"])
     args = parser.parse_args()
     cfg = {**CONFIG, **vars(args)}
     if cfg["pairs_per_book"] <= 0 or cfg["move_time_ms"] <= 0:
