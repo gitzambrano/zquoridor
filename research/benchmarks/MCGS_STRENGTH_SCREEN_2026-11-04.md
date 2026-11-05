@@ -1,0 +1,98 @@
+# MCGS strength investigation: controlled hot-path experiments
+
+Date: 4 November 2026. Baseline: zQuoridor 4.10 `main` at
+`bdffab86ad9e7f21b64b8841fa7f1620668f3fe9`.
+Working branch: `exp/mcgs-strength-20261104`.
+
+## Objective and constraints
+
+Measure whether a smaller search-node layout and a cached PUCT value sum increase
+search throughput and game strength. Preserve all production behavior on `main`.
+Use the frozen 4.10 INT8 weights, fixed 200 ms per move, legal paired openings,
+and no pondering. Treat the two-color opening pair as the comparison unit.
+
+The implementation uses compile-time experiment flags. Both flags default to zero.
+
+| Flag | Change |
+| --- | --- |
+| `ZQ_EXP_COMPACT_MCGS_NODE=1` | Allocate the fixed-capacity legal-move buffer only when a node needs actions. |
+| `ZQ_EXP_PUCT_SUM_CACHE=1` | Maintain the sum of float edge W values at backup time. Use the sum for the parent PUCT value. |
+| `ZQ_EXP_FAST_UCI_REPLAY=1` | Validate only new position-history moves and validate each action without enumerating every legal wall. |
+
+The search changes passed the existing MCGS core, Lazy expansion, sparse policy,
+and endgame-leaf correctness tests.
+
+## Fixed work and 200 ms performance
+
+Source: https://github.com/gitzambrano/zquoridor/actions/runs/41955026109
+
+Each variant was compared against an independently compiled baseline in the same
+GitHub Actions job. Fixed-budget searches had exactly 36,000 expansions and
+93,381 simulations across nine fixed-seed fixtures. Two repeated full-pool
+fingerprints matched exactly for each variant.
+
+| Variant | Baseline simulations in six 200 ms searches | Candidate simulations | Gain | Baseline max tree MiB | Candidate max tree MiB |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Compact | 73,941 | 73,954 | +0.02% | 48.83 | 23.45 |
+| PUCT sum | 103,691 | 109,924 | +6.01% | 51.96 | 53.15 |
+| Combined | 99,192 | 106,241 | +7.11% | 51.98 | 28.86 |
+
+Different jobs may run on different CPU hardware and under different
+contention. Do not compare their absolute throughput.
+
+## Competitive screen: 200 ms per move
+
+Source: https://github.com/gitzambrano/zquoridor/actions/runs/41955323429
+
+The suite used four paired openings from the frozen Normal screening book
+and four paired openings from the frozen Center Rush book. Each candidate
+played 16 full games against the default frozen `main` executable.
+
+| Variant | Score | Estimated Elo | Complete pairs | Failures |
+| --- | ---: | ---: | ---: | ---: |
+| Compact | 43.75% | -43.7 | 8 | 0 |
+| PUCT sum | 50.00% | 0.0 | 8 | 0 |
+| Combined | 50.00% | 0.0 | 8 | 0 |
+
+The sample is too small for an Elo promotion claim. These games do not
+demonstrate a competitive advantage. The original 200 ms screen attempt
+(https://github.com/gitzambrano/zquoridor/actions/runs/41955288279)
+had an output log path error. It was replaced with the complete successful run.
+
+## Adaptive 3+2 root-budget screen
+
+Source: https://github.com/gitzambrano/zquoridor/actions/runs/41955604907
+
+Each comparison used one GitHub-hosted CPU and four deterministic legal root
+positions. The runner used a 180,000 ms + 2,000 ms Fischer clock allocation,
+Adaptive Time, and the same NNUE weights. It did not play full timed games.
+
+| Variant | Main simulations/s | Candidate simulations/s | Gain | Main max tree MiB | Candidate max tree MiB |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Compact | 67,127 | 69,155 | +3.0% | 1,187.2 | 753.0 |
+| Combined | 60,577 | 65,539 | +8.2% | 729.4 | 737.3 |
+
+Do not generalize the memory result across jobs. Peak memory depends on the
+actual search trajectory and capacity reservations. The combined result
+does not demonstrate reduced peak memory in the 3+2 probe.
+
+## Incremental UCI history replay
+
+Source: https://github.com/gitzambrano/zquoridor/actions/runs/41956204587
+
+The opt-in parser passed the release UCI and native pondering tests.
+A synchronized 128-position incremental replay measured 10.217 ms total
+for the baseline and 5.610 ms for the fast parser: a 1.82x speedup.
+Repeating an unchanged long position measured approximately 0.115 ms and
+0.044 ms per command, respectively. The total time saved is small compared
+with 200 ms of search. It is a protocol efficiency improvement, not a
+measured increase in playing strength.
+
+## Promotion decision
+
+Do not change production `main`. Keep these variants isolated and retain the
+full result artifacts. The measured throughput gains are useful, but the paired
+game screen does not establish a strength gain. The next stage must address
+move choice and tactical evaluation, including difficult wall placements.
+Confirm any new candidate across normal and center openings and against both
+Claustrophobia and Titanium before promotion.
