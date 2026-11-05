@@ -1,0 +1,44 @@
+name: "MCGS tactical wall disagreement diagnostic"
+on:
+  push:
+    branches: [exp/mcgs-strength-20261104]
+    paths: [".github/workflows/mcgs-tactical-scan-20261104.yml"]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  tactical:
+    name: tactical-${{ matrix.book }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    strategy:
+      fail-fast: false
+      max-parallel: 3
+      matrix:
+        book: [normal, center, targeted]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build frozen engine for move disagreement tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "fe8473255fd219fab247b1a7d44be25384a6cfc5daa5c301def49109badb7f2b  data/nnue/nnue_weights_int8.bin" | sha256sum -c -
+          mkdir -p bin
+          g++ -O3 -DNDEBUG -std=c++17 -pthread -march=native -mavx2 -mfma -Isrc \
+            tools/external/zquoridor_uci.cpp -o bin/zq_tactical
+          python -m py_compile tools/engine_lab/scan_tactical_disagreements.py
+      - name: Compare 200 ms and 1200 ms decisions at legal wall-rich positions
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -u tools/engine_lab/scan_tactical_disagreements.py \
+            --exe bin/zq_tactical --category "${{ matrix.book }}" \
+            --count 12 --shallow-ms 200 --deep-ms 1200 \
+            --output results/tactical-scans
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: mcgs-tactical-${{ matrix.book }}
+          path: results/tactical-scans/${{ matrix.book }}/
+          if-no-files-found: warn
+          retention-days: 14
