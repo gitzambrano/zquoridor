@@ -1,0 +1,102 @@
+name: "MCGS compact-node and PUCT controlled screen"
+on:
+  push:
+    branches: [exp/mcgs-strength-20261104]
+    paths:
+      - ".github/workflows/mcgs-strength-20261104.yml"
+      - "src/mcab.hpp"
+      - "benchmarks/bench_mcgs_strength_20261104.cpp"
+      - "tools/strength_hotpath_20261104.py"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  compare:
+    name: candidate-${{ matrix.variant }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      max-parallel: 3
+      matrix:
+        include:
+          - variant: compact
+            compact: 1
+            puct: 0
+          - variant: puct
+            compact: 0
+            puct: 1
+          - variant: combined
+            compact: 1
+            puct: 1
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify frozen NNUE
+        run: echo "fe8473255fd219fab247b1a7d44be25384a6cfc5daa5c301def49109badb7f2b  data/nnue/nnue_weights_int8.bin" | sha256sum -c -
+      - name: Compile benchmark and correctness tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p bin "results/hotpath-strength/${{ matrix.variant }}"
+          BASE="-O3 -DNDEBUG -std=c++17 -pthread -march=native -mavx2 -mfma -Isrc"
+          CAND="-DZQ_EXP_COMPACT_MCGS_NODE=${{ matrix.compact }} -DZQ_EXP_PUCT_SUM_CACHE=${{ matrix.puct }}"
+          g++ $BASE benchmarks/bench_mcgs_strength_20261104.cpp -o bin/bench_base
+          g++ $BASE $CAND benchmarks/bench_mcgs_strength_20261104.cpp -o bin/bench_cand
+          for test in test_mcab_core test_mcgs_opt_correctness test_mcgs_sparse_equivalence test_mcab_endgame_leaf; do
+            g++ $BASE $CAND tests/$test.cpp -o bin/$test
+            bin/$test
+          done
+          g++ $BASE tools/external/zquoridor_uci.cpp -o bin/zq_base
+          g++ $BASE $CAND tools/external/zquoridor_uci.cpp -o bin/zq_cand
+      - name: Fixed-node semantic parity and controlled throughput
+        shell: bash
+        run: |
+          set -euo pipefail
+          OUT="results/hotpath-strength/${{ matrix.variant }}"
+          for pass in a b; do
+            bin/bench_base --label base_$pass --nodes 4000 --count 9 --cache 1 > "$OUT/base_$pass.log"
+            bin/bench_cand --label candidate_$pass --nodes 4000 --count 9 --cache 1 > "$OUT/candidate_$pass.log"
+            grep '^SUMMARY' "$OUT/base_$pass.log"
+            grep '^SUMMARY' "$OUT/candidate_$pass.log"
+          done
+          python - <<'PY'
+          import pathlib,re
+          out=pathlib.Path("results/hotpath-strength/${{ matrix.variant }}")
+          rows={}
+          for path in out.glob("*.log"):
+              found=[]
+              for line in path.read_text().splitlines():
+                  if not line.startswith("ROW "): continue
+                  found.append(dict(x.split("=",1) for x in line.split()[1:] if "=" in x))
+              rows[path.stem]=found
+          assert len(rows)==4, rows.keys()
+          for pass_ in ("a","b"):
+              baseline=rows["base_"+pass_]
+              candidate=rows["candidate_"+pass_]
+              assert len(baseline)==len(candidate)==9
+              diff=[]
+              for i,(a,b) in enumerate(zip(baseline,candidate)):
+                  changed={k:(a.get(k),b.get(k)) for k in ("best","expanded","simulations","fingerprint") if a.get(k)!=b.get(k)}
+                  if changed: diff.append({"case":i,"changed":changed})
+              print("PARITY",pass_,"mismatches",len(diff),diff[:9])
+              (out/("parity_"+pass_+".txt")).write_text(repr(diff)+"\n")
+              if "${{ matrix.variant }}" == "compact":
+                  assert not diff, "Compact memory storage must be semantically identical"
+          PY
+      - name: Timed search screen with 200 ms wallclock
+        shell: bash
+        run: |
+          set -euo pipefail
+          OUT="results/hotpath-strength/${{ matrix.variant }}"
+          bin/bench_base --label base_200ms --ms 200 --uncap 1 --count 6 > "$OUT/base_200ms.log"
+          bin/bench_cand --label candidate_200ms --ms 200 --uncap 1 --count 6 > "$OUT/candidate_200ms.log"
+          grep '^SUMMARY' "$OUT/base_200ms.log"
+          grep '^SUMMARY' "$OUT/candidate_200ms.log"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: mcgs-strength-${{ matrix.variant }}
+          path: results/hotpath-strength/${{ matrix.variant }}/
+          retention-days: 14
