@@ -17,6 +17,10 @@
 #include "mcab.hpp"
 #include "time_manager.hpp"
 
+#ifndef ZQ_EXP_FAST_UCI_REPLAY
+#define ZQ_EXP_FAST_UCI_REPLAY 0
+#endif
+
 using Runner = mcab::McabRunner<qr::Negamax, qr::State, qr::Move, qr::MoveList,
                                 qr::AccPair, qr::RepetitionTable, qr::SearchStats>;
 
@@ -50,6 +54,25 @@ static bool parseLegalMove(const qr::State& s, const std::string& text, qr::Move
         candidate = qr::Move::wall(text[2] == 'h' ? 0 : 1, r, c);
     }
 
+#if ZQ_EXP_FAST_UCI_REPLAY
+    if (candidate.isWall) {
+        if (!qr::isWallMoveLegal(s, s.turn, candidate.a, candidate.b, candidate.c))
+            return false;
+    } else {
+        qr::MoveList pawns;
+        qr::pawnStepMoves(s, s.turn, pawns);
+        bool legal = false;
+        for (const auto& move : pawns) {
+            if (move == candidate) {
+                legal = true;
+                break;
+            }
+        }
+        if (!legal) return false;
+    }
+    out = candidate;
+    return true;
+#else
     qr::MoveList legal = qr::legalMoves(s);
     for (const auto& m : legal) {
         if (m == candidate) {
@@ -58,6 +81,7 @@ static bool parseLegalMove(const qr::State& s, const std::string& text, qr::Move
         }
     }
     return false;
+#endif
 }
 
 static int globalAction(const qr::Move& move) {
@@ -278,6 +302,22 @@ int main(int argc, char** argv) {
             runner.resetTree();
             engine.clearTT();
         }
+#if ZQ_EXP_FAST_UCI_REPLAY
+        // Validate a new suffix only. Preserve the previous state until the
+        // entire requested position passes legality checks.
+        qr::State nextState = isExtension ? state : qr::initialState();
+        qr::RepetitionTable nextHistory = isExtension ? history : qr::RepetitionTable{};
+        size_t start = isExtension ? currentMoves.size() : 0;
+        for (size_t i = start; i < moves.size(); ++i) {
+            if (qr::winner(nextState) != -1) return false;
+            qr::Move m;
+            if (!parseLegalMove(nextState, moves[i], m)) return false;
+            nextHistory.push(nextState.hash, m.isWall);
+            nextState = qr::applyMove(nextState, m);
+        }
+        state = nextState;
+        history = std::move(nextHistory);
+#else
         state = qr::initialState();
         history = qr::RepetitionTable{};
         for (const std::string& text : moves) {
@@ -287,6 +327,7 @@ int main(int argc, char** argv) {
             history.push(state.hash, m.isWall);
             state = qr::applyMove(state, m);
         }
+#endif
         currentMoves = moves;
         return true;
     };
