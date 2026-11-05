@@ -1,0 +1,58 @@
+name: "MCGS bounded PUCT and graph value calibration"
+on:
+  push:
+    branches: [exp/mcgs-strength-20261104]
+    paths: [".github/workflows/mcgs-strength-calibrate-20261104.yml"]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  screen:
+    name: calibrate-${{ matrix.variant }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 26
+    strategy:
+      fail-fast: false
+      max-parallel: 3
+      matrix:
+        include:
+          - variant: cpuct_070
+            options: "--candidate-cpuct 0.70"
+          - variant: cpuct_105
+            options: "--candidate-cpuct 1.05"
+          - variant: graphmix_055
+            options: "--candidate-graph-leaf-mix 0.55"
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify trained production checkpoint
+        run: echo "fe8473255fd219fab247b1a7d44be25384a6cfc5daa5c301def49109badb7f2b  data/nnue/nnue_weights_int8.bin" | sha256sum -c -
+      - name: Compile frozen production and accelerated candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p bin
+          BASE="-O3 -DNDEBUG -std=c++17 -pthread -march=native -mavx2 -mfma -Isrc"
+          g++ $BASE tools/external/zquoridor_uci.cpp -o bin/zq_baseline
+          g++ $BASE -DZQ_EXP_COMPACT_MCGS_NODE=1 -DZQ_EXP_PUCT_SUM_CACHE=1 tools/external/zquoridor_uci.cpp -o bin/zq_candidate
+          python -m py_compile tools/engine_lab/run_hotpath_h2h.py
+      - name: Play paired 200 ms screening games against frozen main
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p results/hotpath-strength
+          python -u tools/engine_lab/run_hotpath_h2h.py \
+            --candidate bin/zq_candidate --baseline bin/zq_baseline \
+            --pairs-per-book 4 --move-time-ms 200 --seed 20261105 \
+            ${{ matrix.options }} \
+            --output results/hotpath-strength/calibrate-${{ matrix.variant }} \
+            | tee results/hotpath-strength/calibrate-${{ matrix.variant }}.log
+      - name: Upload paired screening evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mcgs-calibrate-${{ matrix.variant }}
+          path: |
+            results/hotpath-strength/calibrate-${{ matrix.variant }}/
+            results/hotpath-strength/calibrate-${{ matrix.variant }}.log
+          if-no-files-found: warn
+          retention-days: 14
