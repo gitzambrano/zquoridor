@@ -91,10 +91,22 @@ def run(cfg: dict) -> dict:
                     stream.write(json.dumps(result, separators=(",", ":")) + "\n")
 
     report = local_arena.summarize_pairs(games, bootstrap=2000, seed=cfg["seed"])
+    report["by_book"] = {
+        book: local_arena.summarize_pairs(
+            [row for row in games if row["book"] == book],
+            bootstrap=2000, seed=cfg["seed"] + index,
+        )
+        for index, book in enumerate(("normal", "center_rush"))
+    }
     report["configuration"] = cfg
     report["book_games"] = {book: sum(row["book"] == book for row in games)
                             for book in ("normal", "center_rush")}
     (output / "summary.json").write_text(json.dumps(report, indent=2) + "\n")
+    print("BOOK_SUMMARY " + json.dumps({
+        name: {"score_pct": value["score_pct"], "elo": value["elo"],
+               "complete_pairs": value["complete_pairs"]}
+        for name, value in report["by_book"].items()
+    }), flush=True)
     print("SUMMARY " + json.dumps({
         k: report.get(k) for k in ("complete_pairs", "failed_games", "score_pct",
                                   "elo", "paired_bootstrap_95", "strength_claim_ready")
