@@ -1,0 +1,63 @@
+name: "MCGS hot-path strength screen against frozen main"
+on:
+  push:
+    branches: [exp/mcgs-strength-20261104]
+    paths: [".github/workflows/mcgs-strength-h2h-20261104.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  paired:
+    name: h2h-${{ matrix.variant }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 28
+    strategy:
+      fail-fast: false
+      max-parallel: 3
+      matrix:
+        include:
+          - variant: compact
+            compact: 1
+            puct: 0
+          - variant: puct
+            compact: 0
+            puct: 1
+          - variant: combined
+            compact: 1
+            puct: 1
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify exact production checkpoint
+        run: |
+          set -euo pipefail
+          echo "fe8473255fd219fab247b1a7d44be25384a6cfc5daa5c301def49109badb7f2b  data/nnue/nnue_weights_int8.bin" | sha256sum -c -
+      - name: Compile frozen main and experimental candidate from identical sources
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p bin
+          BASE="-O3 -DNDEBUG -std=c++17 -pthread -march=native -mavx2 -mfma -Isrc"
+          g++ $BASE tools/external/zquoridor_uci.cpp -o bin/zq_baseline
+          g++ $BASE -DZQ_EXP_COMPACT_MCGS_NODE=${{ matrix.compact }} -DZQ_EXP_PUCT_SUM_CACHE=${{ matrix.puct }} tools/external/zquoridor_uci.cpp -o bin/zq_candidate
+          python -m py_compile tools/engine_lab/run_hotpath_h2h.py
+      - name: Play eight paired Normal and Center Rush openings, actual 200 ms each move
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -u tools/engine_lab/run_hotpath_h2h.py \
+            --candidate bin/zq_candidate --baseline bin/zq_baseline \
+            --pairs-per-book 4 --move-time-ms 200 \
+            --output results/hotpath-strength/h2h-${{ matrix.variant }} \
+            | tee results/hotpath-strength/h2h-${{ matrix.variant }}.log
+      - name: Upload complete paired evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mcgs-strength-h2h-${{ matrix.variant }}
+          path: |
+            results/hotpath-strength/h2h-${{ matrix.variant }}/
+            results/hotpath-strength/h2h-${{ matrix.variant }}.log
+          if-no-files-found: warn
+          retention-days: 14
