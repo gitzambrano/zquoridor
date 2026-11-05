@@ -53,6 +53,13 @@
 #pragma once
 #include "production_config.hpp"
 
+#ifndef ZQ_EXP_COMPACT_MCGS_NODE
+#define ZQ_EXP_COMPACT_MCGS_NODE 0
+#endif
+#ifndef ZQ_EXP_PUCT_SUM_CACHE
+#define ZQ_EXP_PUCT_SUM_CACHE 0
+#endif
+
 #ifndef ZQ_EXP_RESIDUAL_PUCT
 #define ZQ_EXP_RESIDUAL_PUCT 0
 #endif
@@ -688,6 +695,54 @@ inline void mcabEnumerateCandidates(const StateT& s, int /*side*/, MoveListT& ou
 // =========================================================================
 // 4.3.2 -- Node pool linear (índices, não ponteiros)
 // =========================================================================
+// Optional compact storage for the fixed-capacity list. The large list
+// exists only after the search needs a node's legal actions.
+template <typename MoveListT>
+class CompactMcabMoves {
+public:
+    using MoveT = std::remove_reference_t<decltype(std::declval<MoveListT&>()[0])>;
+    CompactMcabMoves() = default;
+    CompactMcabMoves(CompactMcabMoves&&) noexcept = default;
+    CompactMcabMoves& operator=(CompactMcabMoves&&) noexcept = default;
+    CompactMcabMoves(const CompactMcabMoves&) = delete;
+    CompactMcabMoves& operator=(const CompactMcabMoves&) = delete;
+    CompactMcabMoves& operator=(const MoveListT& source) {
+        if (source.empty()) storage.reset();
+        else storage = std::make_unique<MoveListT>(source);
+        return *this;
+    }
+    CompactMcabMoves& operator=(MoveListT&& source) {
+        if (source.empty()) storage.reset();
+        else storage = std::make_unique<MoveListT>(std::move(source));
+        return *this;
+    }
+    size_t size() const { return storage ? storage->size() : 0; }
+    bool empty() const { return !storage || storage->empty(); }
+    decltype(auto) operator[](size_t i) { return (*storage)[i]; }
+    decltype(auto) operator[](size_t i) const { return (*storage)[i]; }
+    void push_back(const MoveT& move) {
+        if (!storage) storage = std::make_unique<MoveListT>();
+        storage->push_back(move);
+    }
+    auto begin() { return readWriteList().begin(); }
+    auto end() { return readWriteList().end(); }
+    auto begin() const { return readList().begin(); }
+    auto end() const { return readList().end(); }
+    operator const MoveListT&() const { return readList(); }
+    const MoveListT* get() const { return storage.get(); }
+    size_t storageBytes() const { return storage ? sizeof(MoveListT) : 0; }
+private:
+    MoveListT& readWriteList() {
+        static MoveListT emptyList{};
+        return storage ? *storage : emptyList;
+    }
+    const MoveListT& readList() const {
+        static const MoveListT emptyList{};
+        return storage ? *storage : emptyList;
+    }
+    std::unique_ptr<MoveListT> storage;
+};
+
 template <typename StateT, typename MoveListT>
 struct MCABNode {
     StateT state;
@@ -696,7 +751,11 @@ struct MCABNode {
     bool lazyValueEvaluated = false; // variant: first visit evaluates, second visit expands
     bool terminal = false;
     int terminalScore = 0;        // score (unidades NNUE_EVAL_SCALE); convertido via scoreToQ na hora de usar
+#if ZQ_EXP_COMPACT_MCGS_NODE
+    CompactMcabMoves<MoveListT> moves; // list allocated on first use
+#else
     MoveListT moves;               // currently active, already-legal moves
+#endif
     std::vector<float> P;         // prior por lance, mesmo índice de `moves`
     std::vector<float> N;         // visitas por aresta
     std::vector<float> W;         // soma (AvgBlend) or backed value (MinimaxHard)
@@ -710,6 +769,9 @@ struct MCABNode {
     std::vector<size_t> activeCandidateIndices;
     size_t nextCandidate = 0;
     int totalN = 0;
+#if ZQ_EXP_PUCT_SUM_CACHE
+    double sumEdgeW = 0.0;         // derived from stored float edge values
+#endif
     int graphDepth = -1;           // root-relative ply for safe DAG sharing
     uint32_t graphN = 0;           // MCGS node visits, own side-to-move frame
     double graphW = 0.0;           // MCGS node value sum, own frame
@@ -764,6 +826,9 @@ public:
             bytes += n.child.capacity() * sizeof(int32_t);
             bytes += n.candidateP.capacity() * sizeof(float);
             if (n.candidateMoves) bytes += sizeof(MoveListT);
+#if ZQ_EXP_COMPACT_MCGS_NODE
+            bytes += n.moves.storageBytes();
+#endif
         }
         return bytes;
     }
@@ -1556,7 +1621,11 @@ private:
         for (size_t i = 0; i < ranked.size() && (int)keep.size() < topK; i++)
             keep.push_back(ranked[i].second);
 
+#if ZQ_EXP_COMPACT_MCGS_NODE
+        MoveListT oldMoves = static_cast<const MoveListT&>(r.moves);
+#else
         MoveListT oldMoves = r.moves;
+#endif
         std::vector<float> oldP = std::move(r.P);
         std::vector<float> oldN = std::move(r.N);
         std::vector<float> oldW = std::move(r.W);
@@ -1581,6 +1650,10 @@ private:
             r.child.push_back(oldChild.empty() ? -1 : oldChild[e]);
         }
         r.activeMoves = (int)r.moves.size();
+#if ZQ_EXP_PUCT_SUM_CACHE
+        r.sumEdgeW = 0.0;
+        for (float w : r.W) r.sumEdgeW += (double)w;
+#endif
 
         float sum = 0.f;
         for (float p : r.P) sum += p;
@@ -1829,7 +1902,11 @@ private:
 
             if (nm > 0) {
                 std::array<float, PolicyDim> policyOut{};
+#if ZQ_EXP_COMPACT_MCGS_NODE
+                policyOutputForNode(node, depthInTree, policyOut, mstats, node.moves.get());
+#else
                 policyOutputForNode(node, depthInTree, policyOut, mstats, &node.moves);
+#endif
                 // perf/speed-elo-100: era std::vector<float> alocado por
                 // expansao; nm <= 131 < PolicyDim(=209), entao um buffer de
                 // pilha elimina o malloc do caminho quente.
@@ -1908,6 +1985,10 @@ private:
             node.activeMoves = 0;
         }
 
+#if ZQ_EXP_PUCT_SUM_CACHE
+        node.sumEdgeW = 0.0;
+        for (float w : node.W) node.sumEdgeW += (double)w;
+#endif
         node.expanded = true;
         updateWidening(node);
         mstats.nodesExpanded++;
@@ -1928,9 +2009,13 @@ private:
     double nodeQ(const NodeT& node) const {
         if (params.backupMode == BackupMode::AvgBlend) {
             if (node.totalN <= 0) return 0.5;
+#if ZQ_EXP_PUCT_SUM_CACHE
+            return node.sumEdgeW / (double)node.totalN;
+#else
             double sumW = 0.0;
             for (float w : node.W) sumW += w;
             return sumW / (double)node.totalN;
+#endif
         }
         double best = 0.5;
         bool visited = false;
@@ -2315,7 +2400,13 @@ private:
             const int e = path[(size_t)i].edgeIdx;
             const double parentV = 1.0 - upChild;
             parent.N[(size_t)e] += 1.f;
+#if ZQ_EXP_PUCT_SUM_CACHE
+            const float previousW = parent.W[(size_t)e];
+#endif
             parent.W[(size_t)e] += (float)parentV;
+#if ZQ_EXP_PUCT_SUM_CACHE
+            parent.sumEdgeW += (double)parent.W[(size_t)e] - (double)previousW;
+#endif
             parent.totalN += 1;
             v = parentV;
             raw = 1.0 - raw;
@@ -2332,7 +2423,13 @@ private:
         const PathEdge last = path.back();
         NodeT& current = pool[(size_t)last.nodeIdx];
         current.N[(size_t)last.edgeIdx] += 1.f;
+#if ZQ_EXP_PUCT_SUM_CACHE
+        const float previousW = current.W[(size_t)last.edgeIdx];
+#endif
         current.W[(size_t)last.edgeIdx] += 0.5f;
+#if ZQ_EXP_PUCT_SUM_CACHE
+        current.sumEdgeW += (double)current.W[(size_t)last.edgeIdx] - (double)previousW;
+#endif
         current.totalN += 1;
 
         double v = 0.5, raw = 0.5;
@@ -2348,7 +2445,13 @@ private:
             const int e = path[(size_t)i].edgeIdx;
             const double parentV = 1.0 - upChild;
             parent.N[(size_t)e] += 1.f;
+#if ZQ_EXP_PUCT_SUM_CACHE
+            const float previousW = parent.W[(size_t)e];
+#endif
             parent.W[(size_t)e] += (float)parentV;
+#if ZQ_EXP_PUCT_SUM_CACHE
+            parent.sumEdgeW += (double)parent.W[(size_t)e] - (double)previousW;
+#endif
             parent.totalN += 1;
             v = parentV;
             raw = 1.0 - raw;
@@ -2367,11 +2470,17 @@ private:
             NodeT& node = pool[path[i].nodeIdx];
             int e = path[i].edgeIdx;
             node.N[e] += 1.f;
+#if ZQ_EXP_PUCT_SUM_CACHE
+            const float previousW = node.W[e];
+#endif
             if (params.backupMode == BackupMode::AvgBlend) {
                 node.W[e] += (float)v;
             } else {
                 node.W[e] = (float)v;
             }
+#if ZQ_EXP_PUCT_SUM_CACHE
+            node.sumEdgeW += (double)node.W[e] - (double)previousW;
+#endif
             node.totalN += 1;
             if (params.backupMode == BackupMode::MinimaxHard)
                 v = nodeQ(node);
