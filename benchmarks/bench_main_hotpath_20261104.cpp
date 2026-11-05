@@ -53,7 +53,7 @@ int main(int argc, char** argv) {
     int nodeBudget = 256;
     int timeMs = 0;
     int count = 9;
-    bool evalCache = true, graph = true, lazy = true, adaptive = false;
+    bool evalCache = true, graph = true, lazy = true, adaptive = false, uncap = false;
     std::string label = "baseline";
     for (int i = 1; i < argc; ++i) {
         const std::string a = argv[i];
@@ -68,6 +68,7 @@ int main(int argc, char** argv) {
         else if (a == "--graph") graph = std::stoi(next()) != 0;
         else if (a == "--lazy") lazy = std::stoi(next()) != 0;
         else if (a == "--adaptive") adaptive = std::stoi(next()) != 0;
+        else if (a == "--uncap") uncap = std::stoi(next()) != 0;
         else if (a == "--label") label = next();
         else { std::fprintf(stderr, "Unknown argument: %s\n", a.c_str()); return 2; }
     }
@@ -78,8 +79,8 @@ int main(int argc, char** argv) {
     const auto states = fixtures();
     count = std::min(count, (int)states.size());
     if (count == 0) return 4;
-    std::printf("HEADER label=%s count=%d nodes=%d ms=%d cache=%d graph=%d lazy=%d adaptive=%d\n",
-                label.c_str(), count, nodeBudget, timeMs, evalCache, graph, lazy, adaptive);
+    std::printf("HEADER label=%s count=%d nodes=%d ms=%d cache=%d graph=%d lazy=%d adaptive=%d uncap=%d\n",
+                label.c_str(), count, nodeBudget, timeMs, evalCache, graph, lazy, adaptive, uncap);
     std::fflush(stdout);
     double totalMs = 0.0;
     long long totalExp = 0, totalSim = 0, policyHits = 0, policyMiss = 0;
@@ -96,7 +97,11 @@ int main(int argc, char** argv) {
         search.params.lazyExpansion = lazy;
         search.params.treeReuse = true;
         search.params.nodeBudget = nodeBudget;
-        search.params.autoNodeBudget = timeMs > 0;
+        search.params.autoNodeBudget = timeMs > 0 || adaptive;
+        if (uncap) {
+            search.params.autoNodeBudgetPerMs = 256;
+            search.params.autoNodeBudgetCeiling = 2000000;
+        }
         search.params.leafDepth = 0;
         search.params.adaptiveTime = adaptive;
         int effectiveMs = timeMs;
@@ -126,12 +131,13 @@ int main(int argc, char** argv) {
         transLookups += ms.transpositionLookups;
         std::printf("ROW label=%s case=%d plies=%d best=%d ms=%.3f expanded=%lld simulations=%lld "
                     "tree_mib=%.3f policy_hit=%lld policy_miss=%lld value_hit=%lld value_miss=%lld "
-                    "graph_hit=%lld graph_lookup=%lld adaptive_stop=%d\n",
+                    "graph_hit=%lld graph_lookup=%lld adaptive_stop=%d node_cap=%d\n",
                     label.c_str(), k, states[k].plies, (int)qr::moveToPolicyIndex(result),
                     elapsed, ms.nodesExpanded, ms.simulations, treeMiB,
                     ms.evalCachePolicyHits, ms.evalCachePolicyMisses,
                     ms.evalCacheValueHits, ms.evalCacheValueMisses,
-                    ms.transpositionHits, ms.transpositionLookups, (int)ms.adaptiveTimeStop);
+                    ms.transpositionHits, ms.transpositionLookups, (int)ms.adaptiveTimeStop,
+                    ms.effectiveNodeBudget);
         std::fflush(stdout);
     }
     const double seconds = totalMs / 1000.0;
