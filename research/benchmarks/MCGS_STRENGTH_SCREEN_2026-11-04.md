@@ -123,3 +123,50 @@ It uses seed 20261106 and the same true 200 ms move clock.
 Confirmation: https://github.com/gitzambrano/zquoridor/actions/runs/41956913995
 
 No search parameter is promoted from the pilot alone.
+
+## Disjoint cPuct 1.05 confirmation: rejection
+
+Source: https://github.com/gitzambrano/zquoridor/actions/runs/41956913995
+
+Both confirmation jobs finished successfully. The candidate used the compact
+node layout, the incremental PUCT sum, and cPuct = 1.05. The reference used
+the unchanged production settings. Both loaded the exact same 4.10 INT8
+checkpoint and used the same CPU target. No engine used pondering.
+Each game used a real 200 ms per-move search budget. All opening pairs
+contained both colors.
+
+| Book | Pairs | Games | Candidate score | Elo point estimate | Paired bootstrap 95% score interval |
+| --- | ---: | ---: | ---: | ---: | --- |
+| Disjoint Normal confirmation | 20 | 40 | 52.50% | +17.4 | 40% to 65% |
+| Center Rush, new seed | 20 | 40 | 45.00% | -34.9 | 35% to 55% |
+| Combined descriptive score | 40 | 80 | 48.75% | -8.7 | Not computed from a combined bootstrap |
+
+All 80 games completed without failures. No candidate won on time or
+benefited from pondering. The Center Rush deficit makes the candidate fail
+the strict promotion requirement regardless of the Normal point estimate.
+The prior 16-game pilot score of 62.5% was not reproduced.
+
+Decision: REJECT cPuct 1.05 for promotion. Retain compact-node and PUCT-sum
+code as separate opt-in performance experiments, but treat strength
+as unproven. Do not make further search-parameter promotions based on
+small screening samples.
+
+## Strength-directed research priority
+
+The fixed 4.10 network has an updated policy head but unchanged value heads.
+The next strength campaign should isolate the following two hypotheses.
+
+1. The current value evaluator does not rank difficult quiet-wall plans
+   consistently with deeper rollouts. Construct a tactic suite with
+   verified delayed wall consequences, quiet walls, and center-rush
+   defenses. Compare current NNUE values and root decisions against
+   deeper reference search before changing heuristics.
+2. The policy misallocates search to locally attractive pawn progress or
+   immediate wall effects. Produce balanced deeper-search policy targets
+   on hard openings. Train a candidate head against frozen value targets
+   and use independent Normal and Center Rush books for validation.
+
+Neither hypothesis is proved by this performance study. A network
+promotion requires paired external measurements against frozen main,
+Claustrophobia, and Titanium in both books and native 3+2. Keep all
+training and evaluation datasets separate.
