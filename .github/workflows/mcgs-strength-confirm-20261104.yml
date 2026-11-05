@@ -1,0 +1,54 @@
+name: "MCGS cPuct 1.05 disjoint paired confirmation"
+on:
+  push:
+    branches: [exp/mcgs-strength-20261104]
+    paths: [".github/workflows/mcgs-strength-confirm-20261104.yml"]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  confirm:
+    name: confirm-${{ matrix.book }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        book: [normal, center]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify original NNUE checkpoint
+        run: echo "fe8473255fd219fab247b1a7d44be25384a6cfc5daa5c301def49109badb7f2b  data/nnue/nnue_weights_int8.bin" | sha256sum -c -
+      - name: Build the same fixed CPU target for the two engines
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p bin
+          CXX="-O3 -DNDEBUG -std=c++17 -pthread -march=native -mavx2 -mfma -Isrc"
+          g++ $CXX tools/external/zquoridor_uci.cpp -o bin/zq_baseline
+          g++ $CXX -DZQ_EXP_COMPACT_MCGS_NODE=1 -DZQ_EXP_PUCT_SUM_CACHE=1 tools/external/zquoridor_uci.cpp -o bin/zq_candidate
+          python -m py_compile tools/engine_lab/run_hotpath_h2h.py
+      - name: Play 20 paired openings against frozen main with real 200 ms per move
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p results/hotpath-strength
+          python -u tools/engine_lab/run_hotpath_h2h.py \
+            --candidate bin/zq_candidate --baseline bin/zq_baseline \
+            --pairs-per-book 20 --move-time-ms 200 --seed 20261106 \
+            --candidate-cpuct 1.05 \
+            --book-selection "${{ matrix.book }}" \
+            --normal-book tools/external/openings_normal_confirm_400.jsonl \
+            --output results/hotpath-strength/confirm-${{ matrix.book }} \
+            | tee results/hotpath-strength/confirm-${{ matrix.book }}.log
+      - name: Upload complete match records and pair-aware interval
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mcgs-confirm-${{ matrix.book }}
+          path: |
+            results/hotpath-strength/confirm-${{ matrix.book }}/
+            results/hotpath-strength/confirm-${{ matrix.book }}.log
+          if-no-files-found: warn
+          retention-days: 14
