@@ -1,0 +1,47 @@
+name: "MCGS UCI replay performance and protocol parity"
+on:
+  push:
+    branches: [exp/mcgs-strength-20261104]
+    paths: [".github/workflows/mcgs-uci-replay-20261104.yml"]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 16
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compile frozen and fast UCI adapters
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p bin
+          CXX="-O3 -DNDEBUG -std=c++17 -pthread -march=native -mavx2 -mfma -Isrc"
+          g++ $CXX tools/external/zquoridor_uci.cpp -o bin/zq_uci_base
+          g++ $CXX -DZQ_EXP_FAST_UCI_REPLAY=1 tools/external/zquoridor_uci.cpp -o bin/zq_uci_fast
+          python -m py_compile benchmarks/bench_uci_replay_20261104.py
+      - name: Test exact release protocol invariants
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "fe8473255fd219fab247b1a7d44be25384a6cfc5daa5c301def49109badb7f2b  data/nnue/nnue_weights_int8.bin" | sha256sum -c -
+          for candidate in bin/zq_uci_base bin/zq_uci_fast; do
+            python -u tests/test_release_403_uci.py --exe "$candidate" --weights data/nnue/nnue_weights_int8.bin
+            python -u tests/test_first_native_ponder.py --exe "$candidate" --weights data/nnue/nnue_weights_int8.bin
+          done
+      - name: Measure and compare replay overhead
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -u benchmarks/bench_uci_replay_20261104.py \
+            --base-exe bin/zq_uci_base --candidate-exe bin/zq_uci_fast \
+            --length 128 --repetitions 5 \
+            --output results/uci-fast-replay
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: mcgs-uci-replay
+          path: results/uci-fast-replay/
+          if-no-files-found: warn
+          retention-days: 14
