@@ -27,6 +27,8 @@ CONFIG = {
     "max_plies": 140,
     "timeout_s": 8.0,
     "seed": 20261104,
+    "candidate_cpuct": None,
+    "candidate_graph_leaf_mix": None,
     "output": "results/hotpath-strength/h2h",
 }
 
@@ -37,7 +39,12 @@ def run(cfg: dict) -> dict:
     baseline = str((ROOT / cfg["baseline"]).resolve())
 
     def candidate_factory():
-        return local_arena.UciPlayer([candidate, "--nnue", weights], "candidate")
+        argv = [candidate, "--nnue", weights]
+        if cfg["candidate_cpuct"] is not None:
+            argv.extend(["--cpuct", str(cfg["candidate_cpuct"])])
+        if cfg["candidate_graph_leaf_mix"] is not None:
+            argv.extend(["--graph-leaf-mix", str(cfg["candidate_graph_leaf_mix"])])
+        return local_arena.UciPlayer(argv, "candidate")
 
     def baseline_factory():
         return local_arena.UciPlayer([baseline, "--nnue", weights], "baseline")
@@ -106,12 +113,19 @@ def main() -> None:
     parser.add_argument("--clock-initial-ms", type=int, default=CONFIG["clock_initial_ms"])
     parser.add_argument("--clock-increment-ms", type=int, default=CONFIG["clock_increment_ms"])
     parser.add_argument("--output", default=CONFIG["output"])
+    parser.add_argument("--seed", type=int, default=CONFIG["seed"])
+    parser.add_argument("--candidate-cpuct", type=float, default=None)
+    parser.add_argument("--candidate-graph-leaf-mix", type=float, default=None)
     args = parser.parse_args()
     cfg = {**CONFIG, **vars(args)}
     if cfg["pairs_per_book"] <= 0 or cfg["move_time_ms"] <= 0:
         parser.error("pairs-per-book and move-time-ms must be positive")
     if cfg["clock_initial_ms"] < 0 or cfg["clock_increment_ms"] < 0:
         parser.error("clocks must be nonnegative")
+    if cfg["candidate_cpuct"] is not None and cfg["candidate_cpuct"] <= 0:
+        parser.error("candidate-cpuct must be positive")
+    if cfg["candidate_graph_leaf_mix"] is not None and not 0 <= cfg["candidate_graph_leaf_mix"] <= 1:
+        parser.error("candidate-graph-leaf-mix must be in [0,1]")
     run(cfg)
 
 
