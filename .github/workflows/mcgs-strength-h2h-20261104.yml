@@ -46,6 +46,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          mkdir -p results/hotpath-strength
           python -u tools/engine_lab/run_hotpath_h2h.py \
             --candidate bin/zq_candidate --baseline bin/zq_baseline \
             --pairs-per-book 4 --move-time-ms 200 \
