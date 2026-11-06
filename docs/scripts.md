@@ -1,3 +1,31 @@
+## Tactical search stability and eligibility audit
+
+- `tools/engine_lab/tactical_consensus_audit.py` examines the frozen 4.10
+  engine's move selection at four search settings: 200 ms, 1,200 ms,
+  3,000 ms, and 3,000 ms with graph leaf mixing 0.55. It reports move
+  stability, legal wall decisions, and whether a selected wall changes
+  either player's shortest path. This is **diagnostic evidence only**, not
+  an independent correct-move label.
+- The top-level `CONFIG` selects `targeted` by default.
+  `--book {targeted,irregular,normal,center}` chooses the input book.
+  `--samples`, `--seed`, `--engine`, `--weights`,
+  `--budget-fast-ms`, `--budget-mid-ms`, `--budget-deep-ms`, and
+  `--output` override a single execution.
+- Default JSON output: `results/tactical-consensus/<book>/positions.json`
+  and `summary.json`. Full benchmark-overlap checking compares the
+  opening history and prefixes in both directions against **all four**
+  frozen evaluation books (Normal screening, Normal confirmation,
+  Center Rush, and empirical Titanium).
+- `tools/engine_lab/revalidate_tactical_overlap.py` recomputes eligibility
+  for the deterministic seed 20261106, 14 sample positions per evaluation
+  or targeted book, and 20 irregular positions. It performs no inference
+  and writes `results/tactical-consensus/eligibility-recheck.json`.
+- The reproducible Actions entrypoints are
+  `.github/workflows/tactical-consensus-20261106.yml`,
+  `.github/workflows/tactical-eligibility-20261106.yml`, and
+  `.github/workflows/tactical-leakage-20261106.yml`, isolated from
+  production `main`.
+
 ## Tactical search stability audit
 
 `tools/engine_lab/tactical_consensus_audit.py` tests whether the production
