@@ -1,0 +1,51 @@
+name: "ZQuoridor tactical decision and quiet-wall audit"
+on:
+  push:
+    branches: [exp/tactical-consensus-20261106]
+    paths: [".github/workflows/tactical-consensus-20261106.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    name: "tactical-${{ matrix.book }}"
+    runs-on: ubuntu-latest
+    timeout-minutes: 13
+    strategy:
+      fail-fast: false
+      max-parallel: 3
+      matrix:
+        book: [targeted, center, normal]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify production network identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "fe8473255fd219fab247b1a7d44be25384a6cfc5daa5c301def49109badb7f2b  data/nnue/nnue_weights_int8.bin" | sha256sum -c -
+      - name: Build frozen production engine and check Python syntax
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p bin
+          g++ -O3 -DNDEBUG -std=c++17 -pthread -march=native -mavx2 -mfma -Isrc \
+            tools/external/zquoridor_uci.cpp -o bin/zq_tactical_consensus
+          python -m py_compile tools/engine_lab/tactical_consensus_audit.py
+      - name: Screen wall choice and multi-budget decision stability
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -u tools/engine_lab/tactical_consensus_audit.py \
+            --book "${{ matrix.book }}" --samples 14 --seed 20261106 \
+            --budget-fast-ms 200 --budget-mid-ms 1200 --budget-deep-ms 3000 \
+            --output results/tactical-consensus
+      - name: Upload complete per-position diagnostics
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: "tactical-consensus-${{ matrix.book }}"
+          path: "results/tactical-consensus/${{ matrix.book }}/"
+          if-no-files-found: warn
+          retention-days: 14
