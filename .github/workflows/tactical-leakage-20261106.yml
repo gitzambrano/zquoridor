@@ -1,0 +1,29 @@
+name: "ZQuoridor tactical training-leakage revalidation"
+on:
+  push:
+    branches: [exp/tactical-consensus-20261106]
+    paths: [".github/workflows/tactical-leakage-20261106.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  recheck:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check deterministic sample eligibility against all frozen benchmarks
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m py_compile tools/engine_lab/tactical_consensus_audit.py tools/engine_lab/revalidate_tactical_overlap.py
+          python -u tools/engine_lab/revalidate_tactical_overlap.py
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: tactical-eligibility-four-books
+          path: results/tactical-consensus/eligibility-recheck.json
+          if-no-files-found: error
+          retention-days: 14
