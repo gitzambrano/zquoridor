@@ -1,0 +1,51 @@
+name: "ZQuoridor independent Titanium tactical probe"
+on:
+  push:
+    branches: [exp/tactical-consensus-20261106]
+    paths: [".github/workflows/titanium-tactical-probe-20261106.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  teacher:
+    runs-on: ubuntu-latest
+    timeout-minutes: 22
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify frozen zQuoridor weights and compile exact main engine
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "fe8473255fd219fab247b1a7d44be25384a6cfc5daa5c301def49109badb7f2b  data/nnue/nnue_weights_int8.bin" | sha256sum -c -
+          mkdir -p bin
+          g++ -O3 -DNDEBUG -std=c++17 -pthread -march=native -mavx2 -mfma -Isrc \
+            tools/external/zquoridor_uci.cpp -o bin/zq_teacher_compare
+          python -m py_compile tools/engine_lab/titanium_tactical_probe.py
+      - name: Build exact pinned Titanium release
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash tools/external/build_pinned_titanium.sh titanium-bin
+          test "$(cat titanium-bin/titanium-sha.txt)" = "1ac94755f69799f01b2e06869403e701bbf0bd51"
+      - name: Collect eight benchmark-disjoint independent tactical opinions
+        shell: bash
+        env:
+          TITANIUM_PONDERING: "0"
+        run: |
+          set -euo pipefail
+          python -u tools/engine_lab/titanium_tactical_probe.py \
+            --samples 8 --seed 20261106 \
+            --zq-movetime-ms 200 --titanium-movetime-ms 1000 \
+            --output results/titanium-tactical-probe
+      - name: Upload complete independent evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: titanium-tactical-20261106
+          path: |
+            results/titanium-tactical-probe/
+            titanium-bin/titanium-sha.txt
+          if-no-files-found: warn
+          retention-days: 14
