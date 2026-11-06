@@ -26,6 +26,7 @@ CONFIG = {
         "normal": "tools/external/openings_normal_confirm_400.jsonl",
         "center": "tools/external/openings_center_rush_sound_5k.jsonl",
         "targeted": "tools/external/openings_targeted_weakness_bank.jsonl",
+        "irregular": "tools/external/openings_irregular_bank.jsonl",
     },
     "book": "targeted",
     "samples": 14,
@@ -142,7 +143,7 @@ def main() -> None:
         for row in load_book(ROOT / CONFIG["book_paths"][category])
     ]
     chosen = list(range(len(book)))
-    random.Random(cfg["seed"] + {"normal": 11, "center": 13, "targeted": 17}[cfg["book"]]).shuffle(chosen)
+    random.Random(cfg["seed"] + {"normal": 11, "center": 13, "targeted": 17, "irregular": 19}[cfg["book"]]).shuffle(chosen)
     if len(chosen) < cfg["samples"]:
         parser.error("sample count exceeds source book")
 
