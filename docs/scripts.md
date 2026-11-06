@@ -1,3 +1,30 @@
+## Tactical search stability audit
+
+`tools/engine_lab/tactical_consensus_audit.py` tests whether the production
+engine's best move changes with longer search or a different graph-Q blend.
+It does **not** produce independent labels of correct moves.
+
+- Default book: `targeted` (`tools/external/openings_targeted_weakness_bank.jsonl`).
+  `--book normal` selects `openings_normal_confirm_400.jsonl`, and
+  `--book center` selects `openings_center_rush_sound_5k.jsonl`.
+- Default workload: 14 seeded opening histories, searched at 200 ms,
+  1,200 ms, and 3,000 ms under production settings, plus 3,000 ms with
+  `--graph-leaf-mix 0.55`.
+- Default executable: `bin/zq_tactical_consensus`; override with
+  `--engine`. The production weights path can be overridden with
+  `--weights`.
+- `--samples`, `--seed`, `--budget-fast-ms`, `--budget-mid-ms`,
+  `--budget-deep-ms` override the default workload for one invocation.
+- Default output: `results/tactical-consensus/<book>/{positions,summary}.json`;
+  override the base directory with `--output`.
+- The results include legal deep wall placements, whether both players'
+  shortest-path distances remain unchanged, and whether an analyzed history
+  overlaps any frozen benchmark history (including prefix matches).
+  Benchmark-overlapping positions must not enter training datasets.
+- GitHub Actions entry point: `.github/workflows/tactical-consensus-20261106.yml`
+  on the isolated `exp/tactical-consensus-20261106` branch. No weights are
+  trained or promoted by this workflow.
+
 # Script Catalog and Execution Contracts
 
 This document is the reference catalog for operational scripts in Zquoridor.
