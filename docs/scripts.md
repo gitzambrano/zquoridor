@@ -1,3 +1,30 @@
+## Independent Titanium tactical probe
+
+`tools/engine_lab/titanium_tactical_probe.py` compares the frozen production
+engine to the separately implemented and SHA-pinned Titanium engine on
+nonbenchmark tactical positions. It is a pilot for independent annotation,
+not an Elo match, and uses different move budgets intentionally.
+
+- Default inputs: 8 seeded histories from
+  `openings_targeted_weakness_bank.jsonl`, excluding any prefix or exact
+  overlap with all four frozen evaluation books. Recent wall moves are
+  required in the opening suffix to prioritize tactical positions.
+- `--samples`, `--seed`, `--zq-movetime-ms`,
+  `--titanium-movetime-ms`, `--titanium`, `--zquoridor`,
+  `--weights`, `--source`, and `--output` override the default
+  top-level `CONFIG` for a single execution.
+- Default budgets: 200 ms zQuoridor and 1,000 ms Titanium, no pondering.
+  These are independent opinions, not equal-time competitive games.
+- Output: `results/titanium-tactical-probe/{positions,summary}.json`;
+  records moves, legal-wall status, shortest-path-neutral walls, and
+  raw Titanium info, without converting these to training labels.
+- Pinned binary builder:
+  `tools/external/build_pinned_titanium.sh` using
+  SHA `1ac94755f69799f01b2e06869403e701bbf0bd51`.
+- Actions:
+  `.github/workflows/titanium-tactical-probe-20261106.yml`,
+  isolated from production `main`.
+
 ## Tactical search stability and eligibility audit
 
 - `tools/engine_lab/tactical_consensus_audit.py` examines the frozen 4.10
