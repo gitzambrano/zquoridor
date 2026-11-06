@@ -32,11 +32,18 @@ All three parallel jobs completed successfully.
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
 | Normal confirmation | 14 | 0 | 13/14 | 0 | 0 | 0/14 |
 | Center Rush | 14 | 1 | 12/14 | 10 | 3 | 0/14 |
-| Targeted weaknesses | 14 | 2 | 11/14 | 5 | 1 | 13/14 |
+| Targeted weaknesses | 14 | 2 | 11/14 | 5 | 1 | **9/14** |
+| Irregular self-play seeds | 20 | 4 | 17/20 | 0 | 0 | **17/20** |
 
 Nonoverlap requires no exact or prefix relation in either direction with
-any frozen Normal confirmation or Center Rush opening. Every frozen benchmark
-position must be excluded from training regardless of move stability.
+**all four** frozen opening books: Normal screening (100), Normal confirmation
+(400), Center Rush (5,000), and empirical Titanium (40).
+The first audit checked only two books; its original 13/14 targeted
+eligibility count was **invalid**. A separate verified four-book
+recheck corrected the count to **9/14** without repeating inference:
+https://github.com/gitzambrano/zquoridor/actions/runs/42244231474 .
+Every frozen benchmark position must be excluded from training regardless
+of move stability. All search results remain diagnostic, not targets.
 
 Specific targeted diagnostic examples:
 - Source index 1711: 200 ms selected pawn `c1`; 3 s selected wall `d6h`,
@@ -57,8 +64,17 @@ checked against the full frozen benchmark histories for prefix overlap.
 GitHub Actions:
 https://github.com/gitzambrano/zquoridor/actions/runs/42243406946
 
+This extra job finished successfully: 20 irregular positions, four
+200 ms versus 3 s move changes, 17/20 agreement between the two long
+search configurations, and **zero** long-search wall choices. The
+four-book eligibility recheck found 17/20 nonoverlapping histories.
+This book is useful as a negative/control sample, not as a rich quiet-wall
+source.
+
 The output files `positions.json` and `summary.json` are saved as
 GitHub Actions artifacts, not committed to Git or blended into a trainer.
+The `eligibility-recheck.json` artifact contains corrected per-position
+overlap results for all 62 sampled histories.
 
 ## Interpretation and next strength steps
 
