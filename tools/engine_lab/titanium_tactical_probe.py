@@ -5,6 +5,8 @@ Produces raw diagnostic disagreements; does not train any model or assert truth.
 """
 from __future__ import annotations
 
+from contextlib import ExitStack
+
 import argparse
 import json
 import random
@@ -63,44 +65,47 @@ def main() -> None:
     rows = []
     output = ROOT / cfg["output"]
     output.mkdir(parents=True, exist_ok=True)
-    with UciPlayer([str(ROOT / cfg["zquoridor"]), "--nnue", str(ROOT / cfg["weights"])],
-                   "frozen-zquoridor") as zq:
-        with TitaniumPlayer(ROOT / cfg["titanium"]) as titanium:
-            for index in selection:
-                moves = candidates[index]["moves"]
-                ref = Referee()
-                for m in moves:
-                    ref.apply(m)
-                zq_move, zq_time, _ = zq.bestmove(
-                    moves, budget=cfg["zq_movetime_ms"], timeout_s=20.0
-                )
-                ti_move, ti_time, ti_info = titanium.bestmove(
-                    moves, budget=cfg["titanium_movetime_ms"], timeout_s=20.0
-                )
-                zq_move, ti_move = zq_move.lower(), ti_move.lower()
-                if not ref.is_legal_move(zq_move) or not ref.is_legal_move(ti_move):
-                    raise RuntimeError("Engine returned illegal move at source " + str(index))
-                row = {
-                    "source_index": index,
-                    "history": moves,
-                    "benchmark_overlap": False,
-                    "zq_move": zq_move,
-                    "titanium_move": ti_move,
-                    "disagree": zq_move != ti_move,
-                    "zq_wall": wall_properties(moves, zq_move),
-                    "titanium_wall": wall_properties(moves, ti_move),
-                    "zq_elapsed_s": zq_time,
-                    "titanium_elapsed_s": ti_time,
-                    "titanium_info": ti_info[-8:],
-                    "label_quality": "independent_reference_unverified",
-                }
-                rows.append(row)
-                (output / "positions.json").write_text(json.dumps(rows, indent=2) + "\n")
-                print("POSITION " + json.dumps({
-                    "index": index, "zq": zq_move, "titanium": ti_move,
-                    "disagree": row["disagree"],
-                    "titanium_neutral_wall": row["titanium_wall"]["path_distance_neutral"],
-                }), flush=True)
+    with ExitStack() as stack:
+        zq = UciPlayer([str(ROOT / cfg["zquoridor"]), "--nnue", str(ROOT / cfg["weights"])],
+                       "frozen-zquoridor")
+        stack.callback(zq.close)
+        titanium = TitaniumPlayer(ROOT / cfg["titanium"])
+        stack.callback(titanium.close)
+        for index in selection:
+            moves = candidates[index]["moves"]
+            ref = Referee()
+            for m in moves:
+                ref.apply(m)
+            zq_move, zq_time, _ = zq.bestmove(
+                moves, budget=cfg["zq_movetime_ms"], timeout_s=20.0
+            )
+            ti_move, ti_time, ti_info = titanium.bestmove(
+                moves, budget=cfg["titanium_movetime_ms"], timeout_s=20.0
+            )
+            zq_move, ti_move = zq_move.lower(), ti_move.lower()
+            if not ref.is_legal_move(zq_move) or not ref.is_legal_move(ti_move):
+                raise RuntimeError("Engine returned illegal move at source " + str(index))
+            row = {
+                "source_index": index,
+                "history": moves,
+                "benchmark_overlap": False,
+                "zq_move": zq_move,
+                "titanium_move": ti_move,
+                "disagree": zq_move != ti_move,
+                "zq_wall": wall_properties(moves, zq_move),
+                "titanium_wall": wall_properties(moves, ti_move),
+                "zq_elapsed_s": zq_time,
+                "titanium_elapsed_s": ti_time,
+                "titanium_info": ti_info[-8:],
+                "label_quality": "independent_reference_unverified",
+            }
+            rows.append(row)
+            (output / "positions.json").write_text(json.dumps(rows, indent=2) + "\n")
+            print("POSITION " + json.dumps({
+                "index": index, "zq": zq_move, "titanium": ti_move,
+                "disagree": row["disagree"],
+                "titanium_neutral_wall": row["titanium_wall"]["path_distance_neutral"],
+            }), flush=True)
     summary = {
         "samples": len(rows),
         "disagreements": sum(r["disagree"] for r in rows),
