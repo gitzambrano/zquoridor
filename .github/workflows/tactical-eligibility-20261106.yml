@@ -1,0 +1,46 @@
+name: "ZQuoridor independent tactical data eligibility"
+on:
+  push:
+    branches: [exp/tactical-consensus-20261106]
+    paths: [".github/workflows/tactical-eligibility-20261106.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  irregular:
+    name: irregular-nonbenchmark-roots
+    runs-on: ubuntu-latest
+    timeout-minutes: 13
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate frozen production network
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "fe8473255fd219fab247b1a7d44be25384a6cfc5daa5c301def49109badb7f2b  data/nnue/nnue_weights_int8.bin" | sha256sum -c -
+      - name: Compile and test audit runner
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p bin
+          g++ -O3 -DNDEBUG -std=c++17 -pthread -march=native -mavx2 -mfma -Isrc \
+            tools/external/zquoridor_uci.cpp -o bin/zq_tactical_consensus
+          python -m py_compile tools/engine_lab/tactical_consensus_audit.py
+      - name: Audit nonbenchmark tactical candidates with deeper search
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -u tools/engine_lab/tactical_consensus_audit.py \
+            --book irregular --samples 20 --seed 20261106 \
+            --budget-fast-ms 200 --budget-mid-ms 1200 --budget-deep-ms 3000 \
+            --output results/tactical-consensus
+      - name: Upload diagnostic evidence and overlap flags
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: "tactical-consensus-irregular"
+          path: "results/tactical-consensus/irregular/"
+          if-no-files-found: warn
+          retention-days: 14
