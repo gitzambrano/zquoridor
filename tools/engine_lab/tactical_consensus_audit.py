@@ -28,6 +28,12 @@ CONFIG = {
         "targeted": "tools/external/openings_targeted_weakness_bank.jsonl",
         "irregular": "tools/external/openings_irregular_bank.jsonl",
     },
+    "frozen_evaluation_paths": (
+        "tools/external/openings_normal_screen_100.jsonl",
+        "tools/external/openings_normal_confirm_400.jsonl",
+        "tools/external/openings_center_rush_sound_5k.jsonl",
+        "tools/external/openings_titanium_mined_40.jsonl",
+    ),
     "book": "targeted",
     "samples": 14,
     "seed": 20261106,
@@ -139,8 +145,8 @@ def main() -> None:
     book = load_book(ROOT / CONFIG["book_paths"][cfg["book"]])
     benchmarks = [
         tuple(row["moves"])
-        for category in ("normal", "center")
-        for row in load_book(ROOT / CONFIG["book_paths"][category])
+        for relative_path in CONFIG["frozen_evaluation_paths"]
+        for row in load_book(ROOT / relative_path)
     ]
     chosen = list(range(len(book)))
     random.Random(cfg["seed"] + {"normal": 11, "center": 13, "targeted": 17, "irregular": 19}[cfg["book"]]).shuffle(chosen)
