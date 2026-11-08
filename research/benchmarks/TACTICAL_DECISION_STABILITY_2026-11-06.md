@@ -101,3 +101,61 @@ Recommended order:
    pilot self-play results alone.
 
 **Promotion status: no new engine or network is approved.**
+
+## Final independent Titanium diagnostic and closure (8 November 2026)
+
+Source: https://github.com/gitzambrano/zquoridor/actions/runs/42244788786
+
+This GitHub Actions job **completed successfully**, using pinned Titanium
+`1ac94755f69799f01b2e06869403e701bbf0bd51` without pondering.
+It compared production zQuoridor at 200 ms with Titanium at 1,000 ms on
+eight legal, benchmark-disjoint wall-rich targeted histories. Different
+budgets prohibit any fair-strength or Elo interpretation.
+
+| Index | zQuoridor (200 ms) | Titanium (1,000 ms) | Titanium path-distance-neutral wall? |
+| --- | --- | --- | --- |
+| 253 | d3 | d3 | N/A |
+| 1113 | e3 | e3 | N/A |
+| 2336 | f4 | c3h | No |
+| 1310 | e2 | e2 | N/A |
+| 924 | e2 | d1v | Yes |
+| 2197 | e3 | f2 | N/A |
+| 777 | f6 | f6 | N/A |
+| 1863 | d2 | e7v | Yes |
+
+Summary: four move disagreements in eight positions; Titanium selected
+three legal walls, of which two were distance-neutral under the specific
+shortest-path definition. zQuoridor selected no walls in this sample.
+There were zero exact/prefix opening-history overlaps with the four
+frozen evaluation books.
+
+**Interpretation:** These eight positions are independent *diagnostic
+opinions*, not proof that the Titanium move is objectively superior, and
+not a training batch. The sample is selected for tactical-wall content.
+
+### Closure and practical release decision
+
+- **Freeze search-calibration exploration.** The combined compact-MCGS
+  + incremental-PUCT experiment improved 200 ms search throughput by
+  approximately 7%, and the adaptive 3+2 root probe showed around 8%
+  more simulations/s. Yet the candidate with cPuct 1.05 scored 48.75%
+  (80 paired-color games) against the frozen production binary, with a
+  45% Center Rush subset. It **failed promotion**.
+- **Preserve opt-in performance code** in
+  `exp/mcgs-strength-20261104`, and preserve these tactical diagnostic
+  scripts and artifacts in `exp/tactical-consensus-20261106`.
+  Do not merge search/calibration changes into production based only
+  on simulations/s.
+- **Maintain current `main` at 4.10.** No tested successor has
+  established an advantage on the required complete promotion battery.
+- **Next focused development**, not a continuation of this broad audit:
+  use the existing `training/train_nnue.py` pathway to build one
+  candidate policy/value network emphasizing delayed wall consequences.
+  Obtain independent targets at many additional, benchmark-disjoint
+  positions; isolate real strategy from engine disagreement; then run
+  a cheap screening H2H against frozen main, followed by Normal,
+  Center Rush, Claustrophobia, Titanium, and native 3+2 promotion gates.
+  Avoid claiming this small probe is sufficient to start training.
+
+**Status: the performance/tactical audit is complete. No additional
+GitHub Actions jobs are needed for this audit. Production unchanged.**
