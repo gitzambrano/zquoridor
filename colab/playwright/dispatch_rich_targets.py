@@ -23,7 +23,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from colab.config import WORKERS
-from colab.playwright.browser_utils import is_cdp_reachable, solve_recaptcha_playwright
+from colab.playwright.browser_utils import is_cdp_reachable, solve_recaptcha_playwright, find_profile_process
 
 BOOTLOADER_TEMPLATE = """from google.colab import drive
 import os
@@ -89,29 +89,29 @@ print('Launching: {job_label}', flush=True)
 
 JOB_SPECS = {
     1: {
-        "job_label": "Wall Drops v4.10 (Medium Mazes: 3-8 walls) [Target: 500,000]",
+        "job_label": "Wall Drops v4.10 (Medium Mazes: 3-8 walls) [Target: 1,000,000]",
         "output_dir": "/content/drive/MyDrive/zquoridor_data/wall_drops_v410/worker_1",
-        "cli_command": "python -u tools/generate_wall_drops.py --count 500000 --min-walls 3 --max-walls 8 --pawn-walk-plies 4 --move-time-ms 20 --teacher zquoridor-4.10 --zq-executable /content/zquoridor_runtime/zquoridor_uci --output /content/drive/MyDrive/zquoridor_data/wall_drops_v410/worker_1 --seed 1000001",
+        "cli_command": "python -u tools/generate_wall_drops.py --count 1000000 --min-walls 3 --max-walls 8 --pawn-walk-plies 4 --move-time-ms 20 --teacher zquoridor-4.10 --zq-executable /content/zquoridor_runtime/zquoridor_uci --output /content/drive/MyDrive/zquoridor_data/wall_drops_v410/worker_1 --seed 1000001",
     },
     2: {
-        "job_label": "Wall Drops v4.10 (Extreme Mazes: 8-14 walls) [Target: 500,000]",
+        "job_label": "Wall Drops v4.10 (Extreme Mazes: 8-14 walls) [Target: 1,000,000]",
         "output_dir": "/content/drive/MyDrive/zquoridor_data/wall_drops_v410/worker_2",
-        "cli_command": "python -u tools/generate_wall_drops.py --count 500000 --min-walls 8 --max-walls 14 --pawn-walk-plies 4 --move-time-ms 20 --teacher zquoridor-4.10 --zq-executable /content/zquoridor_runtime/zquoridor_uci --output /content/drive/MyDrive/zquoridor_data/wall_drops_v410/worker_2 --seed 2000002",
+        "cli_command": "python -u tools/generate_wall_drops.py --count 1000000 --min-walls 8 --max-walls 14 --pawn-walk-plies 4 --move-time-ms 20 --teacher zquoridor-4.10 --zq-executable /content/zquoridor_runtime/zquoridor_uci --output /content/drive/MyDrive/zquoridor_data/wall_drops_v410/worker_2 --seed 2000002",
     },
     3: {
-        "job_label": "Gumbel AlphaZero Sequential Halving v4.10 (Top-K=8, 15ms) [Target: 20,000]",
+        "job_label": "Gumbel AlphaZero Sequential Halving v4.10 (Top-K=8, 15ms) [Target: 50,000]",
         "output_dir": "/content/drive/MyDrive/zquoridor_data/gumbel_sims_v410/worker_3",
-        "cli_command": "python -u tools/generate_gumbel_sims.py --count 20000 --top-k 8 --c-scale 2.0 --move-time-ms 15 --teacher zquoridor-4.10-gumbel --zq-executable /content/zquoridor_runtime/zquoridor_uci --output /content/drive/MyDrive/zquoridor_data/gumbel_sims_v410/worker_3 --seed 3000003",
+        "cli_command": "python -u tools/generate_gumbel_sims.py --count 50000 --top-k 8 --c-scale 2.0 --move-time-ms 15 --teacher zquoridor-4.10-gumbel --zq-executable /content/zquoridor_runtime/zquoridor_uci --output /content/drive/MyDrive/zquoridor_data/gumbel_sims_v410/worker_3 --seed 3000003",
     },
     4: {
-        "job_label": "Gumbel AlphaZero Sequential Halving v4.10 (Top-K=8, 15ms) [Target: 20,000]",
+        "job_label": "Gumbel AlphaZero Sequential Halving v4.10 (Top-K=8, 15ms) [Target: 50,000]",
         "output_dir": "/content/drive/MyDrive/zquoridor_data/gumbel_sims_v410/worker_4",
-        "cli_command": "python -u tools/generate_gumbel_sims.py --count 20000 --top-k 8 --c-scale 2.0 --move-time-ms 15 --teacher zquoridor-4.10-gumbel --zq-executable /content/zquoridor_runtime/zquoridor_uci --output /content/drive/MyDrive/zquoridor_data/gumbel_sims_v410/worker_4 --seed 4000004",
+        "cli_command": "python -u tools/generate_gumbel_sims.py --count 50000 --top-k 8 --c-scale 2.0 --move-time-ms 15 --teacher zquoridor-4.10-gumbel --zq-executable /content/zquoridor_runtime/zquoridor_uci --output /content/drive/MyDrive/zquoridor_data/gumbel_sims_v410/worker_4 --seed 4000004",
     },
     5: {
-        "job_label": "Gumbel Deep Planning v4.10 (Top-K=16, 20ms) [Target: 20,000]",
+        "job_label": "Gumbel Deep Planning v4.10 (Top-K=16, 20ms) [Target: 50,000]",
         "output_dir": "/content/drive/MyDrive/zquoridor_data/gumbel_sims_v410/worker_5",
-        "cli_command": "python -u tools/generate_gumbel_sims.py --count 20000 --top-k 16 --c-scale 2.5 --move-time-ms 20 --teacher zquoridor-4.10-gumbel --zq-executable /content/zquoridor_runtime/zquoridor_uci --output /content/drive/MyDrive/zquoridor_data/gumbel_sims_v410/worker_5 --seed 5000005",
+        "cli_command": "python -u tools/generate_gumbel_sims.py --count 50000 --top-k 16 --c-scale 2.5 --move-time-ms 20 --teacher zquoridor-4.10-gumbel --zq-executable /content/zquoridor_runtime/zquoridor_uci --output /content/drive/MyDrive/zquoridor_data/gumbel_sims_v410/worker_5 --seed 5000005",
     },
 }
 
@@ -266,7 +266,7 @@ def get_cell_execution_state(page: Any) -> Dict[str, Any]:
 
             const nb = globalThis.colab?.global?.notebook;
             const cell = nb?.cells?.[0];
-            const isBusy = cell ? !!cell.busy : false;
+            const isBusy = cell ? (typeof cell.isRunning === 'function' ? cell.isRunning() : !!cell.busy) : false;
             const kernelBusy = nb?.kernel?.state === 'busy';
             const lastFailed = cell ? !!cell.lastExecutionFailed : false;
 
@@ -384,19 +384,35 @@ def set_cell_code(page: Any, code: str) -> bool:
 
 
 def click_run_button(page: Any) -> bool:
-    """Trigger execution for Cell 0 via cell focus and Control+Enter keyboard shortcut."""
+    """Trigger execution for Cell 0 via cell.manualExecute() and run button click."""
     try:
-        page.evaluate("""() => {
+        executed = page.evaluate("""() => {
             const nb = globalThis.colab?.global?.notebook;
             const cell = nb?.cells?.[0];
+            let done = false;
             if (cell) {
+                if (typeof cell.manualExecute === 'function') {
+                    try { cell.manualExecute(); done = true; } catch (e) {}
+                }
+                const elem = cell.getElement ? cell.getElement() : (cell.element_ || cell.dom_ || cell.element);
+                if (elem) {
+                    const btn = elem.querySelector('colab-run-button');
+                    if (btn && btn.shadowRoot) {
+                        const inner = btn.shadowRoot.querySelector('#run-button, button, [role="button"]');
+                        if (inner) { inner.click(); done = true; }
+                        else { btn.click(); done = true; }
+                    } else if (btn) {
+                        btn.click(); done = true;
+                    }
+                }
                 if (cell.element) cell.element.click();
                 if (typeof cell.focus === 'function') cell.focus();
             }
+            return done;
         }""")
         time.sleep(0.5)
         page.keyboard.press("Control+Enter")
-        return True
+        return bool(executed)
     except Exception:
         return False
 
@@ -412,6 +428,9 @@ def deploy_worker(p: Any, wid: int, force_relaunch: bool = True) -> Dict[str, An
     print(f"Job: {spec['job_label']}", flush=True)
     print(f"=======================================================", flush=True)
 
+    in_use, proc_pid, detected_cdp_port = find_profile_process(w["profile_dir"])
+    if in_use and not is_cdp_reachable(port) and detected_cdp_port and is_cdp_reachable(detected_cdp_port):
+        port = detected_cdp_port
     if is_cdp_reachable(port):
         print(f"  Worker {wid}: Connecting to existing CDP session on port {port}...", flush=True)
         browser = p.chromium.connect_over_cdp(f"http://127.0.0.1:{port}")
@@ -503,6 +522,8 @@ def main():
                         help="Preserve active worker execution instead of relaunching with version 4.10.")
     parser.add_argument("--workers", type=int, nargs="+", default=[1, 2, 3, 4, 5],
                         help="List of worker IDs to deploy and monitor.")
+    parser.add_argument("--cycles", type=int, default=0,
+                        help="Number of monitor cycles to run before exiting (0 for continuous monitoring).")
     args = parser.parse_args()
 
     print("=================================================================", flush=True)
@@ -526,6 +547,9 @@ def main():
                 time.sleep(25)
                 print(f"\n--- FLEET MONITOR [Cycle {cycle} | {time.strftime('%H:%M:%S')}] ---", flush=True)
 
+                if args.cycles > 0 and cycle > args.cycles:
+                    print(f"Completed {args.cycles} monitor cycle(s). Stopping monitor loop.", flush=True)
+                    break
                 for wid in args.workers:
                     st_info = workers_state.get(wid)
                     page = st_info.get("page") if st_info else None

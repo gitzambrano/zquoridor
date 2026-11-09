@@ -130,22 +130,34 @@ def is_cdp_reachable(port: int, host: str = "127.0.0.1", timeout: float = 1.0) -
         return False
 
 
-def is_profile_in_use(profile_dir: str) -> Tuple[bool, Optional[int]]:
-    """Check if any running chrome.exe process is currently using the specified user data directory."""
-    norm_target = os.path.normpath(profile_dir).lower()
+def find_profile_process(profile_dir: str) -> Tuple[bool, Optional[int], Optional[int]]:
+    """Check if any running chrome.exe process is currently using profile_dir.
+    Returns (in_use, pid, cdp_port).
+    """
+    import re
+    norm_target = os.path.normcase(os.path.abspath(profile_dir))
+    found_pid = None
     for proc in psutil.process_iter(["pid", "name", "cmdline"]):
         try:
-            p_name = proc.info.get("name") or ""
-            if "chrome" in p_name.lower():
+            if "chrome" in (proc.info.get("name") or "").lower():
                 cmdline = proc.info.get("cmdline") or []
-                for arg in cmdline:
-                    if arg.lower().startswith("--user-data-dir="):
-                        val = os.path.normpath(arg.split("=", 1)[1]).lower()
-                        if val == norm_target:
-                            return True, proc.info.get("pid")
+                if any(norm_target in os.path.normcase(arg) for arg in cmdline):
+                    found_pid = proc.info.get("pid")
+                    for arg in cmdline:
+                        m = re.search(r"--remote-debugging-port=(\d+)", arg)
+                        if m:
+                            return True, found_pid, int(m.group(1))
         except (psutil.NoSuchProcess, psutil.AccessDenied):
             pass
-    return False, None
+    if found_pid is not None:
+        return True, found_pid, None
+    return False, None, None
+
+
+def is_profile_in_use(profile_dir: str) -> Tuple[bool, Optional[int]]:
+    """Check if any running chrome.exe process is currently using the specified user data directory."""
+    in_use, pid, _ = find_profile_process(profile_dir)
+    return in_use, pid
 
 
 def dismiss_modals(page: Any) -> bool:
@@ -601,6 +613,7 @@ def trigger_cell_execution(
             if extra_args:
                 cmd_args = f"{cmd_args} {extra_args}".strip()
             fmt_kwargs = {
+                **w,
                 "worker_id": worker_or_id,
                 "profile": worker_or_id,
                 "drive_dir": drive_dir,

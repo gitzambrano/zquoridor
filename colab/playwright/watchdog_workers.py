@@ -163,7 +163,8 @@ def run_watchdog(cfg: Dict[str, Any]) -> None:
                 connect_runtime_if_needed(page)
                 time.sleep(2)
                 print(f"[{w['name']}] Injecting updated bootloader template and triggering execution...")
-                ok = trigger_cell_execution(page, wid, BOOTLOADER_TEMPLATE, target_keywords=keywords, force=True)
+                tmpl = w.get("bootloader_template", BOOTLOADER_TEMPLATE)
+                ok = trigger_cell_execution(page, w, tmpl, target_keywords=keywords, force=True)
                 if ok:
                     print(f"[{w['name']}] Triggered execution successfully.")
                 else:
@@ -276,7 +277,8 @@ def run_watchdog(cfg: Dict[str, Any]) -> None:
                                         time.sleep(12)
 
                                     print(f"[{w['name']}] Triggering cell execution...")
-                                    ok = trigger_cell_execution(page, wid, BOOTLOADER_TEMPLATE, target_keywords=keywords, force=True)
+                                    tmpl = w.get("bootloader_template", BOOTLOADER_TEMPLATE)
+                                    ok = trigger_cell_execution(page, w, tmpl, target_keywords=keywords, force=True)
                                     if ok:
                                         print(f"[{w['name']}] Triggered execution successfully.")
                                     else:
