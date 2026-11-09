@@ -252,9 +252,17 @@ def launch_worker_cli(worker_id: int, gpu: str = "T4", force_restart: bool = Fal
             print(f"Worker {worker_id} ({account}): Found active runtime {assignments[0].endpoint}. Attaching as '{session_name}'...")
             attach(worker_id, endpoint=assignments[0].endpoint, name=session_name)
         else:
-            print(f"Worker {worker_id} ({account}): Allocating new Colab GPU session ({gpu})...")
-            new_cmd = command(worker_id, ["new", "-s", session_name, "--gpu", gpu])
+            if gpu and gpu.lower() not in ("none", "cpu"):
+                print(f"Worker {worker_id} ({account}): Allocating new Colab GPU session ({gpu})...")
+                new_cmd = command(worker_id, ["new", "-s", session_name, "--gpu", gpu])
+            else:
+                print(f"Worker {worker_id} ({account}): Allocating new Colab session...")
+                new_cmd = command(worker_id, ["new", "-s", session_name])
             res = subprocess.run(new_cmd, env=env)
+            if res.returncode != 0 and gpu and gpu.lower() not in ("none", "cpu"):
+                print(f"Worker {worker_id}: GPU allocation timed out or unavailable. Falling back to CPU session...")
+                cpu_cmd = command(worker_id, ["new", "-s", session_name])
+                res = subprocess.run(cpu_cmd, env=env)
             if res.returncode != 0:
                 print(f"Worker {worker_id}: Failed to allocate new session.")
                 return False
@@ -303,7 +311,7 @@ def main() -> None:
                         help="Transport backend to use (default: cli)")
     parser.add_argument("--worker-ids", type=int, nargs="+", default=CONFIG["worker_ids"],
                         help=f"Worker IDs to launch (default: {CONFIG['worker_ids']})")
-    parser.add_argument("--gpu", default=CONFIG["gpu"], choices=["T4", "L4", "A100"],
+    parser.add_argument("--gpu", default=CONFIG["gpu"], choices=["T4", "L4", "A100", "none", "cpu"],
                         help="GPU accelerator variant (default: T4)")
     parser.add_argument("--force-restart", action="store_true",
                         help="Force restarting worker process")
