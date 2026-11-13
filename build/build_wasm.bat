@@ -1,5 +1,7 @@
 @echo off
-call C:\emsdk\emsdk_env.bat >nul 2>&1
+where emcc >nul 2>nul
+if errorlevel 1 if exist "%USERPROFILE%\emsdk\emsdk_env.bat" call "%USERPROFILE%\emsdk\emsdk_env.bat" >nul 2>&1
+if errorlevel 1 if exist "C:\emsdk\emsdk_env.bat" call "C:\emsdk\emsdk_env.bat" >nul 2>&1
 cd /d "%~dp0..\gui_web"
 
 set "PRELOAD="

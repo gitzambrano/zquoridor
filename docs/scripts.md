@@ -194,6 +194,40 @@ Collection status and next actions belong to `plan.md`.
 
 ---
 
+### `tools/arena/run_arena.py`
+- **Purpose**: Runs parallel tournament games between two engine configurations or Git revisions, with optional color inversion and binary self-play dataset recording.
+- **Inputs**: Engine executables, NNUE weight directories, and random or prescribed opening schedules.
+- **Outputs**: Match summaries to stdout and optional training shards in `data/arena/`.
+- **Default settings**: `GAMES=1000`, `TIME_MS=150`, `THREADS=14`, `RANDOM_OPENING_PLIES=4`, `INVERT_COLORS=True`, `CREATE_BIN=True`.
+- **Key CLI flags**: `--games`, `--time-ms`, `--threads`, `--e1-heuristic`, `--e2-heuristic`, `--policy-order`, `--no-invert`, `--no-bin`.
+
+### `tools/run_v3_search_screening.py`
+- **Purpose**: Screens aggressive V3 search candidate configurations (LMR, LMP, and cpuct variations) in parallel against V3-main and Claustrophobia.
+- **Inputs**: Production V3 NNUE weights (`data/nnue/nnue_weights_int8.bin`), compiled Zquoridor engine, and opening books.
+- **Outputs**: Screening match summaries and win-rate statistics under `results/benchmarks/`.
+- **Key CLI flags**: `--candidate`, `--pairs`, `--openings`, `--workers`, `--move-time-ms`, `--output`.
+
+### `tools/run_v3_search_confirmation.py`
+- **Purpose**: Executes deep confirmation gates (`main-fixed`, `main-clock`, and `external`) for finalist search candidates against Main, Claustrophobia, and Titanium.
+- **Inputs**: Production V3 NNUE weights, candidate search parameters, opening books, and opponent binaries.
+- **Outputs**: Gate match transcripts and statistical summary JSON files under specified output path.
+- **Key CLI flags**: `--candidate`, `--gate`, `--pairs`, `--openings`, `--output`, `--workers`, `--move-time-ms`, `--base-ms`, `--increment-ms`, `--opponents`.
+
+### `tools/run_central_finetune_evaluation.py`
+- **Purpose**: Evaluates candidate fine-tuned NNUE weights against frozen production and Claustrophobia on Center Rush opening lines.
+- **Inputs**: Candidate NNUE weights and architecture JSON, frozen production directory, and `openings_center_rush_sound_5k.jsonl`.
+- **Outputs**: Paired match transcripts and evaluation reports in `results/benchmarks/central-finetune/`.
+- **Default settings**: 200 pairs, 200 ms move clock, one worker, bootstrap iterations 20000.
+- **Key CLI flags**: `--candidate-nnue`, `--candidate-architecture`, `--candidate-name`, `--pairs`, `--workers`, `--move-time-ms`, `--openings`, `--output`.
+
+### `tools/release_410.py`
+- **Purpose**: Releases and updates the 4.10 search-distilled quantized policy over the 4.03 base engine.
+- **Inputs**: Release payload, base `data/nnue/nnue_weights_int8.bin`, architecture metadata, and GitHub release blobs.
+- **Outputs**: Updated production `data/nnue/nnue_weights_int8.bin`, `nnue_weights.architecture.json`, and `release.json`.
+- **Key environment variables**: `GH_TOKEN`, `GITHUB_REPOSITORY`.
+
+---
+
 ## 2. Remote and Cloud Self-Play (Google Colab)
 
 ### `colab/launch.py`
@@ -395,6 +429,33 @@ Collection status and next actions belong to `plan.md`.
 
 ---
 
+### `tools/teacher/assemble_unified_clean_dataset.py`
+- **Purpose**: Assembles the master production dataset (`multipath_unified_clean_15m`) by combining weakness-boosted positions with clean stored-search self-play.
+- **Inputs**: Weakness master archive (`multipath-weakness-boosted-11m/dataset.npz`) and clean replay archive (`replay_clean_stored/dataset.npz`).
+- **Outputs**: Final consolidated master dataset archive (`data/teaching/multipath_unified_clean_15m/dataset.npz`) and dataset manifest.
+- **Default settings**: `weakness_scale=1.0`, `replay_scale=1.0`. Streams uncompressed arrays in chunks of 50,000 samples.
+- **Key CLI flags**: `--weakness-master`, `--clean-replay`, `--out`, `--weakness-scale`, `--replay-scale`.
+
+### `tools/teacher/assemble_5tier_dataset.py`
+- **Purpose**: Assembles multi-tier hierarchical training datasets from background replay, past search cases, generic search, dual crisis, and deep search tiers.
+- **Inputs**: Tier directories containing state arrays and supervision targets.
+- **Outputs**: Combined `dataset.npz` and build manifest using chunked array streaming.
+- **Key CLI flags**: `--output`, `--tier1`, `--tier2`, `--tier3`, `--tier4`, `--tier5`.
+
+### `tools/teacher/mine_weakness_positions.py`
+- **Purpose**: Extracts critical positions from benchmark game losses, draws, swept openings, and wall-depletion crises against external opponents.
+- **Inputs**: Benchmark transcripts directory containing `games.jsonl`.
+- **Outputs**: Architecture-neutral `positions.jsonl` formatted in canonical `zquoridor.position.v1`.
+- **Key CLI flags**: `--benchmarks-dir`, `--out`, `--max-positions`, `--val-fraction`, `--seed`.
+
+### `tools/teacher/calibrate_claustrophobia_weakness_weights.py`
+- **Purpose**: Calibrates sample loss weights to emphasize Center Rush clashes, bottleneck corridor states, and pawn race disadvantages while keeping background anchor weights at 1.0.
+- **Inputs**: Input master dataset archive (`dataset.npz`).
+- **Outputs**: Calibrated dataset archive with adjusted sample weights.
+- **Key CLI flags**: `--input`, `--output`, `--max-weight`.
+
+---
+
 ## 5. Training, Quantization, and Parity
 
 ### `training/run_experiment.py`
@@ -442,6 +503,15 @@ Collection status and next actions belong to `plan.md`.
 - **Outputs**: Discrepancy report and maximum absolute difference metrics.
 
 
+### `training/new_experiment.py`
+- **Purpose**: Scaffolds a standardized new NNUE experiment directory with template configuration (`config.json`) and structured documentation (`README.md`).
+- **Inputs**: Target experiment name, architecture variant, dataset path, hyperparameters, and hypothesis.
+- **Outputs**: Created workspace under `experimental/experiments/<name>/` ready for training with `training/run_experiment.py`.
+- **Default settings**: `architecture="multipath_phase_contact_bucketed"`, `hidden=512`, `epochs=60`, `batch_size=1024`, `lr=0.0001`.
+- **Key CLI flags**: `--name`, `--architecture`, `--hidden`, `--data`, `--epochs`, `--batch-size`, `--lr`, `--hypothesis`, `--baseline`, `--force`.
+
+---
+
 ## Width comparison runner
 
 ### `training/run_local_training.py`

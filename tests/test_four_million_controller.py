@@ -1,5 +1,6 @@
 import json
 import os
+from pathlib import Path
 import subprocess
 import sys
 
@@ -491,7 +492,7 @@ def test_invalid_thread_reservation_is_rejected_before_file_checks(tmp_path):
 def test_direct_script_help_uses_the_repository_import_path():
     completed = subprocess.run(
         [sys.executable, "tools/teacher/run_four_million_selfplay.py", "--help"],
-        cwd="C:/Projetos/Zquoridor",
+        cwd=str(Path(__file__).resolve().parents[1]),
         capture_output=True,
         text=True,
         check=False,
