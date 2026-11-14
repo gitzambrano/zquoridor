@@ -18,6 +18,7 @@ RUNNERS = [
     "tools.teacher.run_weakness_selfplay",
     "training.run_production_finetune",
     "training.run_contact_finetune",
+    "training.new_experiment",
 ]
 
 
