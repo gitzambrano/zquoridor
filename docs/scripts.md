@@ -24,6 +24,15 @@ using `tools.external.local_arena` and `CONFIG` defaults.
   `.github/workflows/apex-policy-upload-h2h-20261114.yml`, four independent
   shards of eight paired openings, 16 Normal and 16 Center Rush pairs.
   For a 64-game aggregate, combine all four job outputs; do not average Elo.
+- The separate search-only workflow
+  `.github/workflows/apex-401-vs-410-search-20261114.yml` reconstructs
+  the v4.01 UCI executable from source commit `6e8efb0` and builds the
+  current 4.10 UCI executable with matching native flags. **Both load the
+  same production Apex INT8 weights**, so it measures only search changes.
+  It uses two jobs, eight color-reversed opening pairs per book, 32 games
+  total, fixed 200 ms. This is a screening result and not a proof of Elo.
+  See `research/benchmarks/APEX_POLICY_UPLOAD_H2H_2026-11-14.md`.
+
 
 # Script Catalog and Execution Contracts
 
