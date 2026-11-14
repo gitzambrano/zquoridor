@@ -1,3 +1,30 @@
+## Full 400-game Apex search-only H2H
+
+The `.github/workflows/apex-search-h2h-400-20261114.yml` workflow
+reproduces a 4.01-vs-4.10 search-only H2H, keeping the production
+Apex policy weights identical on both sides. Exactly 100 seeded
+color-reversed opening pairs are played per Normal confirmation and
+Center Rush book, 400 games total. The ten shards run with up to four
+concurrent GitHub Actions workers. No pondering; fixed real 200 ms
+UCI `movetime`; native flags identical for both C++ source builds.
+
+Each shard calls `tools/engine_lab/run_apex_policy_h2h.py` with
+`--pairs-per-book 20`, the appropriate `--book-selection`, and
+`--offset 0,20,40,60,80`. The workflow checks the production INT8
+SHA-256 and pins the historical 4.01 search to commit `6e8efb0`.
+
+`tools/engine_lab/summarize_400_search_h2h.py` merges all shard
+artifacts. Its `CONFIG` defaults to input directory
+`results/search400-shards`, output `results/search400-aggregate`,
+10 input shards, 100 complete pairs per book, 10,000 paired bootstrap
+resamples and seed 20261117. Use `--input`, `--output`,
+or `--seed` for one-run overrides. It rejects missing/duplicate/
+failed/color-incomplete games, non-200ms mode, or pondering, and
+produces total and book-specific score, Elo point estimate, and
+paired-bootstrap intervals. Results are uploaded as a separate
+`search400-aggregate` artifact in the **same GitHub Actions run**.
+Do not average per-shard Elo values.
+
 ## Uploaded Apex policy identity H2H runner
 
 `tools/engine_lab/run_apex_policy_h2h.py` is a paired-opening strength
