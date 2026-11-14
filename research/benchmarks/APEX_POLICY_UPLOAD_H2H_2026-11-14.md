@@ -63,3 +63,40 @@ There is no novel policy to merge or promote from the archive. If the
 controlled match establishes any advantage, it confirms the choice already
 made in release 4.10, rather than revealing a new upgrade. Maintain
 the current search and network, regardless of the 4.01 Windows binary.
+
+## Completed 64-game policy-only H2H results
+
+All four shards completed successfully with the exact expected weights
+SHA-256 checks and the same 4.10 search executable. Zero failed games,
+no missing pairs, no pondering, no invalid moves. Search was 200 ms
+per move, with color-reversed paired openings.
+
+| Book | Paired openings | Games | Apex/4.10 score |
+| --- | ---: | ---: | ---: |
+| Normal | 16 | 32 | 59.375% |
+| Center Rush | 16 | 32 | 59.375% |
+| **Total** | **32** | **64** | **59.375% (38/64 points)** |
+
+The point estimate is **+65.92 Elo** (score-to-Elo conversion).
+A 20,000-resample bootstrap over **the 32 paired opening scores**
+gives an approximate 95% score interval of **48.44% to 70.31%**.
+This interval includes parity. Individual 8-pair shard Elo values
+must not be averaged. Every game ended at a legal goal.
+
+The outcome is compatible with the archived 4.10 policy being somewhat
+better than the original 4.01 head under the current search, but it
+does **not** establish a reliable positive Elo gap on its own.
+Most importantly, it demonstrates no new upgrade: the uploaded
+Apex weights are byte-for-byte identical to production 4.10.
+
+Source run: https://github.com/gitzambrano/zquoridor/actions/runs/43637497864
+
+## Independent search-only comparison
+
+A separate bounded H2H uses the 4.01 source snapshot specified in the ZIP,
+rebuilt natively against the 4.10 source snapshot under identical CPU flags.
+Both engines load **exactly the same current Apex network**. It
+isolates the different search implementations rather than training.
+32 paired-color games (16 Normal, 16 Center Rush) were dispatched:
+https://github.com/gitzambrano/zquoridor/actions/runs/43637756382
+
