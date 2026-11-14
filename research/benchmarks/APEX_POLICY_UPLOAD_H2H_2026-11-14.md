@@ -100,3 +100,48 @@ isolates the different search implementations rather than training.
 32 paired-color games (16 Normal, 16 Center Rush) were dispatched:
 https://github.com/gitzambrano/zquoridor/actions/runs/43637756382
 
+
+### Completed 32-game search-only H2H
+
+Run: https://github.com/gitzambrano/zquoridor/actions/runs/43637756382
+
+Both jobs completed successfully, with no failed games and no illegal
+moves. Both native C++ executables used the **same 4.10 Apex INT8 weights**,
+while the search code came from the frozen 4.01 source commit and the
+current 4.10 source respectively. Both used the same compiler flags and
+200 ms per move; no pondering.
+
+| Book | Complete opening pairs | Games | 4.10 search score |
+| --- | ---: | ---: | ---: |
+| Normal | 8 | 16 | 37.500% |
+| Center Rush | 8 | 16 | 59.375% |
+| **Overall** | **16** | **32** | **48.4375% (15.5/32)** |
+
+The overall point Elo estimate is **-10.86** from the 4.10 search
+perspective. A 20,000-resample, paired-opening bootstrap gives an
+approximate 95% score interval of **37.50% to 59.375%**, including
+parity. Center Rush had one correctly adjudicated repetition draw;
+all other 31 games ended at a goal.
+
+Normal and Center Rush point estimates differ sharply, but each
+subgroup has only eight paired openings. Neither one establishes a
+robust regression or improvement.
+
+## Final practical conclusion
+
+1. **No new policy exists in the uploaded archive.** It is exactly the
+   4.10 production network.
+2. Keeping the Apex/4.10 policy is reasonable. The controlled 64-game
+   H2H scored 59.375% against the original 4.01 policy with identical
+   current search, but the paired confidence interval includes parity.
+3. The old 4.01 search did **not** establish superiority over the
+   current search under identical policy; in the 32-game comparison,
+   4.10 scored 48.4375%, also inconclusive.
+4. The uploaded ZIP's self-reported 64.4% on 212 historical games cannot
+   establish a novel production upgrade or be treated as the outcome of
+   either controlled tournament above.
+5. **No code, weights, or search defaults should be promoted from this
+   audit.** Retain 4.10 and close the uploaded-package investigation.
+
+Raw logs and per-game artifacts are retained under the two linked GitHub
+Actions runs, not copied into Git.
