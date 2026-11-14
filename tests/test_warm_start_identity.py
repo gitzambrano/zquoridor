@@ -67,9 +67,9 @@ def test_production_warm_start_identity():
     # Test loading actual production checkpoint if it exists
     prod_bin = ROOT / "results" / "experiments" / "multipath-phase512-searchboost-100ep" / "student.bin"
     if not prod_bin.exists():
-        prod_bin = ROOT / "data" / "nnue" / "nnue_weights.bin"
+        prod_bin = ROOT / "experimental" / "experiments" / "multipath-phase512-searchboost-100ep" / "student.bin"
     if not prod_bin.exists():
-        pytest.skip("Production weights not found")
+        pytest.skip("Single-head multipath_phase baseline weights not found")
 
     single = Student("multipath_phase", hidden=512, qat=False)
     single.load_float(prod_bin)

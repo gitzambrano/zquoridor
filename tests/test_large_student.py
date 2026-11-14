@@ -15,7 +15,12 @@ sys.path.insert(0, str(ROOT / "training"))
 from student_model import Student, encode_features, export
 
 
-PRODUCTION_FLOAT = ROOT / "data" / "nnue" / "nnue_weights.bin"
+BASELINE_FLOAT = (
+    ROOT / "experimental" / "experiments" / "aux_policy_stage_a" / "Soup_Tri_Equal" / "student.bin"
+    if (ROOT / "experimental" / "experiments" / "aux_policy_stage_a" / "Soup_Tri_Equal" / "student.bin").exists()
+    else ROOT / "results" / "experiments" / "aux_policy_stage_a" / "Soup_Tri_Equal" / "student.bin"
+)
+PRODUCTION_FLOAT = BASELINE_FLOAT
 NATIVE_PROBE = ROOT / "tools" / "teacher" / "student_probe.cpp"
 
 
@@ -69,9 +74,14 @@ def test_production_bucketed_warm_start_contact_width_export_and_native_parity(t
         pytest.skip("production float weights unavailable")
 
     manifest_path = (
-        ROOT / "results" / "experiments" / "aux_policy_stage_a" /
+        ROOT / "experimental" / "experiments" / "aux_policy_stage_a" /
         "Soup_Tri_Equal" / "student.architecture.json"
     )
+    if not manifest_path.exists():
+        manifest_path = (
+            ROOT / "results" / "experiments" / "aux_policy_stage_a" /
+            "Soup_Tri_Equal" / "student.architecture.json"
+        )
     if not manifest_path.exists():
         manifest_path = (
             ROOT / "results" / "experiments" / "production-central-finetune-20261002" /

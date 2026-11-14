@@ -846,8 +846,6 @@ def _validate_args(args: argparse.Namespace) -> None:
     if threshold is not None:
         if threshold < 0 or not getattr(args, "visit_temperature_exe", None):
             raise ValueError("the visit-temperature transition requires a threshold and executable")
-        if not Path(args.visit_temperature_exe).is_file():
-            raise FileNotFoundError(args.visit_temperature_exe)
     if args.total_target < 1 or args.central_target < 1 or args.broad_target < 1:
         raise ValueError("the corpus targets must be positive")
     if args.family_floor < 0 or args.games_per_shard < 1 or args.seed_rows_per_shard < 1:

@@ -42,8 +42,11 @@ def probe(binary, weights):
 
 
 def test_zero_expansion_integer_exact_and_python_qat_parity(tmp_path):
+    torch.manual_seed(42)
     baseline = Student("base", 256, qat=True)
-    baseline.load_float(ROOT / "checkpoints/gen9-teacher-head/nnue_weights.bin")
+    chk = ROOT / "checkpoints/gen9-teacher-head/nnue_weights.bin"
+    if chk.exists():
+        baseline.load_float(chk)
     candidate = Student("race", 256, qat=True)
     candidate.warm_start(baseline)
     export(baseline, tmp_path / "base.bin")

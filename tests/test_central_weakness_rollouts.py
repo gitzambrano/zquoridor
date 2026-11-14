@@ -155,6 +155,8 @@ def test_partial_admission_is_preserved_and_not_counted(tmp_path: Path):
 
 def test_contact_manifest_matches_weights_and_flags():
     source = campaign.SELFPLAY_SOURCES[1]
+    if not campaign._source_path(source["weights"]).is_file():
+        pytest.skip(f"Rollout source weights {source['weights']} not found on disk")
     artifacts = campaign._source_artifacts(source)
     assert "-DZQ_NNUE_CONTACT_FEATURES=1" in artifacts["cpp_flags"]
     assert artifacts["architecture_manifest_sha256"]
@@ -253,6 +255,9 @@ def test_dry_run_reports_quotas_reserve_and_search_window(capsys):
 
 def test_wrong_feature_layout_is_rejected_before_selfplay():
     import pytest
+    source1_weights = campaign._source_path(campaign.SELFPLAY_SOURCES[1]["weights"])
+    if not source1_weights.is_file():
+        pytest.skip("Rollout source weights not found on disk")
     swapped = dict(campaign.SELFPLAY_SOURCES[0],
                    weights=campaign.SELFPLAY_SOURCES[1]["weights"])
     with pytest.raises(ValueError, match="layout/feature count mismatch"):
