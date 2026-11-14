@@ -1,0 +1,62 @@
+name: "Uploaded Apex 4.01 versus main 4.10 search-only H2H"
+on:
+  push:
+    branches: [exp/apex-policy-upload-h2h-20261114]
+    paths:
+      - ".github/workflows/apex-401-vs-410-search-20261114.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  search_h2h:
+    name: "${{ matrix.book }}-search"
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        book: [normal, center]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Load exact 4.01 source snapshot of uploaded executable
+        shell: bash
+        run: |
+          set -euo pipefail
+          git worktree add --detach /tmp/zquoridor-401 6e8efb08f7a9442f795f4c3110db3135d70eadf9
+          test "$(git -C /tmp/zquoridor-401 rev-parse HEAD)" = "6e8efb08f7a9442f795f4c3110db3135d70eadf9"
+          echo "fe8473255fd219fab247b1a7d44be25384a6cfc5daa5c301def49109badb7f2b  data/nnue/nnue_weights_int8.bin" | sha256sum -c -
+      - name: Compile source-matched v4.01 and current v4.10 with identical native flags
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p bin
+          g++ -O3 -DNDEBUG -std=c++17 -pthread -march=native -mavx2 -mfma -I/tmp/zquoridor-401/src \
+            /tmp/zquoridor-401/tools/external/zquoridor_uci.cpp -o bin/zquoridor_401
+          g++ -O3 -DNDEBUG -std=c++17 -pthread -march=native -mavx2 -mfma -Isrc \
+            tools/external/zquoridor_uci.cpp -o bin/zquoridor_410
+          python -m py_compile tools/engine_lab/run_apex_policy_h2h.py
+      - name: Play symmetric search-only H2H with exactly same Apex policy
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -u tools/engine_lab/run_apex_policy_h2h.py \
+            --candidate bin/zquoridor_410 --baseline bin/zquoridor_401 \
+            --candidate-weights data/nnue/nnue_weights_int8.bin \
+            --baseline-weights data/nnue/nnue_weights_int8.bin \
+            --book-selection "${{ matrix.book }}" \
+            --pairs-per-book 8 --offset 16 \
+            --seed 20261114 --move-time-ms 200 \
+            --output "results/apex-search-h2h/${{ matrix.book }}"
+      - name: Upload all match decisions
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: "apex-search-401-410-${{ matrix.book }}"
+          path: "results/apex-search-h2h/${{ matrix.book }}/"
+          if-no-files-found: warn
+          retention-days: 14
