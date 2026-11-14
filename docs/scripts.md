@@ -1,3 +1,30 @@
+## Uploaded Apex policy identity H2H runner
+
+`tools/engine_lab/run_apex_policy_h2h.py` is a paired-opening strength
+screen between two INT8 policies **with the same version 4.10 UCI binary**,
+using `tools.external.local_arena` and `CONFIG` defaults.
+
+- `--candidate`, `--baseline`: paths to native UCI engines (both default
+  to `bin/zquoridor_410`), sharing exactly the same executable.
+- `--candidate-weights`: default production
+  `data/nnue/nnue_weights_int8.bin`; `--baseline-weights`: default
+  `bin/nnue_weights_original401.bin`. The historical weights must match
+  the original SHA-256 in `docs/releases/4.10.md`.
+- `--book-selection normal|center|both`: choose opening families.
+  `--normal-book`, `--center-book` override opening JSONL files.
+  `--seed` shuffles books deterministically; `--pairs-per-book` selects
+  complete color-swapped pairs; `--offset` supports nonoverlapping shards.
+- `--move-time-ms`: fixed real-time UCI movetime per move, default 200 ms.
+  No pondering. Native clock overrides are also available through
+  `--clock-initial-ms` and `--clock-increment-ms`, but are not used in
+  the upload verification tournament.
+- `--output` writes `games.jsonl` and `summary.json`; the summary
+  contains paired bootstrap score intervals and no-omission checks.
+- Reproducible entrypoint:
+  `.github/workflows/apex-policy-upload-h2h-20261114.yml`, four independent
+  shards of eight paired openings, 16 Normal and 16 Center Rush pairs.
+  For a 64-game aggregate, combine all four job outputs; do not average Elo.
+
 # Script Catalog and Execution Contracts
 
 This document is the reference catalog for operational scripts in Zquoridor.
