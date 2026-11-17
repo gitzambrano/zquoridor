@@ -7,7 +7,8 @@ This document governs agent behavior, repository structure, and development safe
 - `README.md`: High-level external overview and usage.
 - `docs/plan.md`: Single canonical roadmap, measurement records, experiment history, and dataset inventories.
 - `docs/scripts.md`: Catalog of operational runners with input, output, and CLI contracts. Do not place roadmaps or training plans in this file.
-- `docs/datasets.md`: Local ignored dataset inventory. Never commit this file.
+- `docs/datasets.md`: Local ignored dataset inventory. `tools/dataset_inventory.py` generates its inventory section. Never commit this file.
+- `data/dataset_index.json`: Tracked dataset index that `tools/dataset_inventory.py` generates.
 - `docs/training-data.md`: Canonical fields, source names, target quality, and mixture semantics. Do not place collection status here.
 - `src/`: Header-only C++ engine core.
 - `build/`: Platform build entry points.
@@ -40,6 +41,11 @@ This document governs agent behavior, repository structure, and development safe
 - Preserve policy, value, and auxiliary evidence separately when mixing data.
   Require all configured recent worker snapshots before a full architecture campaign.
 - Keep datasets, checkpoints, binaries, external bots, logs, and raw benchmark outputs outside Git.
+- Give every new dataset a provenance record. Use `training/dataset_provenance.py` in the generator.
+  Then run `python tools/dataset_inventory.py` and commit `data/dataset_index.json`.
+- Put a script for one specific dataset or campaign in `tools/campaigns/`. Keep generic runners in `tools/` and `training/`.
+- Give every new script a module docstring. Then run `python tools/script_catalog.py`.
+- Create a new experiment with `python training/new_experiment.py --name <name>`.
 - Update `docs/plan.md` whenever you measure results, observe regressions, or make architectural decisions.
 
 ## Build and verification

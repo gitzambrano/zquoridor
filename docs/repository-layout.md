@@ -7,6 +7,7 @@
 | `build/` | Native and WebAssembly build entry points. |
 | `training/` | Training, quantization, and campaign implementations. |
 | `tools/` | Local benchmarks, arena, self-play, and data utilities. |
+| `tools/campaigns/` | Scripts that built one specific dataset or campaign. |
 | `colab/` | All current cloud transport, monitoring, remote workload, and notebook implementations. |
 | `tests/` | Automated regression and contract checks. |
 | `docs/` | Roadmap, runner catalog, and repository contracts. |
@@ -46,5 +47,7 @@ Agent configuration copies also remain necessary for the respective clients.
 
 Run `python tools/audit_repository.py` for source layout and duplicate classification.
 Run `python -m colab.privacy_check` before staging cloud changes.
+Run `python tools/script_catalog.py --check` after you add, move, or document a script.
+Run `python tools/dataset_inventory.py --check` after you add or change a dataset.
 Reports stay in ignored artifact directories. Private identities and tokens stay
 in the external local configuration. Neither check rewrites Git history.

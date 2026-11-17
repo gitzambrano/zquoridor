@@ -1,0 +1,307 @@
+{
+  "schema": "zquoridor.dataset_index.v1",
+  "generator": "tools/dataset_inventory.py",
+  "datasets": [
+    {
+      "root": "data/selfplay",
+      "name": "central-weakness-rollouts-16m",
+      "status": "partial",
+      "kind": "selfplay",
+      "samples": 1388686,
+      "generator": "tools/teacher/run_central_weakness_rollouts.py",
+      "sources": [
+        "data/selfplay/central-weakness-rollouts-16m/opening_bank_8to10ply.jsonl",
+        "tools/external/openings_center_rush_50pairs.jsonl",
+        "data/nnue/nnue_weights_int8.bin",
+        "results/experiments/multipath_contact_bucketed_unified/student_int8.bin"
+      ],
+      "description": "Self-play rollouts from a central-opening weakness bank. The 16M campaign stopped at 85 frozen shards.",
+      "provenance_sha256": "6dd241b8d49984e025e66fedcef94e8b73f8428553d29e3091dc50b713304671"
+    },
+    {
+      "root": "data/selfplay",
+      "name": "corpus-contact-4m-50ms",
+      "status": "active",
+      "kind": "selfplay",
+      "samples": 8516655,
+      "generator": "tools/teacher/run_four_million_selfplay.py",
+      "sources": [
+        "data/selfplay/corpus-contact-4m-50ms/schedules",
+        "data/selfplay_canonical_v3/weakness-loss-100ms-20260920"
+      ],
+      "description": "Main contact-feature self-play corpus at 50 ms per move, deduplicated in states.sqlite.",
+      "provenance_sha256": "33aa92e8545c82e6b2d9aebd16196c6898483fa1cc9bf0547a2d40ff903bda47"
+    },
+    {
+      "root": "data/selfplay",
+      "name": "v301_campaign_harvest",
+      "status": "archived",
+      "kind": "selfplay",
+      "samples": 0,
+      "generator": "colab/launch.py",
+      "sources": [],
+      "description": "Destination directory of the 3.01 cloud self-play harvest. The directory holds only the README. The shards are not on this disk.",
+      "provenance_sha256": "b991f4062b1231e45659a421b8032fb807ddddd6d7f88b84506d5a3253e634fd"
+    },
+    {
+      "root": "data/selfplay",
+      "name": "weakness-loss-100ms",
+      "status": "active",
+      "kind": "selfplay",
+      "samples": 635990,
+      "generator": "tools/teacher/run_weakness_selfplay.py",
+      "sources": [
+        "data/teaching/weakness-selfplay-100ms/weighted_positions.jsonl",
+        "results/experiments/multipath-phase512-searchboost-100ep/student_int8.bin"
+      ],
+      "description": "Self-play from weighted weakness seeds at 100 ms per move.",
+      "provenance_sha256": "4e90a2bf19609987a31dcaae908b2f2499284c7c5e2fa16038664264fdef1539"
+    },
+    {
+      "root": "data/teaching",
+      "name": "claustro-mcts-priority-15k",
+      "status": "active",
+      "kind": "teaching",
+      "samples": 15000,
+      "generator": "training/build_search_priority_dataset.py",
+      "sources": [
+        "data/teaching/weakness-mining-35k/dataset.npz",
+        "data/teaching/claustro-mcts-priority-15k/claustro-mcts.npz",
+        "data/teaching/claustro-mcts-priority-15k/zq-search.npz"
+      ],
+      "description": "Search-priority slice of weakness-mining-35k with Claustrophobia MCTS and Zquoridor search targets.",
+      "provenance_sha256": "318e3e943a710f6d91707db395b4e4b38cc6b71edab05a7b8eaabecea7ff3406"
+    },
+    {
+      "root": "data/teaching",
+      "name": "claustro-mcts-priority-5k",
+      "status": "active",
+      "kind": "teaching",
+      "samples": 5000,
+      "generator": "training/build_teacher_soft.py",
+      "sources": [
+        "data/teaching/claustro-mcts-priority-5k/positions.jsonl",
+        "data/teaching/claustro-mcts-priority-5k/blended_targets.npz"
+      ],
+      "description": "Soft-target dataset from 5,000 priority positions. The targets blend 75% Claustrophobia MCTS and 25% Zquoridor search.",
+      "provenance_sha256": "7707ba44dd480dc2ff0db19ec0754389e1641bd03dddff79236803df9159d7a3"
+    },
+    {
+      "root": "data/teaching",
+      "name": "massive_seeds_3500.jsonl",
+      "status": "active",
+      "kind": "positions",
+      "samples": 3572,
+      "generator": "tools/teacher/prepare_massive_seeds.py",
+      "sources": [
+        "data/teaching/mined_weaknesses_all.jsonl",
+        "tools/external/openings_center_rush_sound_5k.jsonl"
+      ],
+      "description": "Seed positions for rollout generation. The file combines mined weaknesses and Center Rush openings.",
+      "provenance_sha256": "d90b1295af8d4d5eee89dd37a9f09e24e705168656ecd98c3b8d81276ce4ab39"
+    },
+    {
+      "root": "data/teaching",
+      "name": "mined_weaknesses_all.jsonl",
+      "status": "active",
+      "kind": "positions",
+      "samples": 50000,
+      "generator": "tools/teacher/mine_weakness_positions.py",
+      "sources": [
+        "results/benchmarks"
+      ],
+      "description": "Positions mined from benchmark losses against Claustrophobia and Titanium.",
+      "provenance_sha256": "8dd5ef58a2114fa34eaf6b65da6d334c171ef914c4b137013704cb0e3ea50f22"
+    },
+    {
+      "root": "data/teaching",
+      "name": "multipath_unified_clean_15m",
+      "status": "active",
+      "kind": "teaching",
+      "samples": 15637120,
+      "generator": "tools/campaigns/assemble_unified_clean_dataset.py",
+      "sources": [
+        "data/teaching/multipath-weakness-boosted-11m/dataset.npz",
+        "data/teaching/replay_clean_stored/dataset.npz"
+      ],
+      "description": "Master training dataset of the 858-feature line. It joins the weakness-boosted master and replay_clean_stored.",
+      "provenance_sha256": "f6e6c829f8f6d957660bae907fb03e33b4f8495d70dee67023bda07bb0b8426c"
+    },
+    {
+      "root": "data/teaching",
+      "name": "policy-tactical-245k",
+      "status": "active",
+      "kind": "teaching",
+      "samples": 244787,
+      "generator": null,
+      "sources": [],
+      "description": "Tactical policy slice of 244,787 positions with teacher soft policy targets.",
+      "provenance_sha256": "816a9e58b9bb5b0110a2c47a324ec96b303c2ce5230b3c0f3f38fa9b10bc1d59"
+    },
+    {
+      "root": "data/teaching",
+      "name": "reliable-search-critical-ft-313k",
+      "status": "active",
+      "kind": "teaching",
+      "samples": 313344,
+      "generator": "tools/campaigns/assemble_5tier_dataset.py",
+      "sources": [
+        "data/teaching/generic-search-100k-zq/dataset.npz",
+        "data/teaching/tier3-5-generic-critical-100k/dataset.npz",
+        "data/teaching/tier4-dual-crisis-100k/dataset.npz",
+        "data/teaching/tier5-deep-search-10k/dataset.npz",
+        "data/teaching/loss-center-rollouts/dataset.npz"
+      ],
+      "description": "Multi-tier fine-tuning dataset of critical positions with search-relabeled targets.",
+      "provenance_sha256": "913cf74eca1785fd787156a8245408b1e0b9a93d35150b5503135aaf6fe0682b"
+    },
+    {
+      "root": "data/teaching",
+      "name": "replay-million-20260915",
+      "status": "partial",
+      "kind": "teaching",
+      "samples": 8192,
+      "generator": "training/prepare_replay.py",
+      "sources": [
+        "data/selfplay",
+        "data/nnue/nnue_weights.bin"
+      ],
+      "description": "Incomplete replay relabel cache with old NNUE and Claustrophobia inference targets.",
+      "provenance_sha256": "328b895d40052450ef0efd177fb033a589a429221a6d2038e91457cefd2d263d"
+    },
+    {
+      "root": "data/teaching",
+      "name": "replay-million-20260915-v2",
+      "status": "partial",
+      "kind": "teaching",
+      "samples": null,
+      "generator": "training/prepare_replay.py",
+      "sources": [
+        "data/selfplay",
+        "data/nnue/nnue_weights.bin"
+      ],
+      "description": "Second incomplete replay relabel cache with the same settings as replay-million-20260915.",
+      "provenance_sha256": "499de6ed26ec0144b854d3ebefd17944e78a64ba3e3f98ad83865516c2b57e8e"
+    },
+    {
+      "root": "data/teaching",
+      "name": "replay_clean_stored",
+      "status": "active",
+      "kind": "teaching",
+      "samples": 4572120,
+      "generator": "training/prepare_replay.py",
+      "sources": [
+        "data/selfplay/corpus-contact-4m-50ms"
+      ],
+      "description": "Stored-search replay from the contact corpus. Targets are MCAB root visits and searched values without outcome blend.",
+      "provenance_sha256": "60abf744150506e889d6553af50d9277fd56ad6127bec539fc24df744dbe2900"
+    },
+    {
+      "root": "data/teaching",
+      "name": "search-priority-gen1",
+      "status": "archived",
+      "kind": "teaching",
+      "samples": 2000,
+      "generator": "training/build_search_priority_dataset.py",
+      "sources": [
+        "data/teaching/replay-old-gen1-500k/dataset.npz",
+        "data/teaching/search-priority-gen1/top2000.jsonl"
+      ],
+      "description": "Search-priority dataset of 2,000 Gen1 replay positions with Claustrophobia and Zquoridor deep search targets.",
+      "provenance_sha256": "5b7536bebee8adcd3079c69e277fb8b5b9e5321910c08bd04a51c45f42470516"
+    },
+    {
+      "root": "data/teaching",
+      "name": "search-priority-gen1-conservative",
+      "status": "archived",
+      "kind": "teaching",
+      "samples": 2000,
+      "generator": "training/build_search_priority_dataset.py",
+      "sources": [
+        "data/teaching/replay-old-gen1-500k/dataset.npz",
+        "data/teaching/search-priority-gen1/top2000.jsonl"
+      ],
+      "description": "Conservative variant of search-priority-gen1 with the same 2,000 positions.",
+      "provenance_sha256": "18279f0e8e46b0222e2e417fb2bacccb469e51ff5da5a3f8f55c12bcbdfc9aea"
+    },
+    {
+      "root": "data/teaching",
+      "name": "weakness-fine-tuning-champion",
+      "status": "active",
+      "kind": "teaching",
+      "samples": 80000,
+      "generator": "tools/campaigns/assemble_weakness_dataset.py",
+      "sources": [
+        "data/teaching/weakness_top5k.jsonl",
+        "data/teaching/weakness_top5k_relabeled.npz",
+        "data/teaching/policy-tactical-245k/dataset.npz"
+      ],
+      "description": "Fine-tuning dataset with 5,000 weakness positions and 75,000 background positions.",
+      "provenance_sha256": "b1b6d2d76614689e5cb3c07e81eda7fb355ebe0dbdf0653fe7d0ad5b2f872fe0"
+    },
+    {
+      "root": "data/teaching",
+      "name": "weakness-mining-35k",
+      "status": "active",
+      "kind": "teaching",
+      "samples": 34787,
+      "generator": "training/build_teacher_soft.py",
+      "sources": [
+        "data/teaching/weakness-mining-35k/positions.jsonl",
+        "data/teaching/weakness-mining-35k/blended_targets.npz"
+      ],
+      "description": "Soft-target dataset of 35,000 mined weakness positions with blended Claustrophobia and Zquoridor targets.",
+      "provenance_sha256": "a3c4e2b5fa1d4864be238ffdd3de4a722217c33d8b6c5c0efeb587761879fcc3"
+    },
+    {
+      "root": "data/teaching",
+      "name": "weakness-selfplay-100ms",
+      "status": "active",
+      "kind": "positions",
+      "samples": 50000,
+      "generator": "tools/teacher/weight_weakness_seeds.py",
+      "sources": [
+        "data/teaching/weakness-selfplay-100ms/source_positions.jsonl"
+      ],
+      "description": "Weighted weakness seed positions for the weakness-loss-100ms self-play run.",
+      "provenance_sha256": "a051957e607427c7e9b48e1252f4b6073b5a9c80ed1c93b6497badb7e2578b13"
+    },
+    {
+      "root": "data/teaching",
+      "name": "weakness_top5k.jsonl",
+      "status": "active",
+      "kind": "positions",
+      "samples": 5000,
+      "generator": null,
+      "sources": [],
+      "description": "Top 5,000 weakness positions used by the weakness fine-tuning datasets.",
+      "provenance_sha256": "9099b8b51e4a532d4125d16daee141a9257f11df0e3558cbeb59e9c60071089b"
+    },
+    {
+      "root": "data/teaching",
+      "name": "weakness_top5k_relabeled.npz",
+      "status": "active",
+      "kind": "targets",
+      "samples": 5000,
+      "generator": "training/teachers/zq_deep_relabel.py",
+      "sources": [
+        "data/teaching/weakness_top5k.jsonl"
+      ],
+      "description": "Zquoridor deep search targets for weakness_top5k.jsonl at 1,024 nodes.",
+      "provenance_sha256": "697e18ccd4e443bc4fb8ce6be1b1def5355ddbac686fc78c23b2fe41ba5db909"
+    }
+  ],
+  "absent_historical_generations": [
+    "gen-rich-v1-montecarlo",
+    "gen01-heuristic-evalSimple",
+    "gen02-heuristic-evalSimple",
+    "gen03-heuristic-evalSimple",
+    "gen04-heuristic-evalSimple",
+    "gen05-epsilon-greedy",
+    "gen05-mcab-temperature",
+    "gen06-mcab-temperature",
+    "gen07-mcab-temperature",
+    "gen12-standard-control",
+    "gen12-standard-control-v2"
+  ]
+}

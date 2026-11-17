@@ -1,4 +1,10 @@
 #!/usr/bin/env python3
+"""Run parallel arena games between two engine configurations or Git revisions.
+
+The script can reverse colors per opening and can record the games as binary
+self-play shards in ``data/arena/``. The constants at the top of the file are
+the defaults. CLI options override them.
+"""
 import os
 import sys
 import json

@@ -152,6 +152,22 @@ The account wrapper is `colab/cli/colab.ps1`. Its first argument selects one
 of the seven registered accounts. The initial trial remains in its original
 local workspace as historical evidence.
 
+### Dataset provenance and script catalog (2026-11-17)
+
+Each dataset under `data/selfplay/` and `data/teaching/` now has a provenance
+record of schema `zquoridor.dataset_provenance.v1`. The 23 existing records
+were backfilled from the generator manifests and README files. Two records name
+no generator because no tracked script writes those paths:
+`policy-tactical-245k` and `weakness_top5k.jsonl`. Eleven historical self-play
+generations and the intermediate stages of `multipath_unified_clean_15m` are
+absent from disk. The generated inventory lists them.
+
+`docs/scripts.md` now ends with a generated index of 182 scripts. Seven
+dataset-specific assemblers moved from `tools/teacher/` to `tools/campaigns/`.
+The V3 search screening scripts and `tools/release_410.py` stay at their paths
+because workflows call them. `training/run_experiment.py` accepts `--config`,
+and `training/new_experiment.py` writes a recipe for that flag.
+
 ### CLI and browser transport organization (2026-10-18)
 
 Both Zquoridor and Zchezz now contain separate `colab/cli` and
@@ -832,6 +848,9 @@ Validation loss values are comparable only within identical datasets and loss ta
 ## 3. Available Datasets Inventory
 
 The table below catalogs all datasets generated, assembled, and maintained in the project.
+This table is a historical record. It also lists datasets that are now absent from disk.
+`data/dataset_index.json` lists the datasets on disk and their provenance records.
+`python tools/dataset_inventory.py` regenerates that index and the local `docs/datasets.md`.
 
 | Dataset Identifier | Records / Positions | Generation Strategy / Sources | Storage Path (Local or Cloud) | Format and Targets | Role and Consumers |
 | :--- | ---: | :--- | :--- | :--- | :--- |

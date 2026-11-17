@@ -14,6 +14,13 @@ This directory stores engine datasets, training targets, network checkpoints, an
 * `plots/`: Metric visualizations and training curve plots.
 * `logs/`: Operational logs from local generation pipelines.
 
+## Provenance
+
+Each dataset in `selfplay/` and `teaching/` has a provenance record. A dataset
+directory holds `provenance.json`. A single dataset file has `<file>.provenance.json`.
+`training/dataset_provenance.py` defines the format. `python tools/dataset_inventory.py`
+builds `docs/datasets.md` and `data/dataset_index.json` from the records.
+
 ## Retention and Safety
 
 * Datasets and training files in this directory are preserved assets. Do not delete them.

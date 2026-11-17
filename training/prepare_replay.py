@@ -11,7 +11,8 @@ Input:
 Output:
     ``<out-dir>/dataset.npz`` with train/validation splits and blended policy
     and value targets.  Resumable ``direct_*.npz`` caches, SHA-256 files, and
-    ``replay_manifest.json`` are written beside it.  This script never creates
+    ``replay_manifest.json`` are written beside it. A finished run also
+    writes ``provenance.json``. ``training/dataset_provenance.py`` defines it.  This script never creates
     self-play games, runs search, or trains a student network.
 
 The configuration block is the default; every field can be overridden with a
@@ -42,6 +43,7 @@ sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "training"))
 sys.path.insert(0, str(ROOT / "training/teachers"))
 from read_selfplay import _detect_format
+import dataset_provenance
 from student_model import Student, encode_features
 from teachers.claustrophobia_relabel import encode_positions
 from teachers.claustrophobia_inference_worker import infer
@@ -614,6 +616,7 @@ def run(config):
         np.savez(folder / "dataset.npz", **data)
         manifest["dataset_sha256"] = sha(folder / "dataset.npz")
         manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+        write_dataset_provenance(config, folder, manifest)
         return manifest
     data, provenance = sample_states(config, blocked)
     bots = ensure_bot("claustrophobia")
@@ -688,7 +691,25 @@ def run(config):
                     train_samples=int((~data["is_val"]).sum()), val_samples=int(data["is_val"].sum()),
                     dataset_sha256=sha(folder/"dataset.npz"))
     manifest_path.write_text(json.dumps(manifest, indent=2)+"\n", encoding="utf-8")
+    write_dataset_provenance(config, folder, manifest)
     return manifest
+
+
+def write_dataset_provenance(config, folder: Path, manifest: dict) -> Path:
+    """Write the provenance record of a finished replay dataset."""
+    stored = config.get("mode") == "stored_search"
+    sources = [dict(path=config["source"], role="self-play shards")]
+    if not stored:
+        sources.append(dict(path=config["old_nnue"], role="old NNUE teacher"))
+    description = ("Stored-search replay. Targets are the stored MCAB root visits and root values."
+                   if stored else "Replay relabeled with old NNUE and Claustrophobia inference targets.")
+    return dataset_provenance.write(
+        folder, kind="teaching", description=description, sources=sources,
+        contents=dict(samples=manifest["train_samples"] + manifest["val_samples"],
+                      train_samples=manifest["train_samples"], val_samples=manifest["val_samples"],
+                      format="npz", dataset_sha256=manifest["dataset_sha256"]),
+        parameters={k: v for k, v in config.items() if k not in ("resume", "source", "out_dir")},
+        generator="training/prepare_replay.py")
 
 
 def main(argv=None):

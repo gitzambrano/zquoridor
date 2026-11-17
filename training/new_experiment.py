@@ -1,12 +1,20 @@
 #!/usr/bin/env python3
-"""Scaffold a new NNUE experiment workspace.
+"""Create a new NNUE experiment workspace.
 
-Creates a dedicated directory under experimental/experiments/<name>/
-populated with a standardized config.json and structured README.md.
+The script creates ``experimental/experiments/<name>/`` with two files:
+
+* ``config.json`` holds the training overrides for ``training/run_experiment.py``.
+* ``README.md`` holds the hypothesis, the commands, and an empty results table.
+
+Every ``config.json`` key must exist in ``run_experiment.CONFIG``. The script
+reads the production version and architecture from ``data/nnue/``. It does not
+train, build, or run games. The top-level ``CONFIG`` supplies defaults and CLI
+options override them.
 """
 from __future__ import annotations
 
 import argparse
+import ast
 from datetime import datetime, timezone
 import json
 from pathlib import Path
@@ -16,12 +24,17 @@ ROOT = Path(__file__).resolve().parents[1]
 
 CONFIG = {
     "name": "pilot_experiment",
+    "hypothesis": "Describe the expected change against the production network.",
+    "baseline_model": "",
+    "force": False,
+    # Training overrides for training/run_experiment.py. An empty string for an
+    # init_* key selects the value from the production architecture file.
+    "data": "data/teaching/multipath_unified_clean_15m/dataset.npz",
     "architecture": "multipath_phase_contact_bucketed",
     "hidden": 512,
-    "data": "data/teaching/multipath_unified_clean_15m/dataset.npz",
     "init_from": "data/nnue/nnue_weights.bin",
-    "init_architecture": "multipath_phase_bucketed",
-    "init_hidden": 512,
+    "init_architecture": "",
+    "init_hidden": 0,
     "from_scratch": False,
     "qat": True,
     "mirror_h": True,
@@ -38,185 +51,164 @@ CONFIG = {
     "device": "cuda",
     "cpu_threads": 2,
     "checkpoint_every": 10,
-    "hypothesis": "Evaluate architecture performance against the production champion baseline.",
-    "baseline_model": "V3.01 Production Tri-Model Soup",
-    "force": False,
 }
 
+WORKSPACE_KEYS = ("name", "hypothesis", "baseline_model", "force")
+EXPERIMENTS_DIR = Path("experimental") / "experiments"
+RUNNER = ROOT / "training" / "run_experiment.py"
+CANDIDATE_SUITE = "tools/run_full_candidate_suite.py"
 
-def build_readme(
-    name: str,
-    arch: str,
-    hidden: int,
-    data: str,
-    epochs: int,
-    hypothesis: str,
-    baseline: str,
-    date_str: str,
-) -> str:
-    """Format a standardized experiment documentation file."""
+
+def runner_keys(runner: Path = RUNNER) -> set[str]:
+    """Return the ``CONFIG`` keys of ``run_experiment.py`` without importing it."""
+    tree = ast.parse(runner.read_text(encoding="utf-8"))
+    for node in tree.body:
+        if isinstance(node, ast.Assign) and any(getattr(t, "id", None) == "CONFIG" for t in node.targets):
+            return {key.value for key in node.value.keys}
+    raise ValueError(f"{runner} has no top-level CONFIG dictionary")
+
+
+def production_identity(root: Path) -> dict:
+    """Return the production version, architecture, and hidden width."""
+    nnue = root / "data" / "nnue"
+    identity = {"version": "unknown", "architecture": "", "hidden": 0}
+    release = nnue / "release.json"
+    if release.is_file():
+        identity["version"] = json.loads(release.read_text(encoding="utf-8")).get("version", "unknown")
+    arch = nnue / "nnue_weights.architecture.json"
+    if arch.is_file():
+        values = json.loads(arch.read_text(encoding="utf-8"))
+        identity["architecture"] = values.get("architecture", "")
+        identity["hidden"] = int(values.get("hidden", 0))
+    return identity
+
+
+def training_overrides(config: dict, name: str, production: dict) -> dict:
+    """Return the ``run_experiment.py`` overrides for one workspace."""
+    values = {key: value for key, value in config.items() if key not in WORKSPACE_KEYS}
+    values["out_dir"] = (EXPERIMENTS_DIR / name).as_posix()
+    if not values["init_architecture"]:
+        values["init_architecture"] = production["architecture"] or values["architecture"]
+    if not values["init_hidden"]:
+        values["init_hidden"] = production["hidden"] or values["hidden"]
+    return values
+
+
+def build_readme(name: str, overrides: dict, hypothesis: str, baseline: str, date_str: str) -> str:
+    """Return the README text for one workspace."""
+    folder = (EXPERIMENTS_DIR / name).as_posix()
+    qat = "Enabled" if overrides["qat"] else "Disabled"
     return f"""# Experiment: {name}
 
-## 1. Overview and Hypothesis
+## 1. Hypothesis
 
 - **Created**: {date_str}
-- **Baseline model**: {baseline}
-- **Primary hypothesis**: {hypothesis}
+- **Baseline**: {baseline}
+- **Hypothesis**: {hypothesis}
 
-## 2. Architecture and Training Specification
+## 2. Training specification
 
-| Component | Setting |
+`config.json` holds the complete set of overrides. This table repeats the main values.
+
+| Setting | Value |
 | :--- | :--- |
-| **Architecture** | `{arch}` |
-| **Hidden width** | {hidden} |
-| **Dataset** | `{data}` |
-| **Target epochs** | {epochs} |
-| **Quantization aware training (QAT)** | Enabled (`true`) |
-| **Learning rate schedule** | Cosine decay with warmup |
+| Architecture | `{overrides["architecture"]}` |
+| Hidden width | {overrides["hidden"]} |
+| Dataset | `{overrides["data"]}` |
+| Initial weights | `{overrides["init_from"]}` |
+| Epochs | {overrides["epochs"]} |
+| Quantization-aware training | {qat} |
+| Learning rate schedule | `{overrides["schedule"]}`, {overrides["warmup_epochs"]} warmup epochs |
 
-## 3. Strict Promotion Criteria
+## 3. Promotion criteria
 
-A candidate network must strictly outperform the previous production network
-across every evaluation dimension:
+A candidate network must outperform the production network in every category:
 
-1. **Head-to-head vs Main**: Win rate > 50.0% across Normal and Center Rush opening books.
-2. **vs Claustrophobia**: Strict outperformance across both opening suites.
-3. **vs Titanium**: Strict outperformance across both opening suites.
-4. **Underperformance condition**: Any single category deficit disqualifies promotion.
+1. Head-to-head against Main, with Normal and Center Rush opening books.
+2. Against Claustrophobia, with both opening books.
+3. Against Titanium, with both opening books.
 
-## 4. Execution Commands
+A deficit in one category disqualifies the candidate.
 
-To start training with the generated configuration:
+## 4. Commands
 
-```bash
-python training/run_experiment.py --config experimental/experiments/{name}/config.json
-```
-
-To run the complete benchmark battery after training:
+Train the network and build the native candidate:
 
 ```bash
-python tools/run_full_candidate_suite.py --candidate-executable bin/candidate/zquoridor_uci.exe --candidate-nnue experimental/experiments/{name}/student_int8.bin
+python training/run_experiment.py --config {folder}/config.json
 ```
 
-## 5. Results and Verification Log
+Run the external battery against the candidate:
+
+```bash
+python {CANDIDATE_SUITE} --candidate-exe {folder}/zquoridor.exe --candidate-nnue {folder}/student_int8.bin
+```
+
+On Linux, the executable name is `zquoridor` without the `.exe` suffix.
+
+## 5. Results
 
 | Metric | Target | Observed | Status |
 | :--- | :--- | :--- | :--- |
-| **Best validation loss** | Baseline parity | Pending | Pending |
-| **vs Main (Normal)** | > 50.0% | Pending | Pending |
-| **vs Main (Center Rush)** | > 50.0% | Pending | Pending |
-| **vs Claustrophobia (Normal)** | > Baseline | Pending | Pending |
-| **vs Claustrophobia (Center Rush)**| > Baseline | Pending | Pending |
-| **vs Titanium (Normal)** | > Baseline | Pending | Pending |
-| **vs Titanium (Center Rush)** | > Baseline | Pending | Pending |
-| **Promotion decision** | Strict unanimous pass | Pending | Pending |
+| Best validation loss | Baseline parity | Pending | Pending |
+| Against Main (Normal) | Above 50.0% | Pending | Pending |
+| Against Main (Center Rush) | Above 50.0% | Pending | Pending |
+| Against Claustrophobia (Normal) | Above baseline | Pending | Pending |
+| Against Claustrophobia (Center Rush) | Above baseline | Pending | Pending |
+| Against Titanium (Normal) | Above baseline | Pending | Pending |
+| Against Titanium (Center Rush) | Above baseline | Pending | Pending |
+| Promotion decision | Pass in every category | Pending | Pending |
+
+Record the final decision and measurements in `docs/plan.md`.
+Add one row for this workspace to `experimental/experiments/README.md`.
 """
 
 
 def scaffold_experiment(config: dict) -> Path:
-    """Create directory structure, config.json, and README.md."""
+    """Create the workspace directory, ``config.json``, and ``README.md``."""
     name = config["name"].strip()
-    if not name:
-        raise ValueError("Experiment name cannot be empty.")
-
-    target_dir = ROOT / "experimental" / "experiments" / name
+    if not name or Path(name).name != name or name in (".", ".."):
+        raise ValueError(f"experiment name must be one directory name: {config['name']!r}")
+    target_dir = ROOT / EXPERIMENTS_DIR / name
     if target_dir.exists() and not config["force"]:
-        raise FileExistsError(
-            f"Target experiment directory already exists: {target_dir}. Use --force to overwrite."
-        )
+        raise FileExistsError(f"experiment directory exists: {target_dir}. Use --force to overwrite.")
+
+    production = production_identity(ROOT)
+    overrides = training_overrides(config, name, production)
+    unknown = sorted(set(overrides) - runner_keys())
+    if unknown:
+        raise ValueError(f"run_experiment.py CONFIG has no keys {unknown}")
+    baseline = config["baseline_model"] or (
+        f"Production {production['version']} (`data/nnue/nnue_weights_int8.bin`)")
 
     target_dir.mkdir(parents=True, exist_ok=True)
-
-    # Prepare config.json for run_experiment.py
-    run_config = {
-        "config": {
-            "data": config["data"],
-            "out_dir": f"experimental/experiments/{name}",
-            "architecture": config["architecture"],
-            "hidden": config["hidden"],
-            "init_from": config["init_from"],
-            "init_architecture": config["init_architecture"],
-            "init_hidden": config["init_hidden"],
-            "from_scratch": config["from_scratch"],
-            "qat": config["qat"],
-            "mirror_h": config["mirror_h"],
-            "epochs": config["epochs"],
-            "batch_size": config["batch_size"],
-            "lr": config["lr"],
-            "min_lr": config["min_lr"],
-            "trunk_lr_scale": config["trunk_lr_scale"],
-            "warmup_epochs": config["warmup_epochs"],
-            "schedule": config["schedule"],
-            "weight_decay": config["weight_decay"],
-            "weight_decay_schedule": config["weight_decay_schedule"],
-            "min_weight_decay": config["min_weight_decay"],
-            "weight_boosts": [],
-            "max_sample_weight": 30.0,
-            "policy_weight": 1.0,
-            "value_weight": 1.0,
-            "train_scope": "full",
-            "grad_clip": 1.0,
-            "patience": 0,
-            "device": config["device"],
-            "cpu_threads": config["cpu_threads"],
-            "checkpoint_every": config["checkpoint_every"],
-        }
-    }
-
-    config_path = target_dir / "config.json"
-    with config_path.open("w", encoding="utf-8") as f:
-        json.dump(run_config, f, indent=2)
-        f.write("\n")
-
+    (target_dir / "config.json").write_text(
+        json.dumps({"config": overrides}, indent=2) + "\n", encoding="utf-8")
     date_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-    readme_content = build_readme(
-        name=name,
-        arch=config["architecture"],
-        hidden=config["hidden"],
-        data=config["data"],
-        epochs=config["epochs"],
-        hypothesis=config["hypothesis"],
-        baseline=config["baseline_model"],
-        date_str=date_str,
-    )
-
-    readme_path = target_dir / "README.md"
-    with readme_path.open("w", encoding="utf-8") as f:
-        f.write(readme_content)
-
+    (target_dir / "README.md").write_text(
+        build_readme(name, overrides, config["hypothesis"], baseline, date_str), encoding="utf-8")
     return target_dir
 
 
-def main() -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--name", type=str, default=CONFIG["name"], help="Experiment identifier name.")
-    parser.add_argument("--architecture", type=str, default=CONFIG["architecture"], help="NNUE architecture variant.")
-    parser.add_argument("--hidden", type=int, default=CONFIG["hidden"], help="Hidden layer unit width.")
-    parser.add_argument("--data", type=str, default=CONFIG["data"], help="Path to training dataset.")
-    parser.add_argument("--epochs", type=int, default=CONFIG["epochs"], help="Number of training epochs.")
-    parser.add_argument("--batch-size", type=int, default=CONFIG["batch_size"], help="Training batch size.")
-    parser.add_argument("--lr", type=float, default=CONFIG["lr"], help="Base learning rate.")
-    parser.add_argument("--hypothesis", type=str, default=CONFIG["hypothesis"], help="Hypothesis summary.")
-    parser.add_argument("--baseline", type=str, default=CONFIG["baseline_model"], help="Baseline model for comparison.")
-    parser.add_argument("--force", action="store_true", help="Overwrite existing experiment directory.")
-    args = parser.parse_args()
+def parse_config(argv=None) -> dict:
+    """Return ``CONFIG`` with the CLI overrides applied."""
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    for key, value in CONFIG.items():
+        flag = "--" + key.replace("_", "-")
+        if isinstance(value, bool):
+            parser.add_argument(flag, action=argparse.BooleanOptionalAction, default=argparse.SUPPRESS)
+        else:
+            parser.add_argument(flag, type=type(value), default=argparse.SUPPRESS)
+    config = dict(CONFIG)
+    config.update(vars(parser.parse_args(argv)))
+    return config
 
-    cfg = dict(CONFIG)
-    cfg["name"] = args.name
-    cfg["architecture"] = args.architecture
-    cfg["hidden"] = args.hidden
-    cfg["data"] = args.data
-    cfg["epochs"] = args.epochs
-    cfg["batch_size"] = args.batch_size
-    cfg["lr"] = args.lr
-    cfg["hypothesis"] = args.hypothesis
-    cfg["baseline_model"] = args.baseline
-    cfg["force"] = args.force
 
-    created = scaffold_experiment(cfg)
-    print(f"Scaffolded experiment directory: {created}")
-    print(f"Configuration file: {created / 'config.json'}")
-    print(f"Documentation template: {created / 'README.md'}")
+def main(argv=None) -> int:
+    created = scaffold_experiment(parse_config(argv))
+    print(f"Experiment directory: {created}")
+    print(f"Training overrides: {created / 'config.json'}")
+    print(f"Documentation: {created / 'README.md'}")
     return 0
 
 

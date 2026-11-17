@@ -1,3 +1,8 @@
+"""Check that every opening in a JSONL opening book is a legal move sequence.
+
+Each row needs a ``moves`` list. The script replays the moves with the local
+arena referee and prints the first illegal move of each failed row.
+"""
 import json
 import sys
 from pathlib import Path

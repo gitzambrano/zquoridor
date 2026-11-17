@@ -19,6 +19,8 @@ RUNNERS = [
     "training.run_production_finetune",
     "training.run_contact_finetune",
     "training.new_experiment",
+    "tools.dataset_inventory",
+    "tools.script_catalog",
 ]
 
 

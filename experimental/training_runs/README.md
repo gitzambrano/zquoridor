@@ -3,7 +3,7 @@
 `registry.json` lists exported experimental networks and their SHA-256 values.
 Float and int8 weights reside in `data/nnue/experiments/`. These artifacts
 support local training and native evaluation. They do not replace production.
-The production network remains version 4.01 under `data/nnue/`.
+The production network is version 4.10 under `data/nnue/`. `data/nnue/release.json` records it.
 
 `retired.json` identifies obsolete local training runs removed from the
 operational experiment directory. Each record includes hashes and paths for

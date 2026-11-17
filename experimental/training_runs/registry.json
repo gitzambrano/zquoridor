@@ -1,7 +1,8 @@
 {
   "schema": "zquoridor.training_network_registry.v1",
   "production": "data/nnue/nnue_weights_int8.bin",
-  "production_version": "4.01",
+  "production_version": "4.10",
+  "production_release": "data/nnue/release.json",
   "width_options": [
     512,
     768,

@@ -91,8 +91,27 @@ CONFIG = {
 }
 
 
+def load_config_file(path) -> dict:
+    """Return the training overrides stored in a JSON recipe.
+
+    The file holds either a flat mapping of ``CONFIG`` keys or a mapping with
+    a ``config`` key. The runner writes the second form to ``config.json``.
+    An unknown key raises ``ValueError``.
+    """
+    loaded = json.loads(Path(path).read_text(encoding="utf-8"))
+    values = loaded.get("config", loaded) if isinstance(loaded, dict) else None
+    if not isinstance(values, dict):
+        raise ValueError(f"config file does not contain a JSON object: {path}")
+    unknown = sorted(set(values) - set(CONFIG))
+    if unknown:
+        raise ValueError(f"config file has unknown keys {unknown}: {path}")
+    return values
+
+
 def parse_config(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--config", default=None,
+                        help="JSON recipe with CONFIG overrides. Other CLI options override the recipe.")
     for key, value in CONFIG.items():
         flag = "--" + key.replace("_", "-")
         if isinstance(value, bool):
@@ -102,8 +121,12 @@ def parse_config(argv=None):
                                 help='JSON argument list, for example ["--games", "100"]')
         else:
             parser.add_argument(flag, type=type(value), default=argparse.SUPPRESS)
+    args = vars(parser.parse_args(argv))
+    recipe = args.pop("config")
     config = copy.deepcopy(CONFIG)
-    config.update(vars(parser.parse_args(argv)))
+    if recipe:
+        config.update(load_config_file(recipe))
+    config.update(args)
     return config
 
 
