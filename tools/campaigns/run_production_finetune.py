@@ -8,9 +8,9 @@ import json
 from pathlib import Path
 import sys
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
-from training import run_experimental_anneal as anneal
+from tools.campaigns import run_experimental_anneal as anneal
 from training.prepare_stored_replay_all import prepare
 
 CONFIG = {
@@ -74,7 +74,7 @@ def run(config):
         eligible_records=replay["accepted_records"], new_unique_states=replay["samples"]))
     result = anneal.run(recipe)
     if config["evaluate"]:
-        from tools import run_central_finetune_evaluation as arena
+        from tools.campaigns import run_central_finetune_evaluation as arena
         candidate = output / "production_bucketed512/train/student_int8.bin"
         anneal.write_json(output / "run_status.json", dict(status="evaluating", training=result))
         evaluation_config = arena.resolve_config([

@@ -162,11 +162,20 @@ no generator because no tracked script writes those paths:
 generations and the intermediate stages of `multipath_unified_clean_15m` are
 absent from disk. The generated inventory lists them.
 
-`docs/scripts.md` now ends with a generated index of 182 scripts. Seven
-dataset-specific assemblers moved from `tools/teacher/` to `tools/campaigns/`.
-The V3 search screening scripts and `tools/release_410.py` stay at their paths
-because workflows call them. `training/run_experiment.py` accepts `--config`,
-and `training/new_experiment.py` writes a recipe for that flag.
+`docs/scripts.md` now ends with a generated index of every tracked script.
+All 30 campaign scripts are in `tools/campaigns/`. These scripts include the
+dataset assemblers, the V3 search screens, the 4.10 release script, and the
+dated training campaigns. The workflows call the new paths.
+`training/run_local_training.py` now imports `training/policy_mix.py` and
+`training/native_parity.py`, so no generic runner imports a campaign script.
+`training/run_experiment.py` accepts `--config`, and
+`training/new_experiment.py` writes a recipe for that flag.
+
+The provenance records now give the source evidence for `weakness_top5k.jsonl`
+and `policy-tactical-245k`. Their generator scripts remain unknown. On
+2026-11-17 an accidental run of `assemble_weakness_dataset.py` rewrote
+`weakness-fine-tuning-champion`. The script has a fixed seed and unchanged
+inputs, and the record states this event.
 
 ### CLI and browser transport organization (2026-10-18)
 
@@ -232,7 +241,7 @@ No passing claim applies to these two suites.
 ### Queued policy replay fine-tune (2026-10-13)
 
 The operator requested a mixed-data fine-tune after the width screen.
-`training/run_policy_mix_campaign.py` waits for its complete training, native
+`tools/campaigns/run_policy_mix_campaign.py` waits for its complete training, native
 verification, and paired H2H report. It then selects the participant with
 the higher aggregate point score. Equality selects the smaller control.
 This experimental selection does not authorize production promotion.
@@ -448,7 +457,7 @@ package is `/workspace/zquoridor_temporal_strength_report.zip`.
 The measurement does not authorize a production promotion.
 
 Records reside in `results/benchmarks/temporal-search-100ep-strength-20261013/`.
-The external controller is `tools/measure_temporal_strength.py`.
+The external controller is `tools/campaigns/measure_temporal_strength.py`.
 
 The operator authorized 100 epochs with learning-rate endpoints of `1e-5`
 and `1e-7`. This campaign starts from the production 4.0 network. The external
@@ -542,7 +551,7 @@ The candidate package is `/workspace/zquoridor_temporal_search_100ep.zip`.
 
 Artifacts reside in `data/teaching/drive-temporal-100ep/` and
 `experimental/experiments/temporal-search-100ep-20261013/`.
-The runner is `training/run_temporal_campaign.py`.
+The runner is `tools/campaigns/run_temporal_campaign.py`.
 
 ### External value fine-tune test (2026-10-13)
 

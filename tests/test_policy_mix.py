@@ -8,7 +8,7 @@ import torch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0,str(ROOT))
-from training.run_policy_mix_campaign import assemble, reconcile_groups, masked_loader, sha
+from training.policy_mix import assemble, reconcile_groups, masked_loader, sha
 from training import run_experiment as trainer
 from training.student_model import Student
 
@@ -57,7 +57,7 @@ def test_aggregation_preserves_policy_and_limits_policy_value_mass(tmp_path):
 
 def test_value_only_sample_has_no_main_or_auxiliary_policy_update(monkeypatch):
     data=dataset([4],[.8],[False]);data['policy_available']=np.array([False])
-    monkeypatch.setattr('training.run_policy_mix_campaign._original_loader',lambda path:data)
+    monkeypatch.setattr('training.policy_mix._original_loader',lambda path:data)
     data=masked_loader(Path('unused'))
     assert data['policy_sample_weight'][0]==0 and data['aux_sample_weight'][0]==0
     torch.set_num_threads(1)

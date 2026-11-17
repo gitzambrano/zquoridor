@@ -66,7 +66,7 @@ jobs:
           python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
       - name: Compare against Claustrophobia and Titanium
         run: |
-          python tools/run_v3_search_confirmation.py \
+          python tools/campaigns/run_v3_search_confirmation.py \
             --candidate "${{ matrix.candidate }}" --gate external \
             --pairs "${{ matrix.pairs }}" --workers 1 --move-time-ms 200 \
             --seed "${{ matrix.seed }}" \

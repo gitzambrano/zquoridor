@@ -7,7 +7,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from tools.teacher import run_central_weakness_rollouts as campaign
+from tools.campaigns import run_central_weakness_rollouts as campaign
 from tools.teacher.selfplay_unique_store import V3_DTYPE
 
 

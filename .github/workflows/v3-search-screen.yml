@@ -6,7 +6,7 @@ on:
     branches: [main]
     paths:
       - ".github/workflows/v3-search-screen.yml"
-      - "tools/run_v3_search_screening.py"
+      - "tools/campaigns/run_v3_search_screening.py"
 
 permissions:
   contents: read
@@ -64,7 +64,7 @@ jobs:
 
       - name: Run paired screen
         run: |
-          python -u tools/run_v3_search_screening.py \
+          python -u tools/campaigns/run_v3_search_screening.py \
             --candidate "${{ matrix.candidate }}" \
             --pairs 50 \
             --workers 1 \

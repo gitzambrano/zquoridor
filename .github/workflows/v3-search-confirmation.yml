@@ -30,7 +30,7 @@ jobs:
           python-version: "3.11"
       - name: 400 games vs V3 main on broad mixed book
         run: |
-          python tools/run_v3_search_confirmation.py \
+          python tools/campaigns/run_v3_search_confirmation.py \
             --candidate "${{ matrix.candidate }}" --gate main-fixed \
             --pairs 200 --workers 2 --move-time-ms 200 --seed 20261004 \
             --openings tools/external/openings_600g_300pairs.jsonl \
@@ -58,7 +58,7 @@ jobs:
           python-version: "3.11"
       - name: 200 games vs V3 main on independent confirmation book
         run: |
-          python tools/run_v3_search_confirmation.py \
+          python tools/campaigns/run_v3_search_confirmation.py \
             --candidate "${{ matrix.candidate }}" --gate main-fixed \
             --pairs 100 --workers 2 --move-time-ms 200 --seed 20261005 \
             --openings tools/external/openings_confirmation_v1.jsonl \
@@ -86,7 +86,7 @@ jobs:
           python-version: "3.11"
       - name: 200 games vs V3 main on central rushes
         run: |
-          python tools/run_v3_search_confirmation.py \
+          python tools/campaigns/run_v3_search_confirmation.py \
             --candidate "${{ matrix.candidate }}" --gate main-fixed \
             --pairs 100 --workers 2 --move-time-ms 200 --seed 20261006 \
             --openings tools/external/openings_center_rush_sound_5k.jsonl \
@@ -130,7 +130,7 @@ jobs:
           python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
       - name: 200 games each vs Claustrophobia and Titanium
         run: |
-          python tools/run_v3_search_confirmation.py \
+          python tools/campaigns/run_v3_search_confirmation.py \
             --candidate "${{ matrix.candidate }}" --gate external \
             --pairs 100 --workers 1 --move-time-ms 200 --seed 20261007 \
             --opponents claustrophobia,titanium \
@@ -175,7 +175,7 @@ jobs:
           python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
       - name: 100 central games each vs Claustrophobia and Titanium
         run: |
-          python tools/run_v3_search_confirmation.py \
+          python tools/campaigns/run_v3_search_confirmation.py \
             --candidate "${{ matrix.candidate }}" --gate external \
             --pairs 50 --workers 1 --move-time-ms 200 --seed 20261008 \
             --opponents claustrophobia,titanium \
@@ -204,7 +204,7 @@ jobs:
           python-version: "3.11"
       - name: 24 games at 3+2 vs V3 main
         run: |
-          python tools/run_v3_search_confirmation.py \
+          python tools/campaigns/run_v3_search_confirmation.py \
             --candidate "${{ matrix.candidate }}" --gate main-clock \
             --pairs 12 --workers 1 --base-ms 180000 --increment-ms 2000 \
             --move-overhead-ms 20 --seed 20261009 \
@@ -233,7 +233,7 @@ jobs:
           python-version: "3.11"
       - name: 16 central games at 3+2 vs V3 main
         run: |
-          python tools/run_v3_search_confirmation.py \
+          python tools/campaigns/run_v3_search_confirmation.py \
             --candidate "${{ matrix.candidate }}" --gate main-clock \
             --pairs 8 --workers 1 --base-ms 180000 --increment-ms 2000 \
             --move-overhead-ms 20 --seed 20261010 \

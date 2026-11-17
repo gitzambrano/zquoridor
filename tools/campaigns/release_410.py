@@ -10,7 +10,7 @@ import subprocess
 import urllib.request
 import zlib
 
-R=Path(__file__).resolve().parents[1]
+R=Path(__file__).resolve().parents[2]
 OLD="45fa3ea7db3127a0b907a23d268b0c55c2020e1018513d54bb920cdbe134abe0"
 NEW="fe8473255fd219fab247b1a7d44be25384a6cfc5daa5c301def49109badb7f2b"
 BLOB="b29cc917bf4ca2e315cac790a0126603e7537989"

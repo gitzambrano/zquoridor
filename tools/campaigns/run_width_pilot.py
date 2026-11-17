@@ -7,10 +7,10 @@ from pathlib import Path
 import sys
 import time
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 from training import run_experiment as trainer
-from training.run_temporal_campaign import parity
+from tools.campaigns.run_temporal_campaign import parity
 from tools import match_finalists, run_benchmark
 
 CONFIG = {

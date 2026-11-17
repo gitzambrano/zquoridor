@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from tools import run_central_finetune_evaluation as evaluation
+from tools.campaigns import run_central_finetune_evaluation as evaluation
 
 
 def _sha256(path: Path) -> str:

@@ -60,7 +60,7 @@ jobs:
 
       - name: Run Claustrophobia screen
         run: |
-          python -u tools/run_v3_search_screening.py \
+          python -u tools/campaigns/run_v3_search_screening.py \
             --candidate "${{ matrix.candidate }}" \
             --pairs 50 \
             --workers 1 \

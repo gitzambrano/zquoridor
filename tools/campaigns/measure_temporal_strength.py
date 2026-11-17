@@ -13,7 +13,7 @@ import zipfile
 
 import numpy as np
 
-ROOT=Path(__file__).resolve().parents[1]
+ROOT=Path(__file__).resolve().parents[2]
 sys.path.insert(0,str(ROOT))
 from tools import run_benchmark
 from tools.external import local_arena

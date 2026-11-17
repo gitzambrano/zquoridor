@@ -44,6 +44,8 @@ This document governs agent behavior, repository structure, and development safe
 - Give every new dataset a provenance record. Use `training/dataset_provenance.py` in the generator.
   Then run `python tools/dataset_inventory.py` and commit `data/dataset_index.json`.
 - Put a script for one specific dataset or campaign in `tools/campaigns/`. Keep generic runners in `tools/` and `training/`.
+- Do not import a campaign script from a generic runner. Move the shared logic into a generic module.
+- Before you run a campaign script, read it. A dataset script can write to `data/` when it starts.
 - Give every new script a module docstring. Then run `python tools/script_catalog.py`.
 - Create a new experiment with `python training/new_experiment.py --name <name>`.
 - Update `docs/plan.md` whenever you measure results, observe regressions, or make architectural decisions.

@@ -1,6 +1,6 @@
 """Check the production-only recipe and the preparation boundary."""
 import copy
-from training import run_production_finetune as runner
+from tools.campaigns import run_production_finetune as runner
 
 
 def test_dry_run_keeps_all_sources_without_training(tmp_path, monkeypatch):

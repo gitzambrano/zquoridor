@@ -10,12 +10,24 @@ Combines:
 from __future__ import annotations
 
 import hashlib
+import argparse
 import json
 from pathlib import Path
 import sys
 import numpy as np
 
 ROOT = Path(__file__).resolve().parents[2]
+
+# Settings of the original campaign run. Command-line flags override them.
+CONFIG = {
+    "weakness_jsonl": "data/teaching/weakness_top5k.jsonl",
+    "weakness_npz": "data/teaching/weakness_top5k_relabeled.npz",
+    "background_npz": "data/teaching/policy-tactical-245k/dataset.npz",
+    "out_dir": "data/teaching/weakness-fine-tuning-champion",
+    "n_background": 75000,
+    "weakness_weight_scale": 3.5,
+    "seed": 20260919,
+}
 if str(ROOT / "training") not in sys.path:
     sys.path.insert(0, str(ROOT / "training"))
 
@@ -149,12 +161,23 @@ def build_weakness_dataset(
     print(f"Manifest written to {manifest_path}")
 
 
+def parse_config(argv=None):
+    """Return ``CONFIG`` with the command-line overrides applied."""
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    for key, value in CONFIG.items():
+        kind = type(value) if isinstance(value, (int, float)) and not isinstance(value, bool) else str
+        parser.add_argument("--" + key.replace("_", "-"), type=kind, default=value)
+    return vars(parser.parse_args(argv))
+
+
 if __name__ == "__main__":
+    cfg = parse_config()
     build_weakness_dataset(
-        weakness_jsonl=ROOT / "data/teaching/weakness_top5k.jsonl",
-        weakness_npz=ROOT / "data/teaching/weakness_top5k_relabeled.npz",
-        background_npz=ROOT / "data/teaching/policy-tactical-245k/dataset.npz",
-        out_dir=ROOT / "data/teaching/weakness-fine-tuning-champion",
-        n_background=75000,
-        weakness_weight_scale=3.5,
+        weakness_jsonl=ROOT / cfg["weakness_jsonl"],
+        weakness_npz=ROOT / cfg["weakness_npz"],
+        background_npz=ROOT / cfg["background_npz"],
+        out_dir=ROOT / cfg["out_dir"],
+        n_background=cfg["n_background"],
+        weakness_weight_scale=cfg["weakness_weight_scale"],
+        seed=cfg["seed"],
     )

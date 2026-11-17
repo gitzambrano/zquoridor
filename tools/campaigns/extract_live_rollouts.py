@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import ctypes
 import ctypes.wintypes as wt
+import argparse
 import json
 import re
 import struct
@@ -16,6 +17,12 @@ from pathlib import Path
 import numpy as np
 
 ROOT = Path(__file__).resolve().parents[2]
+
+# Settings of the original recovery run. Command-line flags override them.
+CONFIG = {
+    "out_dir": "data/teaching/loss-center-rollouts",
+    "encoder": "bin/teacher_encode_state.exe",
+}
 if str(ROOT / "training") not in sys.path:
     sys.path.insert(0, str(ROOT / "training"))
 
@@ -175,7 +182,8 @@ def extract_records(pid: int) -> list[dict]:
     return list(records_by_id.values())
 
 
-def main():
+def main(cfg=None):
+    cfg = cfg or dict(CONFIG)
     pid = find_rollout_pid()
     if not pid:
         print("No running generate_rollouts process found!", file=sys.stderr)
@@ -186,7 +194,7 @@ def main():
         print("Error: No records extracted from process memory!", file=sys.stderr)
         sys.exit(1)
 
-    out_dir = ROOT / "data" / "teaching" / "loss-center-rollouts"
+    out_dir = ROOT / cfg["out_dir"]
     out_dir.mkdir(parents=True, exist_ok=True)
     raw_rollouts_file = out_dir / "raw_rollouts.jsonl"
     out_dataset = out_dir / "dataset.npz"
@@ -203,7 +211,7 @@ def main():
     assert len(read_back) == len(records), "Mismatch in written vs read records"
 
     # Encode states via C++ state encoder
-    encoder_bin = ROOT / "bin" / "teacher_encode_state.exe"
+    encoder_bin = ROOT / cfg["encoder"]
     print(f"Encoding {len(records)} states via {encoder_bin}...", flush=True)
     encoded = encode_states(records, encoder_bin)
 
@@ -268,5 +276,14 @@ def main():
     print(f"Wrote manifest to {manifest_file}", flush=True)
 
 
+def parse_config(argv=None):
+    """Return ``CONFIG`` with the command-line overrides applied."""
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    for key, value in CONFIG.items():
+        kind = type(value) if isinstance(value, (int, float)) and not isinstance(value, bool) else str
+        parser.add_argument("--" + key.replace("_", "-"), type=kind, default=value)
+    return vars(parser.parse_args(argv))
+
+
 if __name__ == "__main__":
-    main()
+    main(parse_config())

@@ -70,12 +70,28 @@ The script index at the end of this document lists every tracked script.
 `python tools/script_catalog.py` regenerates the index from the module docstrings.
 `tests/test_script_catalog.py` fails if the index is out of date.
 
-`tools/campaigns/` holds the scripts that built one specific dataset.
-`tools/campaigns/README.md` lists each script and its output.
+`tools/campaigns/` holds every script that built one specific dataset or ran
+one specific campaign. `tools/campaigns/README.md` lists each script and its
+default output. A generic runner never imports a campaign script.
+
+### `training/policy_mix.py`
+
+This module merges value-only rows from an external teacher archive into a
+replay dataset. `prepare_mix` keeps policy supervision on the replay rows only
+and keeps connected policy games on one side of the validation split.
+`masked_loader` applies the `policy_available` mask before the loss.
+`training/run_local_training.py` and
+`tools/campaigns/run_policy_mix_campaign.py` use this module.
+
+### `training/native_parity.py`
+
+`parity(folder)` builds the native student probe with the export flags. The
+function compares native and Python logits and writes `parity.json`. A
+difference above 0.002 stops the run with an assertion error.
 
 ## 1. Evaluation and Benchmark Runners
 
-### `tools/measure_temporal_strength.py`
+### `tools/campaigns/measure_temporal_strength.py`
 - **Purpose**: Consolidates the requested H2H match and runs a matched external strength screen for the temporal candidate and production baseline.
 - **Inputs**: The H2H game records and summary, the selected opening books, production executable, candidate weights, and baseline weights.
 - **Outputs**: Per-participant external games, paired score-change intervals, category summaries, a consolidated strength report, status, and a report ZIP.
@@ -100,7 +116,7 @@ The script index at the end of this document lists every tracked script.
 - **Auxiliary policy**: Horizontal augmentation mirrors both policy targets. Temperature softening applies to the auxiliary target. Export omits the auxiliary head.
 - **Schedule**: `--epochs 100 --lr 1e-5 --min-lr 1e-7 --warmup-epochs 0 --schedule cosine --patience 0` executes all 100 epochs with the requested endpoint rates.
 
-### `training/run_temporal_campaign.py`
+### `tools/campaigns/run_temporal_campaign.py`
 - **Purpose**: Waits for the selected download ledger, prepares the temporal dataset, trains 100 epochs, and verifies native exports.
 - **Inputs**: The Drive inventory, completed download ledger, and production 4.0 weights.
 - **Outputs**: Campaign status, logs, epoch checkpoints, training report, float and int8 weights, native candidate, parity report, and a ZIP package.
@@ -151,7 +167,7 @@ The script index at the end of this document lists every tracked script.
 - **Inputs**: Two UCI executables and opening book.
 - **Outputs**: Clock stability report and game termination checks.
 
-### `tools/mine_weaknesses.py`
+### `tools/campaigns/mine_weaknesses.py`
 - **Purpose**: Mines empirical opening weaknesses for Candidate (`Soup_Tri_Contact`) and Main 3.01 (`Soup_Tri_Equal`) networks from benchmark transcripts against external opponents (`claustrophobia`, `titanium`).
 - **Inputs**: Benchmark transcripts under `results/benchmarks/`, opening catalogs (`tools/external/openings_normal_screen_100.jsonl`, `tools/external/openings_center_rush_sound_5k.jsonl`).
 - **Outputs**: Curated weak opening banks in `tools/external/weak_openings_mined.json` and `tools/external/weak_openings_mined.jsonl`.
@@ -210,26 +226,26 @@ The script index at the end of this document lists every tracked script.
 - **Default settings**: `GAMES=1000`, `TIME_MS=150`, `THREADS=14`, `RANDOM_OPENING_PLIES=4`, `INVERT_COLORS=True`, `CREATE_BIN=True`.
 - **Key CLI flags**: `--games`, `--time-ms`, `--threads`, `--e1-heuristic`, `--e2-heuristic`, `--policy-order`, `--no-invert`, `--no-bin`.
 
-### `tools/run_v3_search_screening.py`
+### `tools/campaigns/run_v3_search_screening.py`
 - **Purpose**: Screens aggressive V3 search candidate configurations (LMR, LMP, and cpuct variations) in parallel against V3-main and Claustrophobia.
 - **Inputs**: Production V3 NNUE weights (`data/nnue/nnue_weights_int8.bin`), compiled Zquoridor engine, and opening books.
 - **Outputs**: Screening match summaries and win-rate statistics under `results/benchmarks/`.
 - **Key CLI flags**: `--candidate`, `--pairs`, `--openings`, `--workers`, `--move-time-ms`, `--output`.
 
-### `tools/run_v3_search_confirmation.py`
+### `tools/campaigns/run_v3_search_confirmation.py`
 - **Purpose**: Executes deep confirmation gates (`main-fixed`, `main-clock`, and `external`) for finalist search candidates against Main, Claustrophobia, and Titanium.
 - **Inputs**: Production V3 NNUE weights, candidate search parameters, opening books, and opponent binaries.
 - **Outputs**: Gate match transcripts and statistical summary JSON files under specified output path.
 - **Key CLI flags**: `--candidate`, `--gate`, `--pairs`, `--openings`, `--output`, `--workers`, `--move-time-ms`, `--base-ms`, `--increment-ms`, `--opponents`.
 
-### `tools/run_central_finetune_evaluation.py`
+### `tools/campaigns/run_central_finetune_evaluation.py`
 - **Purpose**: Evaluates candidate fine-tuned NNUE weights against frozen production and Claustrophobia on Center Rush opening lines.
 - **Inputs**: Candidate NNUE weights and architecture JSON, frozen production directory, and `openings_center_rush_sound_5k.jsonl`.
 - **Outputs**: Paired match transcripts and evaluation reports in `results/benchmarks/central-finetune/`.
 - **Default settings**: 200 pairs, 200 ms move clock, one worker, bootstrap iterations 20000.
 - **Key CLI flags**: `--candidate-nnue`, `--candidate-architecture`, `--candidate-name`, `--pairs`, `--workers`, `--move-time-ms`, `--openings`, `--output`.
 
-### `tools/release_410.py`
+### `tools/campaigns/release_410.py`
 - **Purpose**: Releases and updates the 4.10 search-distilled quantized policy over the 4.03 base engine.
 - **Inputs**: Release payload, base `data/nnue/nnue_weights_int8.bin`, architecture metadata, and GitHub release blobs.
 - **Outputs**: Updated production `data/nnue/nnue_weights_int8.bin`, `nnue_weights.architecture.json`, and `release.json`.
@@ -355,7 +371,7 @@ The script index at the end of this document lists every tracked script.
 - **Inputs**: Compiled self-play binary, opening positions, NNUE weights.
 - **Outputs**: V3 binary shards in `data/selfplay/`.
 
-### `tools/teacher/run_four_million_selfplay.py`
+### `tools/campaigns/run_four_million_selfplay.py`
 - **Purpose**: Resumable multi-threaded self-play controller. Manages state deduplication and opening quotas across central and broad families.
 - **Inputs**: Opening schedules, self-play binary, NNUE weights.
 - **Outputs**: Durable SQLite state store (`states.sqlite`) and deduplicated shards.
@@ -365,7 +381,7 @@ The script index at the end of this document lists every tracked script.
 - **Inputs**: Weakness position bank JSONL, matching engine.
 - **Outputs**: Dedicated weakness V3 shards.
 
-### `tools/teacher/run_central_weakness_rollouts.py`
+### `tools/campaigns/run_central_weakness_rollouts.py`
 - **Purpose**: Executes 8 to 10 ply Center Rush rollouts using wide, balanced, and sharp exploration profiles.
 - **Inputs**: 50,000 root opening catalog, production and candidate self-play executables.
 - **Outputs**: Source-separated V3 shards and aligned metadata records.
@@ -487,12 +503,12 @@ The script index at the end of this document lists every tracked script.
 - **Key CLI flags**: `--config`, `--architecture`, `--hidden`, `--epochs`, `--batch-size`, `--lr`, `--qat`, `--mirror-h`, `--resume`.
 - **Recipe format**: `--config` accepts a flat JSON object of `CONFIG` keys, or an object with a `config` key. An unknown key stops the run.
 
-### `training/run_contact_finetune.py`
+### `tools/campaigns/run_contact_finetune.py`
 - **Purpose**: Resilient supervisor runner for experimental contact-bucketed candidate training. Handles automatic restarts across Windows memory limits while preserving checkpoint state.
 - **Inputs**: Prepared mixed dataset directory.
 - **Outputs**: Exported weights, quantized int8 model, and compiled candidate executable.
 
-### `training/run_production_finetune.py`
+### `tools/campaigns/run_production_finetune.py`
 - **Purpose**: Executes fine-tuning for production bucketed candidates on combined historical and new rollout data.
 - **Inputs**: Manifest-verified mixed dataset.
 - **Outputs**: Production candidate checkpoints and native binary.
@@ -502,7 +518,7 @@ The script index at the end of this document lists every tracked script.
 - **Inputs**: Float32 weight file (`.bin`).
 - **Outputs**: Quantized weight file (`_int8.bin`).
 
-### `training/run_stage_a.py`
+### `tools/campaigns/run_stage_a.py`
 - **Purpose**: Executes Stage A of the auxiliary policy experiment. Trains A0 (control) and A1 (auxiliary softened policy) from frozen production weights, compiles native candidate binaries, and screens candidates against frozen V3.
 - **Inputs**: Dataset directory (`--data`), production weights (`--init-from`), opening books (`--normal-openings`, `--centerrush-openings`).
 - **Outputs**: Candidate models under `results/experiments/aux_policy_stage_a/`, screening transcripts, and aggregate comparison table.
@@ -561,7 +577,7 @@ Outputs include weights, architecture metadata, checkpoints, training
 reports, and native verification when enabled. The runner resolves default
 paths relative to its project directory and does not modify production.
 
-### `training/run_policy_mix_campaign.py`
+### `tools/campaigns/run_policy_mix_campaign.py`
 
 This runner waits for a completed width campaign and its paired match report.
 It prepares a canonical mixed dataset, trains matched replay-only and policy
@@ -575,7 +591,7 @@ Policy availability masks exclude policy-only states from both policy losses.
 The original width trainer remains unchanged. Production promotion requires
 a separate operator decision.
 
-### `training/run_width_pilot.py`
+### `tools/campaigns/run_width_pilot.py`
 
 This runner trains a wider candidate and a matched control from the same
 reference weights. It verifies native parity and incremental accumulators,
@@ -603,7 +619,7 @@ checksum before compilation. It writes executables to
 `python tools/script_catalog.py` generates this section. Do not edit it by hand.
 Edit the module docstring of the script instead.
 
-The index lists 182 scripts: 10 campaign, 19 diagnostic, 74 module, 79 runner.
+The index lists 184 scripts: 30 campaign, 19 diagnostic, 72 module, 63 runner.
 
 ### `colab/`
 
@@ -702,19 +718,13 @@ The index lists 182 scripts: 10 campaign, 19 diagnostic, 74 module, 79 runner.
 | `generate_gumbel_sims.py` | runner | [section](#toolsgenerate_gumbel_simspy) | Run Gumbel AlphaZero planning and Sequential Halving to generate high-density policy targets. |
 | `generate_wall_drops.py` | runner | [section](#toolsgenerate_wall_dropspy) | Generate diverse Quoridor positions and dense search targets via random wall placements. |
 | `match_finalists.py` | runner | [section](#toolsmatch_finalistspy) | Run a direct head-to-head match between two Zquoridor NNUE candidates. |
-| `measure_temporal_strength.py` | runner | [section](#toolsmeasure_temporal_strengthpy) | Complete a paired H2H and matched external strength screen. |
-| `mine_weaknesses.py` | runner | [section](#toolsmine_weaknessespy) | Mine weak openings for Main 3.01 and Candidate networks against Claustrophobia and Titanium. |
 | `rebuild_npz_from_jsonl.py` | runner | [section](#toolsrebuild_npz_from_jsonlpy) | Rebuild and synchronize dense NumPy target archives from canonical JSONL records. |
-| `release_410.py` | campaign | [section](#toolsrelease_410py) | Promote the 4.10 search-distilled quantized policy over the 4.03 engine. |
 | `run_benchmark.py` | runner | [section](#toolsrun_benchmarkpy) | Build dependencies and run reproducible local strength benchmarks. |
-| `run_central_finetune_evaluation.py` | runner | [section](#toolsrun_central_finetune_evaluationpy) | Run paired center-rush evaluation against frozen production and Claustrophobia. |
 | `run_clock_protocol_validation.py` | runner | [section](#toolsrun_clock_protocol_validationpy) | Validate deadline searches and native game clocks for local engines. |
 | `run_clock_smoke.py` | runner | [section](#toolsrun_clock_smokepy) | Run a small paired game-clock smoke test between two UCI engines. |
 | `run_complete_promotion_battery.py` | runner | [section](#toolsrun_complete_promotion_batterypy) | Run complete promotion benchmark battery for a candidate against main and external bots. |
 | `run_full_candidate_suite.py` | runner | [section](#toolsrun_full_candidate_suitepy) | Run complete evaluation battery for a candidate: 1. |
 | `run_search_games.py` | runner | [section](#toolsrun_search_gamespy) | Collect complete games and the search targets that Claustrophobia used in each game. |
-| `run_v3_search_confirmation.py` | campaign | [section](#toolsrun_v3_search_confirmationpy) | Confirmation gates for the strongest Zquoridor V3 search candidates. |
-| `run_v3_search_screening.py` | campaign | [section](#toolsrun_v3_search_screeningpy) | Screen aggressive V3 search configurations against V3 main and Claustrophobia. |
 | `script_catalog.py` | runner |  | Generate the script index of ``docs/scripts.md`` from the tracked sources. |
 | `setup_bots.py` | runner | [section](#toolssetup_botspy) | Prepare pinned external bots for local jobs. |
 | `validate_openings.py` | module |  | Check that every opening in a JSONL opening book is a legal move sequence. |
@@ -738,6 +748,29 @@ The index lists 182 scripts: 10 campaign, 19 diagnostic, 74 module, 79 runner.
 | `assemble_weakness_dataset.py` | campaign |  | Assemble fine-tuning dataset for weakness recovery and center-rush tactics. |
 | `build_center_rush_priority_dataset.py` | campaign |  | Build Center-Rush Focused Priority Teaching Dataset. |
 | `calibrate_claustrophobia_weakness_weights.py` | campaign | [section](#toolscampaignscalibrate_claustrophobia_weakness_weightspy) | Calibrate and boost sample weights specifically targeting Claustrophobia weaknesses. |
+| `extract_live_rollouts.py` | campaign |  | Extract completed StepRecord entries from live generate_rollouts.exe memory, validate integrity, and generate dataset.npz without stopping the process. |
+| `generate_targeted_weakness_bank.py` | campaign |  | Generate a targeted opening bank focused on empirical engine weaknesses. |
+| `measure_temporal_strength.py` | campaign | [section](#toolscampaignsmeasure_temporal_strengthpy) | Complete a paired H2H and matched external strength screen. |
+| `mine_generic_critical.py` | campaign |  | Mine 100,000 generic critical positions from self-play for Tier 3.5 curriculum. |
+| `mine_losses_and_center.py` | campaign |  | Mine loss positions and center pawn collision states from benchmark matches. |
+| `mine_weaknesses.py` | campaign | [section](#toolscampaignsmine_weaknessespy) | Mine weak openings for Main 3.01 and Candidate networks against Claustrophobia and Titanium. |
+| `prepare_massive_seeds.py` | campaign |  | Prepare 3,500+ diverse weakness seeds for massive rollout generation. |
+| `release_410.py` | campaign | [section](#toolscampaignsrelease_410py) | Promote the 4.10 search-distilled quantized policy over the 4.03 engine. |
+| `run_central_finetune_evaluation.py` | campaign | [section](#toolscampaignsrun_central_finetune_evaluationpy) | Run paired center-rush evaluation against frozen production and Claustrophobia. |
+| `run_central_weakness_rollouts.py` | campaign | [section](#toolscampaignsrun_central_weakness_rolloutspy) | Generate a large self-play corpus focused on weak central openings. |
+| `run_contact_finetune.py` | campaign | [section](#toolscampaignsrun_contact_finetunepy) | Train the contact-bucketed experimental candidate with high VRAM batch size and auto-resuming supervisor. |
+| `run_experimental_anneal.py` | campaign |  | Prepare champion-initialized candidates and train a shared annealing matrix. |
+| `run_four_million_selfplay.py` | campaign | [section](#toolscampaignsrun_four_million_selfplaypy) | Generate an exact, resumable four-million-state self-play corpus. |
+| `run_policy_mix_campaign.py` | campaign | [section](#toolscampaignsrun_policy_mix_campaignpy) | Wait for a width screen, then compare mixed policy teaching with replay alone. |
+| `run_production_finetune.py` | campaign | [section](#toolscampaignsrun_production_finetunepy) | Prepare all accepted new data and fine-tune the production architecture. |
+| `run_stage_a.py` | campaign | [section](#toolscampaignsrun_stage_apy) | Execute Stage A evaluation of auxiliary policy head against frozen baseline. |
+| `run_targeted_weakness_rollouts.py` | campaign |  | Run selfplay rollouts targeted on empirical engine weaknesses. |
+| `run_temporal_campaign.py` | campaign | [section](#toolscampaignsrun_temporal_campaignpy) | Prepare downloaded trajectories, train 100 epochs, and verify native exports. |
+| `run_v3_search_confirmation.py` | campaign | [section](#toolscampaignsrun_v3_search_confirmationpy) | Confirmation gates for the strongest Zquoridor V3 search candidates. |
+| `run_v3_search_screening.py` | campaign | [section](#toolscampaignsrun_v3_search_screeningpy) | Screen aggressive V3 search configurations against V3 main and Claustrophobia. |
+| `run_width_pilot.py` | campaign | [section](#toolscampaignsrun_width_pilotpy) | Train matched width controls, verify native parity, and run paired games. |
+| `sample_massive_background.py` | campaign |  | Sample massive background replay dataset from historical canonical V3 shards. |
+| `weight_weakness_seeds.py` | campaign |  | Build a 60/40 Claustrophobia/Titanium seed schedule with crisis weighting. |
 
 ### `tools/external/`
 
@@ -779,22 +812,12 @@ The index lists 182 scripts: 10 campaign, 19 diagnostic, 74 module, 79 runner.
 | `blend_weakness_teachers.py` | module |  | Blend Claustrophobia and ZQuoridor search targets on mined weakness positions. |
 | `build_selfplay_seed_schedule.py` | module |  | Build deterministic central and broad self-play seed schedules. |
 | `extract_generic_positions.py` | module |  | Extract unique generic positions with move histories from benchmark games. |
-| `extract_live_rollouts.py` | module |  | Extract completed StepRecord entries from live generate_rollouts.exe memory, validate integrity, and generate dataset.npz without stopping the process. |
 | `generate_irregular_bank.py` | runner |  | Generate a validated opening bank of irregular / perimeter / non-standard openings. |
-| `generate_targeted_weakness_bank.py` | runner |  | Generate a targeted opening bank focused on empirical engine weaknesses. |
-| `mine_generic_critical.py` | module |  | Mine 100,000 generic critical positions from self-play for Tier 3.5 curriculum. |
-| `mine_losses_and_center.py` | module |  | Mine loss positions and center pawn collision states from benchmark matches. |
 | `mine_weakness_positions.py` | module | [section](#toolsteachermine_weakness_positionspy) | Mine and export weakness positions from benchmark games. |
-| `prepare_massive_seeds.py` | runner |  | Prepare 3,500+ diverse weakness seeds for massive rollout generation. |
-| `run_central_weakness_rollouts.py` | runner | [section](#toolsteacherrun_central_weakness_rolloutspy) | Generate a large self-play corpus focused on weak central openings. |
-| `run_four_million_selfplay.py` | runner | [section](#toolsteacherrun_four_million_selfplaypy) | Generate an exact, resumable four-million-state self-play corpus. |
 | `run_rollouts.py` | runner |  | Run multithreaded branching rollouts from crisis positions and build dataset.npz. |
-| `run_targeted_weakness_rollouts.py` | runner |  | Run selfplay rollouts targeted on empirical engine weaknesses. |
 | `run_weakness_selfplay.py` | runner | [section](#toolsteacherrun_weakness_selfplaypy) | Generate resumable 100 ms self-play shards from weakness snapshots. |
-| `sample_massive_background.py` | runner |  | Sample massive background replay dataset from historical canonical V3 shards. |
 | `sample_search_states.py` | module |  | Sample states from canonical V3 shards formatted as @state for MCTS and MCAB bridges. |
 | `selfplay_unique_store.py` | module |  | Store exact canonical self-play states and admit validated shards. |
-| `weight_weakness_seeds.py` | module |  | Build a 60/40 Claustrophobia/Titanium seed schedule with crisis weighting. |
 
 ### `training/`
 
@@ -818,8 +841,10 @@ The index lists 182 scripts: 10 campaign, 19 diagnostic, 74 module, 79 runner.
 | `mix_experimental_datasets.py` | runner | [section](#trainingmix_experimental_datasetspy) | Build a disk-backed, split-safe experimental training mixture. |
 | `mix_teaching_datasets.py` | runner |  | Mix a direct replay dataset and a search-teaching dataset by sample weight. |
 | `model_soup.py` | runner | [section](#trainingmodel_souppy) | Create model soups by convex combination of compatible NNUE student checkpoints. |
+| `native_parity.py` | module | [section](#trainingnative_paritypy) | Check that a native INT8 export matches its float NNUE student. |
 | `new_experiment.py` | runner | [section](#trainingnew_experimentpy) | Create a new NNUE experiment workspace. |
 | `parity_check.py` | module | [section](#trainingparity_checkpy) | Evaluate float and quantized NNUE weights for Python and C++ parity. |
+| `policy_mix.py` | module | [section](#trainingpolicy_mixpy) | Mix external value evidence into a replay dataset without policy leakage. |
 | `prepare_replay.py` | runner | [section](#trainingprepare_replaypy) | Build a replay dataset from existing canonical self-play shards. |
 | `prepare_stored_replay_all.py` | runner | [section](#trainingprepare_stored_replay_allpy) | Prepare all frozen accepted stored-search shards into a disk-backed replay. |
 | `prepare_temporal_search.py` | runner | [section](#trainingprepare_temporal_searchpy) | Prepare trajectory-aware search targets from downloaded Drive artifacts. |
@@ -828,16 +853,9 @@ The index lists 182 scripts: 10 campaign, 19 diagnostic, 74 module, 79 runner.
 | `run_architecture_matrix.py` | runner |  | Train and benchmark an NNUE architecture matrix in one resumable run. |
 | `run_campaign.py` | runner |  | Train and compare several NNUE students on shared teaching data. |
 | `run_colab_anneal_and_arena.py` | module |  | Compatibility entry point. |
-| `run_contact_finetune.py` | runner | [section](#trainingrun_contact_finetunepy) | Train the contact-bucketed experimental candidate with high VRAM batch size and auto-resuming supervisor. |
 | `run_experiment.py` | runner | [section](#trainingrun_experimentpy) | Train, export, and build one compact NNUE experiment. |
-| `run_experimental_anneal.py` | runner |  | Prepare champion-initialized candidates and train a shared annealing matrix. |
 | `run_local_training.py` | runner | [section](#trainingrun_local_trainingpy) | Select network capacity, teaching sources, and value targets independently. |
-| `run_policy_mix_campaign.py` | runner | [section](#trainingrun_policy_mix_campaignpy) | Wait for a width screen, then compare mixed policy teaching with replay alone. |
-| `run_production_finetune.py` | runner | [section](#trainingrun_production_finetunepy) | Prepare all accepted new data and fine-tune the production architecture. |
-| `run_stage_a.py` | runner | [section](#trainingrun_stage_apy) | Execute Stage A evaluation of auxiliary policy head against frozen baseline. |
 | `run_teaching.py` | runner | [section](#trainingrun_teachingpy) | Create a multi-teacher dataset for an NNUE student. |
-| `run_temporal_campaign.py` | runner | [section](#trainingrun_temporal_campaignpy) | Prepare downloaded trajectories, train 100 epochs, and verify native exports. |
-| `run_width_pilot.py` | runner | [section](#trainingrun_width_pilotpy) | Train matched width controls, verify native parity, and run paired games. |
 | `select_replay_disagreement.py` | runner |  | Export the hardest direct-relabel states for expensive search teaching. |
 | `strong_cycle.py` | runner |  | Run one search-driven self-play cycle and gate the candidate by Elo. |
 | `student_model.py` | module |  | Compact NNUE students with explicit architecture and portable exports. |

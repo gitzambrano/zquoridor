@@ -107,7 +107,7 @@ def prepare_data(local,config):
     if ready_manifest.exists():
         mixed=json.loads(ready_manifest.read_text())
         if mixed.get('policy_training_value_fraction')==fraction and mixed.get('identity',{}).get('base_manifest_sha256')==file_sha(base/'dataset.manifest.json') and mixed.get('identity',{}).get('archive_sha256')==file_sha(local['policy_archive']):return ready
-    from training.run_policy_mix_campaign import prepare_mix
+    from training.policy_mix import prepare_mix
     signature=hashlib.sha256(json.dumps(dict(base=file_sha(base/'dataset.manifest.json'),archive=file_sha(local['policy_archive']),fraction=fraction,reference=file_sha(config['init_from'])),sort_keys=True).encode()).hexdigest()[:16]
     output=Path(local['data_cache'])/('mixed-'+signature)
     reference=output/'reference';reference.mkdir(parents=True,exist_ok=True)
@@ -123,8 +123,8 @@ def main():
     if local['dry_run']:
         print(json.dumps(config,indent=2));return
     from training import run_experiment as trainer
-    from training.run_policy_mix_campaign import masked_loader
-    from training.run_temporal_campaign import parity
+    from training.policy_mix import masked_loader
+    from training.native_parity import parity
     config['data']=str(prepare_data(local,config))
     if local['policy_value_fraction']>0:trainer.load_dataset=masked_loader
     out=Path(config['out_dir']);out.mkdir(parents=True,exist_ok=True)

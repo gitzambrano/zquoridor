@@ -8,7 +8,7 @@
       "status": "partial",
       "kind": "selfplay",
       "samples": 1388686,
-      "generator": "tools/teacher/run_central_weakness_rollouts.py",
+      "generator": "tools/campaigns/run_central_weakness_rollouts.py",
       "sources": [
         "data/selfplay/central-weakness-rollouts-16m/opening_bank_8to10ply.jsonl",
         "tools/external/openings_center_rush_50pairs.jsonl",
@@ -16,7 +16,7 @@
         "results/experiments/multipath_contact_bucketed_unified/student_int8.bin"
       ],
       "description": "Self-play rollouts from a central-opening weakness bank. The 16M campaign stopped at 85 frozen shards.",
-      "provenance_sha256": "6dd241b8d49984e025e66fedcef94e8b73f8428553d29e3091dc50b713304671"
+      "provenance_sha256": "edaf9fc1540da211a9eae2db28d32f9b0985f6b98512f0ced8a409f114996c5e"
     },
     {
       "root": "data/selfplay",
@@ -24,13 +24,13 @@
       "status": "active",
       "kind": "selfplay",
       "samples": 8516655,
-      "generator": "tools/teacher/run_four_million_selfplay.py",
+      "generator": "tools/campaigns/run_four_million_selfplay.py",
       "sources": [
         "data/selfplay/corpus-contact-4m-50ms/schedules",
         "data/selfplay_canonical_v3/weakness-loss-100ms-20260920"
       ],
       "description": "Main contact-feature self-play corpus at 50 ms per move, deduplicated in states.sqlite.",
-      "provenance_sha256": "33aa92e8545c82e6b2d9aebd16196c6898483fa1cc9bf0547a2d40ff903bda47"
+      "provenance_sha256": "0321745f7b4175a7fa2b79286cf89627920375b2ae93311e3c82c38356aeb952"
     },
     {
       "root": "data/selfplay",
@@ -92,13 +92,13 @@
       "status": "active",
       "kind": "positions",
       "samples": 3572,
-      "generator": "tools/teacher/prepare_massive_seeds.py",
+      "generator": "tools/campaigns/prepare_massive_seeds.py",
       "sources": [
         "data/teaching/mined_weaknesses_all.jsonl",
         "tools/external/openings_center_rush_sound_5k.jsonl"
       ],
       "description": "Seed positions for rollout generation. The file combines mined weaknesses and Center Rush openings.",
-      "provenance_sha256": "d90b1295af8d4d5eee89dd37a9f09e24e705168656ecd98c3b8d81276ce4ab39"
+      "provenance_sha256": "18ed9f25605aa26f10c189404e07c866c2d4d6348915b82eebc6b84e5cb3f1d8"
     },
     {
       "root": "data/teaching",
@@ -136,7 +136,7 @@
       "generator": null,
       "sources": [],
       "description": "Tactical policy slice of 244,787 positions with teacher soft policy targets.",
-      "provenance_sha256": "816a9e58b9bb5b0110a2c47a324ec96b303c2ce5230b3c0f3f38fa9b10bc1d59"
+      "provenance_sha256": "70845a4a7edff0a5075354a5fe8b0537ed87c696b1bc401f519097f8c4f7e4de"
     },
     {
       "root": "data/teaching",
@@ -237,7 +237,7 @@
         "data/teaching/policy-tactical-245k/dataset.npz"
       ],
       "description": "Fine-tuning dataset with 5,000 weakness positions and 75,000 background positions.",
-      "provenance_sha256": "b1b6d2d76614689e5cb3c07e81eda7fb355ebe0dbdf0653fe7d0ad5b2f872fe0"
+      "provenance_sha256": "c6408abb52284fc6aeeb75dee0549bff4f79a09630e7db609bc40d4ec2f5e2d5"
     },
     {
       "root": "data/teaching",
@@ -259,12 +259,12 @@
       "status": "active",
       "kind": "positions",
       "samples": 50000,
-      "generator": "tools/teacher/weight_weakness_seeds.py",
+      "generator": "tools/campaigns/weight_weakness_seeds.py",
       "sources": [
         "data/teaching/weakness-selfplay-100ms/source_positions.jsonl"
       ],
       "description": "Weighted weakness seed positions for the weakness-loss-100ms self-play run.",
-      "provenance_sha256": "a051957e607427c7e9b48e1252f4b6073b5a9c80ed1c93b6497badb7e2578b13"
+      "provenance_sha256": "e33e609929042cf4b6f9aa0721c509546e537945b002b207854aba578206baab"
     },
     {
       "root": "data/teaching",
@@ -273,9 +273,11 @@
       "kind": "positions",
       "samples": 5000,
       "generator": null,
-      "sources": [],
-      "description": "Top 5,000 weakness positions used by the weakness fine-tuning datasets.",
-      "provenance_sha256": "9099b8b51e4a532d4125d16daee141a9257f11df0e3558cbeb59e9c60071089b"
+      "sources": [
+        "data/teaching/mined_weaknesses_all.jsonl"
+      ],
+      "description": "5,000 low-ply weakness positions selected from mined_weaknesses_all.jsonl.",
+      "provenance_sha256": "8169ea9ce0f9ce9938a5240b5e7933d65ea5f8b5b9af3cabbe3c937608832592"
     },
     {
       "root": "data/teaching",

@@ -12,12 +12,12 @@ import json
 import sys
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from tools import match_finalists, run_benchmark
-from tools.run_v3_search_screening import CANDIDATES
+from tools.campaigns.run_v3_search_screening import CANDIDATES
 
 FINALISTS = ("cpuct072", "lmr210", "cpuct072_lmr210")
 ALL_EXTERNAL = ("main", *FINALISTS)

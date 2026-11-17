@@ -8,7 +8,7 @@ import numpy as np
 import pytest
 
 from tools.teacher.build_selfplay_seed_schedule import REQUIRED_FAMILIES
-from tools.teacher.run_four_million_selfplay import (
+from tools.campaigns.run_four_million_selfplay import (
     OutputLock,
     TargetCounts,
     _counts_from_store,
@@ -54,7 +54,7 @@ def test_imported_unclassified_central_states_reduce_family_capacity():
 
     # One imported central state is not assigned to a required family. The
     # controller must reserve that state inside the central target.
-    from tools.teacher.run_four_million_selfplay import _capacity
+    from tools.campaigns.run_four_million_selfplay import _capacity
 
     capacity = _capacity(
         counts, "central", "front_wall", total_target=7,
@@ -209,7 +209,7 @@ def test_fake_generator_completes_mixed_central_target_and_keeps_game_manifests(
         "--fine-tune-threads", "0", "--cpu-thread-limit", "16",
     ]
 
-    from tools.teacher.run_four_million_selfplay import parse_args
+    from tools.campaigns.run_four_million_selfplay import parse_args
 
     assert run_controller(parse_args(args)) == 0
     manifest = json.loads((out_dir / "manifest.json").read_text(encoding="utf-8"))
@@ -235,7 +235,7 @@ def test_launch_intent_is_durable_before_child_spawn(tmp_path, monkeypatch):
     weights = tmp_path / "weights.bin"
     weights.write_bytes(b"weights")
     out_dir = tmp_path / "campaign"
-    from tools.teacher.run_four_million_selfplay import parse_args
+    from tools.campaigns.run_four_million_selfplay import parse_args
 
     args = parse_args([
         "--out", str(out_dir), "--exe", sys.executable, "--exe-arg", str(fake),
@@ -277,9 +277,9 @@ def test_resume_marks_pid_reuse_stale_when_child_identity_differs(tmp_path, monk
             "meta": "staging/shard_000000_0000.meta",
         },
     }), encoding="utf-8")
-    monkeypatch.setattr("tools.teacher.run_four_million_selfplay._process_exists",
+    monkeypatch.setattr("tools.campaigns.run_four_million_selfplay._process_exists",
                         lambda pid: True)
-    monkeypatch.setattr("tools.teacher.run_four_million_selfplay._process_identity",
+    monkeypatch.setattr("tools.campaigns.run_four_million_selfplay._process_identity",
                         lambda pid: {"command_hash": "new"})
 
     state = discover_resume_state(out_dir)
@@ -370,7 +370,7 @@ def test_resume_refuses_a_live_active_child_with_matching_identity(tmp_path, mon
                          "v3": "staging/shard_000000_0000.bin",
                          "meta": "staging/shard_000000_0000.meta"},
     }), encoding="utf-8")
-    monkeypatch.setattr("tools.teacher.run_four_million_selfplay._process_identity",
+    monkeypatch.setattr("tools.campaigns.run_four_million_selfplay._process_identity",
                         lambda pid: {"command_hash": "current"})
 
     with pytest.raises(RuntimeError, match="active child"):
@@ -390,7 +390,7 @@ def test_resume_records_and_quarantines_an_orphaned_child(tmp_path, monkeypatch)
         "active_shard": {"pid": 99999, "v3": "staging/shard_000000_0000.bin",
                          "meta": "staging/shard_000000_0000.meta"},
     }), encoding="utf-8")
-    monkeypatch.setattr("tools.teacher.run_four_million_selfplay._process_exists",
+    monkeypatch.setattr("tools.campaigns.run_four_million_selfplay._process_exists",
                         lambda pid: False)
 
     discover_resume_state(out_dir)
@@ -410,7 +410,7 @@ def test_fake_generator_admits_duplicate_observations_and_keeps_final_refs(tmp_p
     weights = tmp_path / "weights.bin"
     weights.write_bytes(b"weights")
     out_dir = tmp_path / "campaign"
-    from tools.teacher.run_four_million_selfplay import parse_args
+    from tools.campaigns.run_four_million_selfplay import parse_args
 
     args = parse_args([
         "--out", str(out_dir), "--exe", sys.executable, "--exe-arg", str(fake),
@@ -448,7 +448,7 @@ def test_fake_generator_preserves_the_first_pool_label_on_a_stronger_duplicate(t
     weights.write_bytes(b"weights")
     out_dir = tmp_path / "campaign"
 
-    from tools.teacher.run_four_million_selfplay import parse_args
+    from tools.campaigns.run_four_million_selfplay import parse_args
 
     args = parse_args([
         "--out", str(out_dir), "--exe", sys.executable, "--exe-arg", str(fake),
@@ -477,7 +477,7 @@ def test_fake_generator_preserves_the_first_pool_label_on_a_stronger_duplicate(t
 
 
 def test_invalid_thread_reservation_is_rejected_before_file_checks(tmp_path):
-    from tools.teacher.run_four_million_selfplay import parse_args
+    from tools.campaigns.run_four_million_selfplay import parse_args
 
     args = parse_args([
         "--out", str(tmp_path / "campaign"), "--exe", "missing.exe", "--weights", "missing.bin",
@@ -491,7 +491,7 @@ def test_invalid_thread_reservation_is_rejected_before_file_checks(tmp_path):
 
 def test_direct_script_help_uses_the_repository_import_path():
     completed = subprocess.run(
-        [sys.executable, "tools/teacher/run_four_million_selfplay.py", "--help"],
+        [sys.executable, "tools/campaigns/run_four_million_selfplay.py", "--help"],
         cwd=str(Path(__file__).resolve().parents[1]),
         capture_output=True,
         text=True,
@@ -503,7 +503,7 @@ def test_direct_script_help_uses_the_repository_import_path():
 
 
 def test_visit_transition_uses_durable_count_without_mutating_base_args():
-    from tools.teacher.run_four_million_selfplay import generation_args, parse_args
+    from tools.campaigns.run_four_million_selfplay import generation_args, parse_args
     args = parse_args(["--exe", "legacy.exe", "--visit-temperature-after", "5000000",
                        "--visit-temperature-exe", "visits.exe"])
     assert str(generation_args(args, 4999999).exe) == "legacy.exe"
@@ -516,7 +516,7 @@ def test_visit_transition_uses_durable_count_without_mutating_base_args():
 
 
 def test_generator_provenance_distinguishes_weights(tmp_path):
-    from tools.teacher.run_four_million_selfplay import generator_provenance, parse_args
+    from tools.campaigns.run_four_million_selfplay import generator_provenance, parse_args
     exe = tmp_path / "engine"
     weights = tmp_path / "weights"
     exe.write_bytes(b"engine")
@@ -530,7 +530,7 @@ def test_generator_provenance_distinguishes_weights(tmp_path):
 
 
 def test_stop_request_preserves_data_and_launches_no_child(tmp_path, monkeypatch):
-    from tools.teacher.run_four_million_selfplay import parse_args
+    from tools.campaigns.run_four_million_selfplay import parse_args
     central = tmp_path / "central.jsonl"
     broad = tmp_path / "broad.jsonl"
     _write_schedule(central)

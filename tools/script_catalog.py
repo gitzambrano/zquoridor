@@ -40,8 +40,6 @@ CONFIG = {
 BEGIN = "<!-- script-index:begin -->"
 END = "<!-- script-index:end -->"
 CAMPAIGN_DIRS = ("tools/campaigns/",)
-CAMPAIGN_FILES = ("tools/release_410.py", "tools/run_v3_search_screening.py",
-                  "tools/run_v3_search_confirmation.py")
 DIAGNOSTIC_DIRS = ("colab/playwright/diagnostics/",)
 EXCLUDED_DIRS = ("experimental/", "tools/path_clash_bot_arena/")
 
@@ -73,7 +71,7 @@ def summary(tree: ast.Module) -> str:
 
 def role(path: str, tree: ast.Module) -> str:
     """Return the role of one script."""
-    if path.startswith(CAMPAIGN_DIRS) or path in CAMPAIGN_FILES:
+    if path.startswith(CAMPAIGN_DIRS):
         return "campaign"
     if path.startswith(DIAGNOSTIC_DIRS):
         return "diagnostic"

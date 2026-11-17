@@ -26,8 +26,8 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          python tools/release_410.py
-          python -m py_compile tools/release_410.py
+          python tools/campaigns/release_410.py
+          python -m py_compile tools/campaigns/release_410.py
           echo "fe8473255fd219fab247b1a7d44be25384a6cfc5daa5c301def49109badb7f2b  data/nnue/nnue_weights_int8.bin" | sha256sum -c -
       - name: Build and validate native engine, search and clocks
         run: |

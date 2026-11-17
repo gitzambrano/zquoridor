@@ -9,7 +9,7 @@ import torch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-from training import run_experimental_anneal as runner
+from tools.campaigns import run_experimental_anneal as runner
 from training.student_model import Student, export
 
 

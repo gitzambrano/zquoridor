@@ -42,7 +42,7 @@ jobs:
           python-version: "3.11"
       - name: Deep fixed-clock H2H vs V3.0
         run: |
-          python tools/run_v3_search_confirmation.py \
+          python tools/campaigns/run_v3_search_confirmation.py \
             --candidate cpuct072 --gate main-fixed \
             --pairs "${{ matrix.pairs }}" --workers 2 --move-time-ms 200 \
             --seed "${{ matrix.seed }}" \
@@ -118,7 +118,7 @@ jobs:
           python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
       - name: Compare against Claustrophobia and Titanium
         run: |
-          python tools/run_v3_search_confirmation.py \
+          python tools/campaigns/run_v3_search_confirmation.py \
             --candidate "${{ matrix.candidate }}" --gate external \
             --pairs "${{ matrix.pairs }}" --workers 1 --move-time-ms 200 \
             --seed "${{ matrix.seed }}" \
@@ -156,7 +156,7 @@ jobs:
           python-version: "3.11"
       - name: Deep 3+2 H2H vs V3.0
         run: |
-          python tools/run_v3_search_confirmation.py \
+          python tools/campaigns/run_v3_search_confirmation.py \
             --candidate cpuct072 --gate main-clock \
             --pairs "${{ matrix.pairs }}" --workers 1 \
             --base-ms 180000 --increment-ms 2000 --move-overhead-ms 20 \

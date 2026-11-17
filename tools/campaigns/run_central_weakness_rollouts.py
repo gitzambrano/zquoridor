@@ -82,7 +82,7 @@ from tools.teacher.build_selfplay_seed_schedule import (  # noqa: E402
     _apply_move,
     _replay_history,
 )
-from tools.teacher.run_four_million_selfplay import OutputLock  # noqa: E402
+from tools.campaigns.run_four_million_selfplay import OutputLock  # noqa: E402
 from tools.teacher.selfplay_unique_store import V3_DTYPE  # noqa: E402
 
 SCHEMA = "zquoridor.central_weakness_rollouts.v2"

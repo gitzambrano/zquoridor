@@ -11,12 +11,24 @@ Mines and extracts:
 """
 from __future__ import annotations
 
+import argparse
 import json
 from pathlib import Path
 import sys
 import numpy as np
 
 ROOT = Path(__file__).resolve().parents[2]
+
+# Settings of the original campaign run. Command-line flags override them.
+CONFIG = {
+    "source_npz": "data/teaching/multitier-final-dataset/dataset.npz",
+    "weakness_jsonl": "data/teaching/weakness_top5k.jsonl",
+    "weakness_npz": "data/teaching/weakness_top5k_relabeled.npz",
+    "out_dir": "data/teaching/center-rush-200k-priority",
+    "n_center_rush": 200000,
+    "n_background": 50000,
+    "cr_weight": 5.0,
+}
 if str(ROOT / "training") not in sys.path:
     sys.path.insert(0, str(ROOT / "training"))
 
@@ -197,13 +209,23 @@ def build_center_rush_dataset(
     print(f"Effective Center-Rush signal share: {manifest['effective_center_rush_share_pct']:.2f}%")
 
 
+def parse_config(argv=None):
+    """Return ``CONFIG`` with the command-line overrides applied."""
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    for key, value in CONFIG.items():
+        kind = type(value) if isinstance(value, (int, float)) and not isinstance(value, bool) else str
+        parser.add_argument("--" + key.replace("_", "-"), type=kind, default=value)
+    return vars(parser.parse_args(argv))
+
+
 if __name__ == "__main__":
+    cfg = parse_config()
     build_center_rush_dataset(
-        source_npz=ROOT / "data/teaching/multitier-final-dataset/dataset.npz",
-        weakness_jsonl=ROOT / "data/teaching/weakness_top5k.jsonl",
-        weakness_npz=ROOT / "data/teaching/weakness_top5k_relabeled.npz",
-        out_dir=ROOT / "data/teaching/center-rush-200k-priority",
-        n_center_rush=200000,
-        n_background=50000,
-        cr_weight=5.0,
+        source_npz=ROOT / cfg["source_npz"],
+        weakness_jsonl=ROOT / cfg["weakness_jsonl"],
+        weakness_npz=ROOT / cfg["weakness_npz"],
+        out_dir=ROOT / cfg["out_dir"],
+        n_center_rush=cfg["n_center_rush"],
+        n_background=cfg["n_background"],
+        cr_weight=cfg["cr_weight"],
     )
